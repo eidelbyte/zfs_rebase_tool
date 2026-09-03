@@ -45,6 +45,20 @@ freebsd: build
 	    ZFSOPS_CFLAGS="$(ZFS_CFLAGS)" \
 	    LDFLAGS="$(LDFLAGS) $(ZFS_LIBS)" zfs_rebase
 
+# The gates for the freebsd flavor. check links the test programs and
+# relinks zfs_rebase against LIB_OBJS, which includes zfsops.o, so on
+# FreeBSD it needs the same flags the freebsd target uses: plain check
+# would compile zfsops.c without the OpenZFS headers and link without
+# the ZFS libraries. The rule for the two flavors is that they do not
+# share build/, because the objects differ; each flavor starts from
+# make clean. This target therefore has no prerequisite that could
+# build or reuse a portable object: it only recurses, and the inner
+# make builds what the FreeBSD flags demand.
+check-freebsd:
+	$(MAKE) CFLAGS="$(CFLAGS) -DZR_FREEBSD" \
+	    ZFSOPS_CFLAGS="$(ZFS_CFLAGS)" \
+	    LDFLAGS="$(LDFLAGS) $(ZFS_LIBS)" check
+
 build/main.o: src/main.c src/decide.h src/fixture.h src/manifest.h \
 	src/name.h src/run.h src/walk.h src/yellow.h
 	$(CC) $(CFLAGS) -c -o $@ src/main.c
@@ -87,7 +101,8 @@ check: unit battery fixtures
 
 unit: build $(LIB_OBJS)
 	@for t in $(TESTS); do \
-	    $(CC) $(CFLAGS) -o build/$$t tests/$$t.c $(LIB_OBJS) || exit 1; \
+	    $(CC) $(CFLAGS) -o build/$$t tests/$$t.c $(LIB_OBJS) \
+		$(LDFLAGS) || exit 1; \
 	    ./build/$$t || { echo "FAIL $$t"; exit 1; }; \
 	    echo "ok   $$t"; \
 	done
@@ -99,7 +114,8 @@ fixtures: zfs_rebase
 
 # The M1 gate: every committed battery, both modes.
 battery: build $(LIB_OBJS)
-	$(CC) $(CFLAGS) -o build/check_battery tests/check_battery.c $(LIB_OBJS)
+	$(CC) $(CFLAGS) -o build/check_battery tests/check_battery.c $(LIB_OBJS) \
+	    $(LDFLAGS)
 	./build/check_battery tests/battery/*.txt
 
 gate:
@@ -108,4 +124,4 @@ gate:
 clean:
 	rm -rf build zfs_rebase
 
-.PHONY: all freebsd check unit battery fixtures gate clean
+.PHONY: all freebsd check check-freebsd unit battery fixtures gate clean

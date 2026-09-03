@@ -18,6 +18,8 @@ Two build modes:
     make check      build and run the core's tests
     make freebsd    the real tool: adds the ZFS layer and links
                     libzfs_core, libzfs, libnvpair
+    make check-freebsd
+                    the same tests and gates, built and linked that way
     make gate       ASCII and style checks over the sources
 
 The core alone runs end to end in --posix mode over three ordinary
