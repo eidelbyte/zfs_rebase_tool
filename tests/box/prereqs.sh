@@ -16,9 +16,14 @@ check "git"                "command -v git"                   "pkg install git"
 check "perl (gate only)"   "command -v perl"                  "pkg install perl5, or run make gate on the Mac"
 check "zfs and zpool"      "command -v zfs && command -v zpool" "base system"
 check "mdconfig"           "command -v mdconfig"              "base system"
-check "libzfs.h"           "test -r /usr/include/libzfs.h"    "point ZFS_INCLUDE at the src tree's openzfs include dir"
-check "libzfs_core.h"      "test -r /usr/include/libzfs_core.h" "same"
-check "libnvpair.h"        "test -r /usr/include/libnvpair.h" "same"
+ZFS_SRC=${ZFS_SRC:-/usr/src}
+check "OpenZFS source tree at $ZFS_SRC (make freebsd ZFS_SRC=... if elsewhere)" \
+    "test -r $ZFS_SRC/sys/contrib/openzfs/include/libzfs.h" \
+    "the installed headers are not enough: libzfs.h needs libspl's types and sys/avl.h, sys/fs/zfs.h, sys/mnttab.h from the tree"
+check "libspl types in the tree" \
+    "test -r $ZFS_SRC/sys/contrib/openzfs/lib/libspl/include/sys/stdtypes.h" "same tree"
+check "zfs_config.h in the tree" \
+    "test -r $ZFS_SRC/sys/modules/zfs/zfs_config.h" "same tree"
 check "libzfs_core.so"     "ls /lib/libzfs_core.so* /usr/lib/libzfs_core.so* 2>/dev/null | grep -q ." "base system"
 check "libzfs.so"          "ls /lib/libzfs.so* /usr/lib/libzfs.so* 2>/dev/null | grep -q ." "base system"
 check "libnvpair.so"       "ls /lib/libnvpair.so* /usr/lib/libnvpair.so* 2>/dev/null | grep -q ." "base system"

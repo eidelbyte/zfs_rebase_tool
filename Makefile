@@ -5,8 +5,24 @@
 CC ?= cc
 CFLAGS = -std=c99 -Wall -Wextra -Werror -Wcast-qual -O2 -g -Isrc
 LDFLAGS =
-ZFS_INCLUDE = /usr/include
+# The FreeBSD build needs the OpenZFS source tree: FreeBSD installs
+# libzfs.h, libzfs_core.h, libnvpair.h and sys/nvpair.h, but not
+# sys/avl.h, sys/fs/zfs.h, nor libspl's sys/mnttab.h and the Solaris
+# types (uint_t, boolean_t, ...) those headers assume. This is the
+# include set cddl/lib/libzfs/Makefile uses, minus the kernel-only
+# parts. Override ZFS_SRC when the tree is elsewhere. Only zfsops.o
+# gets these flags: libspl ships its own sys/acl.h, which would
+# shadow FreeBSD's for walk.c and apply.c.
+ZFS_SRC = /usr/src
+ZFS_TOP = $(ZFS_SRC)/sys/contrib/openzfs
+ZFS_CFLAGS = -I$(ZFS_TOP)/lib/libspl/include/os/freebsd \
+	-I$(ZFS_TOP)/lib/libspl/include \
+	-I$(ZFS_TOP)/include/os/freebsd -I$(ZFS_TOP)/include \
+	-include $(ZFS_TOP)/include/os/freebsd/spl/sys/ccompile.h \
+	-include $(ZFS_SRC)/sys/modules/zfs/zfs_config.h \
+	-DNEED_SOLARIS_BOOLEAN -DHAVE_ISSETUGID -DHAVE_STRLCAT -DHAVE_STRLCPY
 ZFS_LIBS = -lzfs_core -lzfs -lnvpair
+ZFSOPS_CFLAGS =
 
 # Library objects are everything but main.o; tests link against them.
 LIB_OBJS = build/vis.o build/name.o build/decide.o build/fixture.o \
@@ -25,7 +41,8 @@ zfs_rebase: $(CORE_OBJS)
 	$(CC) $(CFLAGS) -o $@ $(CORE_OBJS) $(LDFLAGS)
 
 freebsd: build
-	$(MAKE) CFLAGS="$(CFLAGS) -DZR_FREEBSD -I$(ZFS_INCLUDE)" \
+	$(MAKE) CFLAGS="$(CFLAGS) -DZR_FREEBSD" \
+	    ZFSOPS_CFLAGS="$(ZFS_CFLAGS)" \
 	    LDFLAGS="$(LDFLAGS) $(ZFS_LIBS)" zfs_rebase
 
 build/main.o: src/main.c src/decide.h src/fixture.h src/manifest.h \
@@ -60,7 +77,7 @@ build/diff.o: src/diff.c src/diff.h src/name.h src/walk.h src/yellow.h
 	$(CC) $(CFLAGS) -c -o $@ src/diff.c
 
 build/zfsops.o: src/zfsops.c src/zfsops.h src/diff.h
-	$(CC) $(CFLAGS) -c -o $@ src/zfsops.c
+	$(CC) $(CFLAGS) $(ZFSOPS_CFLAGS) -c -o $@ src/zfsops.c
 
 build/run.o: src/run.c src/run.h src/apply.h src/decide.h src/diff.h \
 	src/manifest.h src/name.h src/walk.h src/yellow.h src/zfsops.h
