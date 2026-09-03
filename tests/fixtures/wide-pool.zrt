@@ -1,0 +1,57 @@
+# One file with five names in four directories. from adds a sixth
+# name in a fifth directory and edits the bytes through one of them;
+# onto renames nothing and edits nothing. The write lands on the
+# anchor alone, the new name links to it, and the other four names
+# say nothing at all.
+
+tree base
+	/d1 dir
+	/d1/n1 file p
+	/d1/n2 link /d1/n1
+	/d2 dir
+	/d2/n3 link /d1/n1
+	/d3 dir
+	/d3/n4 link /d1/n1
+	/d4 dir
+	/d4/n5 link /d1/n1
+
+tree from
+	/d1 dir
+	/d1/n1 file p2
+	/d1/n2 link /d1/n1
+	/d2 dir
+	/d2/n3 link /d1/n1
+	/d3 dir
+	/d3/n4 link /d1/n1
+	/d4 dir
+	/d4/n5 link /d1/n1
+	/d5 dir
+	/d5/n6 link /d1/n1
+
+tree onto
+	/d1 dir
+	/d1/n1 file p
+	/d1/n2 link /d1/n1
+	/d2 dir
+	/d2/n3 link /d1/n1
+	/d3 dir
+	/d3/n4 link /d1/n1
+	/d4 dir
+	/d4/n5 link /d1/n1
+
+expect
+#rebase-manifest 4
+#base zrt/base@s
+#from zrt/from@s
+#onto zrt/onto@s
+#mode strict
+#actions 3
+#conflicts 0
+/
+    d1/
+        n1 write /d1/n1
+        ..
+    d5/ cp /d5
+        n6 ln /d1/n1
+        ..
+    ..

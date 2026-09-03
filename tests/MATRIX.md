@@ -77,7 +77,7 @@ an unescaped byte that encode would have escaped}.
 | ZV16 | decode rejects `\000`, no NUL in a path | planned: check_vis.c |
 | ZV17 | decode rejects a raw space, hash or high byte | planned: check_vis.c |
 | ZV18 | the empty string and a one-byte name | planned: check_vis.c |
-| ZV19 | encode(decode(s)) == s on fixture names | planned: check_roundtrip.c |
+| ZV19 | encode(decode(s)) == s on fixture names | covered: check_roundtrip.c |
 
 ## ZN -- name table (check_name.c)
 
@@ -299,7 +299,7 @@ anchor {first name in manifest order, onto-created}; record parts
 | ZM39 | parse ignores comments and blank lines | covered: check_manifest.c |
 | ZM40 | emit, parse, emit is byte identical | covered: check_manifest.c |
 | ZM41 | the expect block parses equal | covered: check_manifest.c |
-| ZM42 | escapes.zrt, dir-rm.zrt, wide-pool.zrt | planned: check_manifest.c |
+| ZM42 | escapes, dir-rm, wide-pool, type-change .zrt | covered: check_roundtrip.c |
 | ZM43 | parse rejects a first line that is not v4 | covered: check_manifest.c |
 | ZM44 | parse rejects an ln naming its own path | covered: check_manifest.c |
 | ZM45 | parse rejects a child under a leaf line | covered: check_manifest.c |
@@ -308,6 +308,7 @@ anchor {first name in manifest order, onto-created}; record parts
 | ZM48 | parse rejects a conflict mark with no record | covered: check_manifest.c |
 | ZM49 | parse rejects an unknown class | covered: check_manifest.c |
 | ZM50 | parse rejects records out of order | covered: check_manifest.c |
+| ZM51 | a type change: rm of onto's directory, then cp | covered: check_roundtrip.c |
 
 ## ZA -- apply (check_apply.c)
 

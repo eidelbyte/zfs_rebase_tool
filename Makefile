@@ -14,7 +14,7 @@ LIB_OBJS = build/vis.o build/name.o build/decide.o build/fixture.o \
 CORE_OBJS = build/main.o $(LIB_OBJS)
 FREEBSD_OBJS =
 TESTS = check_vis check_name check_fixture check_manifest check_walk \
-	check_yellow
+	check_yellow check_roundtrip
 
 all: build zfs_rebase
 

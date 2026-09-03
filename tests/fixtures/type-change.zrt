@@ -1,0 +1,31 @@
+# base holds the directory /d with a file in it. from removes the
+# whole directory and creates a regular file of that name; onto is
+# passive. The name survives with from's file as its object, which
+# onto's directory cannot become in place: it is removed with its
+# child first, and the create takes the name after the close.
+
+tree base
+	/d dir
+	/d/f file f
+
+tree from
+	/d file g
+
+tree onto
+	/d dir
+	/d/f file f
+
+expect
+#rebase-manifest 4
+#base zrt/base@s
+#from zrt/from@s
+#onto zrt/onto@s
+#mode strict
+#actions 3
+#conflicts 0
+/
+    d/ rm
+        f rm
+        ..
+    d cp /d
+    ..

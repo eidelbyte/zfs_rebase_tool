@@ -1,0 +1,48 @@
+# from removes a directory three levels deep, with a file at every
+# level and one empty subdirectory in the deepest. onto is passive,
+# so nothing defends any of it and every name goes.
+
+tree base
+	/keep file k
+	/t dir
+	/t/f1 file a
+	/t/l2 dir
+	/t/l2/f2 file b
+	/t/l2/l3 dir
+	/t/l2/l3/e dir
+	/t/l2/l3/f3 file c
+
+tree from
+	/keep file k
+
+tree onto
+	/keep file k
+	/t dir
+	/t/f1 file a
+	/t/l2 dir
+	/t/l2/f2 file b
+	/t/l2/l3 dir
+	/t/l2/l3/e dir
+	/t/l2/l3/f3 file c
+
+expect
+#rebase-manifest 4
+#base zrt/base@s
+#from zrt/from@s
+#onto zrt/onto@s
+#mode strict
+#actions 7
+#conflicts 0
+/
+    t/ rm
+        f1 rm
+        l2/ rm
+            f2 rm
+            l3/ rm
+                e/ rm
+                    ..
+                f3 rm
+                ..
+            ..
+        ..
+    ..

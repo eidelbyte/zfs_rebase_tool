@@ -1,0 +1,54 @@
+# Every byte the escaping has a rule for, in a leaf name: a space, a
+# tab, a backslash, a hash, the control byte 0x01, the two UTF-8
+# bytes of an acute e, and one name that is only a hash. Each name
+# carries an action or a conflict mark, and the two the merge puts in
+# one pool are the names of the record.
+
+tree base
+	/\043 file m
+	/a\040b file x
+	/b\134s file s
+	/caf\303\251 file y
+
+tree from
+	/\043 file m2
+	/a\011b file t
+	/a\040b file x
+	/c\001t link /\043
+	/caf\303\251 link /a\040b
+	/h\043m dir
+	/h\043m/x file hx
+
+tree onto
+	/\043 file m
+	/a\040b file z
+	/b\134s file s
+	/caf\303\251 file y
+
+expect
+#rebase-manifest 4
+#base zrt/base@s
+#from zrt/from@s
+#onto zrt/onto@s
+#mode strict
+#actions 6
+#conflicts 1
+/
+    \043 write /\043
+    a\011b cp /a\011b
+    a\040b conflict 1
+    b\134s rm
+    c\001t ln /\043
+    caf\303\251 conflict 1
+    h\043m/ cp /h\043m
+        x cp /h\043m/x
+        ..
+    ..
+
+# a pool is one file and all its names: {names}letter; same
+# letter, same bytes
+conflict 1 disagree
+  why  /caf\303\251 and /a\040b end in one pool with different contents
+  base ({/caf\303\251}x,{/a\040b}y)
+  from ({/a\040b /caf\303\251}y)
+  onto ({/caf\303\251}x,{/a\040b}z)
