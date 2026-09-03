@@ -513,6 +513,7 @@ za_setflags(const char *full, uint32_t flags)
 struct za_ctx {
 	int			zc_rootfd;
 	const struct zr_walk	*zc_from;
+	const struct zr_walk	*zc_onto;	/* dup source, or NULL */
 	struct zr_apply_stats	*zc_st;
 	char			*zc_err;
 	size_t			zc_errlen;
@@ -529,6 +530,7 @@ struct za_ctx {
 
 /* One from object: where its bytes are and what it looks like. */
 struct za_src {
+	const struct zr_walk	*zs_walk;	/* from, or onto for dup */
 	zr_name_t		zs_name;
 	const struct zr_attr	*zs_at;
 	zr_type_t		zs_type;
@@ -699,23 +701,31 @@ za_type(mode_t m, zr_type_t *out)
 	return (0);
 }
 
-/* The from object an action's argument names, and its attributes. */
+/*
+ * The object an action's argument names, in the walk w (from for cp
+ * and write, onto for dup), and its attributes.
+ */
 static int
-za_source(struct za_ctx *c, const struct zr_action *a, struct za_src *src)
+za_source(struct za_ctx *c, const struct zr_action *a,
+    const struct zr_walk *w, struct za_src *src)
 {
-	const struct zr_tree *t = &c->zc_from->zw_tree;
+	const struct zr_tree *t;
 	zr_name_t nm;
 	zr_pool_t pool;
 
+	if (w == NULL)
+		return (za_failx(c, a, "dup needs the onto tree"));
+	t = &w->zw_tree;
 	nm = zr_names_lookup(t->zt_names, (const char *)a->za_arg,
 	    a->za_arglen);
 	if (nm == ZR_NAME_NONE)
-		return (za_failx(c, a, "the from tree holds no such path"));
+		return (za_failx(c, a, "the source tree holds no such path"));
 	pool = zr_tree_pool(t, nm);
-	if (pool == ZR_POOL_NONE || pool >= c->zc_from->zw_nattrs)
-		return (za_failx(c, a, "the from tree holds no such path"));
+	if (pool == ZR_POOL_NONE || pool >= w->zw_nattrs)
+		return (za_failx(c, a, "the source tree holds no such path"));
+	src->zs_walk = w;
 	src->zs_name = nm;
-	src->zs_at = &c->zc_from->zw_attrs[pool];
+	src->zs_at = &w->zw_attrs[pool];
 	src->zs_type = t->zt_pools[pool].zp_type;
 	return (0);
 }
@@ -732,13 +742,14 @@ za_source(struct za_ctx *c, const struct zr_action *a, struct za_src *src)
  * same descriptor-relative call that never follows a link.
  */
 static int
-za_from_stat(struct za_ctx *c, const struct zr_action *a, struct stat *st)
+za_from_stat(struct za_ctx *c, const struct zr_action *a,
+    const struct zr_walk *w, struct stat *st)
 {
 	const char *rel;
 
 	rel = a->za_arglen == 1 ? "." : za_rel(a->za_arg);
-	if (fstatat(c->zc_from->zw_rootfd, rel, st, AT_SYMLINK_NOFOLLOW) != 0)
-		return (za_fail(c, a, "stat of the from object"));
+	if (fstatat(w->zw_rootfd, rel, st, AT_SYMLINK_NOFOLLOW) != 0)
+		return (za_fail(c, a, "stat of the source object"));
 	return (0);
 }
 
@@ -946,7 +957,7 @@ za_pour(struct za_ctx *c, const struct zr_action *a,
 	uint64_t nb = 0;
 	int in, rc;
 
-	in = zr_walk_openat(c->zc_from, src->zs_name, O_RDONLY);
+	in = zr_walk_openat(src->zs_walk, src->zs_name, O_RDONLY);
 	if (in < 0)
 		return (za_fail(c, a, "open of the from file"));
 	if (fstat(in, fst) != 0) {
@@ -961,9 +972,17 @@ za_pour(struct za_ctx *c, const struct zr_action *a,
 	return (rc);
 }
 
-/* cp: a new object with the type, bytes and attributes of from's. */
+/*
+ * cp: a new object with the type, bytes and attributes of from's.
+ * dup: the same, from the object onto holds at the argument, for a
+ * severed half that must carry bytes only onto has. The source is
+ * read from the onto walk (a snapshot, or the tree before apply);
+ * the anchor keeps that object unchanged, which is what makes the
+ * copy honest.
+ */
 static int
-za_do_cp(struct za_ctx *c, const struct zr_action *a)
+za_do_cp(struct za_ctx *c, const struct zr_action *a,
+    const struct zr_walk *w, const char *what)
 {
 	struct za_src src;
 	struct stat fst;
@@ -973,7 +992,7 @@ za_do_cp(struct za_ctx *c, const struct zr_action *a)
 	int fd, rc;
 
 	if (za_path_ok(c, a, a->za_arg, a->za_arglen) != 0 ||
-	    za_source(c, a, &src) != 0 || za_clear(c, a) != 0)
+	    za_source(c, a, w, &src) != 0 || za_clear(c, a) != 0)
 		return (-1);
 	rel = za_rel(a->za_path);
 	mode = src.zs_at->za_mode & ZA_CREAT;
@@ -981,7 +1000,7 @@ za_do_cp(struct za_ctx *c, const struct zr_action *a)
 	case ZR_T_DIR:
 		if (mkdirat(c->zc_rootfd, rel, mode) != 0)
 			return (za_fail(c, a, "mkdir"));
-		if (za_from_stat(c, a, &fst) != 0)
+		if (za_from_stat(c, a, w, &fst) != 0)
 			return (-1);
 		break;
 	case ZR_T_FILE:
@@ -1001,7 +1020,7 @@ za_do_cp(struct za_ctx *c, const struct zr_action *a)
 			    "target"));
 		if (symlinkat(src.zs_at->za_target, c->zc_rootfd, rel) != 0)
 			return (za_fail(c, a, "symlink"));
-		if (za_from_stat(c, a, &fst) != 0)
+		if (za_from_stat(c, a, w, &fst) != 0)
 			return (-1);
 		break;
 	case ZR_T_CHR:
@@ -1010,22 +1029,25 @@ za_do_cp(struct za_ctx *c, const struct zr_action *a)
 		if (mknodat(c->zc_rootfd, rel, mode,
 		    (dev_t)src.zs_at->za_rdev) != 0)
 			return (za_fail(c, a, "mknod"));
-		if (za_from_stat(c, a, &fst) != 0)
+		if (za_from_stat(c, a, w, &fst) != 0)
 			return (-1);
 		break;
 	case ZR_T_FIFO:
 		if (mkfifoat(c->zc_rootfd, rel, mode) != 0)
 			return (za_fail(c, a, "mkfifo"));
-		if (za_from_stat(c, a, &fst) != 0)
+		if (za_from_stat(c, a, w, &fst) != 0)
 			return (-1);
 		break;
 	default:
 		return (za_failx(c, a, "cannot recreate a socket"));
 	}
 	if (za_attrs(c, a, &src, &fst) != 0 ||
-	    za_verify(c, a, &src, "cp", size) != 0)
+	    za_verify(c, a, &src, what, size) != 0)
 		return (-1);
-	c->zc_st->zs_cp++;
+	if (w == c->zc_from)
+		c->zc_st->zs_cp++;
+	else
+		c->zc_st->zs_dup++;
 	return (0);
 }
 
@@ -1084,7 +1106,7 @@ za_do_write(struct za_ctx *c, const struct zr_action *a)
 	int fd, rc;
 
 	if (za_path_ok(c, a, a->za_arg, a->za_arglen) != 0 ||
-	    za_source(c, a, &src) != 0)
+	    za_source(c, a, c->zc_from, &src) != 0)
 		return (-1);
 	rel = za_rel(a->za_path);
 	if (fstatat(c->zc_rootfd, rel, &st, AT_SYMLINK_NOFOLLOW) != 0)
@@ -1110,7 +1132,7 @@ za_do_write(struct za_ctx *c, const struct zr_action *a)
 			if (za_relink(c, a, src.zs_at->za_target) != 0)
 				return (-1);
 		}
-		if (za_from_stat(c, a, &fst) != 0)
+		if (za_from_stat(c, a, c->zc_from, &fst) != 0)
 			return (-1);
 	}
 	if (za_attrs(c, a, &src, &fst) != 0 ||
@@ -1261,8 +1283,8 @@ za_ctx_fini(struct za_ctx *c)
 
 int
 zr_apply(const struct zr_parsed *m, const char *onto_root,
-    const struct zr_walk *from, struct zr_apply_stats *st,
-    char *err, size_t errlen)
+    const struct zr_walk *from, const struct zr_walk *onto,
+    struct zr_apply_stats *st, char *err, size_t errlen)
 {
 	struct zr_apply_stats spare;
 	const struct zr_action *a;
@@ -1273,6 +1295,7 @@ zr_apply(const struct zr_parsed *m, const char *onto_root,
 	memset(&c, 0, sizeof (struct za_ctx));
 	c.zc_rootfd = -1;
 	c.zc_from = from;
+	c.zc_onto = onto;
 	c.zc_err = err;
 	c.zc_errlen = errlen;
 	c.zc_st = st != NULL ? st : &spare;
@@ -1322,7 +1345,11 @@ zr_apply(const struct zr_parsed *m, const char *onto_root,
 				goto out;
 			break;
 		case ZR_ACT_CP:
-			if (za_do_cp(&c, a) != 0)
+			if (za_do_cp(&c, a, c.zc_from, "cp") != 0)
+				goto out;
+			break;
+		case ZR_ACT_DUP:
+			if (za_do_cp(&c, a, c.zc_onto, "dup") != 0)
 				goto out;
 			break;
 		default:

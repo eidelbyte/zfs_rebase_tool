@@ -38,6 +38,7 @@
 #define	ZM_CP		3
 #define	ZM_WRITE	4
 #define	ZM_CONFLICT	5
+#define	ZM_DUP		6	/* cp, but the bytes are onto's own */
 
 /* Letters for the pool notation, in the order the format note gives. */
 static const char zm_alphabet[] =
@@ -92,6 +93,7 @@ struct zm_node {
 
 /* Everything one emit run carries. */
 struct zm {
+	int			zm_err;		/* a content with no source */
 	const struct zr_tree		*zm_t[3];
 	const struct zr_decision	*zm_d;
 	const struct zr_names		*zm_ns;
@@ -451,7 +453,8 @@ zm_types(struct zm *m)
 /*
  * The path a cp or a write names: a name from holds whose pool has the
  * result pool's content. The name itself when it will do, else the
- * pool's first such name in manifest order.
+ * pool's first such name in manifest order, else ZR_NAME_NONE: the
+ * content is not from's, and a cp becomes a dup (below).
  */
 static zr_name_t
 zm_from_path(const struct zm *m, zr_name_t n, uint32_t k)
@@ -480,7 +483,33 @@ zm_from_path(const struct zm *m, zr_name_t n, uint32_t k)
 			bo = o;
 		}
 	}
-	return (best != ZR_NAME_NONE ? best : n);
+	return (best);
+}
+
+/*
+ * When no name of from holds the result pool's content, the bytes are
+ * onto's own: a split the other side made without an edit while onto
+ * edited the shared file. The severed half is then a copy of the
+ * onto object that another result pool keeps; that pool's anchor is
+ * the path to copy from, and it still holds the object when the line
+ * is applied. ZR_NAME_NONE when no kept onto object has the content.
+ */
+static zr_name_t
+zm_dup_path(const struct zm *m, uint32_t k)
+{
+	const struct zr_decision *d = m->zm_d;
+	const struct zr_tree *onto = m->zm_t[ZM_ONTO];
+	uint32_t content = d->zd_pools[k].zr_content, k2;
+
+	for (k2 = 0; k2 < d->zd_npools; k2++) {
+		zr_pool_t q = m->zm_keeps[k2];
+
+		if (k2 == k || q == ZR_POOL_NONE)
+			continue;
+		if (onto->zt_pools[q].zp_content == content)
+			return (m->zm_anchor[k2]);
+	}
+	return (ZR_NAME_NONE);
 }
 
 /*
@@ -551,6 +580,12 @@ zm_action_of(struct zm *m, uint32_t k)
 		if (n == m->zm_anchor[rk]) {
 			nd->zn_act2 = ZM_CP;
 			nd->zn_arg2 = zm_from_path(m, n, rk);
+			if (nd->zn_arg2 == ZR_NAME_NONE) {
+				nd->zn_act2 = ZM_DUP;
+				nd->zn_arg2 = zm_dup_path(m, rk);
+			}
+			if (nd->zn_arg2 == ZR_NAME_NONE)
+				m->zm_err = 1;
 		} else {
 			nd->zn_act2 = ZM_LN;
 			nd->zn_arg2 = m->zm_anchor[rk];
@@ -565,6 +600,12 @@ zm_action_of(struct zm *m, uint32_t k)
 			return;
 		nd->zn_act = q != ZR_POOL_NONE ? ZM_WRITE : ZM_CP;
 		nd->zn_arg = zm_from_path(m, n, rk);
+		if (nd->zn_arg == ZR_NAME_NONE && nd->zn_act == ZM_CP) {
+			nd->zn_act = ZM_DUP;
+			nd->zn_arg = zm_dup_path(m, rk);
+		}
+		if (nd->zn_arg == ZR_NAME_NONE)
+			m->zm_err = 1;
 		return;
 	}
 	q = zr_tree_pool(m->zm_t[ZM_ONTO], n);
@@ -653,6 +694,10 @@ zm_emit_act(const struct zm *m, FILE *out, uint32_t act, zr_name_t arg,
 		break;
 	case ZM_LN:
 		(void) fputs(" ln ", out);
+		zm_vis_name(m, out, arg);
+		break;
+	case ZM_DUP:
+		(void) fputs(" dup ", out);
 		zm_vis_name(m, out, arg);
 		break;
 	case ZM_CP:
@@ -981,7 +1026,7 @@ zr_manifest_emit(FILE *out, const struct zr_manifest_hdr *hdr,
 	}
 	for (i = 1; i <= m.zm_nconf; i++)
 		zm_emit_record(&m, out, i, m.zm_corder[i]);
-	rc = ferror(out) != 0 ? -1 : 0;
+	rc = (ferror(out) != 0 || m.zm_err != 0) ? -1 : 0;
 done:
 	zm_fini(&m);
 	return (rc);
@@ -1503,6 +1548,8 @@ zp_name_line(struct zp *p, const char *s, size_t len)
 		a.za_kind = ZR_ACT_LN;
 	else if (f1len == 2 && memcmp(f1, "cp", 2) == 0)
 		a.za_kind = ZR_ACT_CP;
+	else if (f1len == 3 && memcmp(f1, "dup", 3) == 0)
+		a.za_kind = ZR_ACT_DUP;
 	else if (f1len == 5 && memcmp(f1, "write", 5) == 0)
 		a.za_kind = ZR_ACT_WRITE;
 	else if (f1len == 8 && memcmp(f1, "conflict", 8) == 0)
@@ -1561,7 +1608,8 @@ zp_name_line(struct zp *p, const char *s, size_t len)
 	}
 	if (p->zp_closed != NULL && p->zp_closed_rm != 0 && isdir == 0 &&
 	    hasact != 0 && (a.za_kind == ZR_ACT_CP ||
-	    a.za_kind == ZR_ACT_LN) && p->zp_closedlen == pathlen &&
+	    a.za_kind == ZR_ACT_DUP || a.za_kind == ZR_ACT_LN) &&
+	    p->zp_closedlen == pathlen &&
 	    memcmp(p->zp_closed, path, pathlen) == 0)
 		second = 1;
 	free(p->zp_closed);
@@ -1938,7 +1986,8 @@ zw_pair(const struct zr_parsed *pp, const struct zw_ent *d,
 	if (pp->zp_actions[d->ze_act].za_kind != ZR_ACT_RM)
 		return (0);
 	a = &pp->zp_actions[e->ze_act];
-	return (a->za_kind == ZR_ACT_CP || a->za_kind == ZR_ACT_LN);
+	return (a->za_kind == ZR_ACT_CP || a->za_kind == ZR_ACT_DUP ||
+	    a->za_kind == ZR_ACT_LN);
 }
 
 /* One line per path: fold the repeated ancestors into one entry. */
@@ -2066,6 +2115,10 @@ zw_line(FILE *out, const struct zr_parsed *pp, const struct zw_ent *e,
 			break;
 		case ZR_ACT_CP:
 			(void) fputs(" cp ", out);
+			zw_vis(out, a->za_arg, a->za_arglen);
+			break;
+		case ZR_ACT_DUP:
+			(void) fputs(" dup ", out);
 			zw_vis(out, a->za_arg, a->za_arglen);
 			break;
 		case ZR_ACT_WRITE:

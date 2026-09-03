@@ -404,10 +404,16 @@ shape_apply(struct shape *sh, const char *body, int nactions,
 	struct zr_parsed p;
 	int rc;
 
+	struct zr_walk wo;
+	char werr[256];
+
 	if (sh->sh_walked == 0)
 		shape_walk(sh);
 	parse_body(&p, body, nactions);
-	rc = zr_apply(&p, sh->sh_onto, &sh->sh_wf, st, err, errlen);
+	/* the onto tree as it stands before apply, the dup source */
+	CHECK(zr_walk(sh->sh_onto, sh->sh_ns, &wo, werr, sizeof (werr)) == 0);
+	rc = zr_apply(&p, sh->sh_onto, &sh->sh_wf, &wo, st, err, errlen);
+	zr_walk_fini(&wo);
 	zr_parsed_fini(&p);
 	return (rc);
 }
@@ -474,6 +480,38 @@ checktimes(const struct stat *s)
  * one extended attribute, and the times, which are written after the
  * attribute and so are the ones that survive.
  */
+/*
+ * ZA: dup. onto holds A and B as one file; the manifest severs B as
+ * a copy of onto's own bytes (from has nothing to offer). Afterwards
+ * B is its own object with A's bytes and mode, A is untouched, and
+ * the count lands in zs_dup, not zs_cp.
+ */
+static void
+check_dup_severs(void)
+{
+	struct zr_apply_stats st;
+	char a[PATHMAX], b[PATHMAX];
+	struct shape sh;
+	struct stat sa, sb;
+
+	shape_init(&sh);
+	mkfile(sh.sh_onto, "/A", "onto bytes", 0640);
+	join(a, sizeof (a), sh.sh_onto, "/A");
+	join(b, sizeof (b), sh.sh_onto, "/B");
+	CHECK(link(a, b) == 0);
+	shape_ok(&sh, "    B dup /A\n", 1, &st);
+	CHECK(st.zs_dup == 1);
+	CHECK(st.zs_cp == 0);
+	lstat_at(sh.sh_onto, "/A", &sa);
+	lstat_at(sh.sh_onto, "/B", &sb);
+	CHECK(S_ISREG(sb.st_mode));
+	CHECK(sa.st_ino != sb.st_ino);
+	CHECK(sa.st_nlink == 1);
+	CHECK((sb.st_mode & 07777) == 0640);
+	same_bytes(b, a);
+	shape_fini(&sh);
+}
+
 static void
 check_cp_file(void)
 {
@@ -1070,7 +1108,8 @@ check_probe(const char *root)
 	world_build(&w, root);
 	world_decide(&w);
 	err[0] = '\0';
-	if (zr_apply(&w.w_p, w.w_onto, &w.w_wf, &st, err, sizeof (err)) != 0)
+	if (zr_apply(&w.w_p, w.w_onto, &w.w_wf, &w.w_wo, &st, err,
+	    sizeof (err)) != 0)
 		printf("  apply: %s\n", err);
 	CHECK(err[0] == '\0');
 	check_counts(&w, &st);
@@ -1113,6 +1152,7 @@ main(void)
 	rmtree(probe);
 
 	check_cp_file();
+	check_dup_severs();
 	check_cp_symlink();
 	check_cp_dir();
 	check_cp_fifo();

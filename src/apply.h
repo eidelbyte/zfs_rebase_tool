@@ -19,6 +19,7 @@ struct zr_apply_stats {
 	uint64_t	zs_ln;
 	uint64_t	zs_cp;
 	uint64_t	zs_write;
+	uint64_t	zs_dup;
 	uint64_t	zs_bytes;	/* file bytes copied out of from */
 };
 
@@ -36,7 +37,7 @@ struct zr_apply_stats {
  * part way, which is why the caller works on a clone.
  */
 int zr_apply(const struct zr_parsed *m, const char *onto_root,
-    const struct zr_walk *from, struct zr_apply_stats *st,
-    char *err, size_t errlen);
+    const struct zr_walk *from, const struct zr_walk *onto,
+    struct zr_apply_stats *st, char *err, size_t errlen);
 
 #endif	/* ZR_APPLY_H */

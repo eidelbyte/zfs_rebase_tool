@@ -41,6 +41,7 @@ enum zr_act_kind {
 	ZR_ACT_RM,
 	ZR_ACT_LN,
 	ZR_ACT_CP,
+	ZR_ACT_DUP,	/* a new object copied from onto's own PATH */
 	ZR_ACT_WRITE,
 	ZR_ACT_CONFLICT
 };

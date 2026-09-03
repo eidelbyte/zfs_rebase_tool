@@ -309,6 +309,7 @@ anchor {first name in manifest order, onto-created}; record parts
 | ZM49 | parse rejects an unknown class | covered: check_manifest.c |
 | ZM50 | parse rejects records out of order | covered: check_manifest.c |
 | ZM51 | a type change: rm of onto's directory, then cp | covered: check_roundtrip.c |
+| ZM52 | dup: a severed half copies onto's own bytes | covered: check_apply.c, h-th-op1-edit-vs-split.zrt |
 
 ## ZA -- apply (check_apply.c)
 

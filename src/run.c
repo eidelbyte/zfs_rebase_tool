@@ -290,13 +290,13 @@ apply_manifest(struct run *r, const struct zr_manifest_hdr *hdr)
 	if (zr_zfs_set_readonly(r->zfs, r->clone, 0, r->err,
 	    sizeof (r->err)) != 0)
 		goto done;
-	rc = zr_apply(&parsed, r->workmnt, &r->wf, &st, r->err,
+	rc = zr_apply(&parsed, r->workmnt, &r->wf, &r->wo, &st, r->err,
 	    sizeof (r->err));
 	if (rc == 0 && r->o.verbose)
 		(void) fprintf(stderr, "zfs_rebase: applied %llu rm %llu ln "
-		    "%llu cp %llu write, %llu bytes\n",
+		    "%llu cp %llu dup %llu write, %llu bytes\n",
 		    (unsigned long long)st.zs_rm, (unsigned long long)st.zs_ln,
-		    (unsigned long long)st.zs_cp,
+		    (unsigned long long)st.zs_cp, (unsigned long long)st.zs_dup,
 		    (unsigned long long)st.zs_write,
 		    (unsigned long long)st.zs_bytes);
 	if (zr_zfs_set_readonly(r->zfs, r->clone, 1, r->err,
