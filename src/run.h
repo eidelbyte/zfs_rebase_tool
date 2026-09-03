@@ -26,4 +26,12 @@ struct zr_run_opts {
 
 int zr_run(const struct zr_run_opts *);
 
+/*
+ * Undo one run: destroy the result dataset, remove the manifest it
+ * recorded, and take its run directory away. Only a dataset carrying
+ * the zfs_rebase marker is touched, and nothing is ever removed
+ * recursively.
+ */
+int zr_abort(const char *result, int verbose);
+
 #endif	/* ZR_RUN_H */

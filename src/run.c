@@ -877,3 +877,107 @@ done:
 	teardown(&r, keep);
 	return (rc);
 }
+
+/*
+ * --abort: take one run's leavings away and nothing else. A hard
+ * kill can leave the result clone and the manifest behind -- the
+ * holds go by themselves -- and this is how they go.
+ *
+ * The refusal is the point of the marker. Only a dataset that
+ * carries zfs_rebase:state is destroyed, so a mistyped or a
+ * remembered-wrong name cannot cost the user a dataset of their own;
+ * every state is fair game, "applying" included, because a process
+ * killed part way through the apply leaves exactly that and this is
+ * what clears it. Nothing is removed recursively: the one file this
+ * unlinks is the manifest the run itself recorded, and every
+ * directory goes by rmdir, which will not touch one that is not
+ * empty.
+ */
+int
+zr_abort(const char *result, int verbose)
+{
+	char manifest[ZR_NAME_MAX], dir[ZR_NAME_MAX];
+	char state[64], err[512];
+	struct zr_zfs *z = NULL;
+	struct stat sb;
+	int rc = EXIT_INTERNAL, hasdir, hasds, hasman = 0;
+
+	if (geteuid() != 0) {
+		(void) fprintf(stderr, "zfs_rebase: must run as root\n");
+		return (EXIT_PRECOND);
+	}
+	if ((size_t)snprintf(dir, sizeof (dir), "%s/%s", WORKDIR, result) >=
+	    sizeof (dir)) {
+		(void) fprintf(stderr, "zfs_rebase: %s: %s\n", result,
+		    strerror(ENAMETOOLONG));
+		return (EXIT_PRECOND);
+	}
+	hasdir = stat(dir, &sb) == 0;
+	if (zr_zfs_open(&z, "zfs_rebase-abort", err, sizeof (err)) != 0) {
+		(void) fprintf(stderr, "zfs_rebase: libzfs: %s\n", err);
+		return (EXIT_PRECOND);
+	}
+	hasds = zr_zfs_exists(z, result, err, sizeof (err));
+	if (hasds < 0) {
+		(void) fprintf(stderr, "zfs_rebase: %s: %s\n", result, err);
+		rc = EXIT_PRECOND;
+		goto done;
+	}
+	if (hasds == 0 && !hasdir) {
+		(void) fprintf(stderr, "zfs_rebase: %s: no such run\n",
+		    result);
+		rc = EXIT_PRECOND;
+		goto done;
+	}
+	if (hasds != 0) {
+		int got = zr_zfs_get_user(z, result, ZR_PROP_STATE, state,
+		    sizeof (state), err, sizeof (err));
+
+		if (got < 0) {
+			(void) fprintf(stderr, "zfs_rebase: %s: %s\n", result,
+			    err);
+			rc = EXIT_PRECOND;
+			goto done;
+		}
+		if (got == 0) {
+			(void) fprintf(stderr, "zfs_rebase: %s is not a "
+			    "zfs_rebase result; nothing was touched\n",
+			    result);
+			rc = EXIT_PRECOND;
+			goto done;
+		}
+		if (verbose)
+			(void) fprintf(stderr, "zfs_rebase: %s is at %s\n",
+			    result, state);
+		hasman = zr_zfs_get_user(z, result, ZR_PROP_MANIFEST, manifest,
+		    sizeof (manifest), err, sizeof (err));
+		if (hasman < 0) {
+			(void) fprintf(stderr, "zfs_rebase: %s: %s\n",
+			    ZR_PROP_MANIFEST, err);
+			hasman = 0;
+		}
+		if (hasman > 0 && unlink(manifest) != 0) {
+			if (errno != ENOENT)
+				(void) fprintf(stderr, "zfs_rebase: %s: %s\n",
+				    manifest, strerror(errno));
+			hasman = 0;
+		}
+		if (zr_zfs_destroy(z, result, err, sizeof (err)) != 0) {
+			(void) fprintf(stderr, "zfs_rebase: destroy %s: %s\n",
+			    result, err);
+			goto done;
+		}
+		(void) fprintf(stderr, "zfs_rebase: destroyed %s\n", result);
+		if (hasman > 0)
+			(void) fprintf(stderr, "zfs_rebase: removed the "
+			    "manifest %s\n", manifest);
+	}
+	if (hasdir) {
+		rmdir_run(result);
+		(void) fprintf(stderr, "zfs_rebase: removed %s\n", dir);
+	}
+	rc = EXIT_CLEAN;
+done:
+	zr_zfs_close(z);
+	return (rc);
+}

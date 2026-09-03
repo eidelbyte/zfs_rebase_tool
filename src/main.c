@@ -33,12 +33,15 @@
 static const char usage[] =
 	"usage: zfs_rebase [-n] [-p] [-v] [-o FILE] "
 	"--from SNAP --onto SNAP --result DATASET\n"
+	"       zfs_rebase --abort --result DATASET\n"
 	"       zfs_rebase --posix [-p] [-o FILE] BASEDIR FROMDIR ONTODIR\n"
 	"       zfs_rebase --build-fixture FIXTURE DIR\n"
 	"  --from    the snapshot whose changes are replayed (--off-of)\n"
 	"  --onto    the snapshot they are replayed onto; the base is the\n"
 	"            branch point of the two, which the tool works out\n"
 	"  --result  the dataset the rebased clone is created as\n"
+	"  --abort   destroy that result, remove the manifest it recorded\n"
+	"            and its run directory, and nothing else\n"
 	"  -n   dry run: write the manifest, create no clone, apply nothing\n"
 	"  -p   permissive-merge mode\n"
 	"  -v   report counts on stderr\n"
@@ -242,7 +245,7 @@ main(int argc, char **argv)
 	const char *from = NULL, *onto = NULL, *result = NULL;
 	const char *outpath = NULL, *v;
 	zr_mode_t mode = ZR_MODE_STRICT;
-	int dryrun = 0, verbose = 0, i, t;
+	int dryrun = 0, verbose = 0, abrt = 0, i, t;
 	struct zr_run_opts ro;
 
 	if (argc >= 2 && strcmp(argv[1], "--build-fixture") == 0) {
@@ -259,6 +262,8 @@ main(int argc, char **argv)
 			dryrun = 1;
 		} else if (strcmp(argv[i], "-v") == 0) {
 			verbose = 1;
+		} else if (strcmp(argv[i], "--abort") == 0) {
+			abrt = 1;
 		} else if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
 			outpath = argv[++i];
 		} else if ((t = longopt(argc, argv, &i, "--from", &v)) != 0 ||
@@ -278,6 +283,13 @@ main(int argc, char **argv)
 		} else {
 			return (die_usage());
 		}
+	}
+	/* --abort goes alone: the result to be rid of, and -v. */
+	if (abrt) {
+		if (result == NULL || from != NULL || onto != NULL ||
+		    outpath != NULL || dryrun != 0 || mode != ZR_MODE_STRICT)
+			return (die_usage());
+		return (zr_abort(result, verbose));
 	}
 	if (from == NULL || onto == NULL || (result == NULL && !dryrun))
 		return (die_usage());
