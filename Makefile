@@ -9,10 +9,10 @@ ZFS_INCLUDE = /usr/include
 ZFS_LIBS = -lzfs_core -lzfs -lnvpair
 
 # Library objects are everything but main.o; tests link against them.
-LIB_OBJS = build/vis.o
+LIB_OBJS = build/vis.o build/name.o
 CORE_OBJS = build/main.o $(LIB_OBJS)
 FREEBSD_OBJS =
-TESTS = check_vis
+TESTS = check_vis check_name
 
 all: build zfs_rebase
 
@@ -32,6 +32,9 @@ build/main.o: src/main.c
 
 build/vis.o: src/vis.c src/vis.h
 	$(CC) $(CFLAGS) -c -o $@ src/vis.c
+
+build/name.o: src/name.c src/name.h
+	$(CC) $(CFLAGS) -c -o $@ src/name.c
 
 check: build $(LIB_OBJS)
 	@for t in $(TESTS); do \
