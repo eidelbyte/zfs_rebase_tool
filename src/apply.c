@@ -47,6 +47,9 @@
 #define	ZA_PERM		07777		/* the mode bits chmod sets */
 #define	ZA_CREAT	0777		/* the mode a create asks for */
 
+/* The driver's stop flag; see apply.h. */
+volatile sig_atomic_t zr_apply_stop = 0;
+
 /*
  * ---------------------------------------------------------------
  * The platform section. Everything outside it is plain POSIX; here
@@ -1328,6 +1331,20 @@ zr_apply(const struct zr_parsed *m, const char *onto_root,
 		goto out;
 	}
 	for (i = 0; i < m->zp_nactions; i++) {
+		/*
+		 * Between two actions is the one place the apply can
+		 * be left: the action before is finished and the one
+		 * after has not begun. The pending directory removals
+		 * are dropped rather than run, because their scopes
+		 * were never closed; what that leaves is a tree part
+		 * way through the manifest, which is a clone, and
+		 * --abort destroys it whole.
+		 */
+		if (zr_apply_stop != 0) {
+			if (err != NULL && errlen > 0)
+				(void) snprintf(err, errlen, "interrupted");
+			goto out;
+		}
 		a = &m->zp_actions[i];
 		if (a->za_kind == ZR_ACT_CONFLICT)
 			continue;

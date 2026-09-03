@@ -7,11 +7,20 @@
 #ifndef	ZR_APPLY_H
 #define	ZR_APPLY_H
 
+#include <signal.h>
 #include <stddef.h>
 #include <stdint.h>
 
 #include "manifest.h"
 #include "walk.h"
+
+/*
+ * Set this from a signal handler and the apply stops between two
+ * actions, at the first one it has not started, and fails with
+ * "interrupted". It is only ever read and only ever set to 1, which
+ * is what a handler is allowed to do to a volatile sig_atomic_t.
+ */
+extern volatile sig_atomic_t zr_apply_stop;
 
 /* What the apply did, for the report and for the tests. */
 struct zr_apply_stats {

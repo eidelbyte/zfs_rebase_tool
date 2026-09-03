@@ -32,10 +32,26 @@
  * it through: "created", then "conflicts" (the decision has
  * conflicts, so nothing is applied and the clone is onto's tree
  * unchanged), or "applying" (readonly is off), "applied" (the result
- * verified and readonly is back on), or "failed".
+ * verified and readonly is back on), or "failed", or "interrupted".
+ *
+ * A signal that would ordinarily end the process -- INT, TERM, HUP
+ * -- is caught instead and only raises a flag. Before every phase,
+ * and between two actions of the apply, the flag is looked at: if it
+ * is up the run stops there and says so. Before the apply that
+ * destroys the clone as any other failure before the apply does;
+ * inside the apply the clone is kept, put back to read-only and
+ * marked "interrupted", and --abort takes it away. The handlers do
+ * not ask for SA_RESTART, so a read or a write already in a slow
+ * call fails with EINTR rather than starting over, and the phase
+ * that owns it reports that failure in the ordinary way. SIGPIPE is
+ * ignored for the length of the run, which is what zfs(8) does
+ * around zfs_show_diffs: the diff runs a thread over a pipe, and a
+ * failure at one end must not kill the process before libzfs can say
+ * what went wrong.
  */
 
 #include <errno.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -92,11 +108,60 @@ struct run {
 	char			err[512];
 };
 
+/*
+ * The signals the run catches, and SIGPIPE, which it ignores. The
+ * handler does the one thing a handler may do here: raise the flag
+ * apply.c and every phase boundary read.
+ */
+static const int zr_sigs[] = { SIGPIPE, SIGINT, SIGTERM, SIGHUP };
+#define	ZR_NSIG		(sizeof (zr_sigs) / sizeof (zr_sigs[0]))
+
+static void
+on_signal(int sig)
+{
+	(void) sig;
+	zr_apply_stop = 1;
+}
+
+static void
+signals_install(struct sigaction *saved)
+{
+	struct sigaction sa;
+	size_t i;
+
+	memset(&sa, 0, sizeof (sa));
+	(void) sigemptyset(&sa.sa_mask);
+	sa.sa_flags = 0;	/* no SA_RESTART: a slow call fails EINTR */
+	for (i = 0; i < ZR_NSIG; i++) {
+		sa.sa_handler = zr_sigs[i] == SIGPIPE ? SIG_IGN : on_signal;
+		(void) sigaction(zr_sigs[i], &sa, &saved[i]);
+	}
+}
+
+static void
+signals_restore(const struct sigaction *saved)
+{
+	size_t i;
+
+	for (i = 0; i < ZR_NSIG; i++)
+		(void) sigaction(zr_sigs[i], &saved[i], NULL);
+}
+
 static int
 fail(struct run *r, int code, const char *what)
 {
 	(void) fprintf(stderr, "zfs_rebase: %s: %s\n", what, r->err);
 	return (code);
+}
+
+/* A phase boundary: has a signal come in while the last one ran? */
+static int
+stopped(struct run *r)
+{
+	if (zr_apply_stop == 0)
+		return (0);
+	(void) snprintf(r->err, sizeof (r->err), "interrupted");
+	return (-1);
 }
 
 /* Where the run's own state is, and how to be rid of it. */
@@ -514,14 +579,20 @@ read_trees(struct run *r)
 	if (zr_walk(path, r->names, &r->wb, r->err, sizeof (r->err)) != 0)
 		return (-1);
 	r->walked = 1;
+	if (stopped(r) != 0)
+		return (-1);
 	snapdir(path, sizeof (path), r->frommnt, r->o.from);
 	if (zr_walk(path, r->names, &r->wf, r->err, sizeof (r->err)) != 0)
 		return (-1);
 	r->walked = 2;
+	if (stopped(r) != 0)
+		return (-1);
 	snapdir(path, sizeof (path), r->ontomnt, r->o.onto);
 	if (zr_walk(path, r->names, &r->wo, r->err, sizeof (r->err)) != 0)
 		return (-1);
 	r->walked = 3;
+	if (stopped(r) != 0)
+		return (-1);
 
 	if (zr_oracle_init(&r->oracle, &r->wb, &r->wf, &r->wo) != 0) {
 		(void) snprintf(r->err, sizeof (r->err), "out of memory");
@@ -533,11 +604,15 @@ read_trees(struct run *r)
 		return (-1);
 	marked = zr_diff_apply_unchanged(&df, &r->wb, &r->wf, 1, r->oracle);
 	zr_diff_fini(&df);
+	if (stopped(r) != 0)
+		return (-1);
 	if (zr_zfs_diff(r->zfs, r->base, r->o.onto, r->ontomnt, &dfo,
 	    r->err, sizeof (r->err)) != 0)
 		return (-1);
 	marked += zr_diff_apply_unchanged(&dfo, &r->wb, &r->wo, 2, r->oracle);
 	zr_diff_fini(&dfo);
+	if (stopped(r) != 0)
+		return (-1);
 	if (r->o.verbose)
 		(void) fprintf(stderr, "zfs_rebase: %d pools unchanged\n",
 		    marked);
@@ -739,6 +814,7 @@ teardown(struct run *r, int keep_clone)
 int
 zr_run(const struct zr_run_opts *o)
 {
+	struct sigaction saved[ZR_NSIG];
 	struct run r;
 	struct zr_manifest_hdr hdr;
 	FILE *out = stdout;
@@ -757,8 +833,11 @@ zr_run(const struct zr_run_opts *o)
 	 */
 	(void) snprintf(r.holdtag, sizeof (r.holdtag), "zfs_rebase-%lld-%ld",
 	    (long long)time(NULL), (long)getpid());
-	if (zr_zfs_open(&r.zfs, r.holdtag, r.err, sizeof (r.err)) != 0)
-		return (fail(&r, EXIT_PRECOND, "libzfs"));
+	signals_install(saved);
+	if (zr_zfs_open(&r.zfs, r.holdtag, r.err, sizeof (r.err)) != 0) {
+		rc = fail(&r, EXIT_PRECOND, "libzfs");
+		goto done;
+	}
 	if (preconditions(&r) != 0) {
 		rc = fail(&r, EXIT_PRECOND, "precondition");
 		goto done;
@@ -796,12 +875,17 @@ zr_run(const struct zr_run_opts *o)
 
 	/* 3. read, 4. decide */
 	if (read_trees(&r) != 0) {
-		rc = fail(&r, EXIT_PRECOND, "read");
+		rc = fail(&r, zr_apply_stop != 0 ? EXIT_INTERNAL :
+		    EXIT_PRECOND, "read");
 		goto done;
 	}
 	if (zr_decide(&r.wb.zw_tree, &r.wf.zw_tree, &r.wo.zw_tree, o->mode,
 	    &r.d) != 0) {
 		(void) snprintf(r.err, sizeof (r.err), "out of memory");
+		rc = fail(&r, EXIT_INTERNAL, "decide");
+		goto done;
+	}
+	if (stopped(&r) != 0) {
 		rc = fail(&r, EXIT_INTERNAL, "decide");
 		goto done;
 	}
@@ -851,10 +935,14 @@ zr_run(const struct zr_run_opts *o)
 	}
 
 	/* 6. apply, 7. verify */
+	if (stopped(&r) != 0) {
+		rc = fail(&r, EXIT_INTERNAL, "apply");
+		goto done;	/* nothing written yet: the clone goes */
+	}
 	if (apply_manifest(&r, &hdr) != 0) {
 		keep = 1;
 		rc = fail(&r, EXIT_INTERNAL, "apply");
-		set_state(&r, "failed");
+		set_state(&r, zr_apply_stop != 0 ? "interrupted" : "failed");
 		manifest_note(&r);
 		abort_hint(&r);
 		goto done;
@@ -862,7 +950,7 @@ zr_run(const struct zr_run_opts *o)
 	if (verify_clone(&r) != 0) {
 		keep = 1;
 		rc = fail(&r, EXIT_INTERNAL, "verify");
-		set_state(&r, "failed");
+		set_state(&r, zr_apply_stop != 0 ? "interrupted" : "failed");
 		manifest_note(&r);
 		abort_hint(&r);
 		goto done;
@@ -875,6 +963,7 @@ zr_run(const struct zr_run_opts *o)
 	rc = EXIT_CLEAN;
 done:
 	teardown(&r, keep);
+	signals_restore(saved);
 	return (rc);
 }
 
