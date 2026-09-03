@@ -29,7 +29,7 @@ expect
 # a pool is one file and all its names: {names}letter; same
 # letter, same bytes
 conflict 1 healed-split
-  why  /Q and /P were split on one side and joined by the other
-  base ({/S}x,{/P /Q}x)
-  from ({/S}x,{/Q}x,{/P}x)
+  why  /P and /Q were split on one side and joined by the other
+  base ({/P /Q}x,{/S}x)
+  from ({/P}x,{/Q}x,{/S}x)
   onto ({/P /Q /S}x)

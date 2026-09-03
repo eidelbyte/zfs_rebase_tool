@@ -29,7 +29,7 @@ expect
 # a pool is one file and all its names: {names}letter; same
 # letter, same bytes
 conflict 1 disagree
-  why  /A and /C end in one pool with different contents
-  base ({/A}x,{/C}y,{/B}z)
+  why  /A and /B end in one pool with different contents
+  base ({/A}x,{/B}y,{/C}z)
   from ({/A /B /C}x)
-  onto ({/A}w,{/C}y,{/B}z)
+  onto ({/A}w,{/B}y,{/C}z)

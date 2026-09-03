@@ -29,7 +29,7 @@ expect
 # a pool is one file and all its names: {names}letter; same
 # letter, same bytes
 conflict 1 unexpressed-sharing,changed-both,disagree
-  why  /C and /B would share a pool that neither side joined
-  base ({/A}x,{/C}y,{/B}z)
-  from ({/A /B}z,{/C}y)
-  onto ({/A /C}y,{/B}z)
+  why  /B and /C would share a pool that neither side joined
+  base ({/A}x,{/B}y,{/C}z)
+  from ({/A /B}y,{/C}z)
+  onto ({/A /C}z,{/B}y)

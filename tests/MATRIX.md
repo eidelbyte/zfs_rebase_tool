@@ -124,7 +124,8 @@ nlink {1, 2, 3+}; placement {one dir, across dirs}; depth {1, 64};
 name bytes {every class, NAME_MAX, path near MAXPATHLEN}; empty
 directory; xattrs {none, one namespace, several, empty value,
 binary}; ACL {absent, present}; symlink target; rdev {0, large};
-completeness against st_nlink; the root's .zfs; faults.
+completeness against st_nlink; the root's .zfs; entry order
+{readdir's, sorted}; faults.
 
 | cell | scenario | disposition |
 |------|----------|-------------|
@@ -156,6 +157,16 @@ completeness against st_nlink; the root's .zfs; faults.
 | ZW26 | an empty root | planned: check_walk.c |
 | ZW27 | rdev 0 and a large rdev both survive | planned: check_walk.c |
 | ZW28 | the root's .zfs is skipped, a nested one is not | planned: check_walk.c |
+| ZW29 | entries interned in sorted order, not readdir's | planned: check_walk.c |
+
+ZW29 is the cell the two platforms found: readdir's order is the
+filesystem's, so the same three trees were interned in one order on
+APFS and another on UFS or ZFS, the name ids differed, and a why
+line -- which names the first two culprits a conflict met, in id
+order -- came out with its two names swapped. The walk now sorts
+each directory's entries bytewise before interning any of them, so
+the ids follow the manifest's own order on every filesystem and the
+why line is a property of the trees, not of the disk they sit on.
 
 ## ZC -- content oracle (check_yellow.c)
 

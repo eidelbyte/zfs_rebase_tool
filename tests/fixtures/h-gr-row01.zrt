@@ -31,7 +31,7 @@ expect
 # a pool is one file and all its names: {names}letter; same
 # letter, same bytes
 conflict 1 healed-split
-  why  /A and /C were split on one side and joined by the other
+  why  /A and /B were split on one side and joined by the other
   base ({/A /B /C}x)
   from ({/A /B /C /D}x)
-  onto ({/A}x,{/C}x,{/B}x)
+  onto ({/A}x,{/B}x,{/C}x)

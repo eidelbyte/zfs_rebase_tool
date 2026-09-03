@@ -60,7 +60,11 @@ struct zr_walk {
  * The walk never follows a symbolic link and never crosses a mount
  * point, and it skips a ".zfs" at the root, which is ZFS's control
  * directory and not part of the tree. It descends on a stack of open
- * directories, so it holds one descriptor per level of depth.
+ * directories, so it holds one descriptor per level of depth, and
+ * each of those directories is read whole and sorted by leaf name
+ * before it is descended: the ids therefore follow the manifest's
+ * own order, per directory and sorted, parents before children, on
+ * every filesystem, whatever order readdir gave.
  * Returns 0, or -1 with a message naming the path and the errno text
  * in err when errlen is not 0. Either way out is left consistent and
  * must be handed to zr_walk_fini.

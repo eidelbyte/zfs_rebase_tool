@@ -3,9 +3,12 @@
  * of open directories descends it without recursion, every entry is
  * lstat'd and never followed, each name joins its pool by inode
  * number, and the first name to reach a pool records the attributes
- * the content oracle will later compare. Extended attributes and the
- * ACL are the only calls with no portable form; they live in the one
- * platform section below.
+ * the content oracle will later compare. A directory's entries are
+ * read in one pass and sorted before any of them is looked at, so
+ * that the order of the walk -- and with it the name ids it hands
+ * out -- is the same on every filesystem, not readdir's. Extended
+ * attributes and the ACL are the only calls with no portable form;
+ * they live in the one platform section below.
  */
 
 #define	_XOPEN_SOURCE	700
@@ -39,6 +42,8 @@
 #define	ZW_STACK_MIN	16
 #define	ZW_LINK_MIN	64
 #define	ZW_XATTR_TRIES	4
+#define	ZW_ENTS_MIN	32	/* entries in one directory's index */
+#define	ZW_LEAVES_MIN	512	/* bytes in one directory's name buffer */
 
 /*
  * dev_t is a signed 32-bit integer on some platforms, where a device
@@ -623,10 +628,25 @@ zw_acl(const char *full, const struct stat *st, struct zr_attr *at)
 
 #endif	/* platform section ends */
 
-/* One open directory on the descent stack, and the name it has. */
+/*
+ * One open directory on the descent stack: the name it has, and its
+ * entries, read in one pass and sorted before the first is used.
+ * zf_leaves holds the leaf names end to end, each NUL-terminated;
+ * zf_ents holds their offsets, and the sort moves offsets, never
+ * bytes. zf_next is how far the descent has got through them. The
+ * directory stays open for its descriptor, which is what every entry
+ * of it is reached through; both arrays are freed when it is popped.
+ */
 struct zw_frame {
 	DIR		*zf_dir;
 	zr_name_t	zf_name;
+	char		*zf_leaves;
+	size_t		zf_len;
+	size_t		zf_cap;
+	size_t		*zf_ents;
+	uint32_t	zf_nents;
+	uint32_t	zf_entcap;
+	uint32_t	zf_next;
 };
 
 /*
@@ -729,32 +749,213 @@ zw_where(struct zw_ctx *c, zr_name_t nm)
 	return (p != NULL ? p : "(a name of the tree)");
 }
 
+/*
+ * One leaf appended to the frame: its bytes to the name buffer, its
+ * offset to the index. Nothing is compared here; the sort comes once
+ * the whole directory has been read.
+ */
 static int
-zw_push(struct zw_ctx *c, DIR *dp, zr_name_t nm)
+zw_add(struct zw_frame *fr, const char *leaf, size_t leaflen)
 {
-	struct zw_frame *st;
-	uint32_t cap;
+	char *nb;
+	size_t *ne;
+	size_t cap, need;
+	uint32_t ecap;
 
-	if (c->zc_depth == c->zc_cap) {
-		cap = c->zc_cap != 0 ? c->zc_cap * 2 : ZW_STACK_MIN;
-		st = realloc(c->zc_stack, (size_t)cap *
-		    sizeof (struct zw_frame));
-		if (st == NULL)
+	need = fr->zf_len + leaflen + 1;
+	if (need > fr->zf_cap) {
+		cap = fr->zf_cap != 0 ? fr->zf_cap : ZW_LEAVES_MIN;
+		while (cap < need) {
+			if (cap > (size_t)-1 / 2) {
+				errno = ENOMEM;
+				return (-1);
+			}
+			cap *= 2;
+		}
+		nb = realloc(fr->zf_leaves, cap);
+		if (nb == NULL)
 			return (-1);
-		c->zc_stack = st;
-		c->zc_cap = cap;
+		fr->zf_leaves = nb;
+		fr->zf_cap = cap;
 	}
-	c->zc_stack[c->zc_depth].zf_dir = dp;
-	c->zc_stack[c->zc_depth].zf_name = nm;
-	c->zc_depth++;
+	if (fr->zf_nents == fr->zf_entcap) {
+		if (fr->zf_entcap > (uint32_t)-1 / 2) {
+			errno = ENOMEM;
+			return (-1);
+		}
+		ecap = fr->zf_entcap != 0 ? fr->zf_entcap * 2 : ZW_ENTS_MIN;
+		ne = realloc(fr->zf_ents, (size_t)ecap * sizeof (size_t));
+		if (ne == NULL)
+			return (-1);
+		fr->zf_ents = ne;
+		fr->zf_entcap = ecap;
+	}
+	fr->zf_ents[fr->zf_nents] = fr->zf_len;
+	fr->zf_nents++;
+	memcpy(fr->zf_leaves + fr->zf_len, leaf, leaflen);
+	fr->zf_leaves[fr->zf_len + leaflen] = '\0';
+	fr->zf_len = need;
+	return (0);
+}
+
+/*
+ * Two leaves of one directory, as bytes: memcmp over the common
+ * prefix, and the shorter first when one is a prefix of the other.
+ * This is the order the manifest writes a directory's children in,
+ * which is why the walk uses it too. Comparing bytes and not
+ * characters keeps a name with a byte above 0x7f in the same place
+ * whatever the sign of a char.
+ */
+static int
+zw_leafcmp(const char *leaves, size_t a, size_t b)
+{
+	const char *x = leaves + a, *y = leaves + b;
+	size_t alen, blen, n;
+	int r;
+
+	alen = strlen(x);
+	blen = strlen(y);
+	n = alen < blen ? alen : blen;
+	r = n != 0 ? memcmp(x, y, n) : 0;
+	if (r != 0)
+		return (r);
+	if (alen == blen)
+		return (0);
+	return (alen < blen ? -1 : 1);
+}
+
+/* One sift down of the heap the sort below builds. */
+static void
+zw_sift(const char *leaves, size_t *ents, uint32_t top, uint32_t n)
+{
+	uint32_t kid;
+	size_t t;
+
+	for (;;) {
+		kid = top * 2 + 1;
+		if (kid >= n)
+			return;
+		if (kid + 1 < n &&
+		    zw_leafcmp(leaves, ents[kid], ents[kid + 1]) < 0)
+			kid++;
+		if (zw_leafcmp(leaves, ents[top], ents[kid]) >= 0)
+			return;
+		t = ents[top];
+		ents[top] = ents[kid];
+		ents[kid] = t;
+		top = kid;
+	}
+}
+
+/*
+ * The index sorted into name order. A heap sort: in place, iterative
+ * and O(n log n) whatever the directory holds, and it needs no
+ * comparison context, which qsort has no portable way to pass.
+ */
+static void
+zw_sort(const char *leaves, size_t *ents, uint32_t n)
+{
+	uint32_t i;
+	size_t t;
+
+	if (n < 2)
+		return;
+	for (i = n / 2; i > 0; i--)
+		zw_sift(leaves, ents, i - 1, n);
+	for (i = n; i > 1; i--) {
+		t = ents[0];
+		ents[0] = ents[i - 1];
+		ents[i - 1] = t;
+		zw_sift(leaves, ents, 0, i - 1);
+	}
+}
+
+/*
+ * The whole of one directory read into the frame, then sorted. "."
+ * and ".." never enter it, and neither does a ".zfs" at the root:
+ * that is ZFS's control directory, under which a snapshot mounts
+ * itself the moment it is looked up, and it is never part of the
+ * tree being rebased. The root is the first frame pushed, so a depth
+ * of one is what makes this the root; deeper down, .zfs is an
+ * ordinary name.
+ */
+static int
+zw_read(struct zw_ctx *c, struct zw_frame *fr)
+{
+	struct dirent *de;
+	const char *leaf;
+
+	for (;;) {
+		errno = 0;
+		de = readdir(fr->zf_dir);
+		if (de == NULL) {
+			if (errno == 0)
+				break;
+			return (zw_fail(c, zw_where(c, fr->zf_name),
+			    "readdir"));
+		}
+		leaf = de->d_name;
+		if (leaf[0] == '.' && (leaf[1] == '\0' ||
+		    (leaf[1] == '.' && leaf[2] == '\0')))
+			continue;
+		if (c->zc_depth == 1 && strcmp(leaf, ".zfs") == 0)
+			continue;
+		if (zw_add(fr, leaf, strlen(leaf)) != 0) {
+			errno = ENOMEM;
+			return (zw_fail(c, zw_where(c, fr->zf_name),
+			    "entries"));
+		}
+	}
+	zw_sort(fr->zf_leaves, fr->zf_ents, fr->zf_nents);
 	return (0);
 }
 
 static void
 zw_pop(struct zw_ctx *c)
 {
+	struct zw_frame *fr;
+
 	c->zc_depth--;
-	(void) closedir(c->zc_stack[c->zc_depth].zf_dir);
+	fr = &c->zc_stack[c->zc_depth];
+	(void) closedir(fr->zf_dir);
+	free(fr->zf_leaves);
+	free(fr->zf_ents);
+	memset(fr, 0, sizeof (struct zw_frame));
+}
+
+/*
+ * Push one open directory and read it. The frame owns dp from here,
+ * closing it whether this succeeds or not, so a caller that fails
+ * has nothing left to close.
+ */
+static int
+zw_push(struct zw_ctx *c, DIR *dp, zr_name_t nm)
+{
+	struct zw_frame *fr, *st;
+	uint32_t cap;
+
+	if (c->zc_depth == c->zc_cap) {
+		cap = c->zc_cap != 0 ? c->zc_cap * 2 : ZW_STACK_MIN;
+		st = realloc(c->zc_stack, (size_t)cap *
+		    sizeof (struct zw_frame));
+		if (st == NULL) {
+			(void) closedir(dp);
+			errno = ENOMEM;
+			return (zw_fail(c, zw_where(c, nm), "stack"));
+		}
+		c->zc_stack = st;
+		c->zc_cap = cap;
+	}
+	fr = &c->zc_stack[c->zc_depth];
+	memset(fr, 0, sizeof (struct zw_frame));
+	fr->zf_dir = dp;
+	fr->zf_name = nm;
+	c->zc_depth++;
+	if (zw_read(c, fr) != 0) {
+		zw_pop(c);
+		return (-1);
+	}
+	return (0);
 }
 
 static void
@@ -1032,7 +1233,6 @@ zr_walk(const char *root, struct zr_names *names, struct zr_walk *out,
 {
 	struct zw_ctx c;
 	struct zw_frame *fr;
-	struct dirent *de;
 	const char *leaf;
 	zr_name_t nm;
 	DIR *dp;
@@ -1064,51 +1264,31 @@ zr_walk(const char *root, struct zr_names *names, struct zr_walk *out,
 	}
 	if (zw_root(&c, root, &nm, &dp) != 0)
 		goto fail;
-	if (zw_push(&c, dp, nm) != 0) {
-		(void) closedir(dp);
-		errno = ENOMEM;
-		(void) zw_fail(&c, root, "stack");
+	if (zw_push(&c, dp, nm) != 0)
 		goto fail;
-	}
+	/*
+	 * The descent, in the order the entries were sorted into: a
+	 * directory's names before any of their children, and the
+	 * children of one name before the next name of that
+	 * directory. leaf points into the frame's own buffer, which
+	 * nothing moves while the entry is being looked at.
+	 */
 	while (c.zc_depth > 0) {
 		fr = &c.zc_stack[c.zc_depth - 1];
-		errno = 0;
-		de = readdir(fr->zf_dir);
-		if (de == NULL) {
-			if (errno != 0) {
-				(void) zw_fail(&c, zw_where(&c, fr->zf_name),
-				    "readdir");
-				goto fail;
-			}
+		if (fr->zf_next == fr->zf_nents) {
 			zw_pop(&c);
 			continue;
 		}
-		leaf = de->d_name;
-		if (leaf[0] == '.' && (leaf[1] == '\0' ||
-		    (leaf[1] == '.' && leaf[2] == '\0')))
-			continue;
-		/*
-		 * .zfs at the root is ZFS's control directory, under
-		 * which a snapshot mounts itself the moment it is
-		 * looked up. It is never part of the tree being
-		 * rebased. The root is the first frame pushed, so a
-		 * depth of one is what makes this the root; deeper
-		 * down, .zfs is an ordinary name.
-		 */
-		if (c.zc_depth == 1 && strcmp(leaf, ".zfs") == 0)
-			continue;
+		leaf = fr->zf_leaves + fr->zf_ents[fr->zf_next];
+		fr->zf_next++;
 		dfd = dirfd(fr->zf_dir);
 		if (zw_entry(&c, fr->zf_name, dfd, leaf, &nm, &dp) != 0)
 			goto fail;
 		if (dp == NULL)
 			continue;
 		/* the push may move the stack, so fr is stale after it */
-		if (zw_push(&c, dp, nm) != 0) {
-			(void) closedir(dp);
-			errno = ENOMEM;
-			(void) zw_fail(&c, zw_where(&c, nm), "stack");
+		if (zw_push(&c, dp, nm) != 0)
 			goto fail;
-		}
 	}
 	if (zr_tree_seal(&out->zw_tree) != 0) {
 		(void) zw_failx(&c, root, "the tree would not seal");

@@ -30,6 +30,6 @@ expect
 # letter, same bytes
 conflict 1 unexpressed-sharing
   why  /A and /C would share a pool that neither side joined
-  base ({/A}x,{/C}x,{/B}x)
+  base ({/A}x,{/B}x,{/C}x)
   from ({/A /B}x,{/C}x)
   onto ({/A}x,{/B /C}x)

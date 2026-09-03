@@ -3,8 +3,9 @@
  * and walked back into one shared name table, then a tree the test
  * builds itself for the corners a fixture cannot describe -- depth,
  * odd bytes in a leaf, an empty directory, a fifo, a symlink, links
- * across directories, an extended attribute and the .zfs the root
- * must not walk into. Crossing a mount point is not tested here:
+ * across directories, an extended attribute, the .zfs the root must
+ * not walk into, and a directory built backwards, whose ids must
+ * still ascend in name order. Crossing a mount point is not tested here:
  * making a mount needs root, so that cell stays deferred to the box
  * probe. So is ZW18, an ACL present: the two ACL models differ and
  * setting one on macOS without root proves nothing about ZFS.
@@ -47,6 +48,18 @@
 
 /* a space, a backslash, a hash, a control byte and two UTF-8 bytes */
 #define	ODD		"o \\#\001\303\251x"
+
+/*
+ * ZW29: the entries of one directory, in the order they must be
+ * interned in -- bytewise, a shorter name before the longer one it
+ * is a prefix of, and a byte above 0x7f above every ASCII one, which
+ * is where a signed char would have put it first. They are created
+ * in the reverse of this.
+ */
+#define	ORD_N		6
+static const char *const ord_name[ORD_N] = {
+	"a", "a0", "ab", "b", "z", "\303\251"
+};
 
 #define	XA1		"user.zra"
 #define	XA2		"user.zrtest"
@@ -448,6 +461,18 @@ build_odd(const char *root)
 	CHECK(mkdirat(rootfd, ".zfs", 0755) == 0);
 	CHECK(mkdirat(rootfd, "la/.zfs", 0755) == 0);
 
+	/*
+	 * ZW29: one directory whose entries are created backwards, so
+	 * that a filesystem handing readdir the creation order gives
+	 * the walk the reverse of the order it must intern them in.
+	 */
+	CHECK(mkdirat(rootfd, "ord", 0755) == 0);
+	fd = openat(rootfd, "ord", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+	CHECK(fd >= 0);
+	for (i = ORD_N - 1; i >= 0; i--)
+		write_at(fd, ord_name[i], "ord");
+	CHECK(close(fd) == 0);
+
 	CHECK(close(rootfd) == 0);
 }
 
@@ -580,6 +605,31 @@ check_xattrs(const struct zr_walk *w, struct zr_names *ns)
 	CHECK(memcmp(at->za_xattrs[1].zx_value, XA2VAL, XA2LEN) == 0);
 }
 
+/*
+ * ZW29: the ids of one directory's names ascend in name order, not
+ * in the order the entries were created, because the walk sorts a
+ * directory before it interns any of it. Here they are consecutive
+ * as well: every entry of ord is a file, so nothing is descended
+ * between one name and the next.
+ */
+static void
+check_order(const struct zr_walk *w, struct zr_names *ns)
+{
+	char path[PATHMAX];
+	zr_name_t nm, prev;
+	int i;
+
+	prev = ZR_NAME_NONE;
+	for (i = 0; i < ORD_N; i++) {
+		join(path, sizeof (path), "/ord/", ord_name[i]);
+		nm = nameof(ns, path);
+		CHECK(zr_tree_pool(&w->zw_tree, nm) != ZR_POOL_NONE);
+		if (i > 0)
+			CHECK(nm == prev + 1);
+		prev = nm;
+	}
+}
+
 /* ZW28: ZFS's control directory is not a name of the tree. */
 static void
 check_dotzfs(const struct zr_walk *w, struct zr_names *ns)
@@ -650,15 +700,16 @@ check_odd_tree(const char *root)
 	/*
 	 * 1 root, 64 chain directories and their file, empty, sym,
 	 * the odd directory and its file, the fifo, three link
-	 * directories and the one file they share, x, and la/.zfs.
-	 * The root's own .zfs is not among them.
+	 * directories and the one file they share, x, la/.zfs, and
+	 * the ord directory with its six files. The root's own .zfs
+	 * is not among them.
 	 */
-	CHECK(w.zw_tree.zt_npools == 77);
-	CHECK(w.zw_nattrs == 77);
+	CHECK(w.zw_tree.zt_npools == 84);
+	CHECK(w.zw_nattrs == 84);
 	names = 0;
 	for (i = 0; i < w.zw_tree.zt_npools; i++)
 		names += w.zw_tree.zt_pools[i].zp_nnames;
-	CHECK(names == 79);
+	CHECK(names == 86);
 
 	check_deep(&w, ns);
 	check_empty(&w, ns);
@@ -668,6 +719,7 @@ check_odd_tree(const char *root)
 	check_links(&w, ns);
 	check_xattrs(&w, ns);
 	check_dotzfs(&w, ns);
+	check_order(&w, ns);
 	deep_path(path, sizeof (path));
 	check_attr(&w, ns, root, path);
 	check_attr(&w, ns, root, "/fifo");

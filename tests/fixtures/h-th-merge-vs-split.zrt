@@ -32,4 +32,4 @@ conflict 1 healed-split
   why  /A and /B were split on one side and joined by the other
   base ({/A /B}x,{/C}x)
   from ({/A /B /C}x)
-  onto ({/A}x,{/C}x,{/B}x)
+  onto ({/A}x,{/B}x,{/C}x)

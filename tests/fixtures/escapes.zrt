@@ -48,7 +48,7 @@ expect
 # a pool is one file and all its names: {names}letter; same
 # letter, same bytes
 conflict 1 disagree
-  why  /caf\303\251 and /a\040b end in one pool with different contents
-  base ({/caf\303\251}x,{/a\040b}y)
-  from ({/a\040b /caf\303\251}y)
-  onto ({/caf\303\251}x,{/a\040b}z)
+  why  /a\040b and /caf\303\251 end in one pool with different contents
+  base ({/a\040b}x,{/caf\303\251}y)
+  from ({/a\040b /caf\303\251}x)
+  onto ({/a\040b}z,{/caf\303\251}y)

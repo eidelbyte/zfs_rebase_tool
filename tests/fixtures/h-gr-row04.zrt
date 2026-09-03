@@ -31,5 +31,5 @@ expect
 conflict 1 healed-split
   why  /A and /B were split on one side and joined by the other
   base ({/A /B}x,{/C}x)
-  from ({/A}x,{/C}x,{/B}x)
+  from ({/A}x,{/B}x,{/C}x)
   onto ({/A /B /C}x)

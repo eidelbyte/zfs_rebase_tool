@@ -29,5 +29,5 @@ expect
 conflict 1 contested-home,disagree
   why  /R was created on both sides in different pools
   base ({/Q}x)
-  from ({/R}y,{/Q}x)
+  from ({/Q}x,{/R}y)
   onto ({/Q /R}x)

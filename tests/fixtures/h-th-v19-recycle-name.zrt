@@ -29,5 +29,5 @@ expect
 conflict 1 changed-both
   why  /Z changed on both sides
   base ({/Z}x)
-  from ({/Z}y,{/W /A}z)
-  onto ({/W /Z}z)
+  from ({/W /A}y,{/Z}z)
+  onto ({/W /Z}y)
