@@ -1,0 +1,32 @@
+platform freebsd
+
+# A non-trivial NFSv4 ACL added on from and nowhere else: one named
+# user allowed everything, ahead of the three entries the mode
+# stands for. The walk keeps an ACL only where it says more than the
+# mode does, so base and onto, which have none, are the same content
+# and from is not: the pool is written into onto's object in place.
+#
+# Box only. acl_from_text(3) and acl_set_link_np(3) are FreeBSD's,
+# and a text ACL means nothing on any other platform, which is what
+# the platform line above says.
+
+tree base
+	/A file x
+
+tree from
+	/A file x acl=user:1001:rwxp--aARWcCos:------:allow,owner@:rwxp--aARWcCos:------:allow,group@:r-x---a-R-c--s:------:allow,everyone@:r-x---a-R-c--s:------:allow
+
+tree onto
+	/A file x
+
+expect
+#rebase-manifest 4
+#base zrt/base@s
+#from zrt/from@s
+#onto zrt/onto@s
+#mode strict
+#actions 1
+#conflicts 0
+/
+    A write /A
+    ..

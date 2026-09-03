@@ -1,0 +1,27 @@
+# Two adds of an attribute where there was none: on a file onto kept
+# unchanged, which is a write, and on a file only from has, which is
+# a cp. The second attribute's value is empty, which is a value like
+# any other and not the absence of one.
+
+tree base
+	/A file x
+
+tree from
+	/A file x xattr=user.new:v
+	/N file n xattr=user.n:
+
+tree onto
+	/A file x
+
+expect
+#rebase-manifest 4
+#base zrt/base@s
+#from zrt/from@s
+#onto zrt/onto@s
+#mode strict
+#actions 2
+#conflicts 0
+/
+    A write /A
+    N cp /N
+    ..

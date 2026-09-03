@@ -1,0 +1,30 @@
+platform freebsd
+
+# One extended attribute of the system namespace, edited on from and
+# nowhere else. The walk reads both namespaces and spells this one
+# "system.NAME", so the fixture does too.
+#
+# Box only, and root only: FreeBSD's system namespace is root's to
+# write, and a walk that may not read it sees no attributes at all
+# rather than failing, which would make this fixture say nothing.
+
+tree base
+	/A file x xattr=system.tag:one
+
+tree from
+	/A file x xattr=system.tag:two
+
+tree onto
+	/A file x xattr=system.tag:one
+
+expect
+#rebase-manifest 4
+#base zrt/base@s
+#from zrt/from@s
+#onto zrt/onto@s
+#mode strict
+#actions 1
+#conflicts 0
+/
+    A write /A
+    ..

@@ -435,6 +435,67 @@ box, so the refusal path stays deferred. Unblocking work is a
 box-probe run started at securelevel 1, which is also the only way
 to prove the schg/sappnd name listing.
 
+## ZF -- the fixture format (check_fixture.c, run-fixtures.sh)
+
+Not an engine phase but the input every other family's end to end
+level reads: one .zrt file, parsed, built as three directory trees
+and built again as pools in memory, where the two builders must
+agree. Dimensions: syntax element {tree lines, the four types, the
+escapes, mode, uid, gid, flags, xattr, acl, the platform line,
+expect}; what it acts on {file, dir, symlink, a link line, the pool
+two names share}; builder {directories, pools}; rejection {every
+rule the format names}; platform {portable, box only}.
+
+Rows for the attributes were added with the attributes themselves
+(issue fixture-attrs). A row that only FreeBSD can reach is
+deferred to attr-cells, the sprint-5 issue that runs the box-only
+fixtures on the box; the Mac still parses those fixtures and still
+holds their expect blocks to the theory, which is what the covered
+rows beside them say.
+
+| cell | scenario | disposition |
+|------|----------|-------------|
+| ZF1 | the four types, tokens, links and escapes parse | covered: check_fixture.c |
+| ZF2 | mode, uid and gid on a file, a dir and a symlink | covered: check_fixture.c |
+| ZF3 | a build into a directory that is not empty is refused | covered: check_fixture.c |
+| ZF4 | to_tree: pools, synthetic inos, nlink, handles | covered: check_fixture.c |
+| ZF5 | the expect block, and a fixture without one | covered: check_fixture.c |
+| ZF6 | the rejections the format named before attributes | covered: check_fixture.c |
+| ZF7 | flags=NAMES parses to the number lchflags takes | covered: check_fixture.c |
+| ZF8 | a flag name chflags(1) does not know is rejected | covered: check_fixture.c |
+| ZF9 | flags on a file, walked back as za_flags | covered: check_fixture.c |
+| ZF10 | uchg on a directory: set after its children exist | covered: check_fixture.c |
+| ZF11 | xattr=NAME:VALUE parses; the walk reads that name | covered: check_fixture.c |
+| ZF12 | an empty value, and a value needing an escape | covered: check_fixture.c |
+| ZF13 | two xattrs out of bytewise name order: rejected | covered: check_fixture.c |
+| ZF14 | one xattr name twice on a line: rejected | covered: check_fixture.c |
+| ZF15 | an xattr with no colon, no namespace, or a bad escape | covered: check_fixture.c |
+| ZF16 | a system-namespace xattr with no platform line: rejected | covered: check_fixture.c |
+| ZF17 | a system-namespace xattr set and walked back | deferred: root and FreeBSD namespaces; box, attr-cells |
+| ZF18 | acl=TEXT parses and reaches the pool's handle | covered: check_fixture.c |
+| ZF19 | acl= with no platform line: rejected | covered: check_fixture.c |
+| ZF20 | an ACL set with acl_from_text and walked back | deferred: NFSv4 ACLs are FreeBSD's; box, attr-cells |
+| ZF21 | the platform line: parsed, and the build off it refused | covered: check_fixture.c |
+| ZF22 | platform after a tree line, twice, or unknown: rejected | covered: check_fixture.c |
+| ZF23 | attributes on a link line land on the shared pool | covered: check_fixture.c |
+| ZF24 | the handle folds mode, uid, gid, flags, xattrs and ACL | covered: check_fixture.c |
+| ZF25 | a symlink's mode= is passed by; defaults resolve equal | covered: check_fixture.c |
+| ZF26 | flags cleared before a built tree is removed | covered: check_fixture.c, run-fixtures.sh |
+| ZF27 | xattr-edit.zrt: a user xattr edited on from -> write | covered: run-fixtures.sh |
+| ZF28 | xattr-add.zrt: an xattr added -> write, and a new file -> cp | covered: run-fixtures.sh |
+| ZF29 | xattr-conflict.zrt: one xattr, both sides -> changed-both | covered: run-fixtures.sh |
+| ZF30 | flags-copy.zrt: a from-only file with nodump -> cp | covered: run-fixtures.sh |
+| ZF31 | acl-nfsv4.zrt: an NFSv4 ACL added on from -> write | deferred: box, attr-cells |
+| ZF32 | sysxattr.zrt: a system xattr edited on from -> write | deferred: box, attr-cells |
+
+ZF17 and ZF20 are the two the Mac cannot reach at all: it has no
+extended-attribute namespaces and no NFSv4 ACLs, so a fixture
+carrying either says "platform freebsd" and lives in
+tests/fixtures/freebsd/, where run-fixtures.sh skips it and counts
+the skip. What the Mac does prove of them is ZF18 and ZF21: the
+fixture parses, the attribute reaches the handle, and the expect
+block is held against the theory by hand rather than by the tool.
+
 ## Positive-proof cells
 
 One per subsection, the cell that proves the phase ran at all

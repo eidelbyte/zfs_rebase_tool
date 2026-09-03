@@ -2,11 +2,19 @@
  * The fixture tests: the probe scenario of v4-manifest.md section 7
  * parsed, built as real directories and walked back, and built again
  * as pools in memory; a second inline fixture for the symlinks and
- * attributes the probe has none of; then every rejection the format
- * promises.
+ * the owner attributes the probe has none of; a third for the file
+ * flags and extended attributes, built and walked back with zr_walk
+ * so that what the fixture said is what the walk reads; the two
+ * fixtures a platform line makes the box's, which parse here and
+ * build nowhere; then every rejection the format promises. Cells
+ * ZF1 to ZF16, ZF18, ZF19 and ZF21 to ZF26; ZF17 and ZF20 are the
+ * box's.
  */
 
 #define	_XOPEN_SOURCE	700
+#ifdef __FreeBSD__
+#define	__BSD_VISIBLE	1
+#endif
 #ifdef __APPLE__
 #define	_DARWIN_C_SOURCE
 #endif
@@ -23,6 +31,12 @@
 
 #include "fixture.h"
 #include "name.h"
+#include "walk.h"
+
+/* The platforms with file flags, which are the ones a flags= needs. */
+#if defined(__FreeBSD__) || defined(__APPLE__)
+#define	HAVE_FFLAGS	1
+#endif
 
 #define	E_FILE	0
 #define	E_LINK	1
@@ -96,8 +110,27 @@ static const struct expent exp_extra[] = {
 	{ "/l", E_SYM, "/a b", NULL, 1, -1 },
 	{ "/f", E_FILE, "t", NULL, 1, 0600 },
 	{ "/dd", E_DIR, NULL, NULL, 1, 0700 },
-	{ "/dd/s", E_SYM, "t", NULL, 1, -1 }
+	{ "/dd/s", E_SYM, "t", NULL, 1, -1 },
+	{ "/dd/s2", E_SYM, "t", NULL, 1, -1 }
 };
+
+#ifdef HAVE_FFLAGS
+/*
+ * The flags and extended attributes fixture: an immutable directory
+ * whose child was written before the flag went on, two attributes
+ * on that child and a flag of its own, an attribute set through the
+ * second name of a hardlink pool, and a file with the same token as
+ * both and nothing else, which is what makes them different.
+ */
+static const struct expent exp_attrs[] = {
+	{ "/d", E_DIR, NULL, NULL, 1, -1 },
+	{ "/d/f", E_FILE, "t", NULL, 1, -1 },
+	{ "/e", E_DIR, NULL, NULL, 1, -1 },
+	{ "/h1", E_FILE, "t", "/h2", 2, -1 },
+	{ "/h2", E_LINK, "t", "/h1", 2, -1 },
+	{ "/plain", E_FILE, "t", NULL, 1, -1 }
+};
+#endif	/* HAVE_FFLAGS */
 
 /* Every name a walk found under one root, parents before children. */
 struct walk {
@@ -194,6 +227,32 @@ walk_free(struct walk *w)
 	memset(w, 0, sizeof (*w));
 }
 
+/*
+ * Take the file flags off everything under root, parents first. A
+ * fixture may have made a file immutable, and unlink(2) cannot
+ * remove one; it may have made a directory immutable, and then
+ * nothing can be removed from it at all.
+ */
+static void
+clearflags(const char *root)
+{
+#ifdef HAVE_FFLAGS
+	char full[PATHMAX];
+	struct walk w;
+	int i;
+
+	(void) lchflags(root, 0);
+	walk_tree(&w, root);
+	for (i = 0; i < w.w_n; i++) {
+		join(full, sizeof (full), root, w.w_path[i]);
+		(void) lchflags(full, 0);
+	}
+	walk_free(&w);
+#else
+	(void) root;
+#endif
+}
+
 /* Children before parents, which is the walk order reversed. */
 static void
 rmtree(const char *root)
@@ -202,6 +261,7 @@ rmtree(const char *root)
 	struct walk w;
 	int i;
 
+	clearflags(root);
 	walk_tree(&w, root);
 	for (i = w.w_n - 1; i >= 0; i--) {
 		join(full, sizeof (full), root, w.w_path[i]);
@@ -324,9 +384,10 @@ check_inos(const struct zr_tree *tr)
 }
 
 /*
- * The pools the spec implies, without a filesystem: the hardlink pool
- * of base holds h1 and h2, the one of from holds h1, h2 and h3, and
- * the content handles say which files share bytes across the trees.
+ * ZF4: the pools the spec implies, without a filesystem. The
+ * hardlink pool of base holds h1 and h2, the one of from holds h1,
+ * h2 and h3, and the content handles say which files share bytes
+ * across the trees.
  */
 static void
 check_pools(const struct zr_fixture *fx)
@@ -388,12 +449,16 @@ check_pools(const struct zr_fixture *fx)
 	CHECK(content(&base, ns, "/h1") != content(&from, ns, "/h1"));
 	CHECK(content(&base, ns, "/keep/k") != content(&onto, ns, "/keep/k"));
 
-	/* the directories share one handle, and no file wears it */
-	CHECK(content(&base, ns, "/d") == ZR_FX_DIR_CONTENT);
-	CHECK(content(&base, ns, "/keep") == ZR_FX_DIR_CONTENT);
-	CHECK(content(&from, ns, "/e") == ZR_FX_DIR_CONTENT);
-	CHECK(content(&base, ns, "/a") < ZR_FX_DIR_CONTENT);
-	CHECK(content(&onto, ns, "/keep/k") < ZR_FX_DIR_CONTENT);
+	/*
+	 * Directories with the attributes the builder defaults to are
+	 * one content, in one tree and across three, and no file is
+	 * ever that content.
+	 */
+	CHECK(content(&base, ns, "/d") == content(&base, ns, "/keep"));
+	CHECK(content(&base, ns, "/d") == content(&from, ns, "/e"));
+	CHECK(content(&base, ns, "/d") == content(&onto, ns, "/keep"));
+	CHECK(content(&base, ns, "/a") != content(&base, ns, "/d"));
+	CHECK(content(&onto, ns, "/keep/k") != content(&base, ns, "/keep"));
 	CHECK(content(&base, ns, "/a") != ZR_CONTENT_NONE);
 
 	zr_tree_fini(&base);
@@ -402,9 +467,33 @@ check_pools(const struct zr_fixture *fx)
 	zr_names_destroy(ns);
 }
 
+/* Write one inline spec under root and load it. */
+static struct zr_fixture *
+load_spec(const char *root, const char *name, const char *spec)
+{
+	struct zr_fixture *fx = NULL;
+	char path[PATHMAX], err[256];
+	size_t len;
+	FILE *fp;
+
+	join(path, sizeof (path), root, name);
+	len = strlen(spec);
+	fp = fopen(path, "wb");
+	CHECK(fp != NULL);
+	CHECK(fwrite(spec, 1, len, fp) == len);
+	CHECK(fclose(fp) == 0);
+	err[0] = '\0';
+	if (zr_fixture_load(path, &fx, err, sizeof (err)) != 0)
+		printf("  %s: %s\n", path, err);
+	CHECK(fx != NULL);
+	CHECK(unlink(path) == 0);
+	return (fx);
+}
+
 /*
- * The second fixture: a symlink target that needs escaping, a symlink
- * whose target is also a file's token, and the three attributes.
+ * ZF2, ZF3, ZF25: the second fixture -- a symlink target that needs
+ * escaping, a symlink whose target is also a file's token, the owner
+ * attributes, and the mode a symlink does not keep.
  */
 static void
 check_extra(const char *root)
@@ -414,8 +503,6 @@ check_extra(const char *root)
 	struct zr_names *ns;
 	struct zr_tree tr;
 	struct stat st;
-	FILE *fp;
-	size_t len;
 	int n;
 
 	n = snprintf(spec, sizeof (spec),
@@ -425,19 +512,12 @@ check_extra(const char *root)
 	    "\t/f file t mode=0600\n"
 	    "\t/dd dir mode=0700\n"
 	    "\t/dd/s symlink t mode=0777 uid=%lu gid=%lu\n"
+	    "\t/dd/s2 symlink t\n"
 	    "tree from\n"
 	    "tree onto\n",
 	    (unsigned long)getuid(), (unsigned long)getgid());
 	CHECK(n > 0 && (size_t)n < sizeof (spec));
-	len = (size_t)n;
-	join(path, sizeof (path), root, "/extra.zrt");
-	fp = fopen(path, "wb");
-	CHECK(fp != NULL);
-	CHECK(fwrite(spec, 1, len, fp) == len);
-	CHECK(fclose(fp) == 0);
-
-	CHECK(zr_fixture_load(path, &fx, err, sizeof (err)) == 0);
-	CHECK(fx != NULL);
+	fx = load_spec(root, "/extra.zrt", spec);
 	CHECK(zr_fixture_expect(fx) == NULL);
 
 	join(full, sizeof (full), root, "/extra");
@@ -462,23 +542,181 @@ check_extra(const char *root)
 	CHECK(zr_fixture_to_tree(fx, ZR_FX_BASE, ns, &tr) == 0);
 	CHECK(zr_tree_verify(&tr, err, sizeof (err)) == 0);
 	CHECK(tr.zt_pools[poolof(&tr, ns, "/l")].zp_type == ZR_T_SYMLINK);
-	CHECK(content(&tr, ns, "/dd") == ZR_FX_DIR_CONTENT);
-	CHECK((content(&tr, ns, "/l") & ZR_FX_SYMLINK_BIT) != 0);
 	CHECK(content(&tr, ns, "/l") != content(&tr, ns, "/dd/s"));
 	/*
-	 * The symlink to "t" and the file whose token is "t" agree
-	 * only below the high bit.
+	 * A symlink whose target is a file's token is not that file's
+	 * content: the type is part of the handle, as it is part of
+	 * what the oracle compares.
 	 */
-	CHECK(content(&tr, ns, "/dd/s") ==
-	    (content(&tr, ns, "/f") | ZR_FX_SYMLINK_BIT));
 	CHECK(content(&tr, ns, "/f") != content(&tr, ns, "/dd/s"));
+	/*
+	 * A symlink's mode is not honoured anywhere this tool runs, so
+	 * the handle passes it by just as the builder does: these two
+	 * differ in mode= alone and in nothing the filesystem keeps.
+	 * The owner and group they name are the ones the builder would
+	 * have left behind anyway, which is the same resolution.
+	 */
+	CHECK(content(&tr, ns, "/dd/s") == content(&tr, ns, "/dd/s2"));
+	/* the directory's mode= is honoured, and does reach its handle */
+	CHECK(content(&tr, ns, "/dd") != ZR_CONTENT_NONE);
 	zr_tree_fini(&tr);
 	zr_names_destroy(ns);
 
 	zr_fixture_free(fx);
 	rmtree(full);
-	join(path, sizeof (path), root, "/extra.zrt");
-	CHECK(unlink(path) == 0);
+}
+
+#ifdef HAVE_FFLAGS
+
+/*
+ * ZF7, ZF9 to ZF12, ZF23, ZF24 and ZF26: file flags and extended
+ * attributes, built and then read back with the walk itself, which
+ * is the only proof that a fixture's attributes and the walk's are
+ * the same attributes. The immutable directory is the ordering test
+ * -- its child was written first, and a builder that set the flag
+ * when it made the directory could not have put anything in it.
+ * The attributes go on the pool through whichever name carries
+ * them, /h2 being the second name of the file /h1, and every one of
+ * them tells the handles apart from /plain, whose token is the same
+ * and whose attributes are none.
+ */
+static void
+check_attrs(const char *root)
+{
+	static const char spec[] =
+	    "# file flags and extended attributes\n"
+	    "tree base\n"
+	    "\t/d dir flags=uchg\n"
+	    "\t/d/f file t flags=nodump xattr=user.a: xattr=user.b:v\\040w\n"
+	    "\t/e dir\n"
+	    "\t/h1 file t\n"
+	    "\t/h2 link /h1 xattr=user.z:zz\n"
+	    "\t/plain file t\n"
+	    "tree from\n"
+	    "tree onto\n";
+	char full[PATHMAX], err[256];
+	struct zr_fixture *fx;
+	const struct zr_attr *at;
+	struct zr_names *ns;
+	struct zr_walk w;
+	struct zr_tree tr;
+
+	fx = load_spec(root, "/attrs.zrt", spec);
+	join(full, sizeof (full), root, "/attrs");
+	CHECK(mkdir(full, 0755) == 0);
+	CHECK(zr_fixture_build(fx, ZR_FX_BASE, full) == 0);
+	check_built(full, exp_attrs, (int)(sizeof (exp_attrs) /
+	    sizeof (exp_attrs[0])));
+
+	ns = zr_names_create();
+	CHECK(ns != NULL);
+	err[0] = '\0';
+	if (zr_walk(full, ns, &w, err, sizeof (err)) != 0)
+		printf("  walk: %s\n", err);
+	CHECK(err[0] == '\0');
+
+	/* the two attributes of the child, in name order, and its flag */
+	at = &w.zw_attrs[poolof(&w.zw_tree, ns, "/d/f")];
+	CHECK(at->za_nxattrs == 2);
+	CHECK(strcmp(at->za_xattrs[0].zx_name, "user.a") == 0);
+	CHECK(at->za_xattrs[0].zx_len == 0);
+	CHECK(strcmp(at->za_xattrs[1].zx_name, "user.b") == 0);
+	CHECK(at->za_xattrs[1].zx_len == 3);
+	CHECK(memcmp(at->za_xattrs[1].zx_value, "v w", 3) == 0);
+	CHECK(at->za_flags == UF_NODUMP);
+
+	/* the directory kept its child and became immutable after it */
+	at = &w.zw_attrs[poolof(&w.zw_tree, ns, "/d")];
+	CHECK(at->za_flags == UF_IMMUTABLE);
+	at = &w.zw_attrs[poolof(&w.zw_tree, ns, "/e")];
+	CHECK(at->za_flags == 0);
+
+	/* the second name of a pool set the attribute on the file */
+	at = &w.zw_attrs[poolof(&w.zw_tree, ns, "/h1")];
+	CHECK(at->za_nxattrs == 1);
+	CHECK(strcmp(at->za_xattrs[0].zx_name, "user.z") == 0);
+	CHECK(at->za_xattrs[0].zx_len == 2);
+	CHECK(memcmp(at->za_xattrs[0].zx_value, "zz", 2) == 0);
+	CHECK(poolof(&w.zw_tree, ns, "/h2") ==
+	    poolof(&w.zw_tree, ns, "/h1"));
+
+	at = &w.zw_attrs[poolof(&w.zw_tree, ns, "/plain")];
+	CHECK(at->za_nxattrs == 0);
+	CHECK(at->za_flags == 0);
+	zr_walk_fini(&w);
+	zr_names_destroy(ns);
+
+	/* one token, four pools, and the attributes tell them apart */
+	ns = zr_names_create();
+	CHECK(ns != NULL);
+	CHECK(zr_fixture_to_tree(fx, ZR_FX_BASE, ns, &tr) == 0);
+	CHECK(zr_tree_verify(&tr, err, sizeof (err)) == 0);
+	CHECK(content(&tr, ns, "/d/f") != content(&tr, ns, "/plain"));
+	CHECK(content(&tr, ns, "/h1") != content(&tr, ns, "/plain"));
+	CHECK(content(&tr, ns, "/h1") != content(&tr, ns, "/d/f"));
+	CHECK(content(&tr, ns, "/h1") == content(&tr, ns, "/h2"));
+	CHECK(content(&tr, ns, "/d") != content(&tr, ns, "/e"));
+	zr_tree_fini(&tr);
+	zr_names_destroy(ns);
+
+	zr_fixture_free(fx);
+	rmtree(full);
+}
+
+#endif	/* HAVE_FFLAGS */
+
+/*
+ * ZF18 and ZF21: one of the two fixtures a platform line makes the
+ * box's. It parses here, whatever this platform is, and its
+ * attribute reaches the handles -- base and onto agree and from
+ * does not, which is what makes the expect block a write. Building
+ * it is refused off its own platform, in words naming the line that
+ * said so.
+ */
+static void
+check_boxonly(const char *root, const char *path)
+{
+	struct zr_tree base, from, onto;
+	struct zr_fixture *fx = NULL;
+	struct zr_names *ns;
+	char dir[PATHMAX], err[256];
+
+	err[0] = '\0';
+	if (zr_fixture_load(path, &fx, err, sizeof (err)) != 0)
+		printf("  %s: %s\n", path, err);
+	CHECK(fx != NULL);
+	CHECK(zr_fixture_platform(fx) != NULL);
+	CHECK(strcmp(zr_fixture_platform(fx), "freebsd") == 0);
+	CHECK(zr_fixture_expect(fx) != NULL);
+
+	ns = zr_names_create();
+	CHECK(ns != NULL);
+	CHECK(zr_fixture_to_tree(fx, ZR_FX_BASE, ns, &base) == 0);
+	CHECK(zr_fixture_to_tree(fx, ZR_FX_FROM, ns, &from) == 0);
+	CHECK(zr_fixture_to_tree(fx, ZR_FX_ONTO, ns, &onto) == 0);
+	CHECK(content(&base, ns, "/A") == content(&onto, ns, "/A"));
+	CHECK(content(&base, ns, "/A") != content(&from, ns, "/A"));
+	zr_tree_fini(&base);
+	zr_tree_fini(&from);
+	zr_tree_fini(&onto);
+	zr_names_destroy(ns);
+
+	join(dir, sizeof (dir), root, "/boxonly");
+	CHECK(mkdir(dir, 0755) == 0);
+#ifndef __FreeBSD__
+	err[0] = '\0';
+	errno = 0;
+	CHECK(zr_fixture_build_err(fx, ZR_FX_BASE, dir, err,
+	    sizeof (err)) == -1);
+	CHECK(errno == ENOTSUP);
+	if (strstr(err, "platform freebsd") == NULL)
+		printf("  build: %s\n", err);
+	CHECK(strstr(err, "platform freebsd") != NULL);
+	CHECK(strstr(err, "line 1:") != NULL);
+	CHECK(zr_fixture_build(fx, ZR_FX_BASE, dir) == -1);
+#endif
+	CHECK(rmdir(dir) == 0);
+	zr_fixture_free(fx);
 }
 
 /* One spec that must be rejected, with the line it must name. */
@@ -506,6 +744,7 @@ reject(const char *root, const char *spec, int line, const char *what)
 	CHECK(unlink(path) == 0);
 }
 
+/* ZF6, ZF8, ZF13 to ZF16, ZF19 and ZF22: every rejection in turn. */
 static void
 check_rejections(const char *root)
 {
@@ -545,6 +784,67 @@ check_rejections(const char *root)
 	    "/a file x mode=0648\n"
 	    "tree from\n"
 	    "tree onto\n", 2, "a mode that is not octal");
+	reject(root,
+	    "tree base\n"
+	    "/a file x flags=nodump gid=0\n"
+	    "tree from\n"
+	    "tree onto\n", 2, "attributes out of order");
+	reject(root,
+	    "tree base\n"
+	    "/a file x flags=nosuchflag\n"
+	    "tree from\n"
+	    "tree onto\n", 2, "a flag chflags does not know");
+	reject(root,
+	    "tree base\n"
+	    "/a file x xattr=user.b:1 xattr=user.a:2\n"
+	    "tree from\n"
+	    "tree onto\n", 2, "xattrs out of name order");
+	reject(root,
+	    "tree base\n"
+	    "/a file x xattr=user.a:1 xattr=user.a:2\n"
+	    "tree from\n"
+	    "tree onto\n", 2, "one xattr name twice");
+	reject(root,
+	    "tree base\n"
+	    "/a file x xattr=user.a\n"
+	    "tree from\n"
+	    "tree onto\n", 2, "an xattr with no colon");
+	reject(root,
+	    "tree base\n"
+	    "/a file x xattr=plain:1\n"
+	    "tree from\n"
+	    "tree onto\n", 2, "an xattr in no namespace");
+	reject(root,
+	    "tree base\n"
+	    "/a file x xattr=system.a:1\n"
+	    "tree from\n"
+	    "tree onto\n", 2, "a system xattr with no platform line");
+	reject(root,
+	    "tree base\n"
+	    "/a file x xattr=user.a:\\8\n"
+	    "tree from\n"
+	    "tree onto\n", 2, "a bad escape in an xattr value");
+	reject(root,
+	    "tree base\n"
+	    "/a file x acl=owner@:rwxp:allow\n"
+	    "tree from\n"
+	    "tree onto\n", 2, "an acl with no platform line");
+	reject(root,
+	    "tree base\n"
+	    "platform freebsd\n"
+	    "tree from\n"
+	    "tree onto\n", 2, "a platform line after a tree line");
+	reject(root,
+	    "platform freebsd\n"
+	    "platform freebsd\n"
+	    "tree base\n"
+	    "tree from\n"
+	    "tree onto\n", 2, "a platform line twice");
+	reject(root,
+	    "platform sunos\n"
+	    "tree base\n"
+	    "tree from\n"
+	    "tree onto\n", 1, "a platform nothing can build");
 }
 
 int
@@ -589,6 +889,11 @@ main(void)
 	zr_fixture_free(fx);
 
 	check_extra(root);
+#ifdef HAVE_FFLAGS
+	check_attrs(root);
+#endif
+	check_boxonly(root, "tests/fixtures/freebsd/acl-nfsv4.zrt");
+	check_boxonly(root, "tests/fixtures/freebsd/sysxattr.zrt");
 	check_rejections(root);
 
 	rmtree(root);

@@ -1,0 +1,26 @@
+# A from-only file carrying a file flag. The walk records the flags
+# of every object, so the copy is an ordinary cp: the flag travels
+# with the attributes the action carries, and the manifest has no
+# more to say about it than about a mode.
+
+tree base
+	/A file x
+
+tree from
+	/A file x
+	/N file n flags=nodump
+
+tree onto
+	/A file x
+
+expect
+#rebase-manifest 4
+#base zrt/base@s
+#from zrt/from@s
+#onto zrt/onto@s
+#mode strict
+#actions 1
+#conflicts 0
+/
+    N cp /N
+    ..

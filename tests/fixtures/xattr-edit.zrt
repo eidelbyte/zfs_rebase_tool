@@ -1,0 +1,24 @@
+# One user extended attribute, edited on from and nowhere else. An
+# attribute is content to the oracle, so this is the ordinary
+# one-sided edit: onto's object is written in place.
+
+tree base
+	/A file x xattr=user.tag:one
+
+tree from
+	/A file x xattr=user.tag:two
+
+tree onto
+	/A file x xattr=user.tag:one
+
+expect
+#rebase-manifest 4
+#base zrt/base@s
+#from zrt/from@s
+#onto zrt/onto@s
+#mode strict
+#actions 1
+#conflicts 0
+/
+    A write /A
+    ..
