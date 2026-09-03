@@ -321,36 +321,36 @@ check; the copy path {copy_file_range, read/write}.
 
 | cell | scenario | disposition |
 |------|----------|-------------|
-| ZA1 | cp of a regular file: bytes and type | planned: check_apply.c |
-| ZA2 | cp of a directory: empty, children after | planned: check_apply.c |
-| ZA3 | cp of a symlink: the target, not the file | planned: check_apply.c |
-| ZA4 | cp of a character device: mknod, rdev | planned: check_apply.c |
-| ZA5 | cp of a block device | planned: check_apply.c |
-| ZA6 | cp of a fifo | planned: check_apply.c |
+| ZA1 | cp of a regular file: bytes and type | covered: check_apply.c |
+| ZA2 | cp of a directory: empty, children after | covered: check_apply.c |
+| ZA3 | cp of a symlink: the target, not the file | covered: check_apply.c |
+| ZA4 | cp of a character device: mknod, rdev | deferred: mknod needs root; box-probe |
+| ZA5 | cp of a block device | deferred: mknod needs root; box-probe |
+| ZA6 | cp of a fifo | covered: check_apply.c |
 | ZA7 | cp of a socket | deferred: no portable socket create; box-probe |
-| ZA8 | write in place: same object, new bytes | planned: check_apply.c |
-| ZA9 | write is seen through every name | planned: check_apply.c |
-| ZA10 | write preserves st_ino and st_nlink | planned: check_apply.c |
-| ZA11 | ln: a second name on the anchor | planned: check_apply.c |
-| ZA12 | ln replacing an existing name | planned: check_apply.c |
-| ZA13 | ln where the destination is a directory | planned: check_apply.c |
-| ZA14 | rm of a leaf | planned: check_apply.c |
-| ZA15 | rm of a directory at its close | planned: check_apply.c |
-| ZA16 | rm of a directory with a child left: loud | planned: check_apply.c |
-| ZA17 | conflict does nothing to the name | planned: check_apply.c |
-| ZA18 | order: chown before chmod, setuid survives | planned: check_apply.c |
-| ZA19 | order: xattrs and ACL before times | planned: check_apply.c |
-| ZA20 | order: times before flags | planned: check_apply.c |
-| ZA21 | flags last: an immutable copied file | planned: check_apply.c |
-| ZA22 | every action re-stats its target | planned: check_apply.c |
-| ZA23 | a re-stat mismatch fails the apply | planned: check_apply.c |
-| ZA24 | copy_file_range absent: the fallback | planned: check_apply.c |
-| ZA25 | openat-relative: no path leaves the root | planned: check_apply.c |
-| ZA26 | an action naming a path outside the root | planned: check_apply.c |
-| ZA27 | actions run in manifest order | planned: check_apply.c |
-| ZA28 | xattrs applied, the user namespace | planned: check_apply.c |
+| ZA8 | write in place: same object, new bytes | covered: check_apply.c |
+| ZA9 | write is seen through every name | covered: check_apply.c |
+| ZA10 | write preserves st_ino and st_nlink | covered: check_apply.c |
+| ZA11 | ln: a second name on the anchor | covered: check_apply.c |
+| ZA12 | ln replacing an existing name | covered: check_apply.c |
+| ZA13 | ln where the destination is a directory | covered: check_apply.c |
+| ZA14 | rm of a leaf | covered: check_apply.c |
+| ZA15 | rm of a directory at its close | covered: check_apply.c |
+| ZA16 | rm of a directory with a child left: loud | covered: check_apply.c |
+| ZA17 | conflict does nothing to the name | covered: check_apply.c |
+| ZA18 | order: chown before chmod, setuid survives | deferred: an apply run by the tree's owner skips the chown; box-probe |
+| ZA19 | order: xattrs and ACL before times | covered: check_apply.c, the xattr half; the ACL half is box-probe |
+| ZA20 | order: times before flags | covered: check_apply.c |
+| ZA21 | flags last: an immutable copied file | deferred: schg needs root; box-probe |
+| ZA22 | every action re-stats its target | covered: check_apply.c, every action here passed its re-stat |
+| ZA23 | a re-stat mismatch fails the apply | deferred: forcing one needs root; box-probe |
+| ZA24 | copy_file_range absent: the fallback | covered: check_apply.c, which is the macOS path |
+| ZA25 | openat-relative: no path leaves the root | covered: check_apply.c |
+| ZA26 | an action naming a path outside the root | covered: check_apply.c |
+| ZA27 | actions run in manifest order | covered: check_apply.c |
+| ZA28 | xattrs applied, the user namespace | covered: check_apply.c |
 | ZA29 | an ACL applied | deferred: the two ACL models differ; box-probe |
-| ZA30 | the whole probe manifest applies | planned: run-fixtures.sh |
+| ZA30 | the whole probe manifest applies | covered: check_apply.c |
 
 ## ZX -- the ZFS layer (diff parse, zfs ops, driver, guards)
 

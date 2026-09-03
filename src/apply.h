@@ -1,0 +1,42 @@
+/*
+ * apply: turn the actions of a parsed manifest into the result tree.
+ * The onto tree is the writable one; the walked from tree is where
+ * the bytes and the attributes of every cp and write come from.
+ */
+
+#ifndef	ZR_APPLY_H
+#define	ZR_APPLY_H
+
+#include <stddef.h>
+#include <stdint.h>
+
+#include "manifest.h"
+#include "walk.h"
+
+/* What the apply did, for the report and for the tests. */
+struct zr_apply_stats {
+	uint64_t	zs_rm;
+	uint64_t	zs_ln;
+	uint64_t	zs_cp;
+	uint64_t	zs_write;
+	uint64_t	zs_bytes;	/* file bytes copied out of from */
+};
+
+/*
+ * Apply m to the tree at onto_root, reading from's bytes and
+ * attributes for every cp and write. Actions run in manifest order,
+ * except that the removal of a directory waits for its scope to
+ * close. Every operation is relative to one descriptor on onto_root
+ * and never follows a symbolic link, so nothing outside that tree is
+ * read or written. Conflict marks do nothing.
+ *
+ * Returns 0 with *st filled, or -1 at the first failure with a
+ * message naming the path, the step and the reason in err when
+ * errlen is not 0. There is no undo: a failed apply leaves the tree
+ * part way, which is why the caller works on a clone.
+ */
+int zr_apply(const struct zr_parsed *m, const char *onto_root,
+    const struct zr_walk *from, struct zr_apply_stats *st,
+    char *err, size_t errlen);
+
+#endif	/* ZR_APPLY_H */
