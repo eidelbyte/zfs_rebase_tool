@@ -1,0 +1,64 @@
+# The probe scenario of v4-manifest.md section 7: b deleted on from,
+# d renamed to e, the {h1 h2} pool edited and given a third link, n
+# added, keep/k edited on onto alone, and a edited on both sides.
+
+tree base
+	/a file x
+	/b file y
+	/h1 file h
+	/h2 link /h1
+	/d dir
+	/d/f file f
+	/keep dir
+	/keep/k file k
+
+tree from
+	/a file a2
+	/h1 file h2
+	/h2 link /h1
+	/h3 link /h1
+	/e dir
+	/e/f file f
+	/keep dir
+	/keep/k file k
+	/n file n
+
+tree onto
+	/a file a3
+	/b file y
+	/h1 file h
+	/h2 link /h1
+	/d dir
+	/d/f file f
+	/keep dir
+	/keep/k file k2
+
+expect
+#rebase-manifest 4
+#base zrtdiff/fs@base
+#from zrtdiff/from@work
+#onto zrtdiff/onto@work
+#mode strict
+#actions 8
+#conflicts 1
+/
+    a conflict 1
+    b rm
+    d/ rm
+        f rm
+        ..
+    e/ cp /e
+        f cp /e/f
+        ..
+    h1 write /h1
+    h3 ln /h1
+    n cp /n
+    ..
+
+# a pool is one file and all its names: {names}letter; same
+# letter, same bytes
+conflict 1 changed-both
+  why  /a changed on both sides
+  base ({/a}x)
+  from ({/a}y)
+  onto ({/a}z)

@@ -9,10 +9,10 @@ ZFS_INCLUDE = /usr/include
 ZFS_LIBS = -lzfs_core -lzfs -lnvpair
 
 # Library objects are everything but main.o; tests link against them.
-LIB_OBJS = build/vis.o build/name.o build/decide.o
+LIB_OBJS = build/vis.o build/name.o build/decide.o build/fixture.o
 CORE_OBJS = build/main.o $(LIB_OBJS)
 FREEBSD_OBJS =
-TESTS = check_vis check_name
+TESTS = check_vis check_name check_fixture
 
 all: build zfs_rebase
 
@@ -38,6 +38,9 @@ build/name.o: src/name.c src/name.h
 
 build/decide.o: src/decide.c src/decide.h src/name.h
 	$(CC) $(CFLAGS) -c -o $@ src/decide.c
+
+build/fixture.o: src/fixture.c src/fixture.h src/name.h src/vis.h
+	$(CC) $(CFLAGS) -c -o $@ src/fixture.c
 
 check: unit battery
 
