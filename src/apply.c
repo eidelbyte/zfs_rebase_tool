@@ -7,6 +7,13 @@
  * and attributes come from the walked from tree. Extended
  * attributes, the ACL and the file flags are the only writes POSIX
  * never standardised; they live in the one platform section below.
+ *
+ * Every action means "make this true", not "do this once": a name
+ * already gone is removed, a directory already there is created, a
+ * link already standing is linked, and an object in the way of a cp
+ * is replaced. So the second run of a manifest over the tree the
+ * first one left succeeds and lands in the same place, which is what
+ * makes a fresh apply, a --continue and a repair one code path.
  */
 
 #define	_XOPEN_SOURCE	700
@@ -40,6 +47,7 @@
 #include "apply.h"
 #include "manifest.h"
 #include "name.h"
+#include "verify.h"
 #include "walk.h"
 
 #define	ZA_BUFSZ	(64u * 1024u)
@@ -516,6 +524,7 @@ za_setflags(const char *full, uint32_t flags)
  */
 struct za_ctx {
 	int			zc_rootfd;
+	const struct zr_parsed	*zc_m;		/* for the conflict marks */
 	const struct zr_walk	*zc_from;
 	const struct zr_walk	*zc_onto;	/* dup source, or NULL */
 	struct zr_apply_stats	*zc_st;
@@ -926,14 +935,19 @@ za_verify(struct za_ctx *c, const struct zr_action *a,
 
 /*
  * Clear the way for a cp. A leaf goes: it is a name the result gives
- * to something else, or a symbolic link being replaced. A directory
- * is the type-change shape, where the rm of the old directory closed
- * on the line before this one -- so what is left is empty and rmdir
+ * to something else, or a symbolic link being replaced, or the same
+ * name an earlier run of this manifest made. A directory where the
+ * action wants a directory is that directory, made by an earlier run
+ * with the children of the lines that follow inside it, and it
+ * stays: what the action still owes it is its attributes, which are
+ * written below. A directory where the action wants anything else is
+ * the type-change shape, where the rm of the old directory closed on
+ * the line before this one -- so what is left is empty and rmdir
  * takes it, and anything still inside is a manifest that did not
  * remove its children.
  */
 static int
-za_clear(struct za_ctx *c, const struct zr_action *a)
+za_clear(struct za_ctx *c, const struct zr_action *a, zr_type_t want)
 {
 	const char *rel = za_rel(a->za_path);
 	struct stat st;
@@ -948,6 +962,8 @@ za_clear(struct za_ctx *c, const struct zr_action *a)
 			return (za_fail(c, a, "unlink"));
 		return (0);
 	}
+	if (want == ZR_T_DIR)
+		return (0);
 	if (unlinkat(c->zc_rootfd, rel, AT_REMOVEDIR) != 0)
 		return (za_fail(c, a, "rmdir of the directory in the way"));
 	return (0);
@@ -996,13 +1012,15 @@ za_do_cp(struct za_ctx *c, const struct zr_action *a,
 	int fd, rc;
 
 	if (za_path_ok(c, a, a->za_arg, a->za_arglen) != 0 ||
-	    za_source(c, a, w, &src) != 0 || za_clear(c, a) != 0)
+	    za_source(c, a, w, &src) != 0 ||
+	    za_clear(c, a, src.zs_type) != 0)
 		return (-1);
 	rel = za_rel(a->za_path);
 	mode = src.zs_at->za_mode & ZA_CREAT;
 	switch (src.zs_type) {
 	case ZR_T_DIR:
-		if (mkdirat(c->zc_rootfd, rel, mode) != 0)
+		/* the directory an earlier run made is the one wanted */
+		if (mkdirat(c->zc_rootfd, rel, mode) != 0 && errno != EEXIST)
 			return (za_fail(c, a, "mkdir"));
 		if (za_from_stat(c, a, w, &fst) != 0)
 			return (-1);
@@ -1147,10 +1165,32 @@ za_do_write(struct za_ctx *c, const struct zr_action *a)
 }
 
 /*
+ * Are these two names one object already? Two stats and no write:
+ * how the ln below knows there is nothing left to do, and how the
+ * apply confirms an ln a report called done before it takes the
+ * report's word for it.
+ */
+static int
+za_linked(struct za_ctx *c, const struct zr_action *a)
+{
+	struct stat st, ast;
+
+	if (fstatat(c->zc_rootfd, za_rel(a->za_path), &st,
+	    AT_SYMLINK_NOFOLLOW) != 0)
+		return (0);
+	if (fstatat(c->zc_rootfd, za_rel(a->za_arg), &ast,
+	    AT_SYMLINK_NOFOLLOW) != 0)
+		return (0);
+	return (st.st_ino == ast.st_ino && st.st_dev == ast.st_dev);
+}
+
+/*
  * ln: the path becomes another name of the object the anchor names,
  * both of them in the result tree. The anchor is looked at before
  * anything is unlinked, so a manifest naming an anchor that is not
- * there leaves the tree as it found it.
+ * there leaves the tree as it found it. A path that is the anchor's
+ * object already is the link this action asks for: it stands, and
+ * nothing is unlinked to make it again.
  */
 static int
 za_do_ln(struct za_ctx *c, const struct zr_action *a)
@@ -1172,6 +1212,10 @@ za_do_ln(struct za_ctx *c, const struct zr_action *a)
 		return (-1);
 	}
 	if (fstatat(c->zc_rootfd, rel, &st, AT_SYMLINK_NOFOLLOW) == 0) {
+		if (st.st_ino == ast.st_ino && st.st_dev == ast.st_dev) {
+			c->zc_st->zs_ln++;
+			return (0);
+		}
 		if (S_ISDIR(st.st_mode))
 			return (za_failx(c, a, "a directory is in the way of "
 			    "a link"));
@@ -1239,6 +1283,13 @@ za_pend(struct za_ctx *c, const struct zr_action *a)
  * which the next action's path does not lie under has had its last
  * child; remove it now. A NULL path is the end of the manifest,
  * where every one of them is due.
+ *
+ * A directory already gone is a removal that is true, and a
+ * directory that will not go because a conflicted name is still
+ * inside it is the one removal the manifest cannot ask for yet: it
+ * is left, counted as skipped, and the conflict manager's resolution
+ * is what frees it. Anything else that will not go is a manifest
+ * that did not remove its children, which is loud.
  */
 static int
 za_close_to(struct za_ctx *c, const unsigned char *path, size_t len)
@@ -1251,21 +1302,34 @@ za_close_to(struct za_ctx *c, const unsigned char *path, size_t len)
 		dirlen = c->zc_pendlen[c->zc_npend - 1];
 		if (path != NULL && za_under(dir, dirlen, path, len))
 			break;
-		if (unlinkat(c->zc_rootfd, za_rel(dir), AT_REMOVEDIR) != 0)
-			return (za_failp(c, dir, "rmdir"));
+		if (unlinkat(c->zc_rootfd, za_rel(dir), AT_REMOVEDIR) != 0) {
+			if ((errno == ENOTEMPTY || errno == EEXIST) &&
+			    zr_verify_blocked(c->zc_m, dir, dirlen) != 0) {
+				c->zc_npend--;
+				c->zc_st->zs_skipped++;
+				continue;
+			}
+			if (errno != ENOENT)
+				return (za_failp(c, dir, "rmdir"));
+		}
 		c->zc_npend--;
 		c->zc_st->zs_rm++;
 	}
 	return (0);
 }
 
-/* rm: a leaf goes now, a directory when its scope closes. */
+/*
+ * rm: a leaf goes now, a directory when its scope closes. A name
+ * that is not there is the state the action asks for and not a
+ * failure, which is what lets a manifest run twice.
+ */
 static int
 za_do_rm(struct za_ctx *c, const struct zr_action *a)
 {
 	if (a->za_isdir != 0)
 		return (za_pend(c, a));
-	if (unlinkat(c->zc_rootfd, za_rel(a->za_path), 0) != 0)
+	if (unlinkat(c->zc_rootfd, za_rel(a->za_path), 0) != 0 &&
+	    errno != ENOENT)
 		return (za_fail(c, a, "unlink"));
 	c->zc_st->zs_rm++;
 	return (0);
@@ -1285,10 +1349,30 @@ za_ctx_fini(struct za_ctx *c)
 	c->zc_rootfd = -1;
 }
 
+/*
+ * An action a report marked done or blocked, at the moment the apply
+ * reaches it. Everything is taken on the report's word but the ln,
+ * whose anchor is a name of the result: a cp, a dup or a write
+ * performed since the report was written may have put a new object
+ * at that name, and this one would still be on the old one. It is
+ * the one dependency an action of this manifest has on another, and
+ * two stats settle it.
+ */
+static int
+za_skippable(struct za_ctx *c, const struct zr_action *a)
+{
+	if (a->za_kind != ZR_ACT_LN)
+		return (1);
+	if (za_path_ok(c, a, a->za_arg, a->za_arglen) != 0)
+		return (0);
+	return (za_linked(c, a));
+}
+
 int
-zr_apply(const struct zr_parsed *m, const char *onto_root,
+zr_apply_with(const struct zr_parsed *m, const char *onto_root,
     const struct zr_walk *from, const struct zr_walk *onto,
-    struct zr_apply_stats *st, char *err, size_t errlen)
+    const struct zr_verify_report *skip, struct zr_apply_stats *st,
+    char *err, size_t errlen)
 {
 	struct zr_apply_stats spare;
 	const struct zr_action *a;
@@ -1298,6 +1382,7 @@ zr_apply(const struct zr_parsed *m, const char *onto_root,
 
 	memset(&c, 0, sizeof (struct za_ctx));
 	c.zc_rootfd = -1;
+	c.zc_m = m;
 	c.zc_from = from;
 	c.zc_onto = onto;
 	c.zc_err = err;
@@ -1311,6 +1396,12 @@ zr_apply(const struct zr_parsed *m, const char *onto_root,
 		errno = EINVAL;
 		return (za_failp(&c, (const unsigned char *)"(the apply)",
 		    "arguments"));
+	}
+	if (skip != NULL && (skip->zv_nactions != m->zp_nactions ||
+	    (m->zp_nactions != 0 && skip->zv_outcome == NULL))) {
+		errno = EINVAL;
+		return (za_failp(&c, (const unsigned char *)"(the apply)",
+		    "a report of another manifest"));
 	}
 	if (za_root_copy(&c, onto_root) != 0) {
 		errno = ENOMEM;
@@ -1353,6 +1444,17 @@ zr_apply(const struct zr_parsed *m, const char *onto_root,
 			goto out;
 		if (za_close_to(&c, a->za_path, a->za_pathlen) != 0)
 			goto out;
+		/*
+		 * The scope above is closed for every action, skipped
+		 * or not: which directories have had their last child
+		 * is the manifest's own order and no report's business.
+		 */
+		if (skip != NULL && (skip->zv_outcome[i] == ZR_OC_DONE ||
+		    skip->zv_outcome[i] == ZR_OC_BLOCKED) &&
+		    za_skippable(&c, a) != 0) {
+			c.zc_st->zs_skipped++;
+			continue;
+		}
 		switch (a->za_kind) {
 		case ZR_ACT_RM:
 			if (za_do_rm(&c, a) != 0)
@@ -1382,4 +1484,13 @@ zr_apply(const struct zr_parsed *m, const char *onto_root,
 out:
 	za_ctx_fini(&c);
 	return (rc);
+}
+
+int
+zr_apply(const struct zr_parsed *m, const char *onto_root,
+    const struct zr_walk *from, const struct zr_walk *onto,
+    struct zr_apply_stats *st, char *err, size_t errlen)
+{
+	return (zr_apply_with(m, onto_root, from, onto, NULL, st, err,
+	    errlen));
 }

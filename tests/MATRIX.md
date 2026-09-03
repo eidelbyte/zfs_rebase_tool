@@ -217,6 +217,7 @@ face local group}.
 | ZC22 | handles are scoped to one face local group | planned: check_yellow.c |
 | ZC23 | transitivity: a=b, b=c, one handle | planned: check_yellow.c |
 | ZC24 | a read error is an error, never "equal" | planned: check_yellow.c |
+| ZC25 | the pair entry point: the memo answers, unread | covered: check_verify.c |
 
 The oracle asks zr_acl_equal for za_acl and za_dacl, so ZC9 is that
 function on two pools of a live filesystem: the comparison itself is
@@ -504,6 +505,75 @@ the skip. What the Mac does prove of them is ZF18 and ZF21: the
 fixture parses, the attribute reaches the handle, and the expect
 block is held against the theory by hand rather than by the tool.
 
+## ZY -- verify and idempotent apply (check_verify.c)
+
+Plotted 2026-09-03, before its tests, for the verify-mode issue of
+sprints/sprint-5. Dimensions: action {rm, ln, cp, dup, write,
+conflict}; what onto held at the name {an object, absence}; what
+the result holds {the action's own outcome, onto's original,
+neither, nothing}; pooling in the result {one pool with the anchor,
+its own, torn from its pool}; outcome {done, pending, blocked,
+drifted}; the information line {edited, added, covered by a
+conflict, still onto's, another name of an object an action made};
+the apply's input {no report, a report}; repetition {a first run, a
+second run over what the first left}.
+
+The whole grid runs on the Mac: three directories, a manifest as
+text or one the pipeline emitted, and a result doctored by hand,
+which is the --posix form of everything but the attributes only ZFS
+has. What is deferred is deferred for the reason every other family
+defers: a real ACL, the two extended-attribute namespaces, a
+snapshot, a clone and a kill need the box.
+
+| cell | scenario | disposition |
+|------|----------|-------------|
+| ZY1 | rm: the name is gone | covered: check_verify.c |
+| ZY2 | rm: the name is still onto's | covered: check_verify.c |
+| ZY3 | rm: the name holds something else | covered: check_verify.c |
+| ZY4 | rm of a directory a conflict holds open: blocked | covered: check_verify.c |
+| ZY5 | ln: the name is the anchor's own object | covered: check_verify.c |
+| ZY6 | ln: the name is not there yet | covered: check_verify.c |
+| ZY7 | ln: the name is still onto's | covered: check_verify.c |
+| ZY8 | ln: the name is some third object | covered: check_verify.c |
+| ZY9 | cp: the name equals from's path | covered: check_verify.c |
+| ZY10 | cp of a new name, still absent: pending, not done | covered: check_verify.c |
+| ZY11 | cp over a name onto had, still onto's | covered: check_verify.c |
+| ZY12 | cp: the name is neither | covered: check_verify.c |
+| ZY13 | dup: severed and equal to onto's anchor | covered: check_verify.c |
+| ZY14 | dup: still one file with the anchor: pending | covered: check_verify.c |
+| ZY15 | dup: severed with an attribute changed | covered: check_verify.c |
+| ZY16 | write: from's bytes, and the pool the manifest implies | covered: check_verify.c |
+| ZY17 | write: still onto's bytes | covered: check_verify.c |
+| ZY18 | write: bytes nobody asked for | covered: check_verify.c |
+| ZY19 | write: from's bytes but the pool torn | covered: check_verify.c |
+| ZY20 | a conflict mark: classified as nothing, counted nowhere | covered: check_verify.c |
+| ZY21 | a name under a conflicted directory: never an info line | covered: check_verify.c |
+| ZY22 | info: an untouched name edited | covered: check_verify.c |
+| ZY23 | info: a name onto never had | covered: check_verify.c |
+| ZY24 | no info: an untouched name that still matches | covered: check_verify.c |
+| ZY25 | no info: another name of an object an action made | covered: check_verify.c |
+| ZY26 | the counts and the firsts, in manifest order | covered: check_verify.c |
+| ZY27 | applied twice over a pristine tree: one place | covered: check_verify.c |
+| ZY28 | idempotence: rm of a name already gone | covered: check_verify.c |
+| ZY29 | idempotence: cp over the object an earlier run made | covered: check_verify.c |
+| ZY30 | idempotence: a directory to create that is there | covered: check_verify.c |
+| ZY31 | idempotence: an ln already standing | covered: check_verify.c |
+| ZY32 | a report: done and blocked left alone, in zs_skipped | covered: check_verify.c |
+| ZY33 | a report: pending and drifted performed | covered: check_verify.c |
+| ZY34 | a report: a done ln whose anchor was rebuilt, done again | covered: check_verify.c |
+| ZY35 | the blocked removal left alone with no report at all | covered: check_verify.c |
+| ZY36 | a directory rm not empty and not conflicted: still loud | covered: check_verify.c |
+| ZY37 | an NFSv4 ACL or a system xattr told apart in a classification | deferred: needs ZFS and root; box, attr-cells |
+| ZY38 | a kill at a gate, then --verify and --continue --verify | deferred: needs the stages and the pause hook; box, stages and kill-tests |
+| ZY39 | a stray edit and a stray delete in a real result, both forms | deferred: needs snapshots and a clone; box, stray-tests and box-forms |
+
+ZY19's drift is reported and not repaired: a re-write mends the
+bytes of the name it is on and cannot rejoin a pool somebody tore,
+so --continue --verify will make the write true again and verify
+will still say drifted. That is the honest answer and the reason
+the information lines and this cell exist at all -- to be read, not
+to be cleared.
+
 ## Positive-proof cells
 
 One per subsection, the cell that proves the phase ran at all
@@ -518,3 +588,5 @@ V family learned:
   ZM32  a manifest matches the note byte for byte
   ZA9   a write is seen through a second name, so it was in place
   ZX25  the re-walk equals the decision, so apply was complete
+  ZY14  a dup with the right bytes is still pending, so the
+        classifier reads the pooling and not the bytes alone

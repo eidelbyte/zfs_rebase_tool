@@ -367,23 +367,28 @@ zo_pool_equal(struct zr_oracle *o, int ta, zr_pool_t pa, int tb,
 	return (0);
 }
 
-/*
- * One green-adjacent pair. Two pools already in one class say what
- * they would have said, so nothing is read; a pair already compared
- * differed, and would differ again.
- */
-static int
-zo_pair(struct zr_oracle *o, int ta, zr_pool_t pa, int tb, zr_pool_t pb,
-    char *err, size_t errlen)
+int
+zr_oracle_equal(struct zr_oracle *o, int ta, zr_pool_t pa, int tb,
+    zr_pool_t pb, char *err, size_t errlen)
 {
 	uint64_t key;
 	uint32_t ga, gb;
 	int eq;
 
+	if (err != NULL && errlen > 0)
+		err[0] = '\0';
+	if (o == NULL || ta < 0 || ta > 2 || tb < 0 || tb > 2 ||
+	    pa >= o->zo_npools[ta] || pb >= o->zo_npools[tb]) {
+		if (err != NULL && errlen > 0) {
+			(void) snprintf(err, errlen, "the oracle was asked "
+			    "about a pool it does not hold");
+		}
+		return (-1);
+	}
 	ga = o->zo_off[ta] + pa;
 	gb = o->zo_off[tb] + pb;
 	if (zo_find(o->zo_parent, ga) == zo_find(o->zo_parent, gb))
-		return (0);
+		return (1);
 	key = ga < gb ? ((uint64_t)ga << 32) | gb : ((uint64_t)gb << 32) | ga;
 	if (zo_set_has(&o->zo_seen, key))
 		return (0);
@@ -394,11 +399,21 @@ zo_pair(struct zr_oracle *o, int ta, zr_pool_t pa, int tb, zr_pool_t pb,
 		return (-1);
 	}
 	eq = zo_pool_equal(o, ta, pa, tb, pb, err, errlen);
-	if (eq < 0)
-		return (-1);
-	if (eq != 0)
+	if (eq > 0)
 		zo_union(o->zo_parent, ga, gb);
-	return (0);
+	return (eq);
+}
+
+/*
+ * One green-adjacent pair, for the assign below, which cares only
+ * whether the comparison could be made: the verdict is in the union
+ * find afterwards. Returns 0, or -1 with err set.
+ */
+static int
+zo_pair(struct zr_oracle *o, int ta, zr_pool_t pa, int tb, zr_pool_t pb,
+    char *err, size_t errlen)
+{
+	return (zr_oracle_equal(o, ta, pa, tb, pb, err, errlen) < 0 ? -1 : 0);
 }
 
 int
