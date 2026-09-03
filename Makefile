@@ -29,7 +29,8 @@ freebsd: build
 	    LDFLAGS="$(LDFLAGS) $(ZFS_LIBS)" \
 	    CORE_OBJS="$(CORE_OBJS) $(FREEBSD_OBJS)" zfs_rebase
 
-build/main.o: src/main.c
+build/main.o: src/main.c src/decide.h src/fixture.h src/manifest.h \
+	src/name.h src/walk.h src/yellow.h
 	$(CC) $(CFLAGS) -c -o $@ src/main.c
 
 build/vis.o: src/vis.c src/vis.h
@@ -53,7 +54,7 @@ build/walk.o: src/walk.c src/walk.h src/name.h
 build/yellow.o: src/yellow.c src/yellow.h src/walk.h src/name.h
 	$(CC) $(CFLAGS) -c -o $@ src/yellow.c
 
-check: unit battery
+check: unit battery fixtures
 
 unit: build $(LIB_OBJS)
 	@for t in $(TESTS); do \
@@ -61,6 +62,11 @@ unit: build $(LIB_OBJS)
 	    ./build/$$t || { echo "FAIL $$t"; exit 1; }; \
 	    echo "ok   $$t"; \
 	done
+
+# The M2 gate: every fixture built as directories, run through --posix,
+# compared with its expect block.
+fixtures: zfs_rebase
+	sh tests/run-fixtures.sh
 
 # The M1 gate: every committed battery, both modes.
 battery: build $(LIB_OBJS)
@@ -73,4 +79,4 @@ gate:
 clean:
 	rm -rf build zfs_rebase
 
-.PHONY: all freebsd check unit battery gate clean
+.PHONY: all freebsd check unit battery fixtures gate clean
