@@ -282,6 +282,7 @@ zr_zfs_clone(struct zr_zfs *z, const char *snapshot, const char *clone,
 {
 	zfs_handle_t *zhp;
 	nvlist_t *props;
+	uint64_t ro;
 	int rc;
 
 	if (err != NULL && errlen > 0)
@@ -289,11 +290,30 @@ zr_zfs_clone(struct zr_zfs *z, const char *snapshot, const char *clone,
 	if (z == NULL || snapshot == NULL || clone == NULL ||
 	    mountpoint == NULL)
 		return (zz_err(err, errlen, "clone", EINVAL));
+	/*
+	 * readonly is an index property: module/zcommon/zfs_prop.c
+	 * registers it with zprop_register_index, so the value the
+	 * kernel wants is the uint64 index of "on" and not the word.
+	 * lzc_clone hands this nvlist to ZFS_IOC_CLONE untouched, and
+	 * zfs_set_prop_nvlist (module/zfs/zfs_ioctl.c), which
+	 * zfs_ioc_clone applies the props with, returns EINVAL for a
+	 * string whose property is not PROP_TYPE_STRING. zfs(8) never
+	 * meets that because zfs_clone (lib/libzfs/libzfs_dataset.c)
+	 * runs the list through zfs_valid_proplist first, whose
+	 * zprop_parse_value (lib/libzfs/libzfs_util.c) converts every
+	 * PROP_TYPE_INDEX string to its index and re-adds it as a
+	 * uint64; off the libzfs path that conversion is ours to do.
+	 * mountpoint is zprop_register_string in the same table, so it
+	 * stays a string.
+	 */
+	ro = 0;
+	if (zfs_prop_string_to_index(ZFS_PROP_READONLY, "on", &ro) != 0)
+		return (zz_err(err, errlen, "clone", EINVAL));
 	props = NULL;
 	rc = nvlist_alloc(&props, NV_UNIQUE_NAME, 0);
 	if (rc == 0)
-		rc = nvlist_add_string(props,
-		    zfs_prop_to_name(ZFS_PROP_READONLY), "on");
+		rc = nvlist_add_uint64(props,
+		    zfs_prop_to_name(ZFS_PROP_READONLY), ro);
 	if (rc == 0)
 		rc = nvlist_add_string(props,
 		    zfs_prop_to_name(ZFS_PROP_MOUNTPOINT), mountpoint);
