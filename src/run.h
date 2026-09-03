@@ -21,16 +21,19 @@ struct zr_run_opts {
 	const char	*outpath;	/* manifest file, or NULL */
 	zr_mode_t	mode;
 	int		dryrun;		/* manifest only, no clone, no apply */
+	int		verify;		/* the demand for a final check */
 	int		verbose;
 };
 
 int zr_run(const struct zr_run_opts *);
 
 /*
- * Undo one run: destroy the result dataset, remove the manifest it
- * recorded, and take its run directory away. Only a dataset carrying
- * the zfs_rebase marker is touched, and nothing is ever removed
- * recursively.
+ * Undo one rebase: release the holds its record names, destroy the
+ * result dataset, remove the manifest the record names, and take the
+ * run directory away. Only a dataset carrying the record -- the hold
+ * tag and the manifest path, both as local values -- is touched, and
+ * nothing is ever removed recursively. It can be run again over a
+ * half-aborted rebase.
  */
 int zr_abort(const char *result, int verbose);
 

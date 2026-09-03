@@ -388,9 +388,10 @@ check; the copy path {copy_file_range, read/write}.
 
 Dimensions: diff line {M, -, +, R}; link delta; zfs diff's own
 escaping; derived sets {unchanged, renamed dirs, modified dirs};
-zfs ops {snapshot, hold, clone, mount, prop flip, release,
-destroy}; guards {securelevel, private mountpoint, readonly flip,
-re-walk}; driver {flags, preconditions, exit status}. The parser
+zfs ops {hold, clone, mount, prop flip, release, destroy}; the
+record {every property, guids, local against inherited, the states};
+guards {securelevel, private mountpoint, readonly flip, re-walk};
+driver {flags, preconditions, exit status}. The parser
 rows run on the Mac over a captured file; everything from ZX13 on
 is box only.
 
@@ -408,9 +409,9 @@ is box only.
 | ZX10 | a malformed diff line errors | planned: check_diff.c |
 | ZX11 | the parser over tests/data/probe.diff | planned: check_diff.c |
 | ZX12 | the escaping rules confirmed live | planned: box, box/run-fixture.sh |
-| ZX13 | snapshot from and onto @rebase-ID | planned: box, box/run-fixture.sh |
-| ZX14 | holds on all three snapshots | planned: box, box/run-fixture.sh |
-| ZX15 | cleanup fd drops holds on death | planned: box, box/run-fixture.sh |
+| ZX13 | snapshot from and onto @rebase-ID | deferred: the tool takes none until input-forms |
+| ZX14 | one hold per input, under the record's tag | planned: box, box/run-fixture.sh |
+| ZX15 | the holds outlive the process; done and --abort release them | planned: box, box/run-fixture.sh |
 | ZX16 | clone readonly=on, private mount | planned: box, box/run-fixture.sh |
 | ZX17 | the clone mounts under that root | planned: box, box/run-fixture.sh |
 | ZX18 | readonly off to apply, on after | planned: box, box/run-fixture.sh |
@@ -426,9 +427,16 @@ is box only.
 | ZX28 | exit 1: conflicts, clone left | planned: box, box/run-fixture.sh |
 | ZX29 | exit 2: precondition failure | planned: box, box/run-fixture.sh |
 | ZX30 | exit 3: internal | planned: box, box/run-fixture.sh |
-| ZX31 | -n: manifest only, no clone | planned: box, box/run-fixture.sh |
+| ZX31 | -n: manifest only, no clone, no hold | planned: box, box/run-fixture.sh |
 | ZX32 | -o FILE against stdout | planned: box, box/run-fixture.sh |
 | ZX33 | -p sets the mode and the header | planned: box, box/run-fixture.sh |
+| ZX34 | the record is there from the create, every property | planned: box, box/run-fixture.sh |
+| ZX35 | the three guids equal zfs get guid on the snapshots | planned: box, box/run-fixture.sh |
+| ZX36 | every record property has source local | planned: box, box/run-fixture.sh |
+| ZX37 | an inherited record is none: --abort exits 2, touches nothing | planned: box, box/run-fixture.sh |
+| ZX38 | the states: applying1, conflicts, done, and none at birth | planned: box, box/run-fixture.sh |
+| ZX39 | --abort releases the holds, and runs again after a half abort | planned: box, box/run-fixture.sh |
+| ZX40 | --verify recorded; -n --verify still creates nothing | planned: box, box/run-fixture.sh |
 
 Note on ZX23: securelevel cannot be raised without a reboot of the
 box, so the refusal path stays deferred. Unblocking work is a

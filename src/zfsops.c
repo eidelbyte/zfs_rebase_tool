@@ -3,7 +3,8 @@
  * driver speaks one vocabulary and never execs zfs(8). Hold, clone,
  * mount, property get and set, existence, release, destroy and the
  * diff, over libzfs_core and libzfs. No snapshot: the three the run
- * works from are the user's.
+ * works from are the user's, and the holds it takes on them outlive
+ * the process, because a rebase does.
  *
  * NOTHING IN THE ZR_FREEBSD HALF OF THIS FILE HAS EVER BEEN COMPILED
  * FOR REAL. It is written against the headers and the sources of the
@@ -39,7 +40,6 @@
 #ifdef ZR_FREEBSD
 
 #include <errno.h>
-#include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -55,8 +55,6 @@
 
 struct zr_zfs {
 	libzfs_handle_t	*zz_hdl;
-	int		zz_cleanupfd;
-	char		zz_tag[ZZ_NAME_MAX];
 };
 
 /* A failure libzfs did not record: libc's, or one of our own. */
@@ -93,10 +91,9 @@ zz_hdl_err(struct zr_zfs *z, char *err, size_t errlen, const char *what)
 }
 
 int
-zr_zfs_open(struct zr_zfs **out, const char *holdtag, char *err, size_t errlen)
+zr_zfs_open(struct zr_zfs **out, char *err, size_t errlen)
 {
 	struct zr_zfs *z;
-	size_t n;
 	int e;
 
 	if (err != NULL && errlen > 0)
@@ -104,16 +101,10 @@ zr_zfs_open(struct zr_zfs **out, const char *holdtag, char *err, size_t errlen)
 	if (out == NULL)
 		return (zz_err(err, errlen, "zfs open", EINVAL));
 	*out = NULL;
-	if (holdtag == NULL)
-		return (zz_err(err, errlen, "zfs open", EINVAL));
-	n = strlen(holdtag);
-	if (n == 0 || n >= ZZ_NAME_MAX)
-		return (zz_err(err, errlen, "hold tag", EINVAL));
 	z = malloc(sizeof (struct zr_zfs));
 	if (z == NULL)
 		return (zz_err(err, errlen, "zfs open", ENOMEM));
 	(void) memset(z, 0, sizeof (struct zr_zfs));
-	(void) memcpy(z->zz_tag, holdtag, n + 1);
 	/*
 	 * libzfs_init (lib/libzfs/libzfs_util.c) loads the module,
 	 * opens its own descriptor on /dev/zfs and calls
@@ -126,19 +117,6 @@ zr_zfs_open(struct zr_zfs **out, const char *holdtag, char *err, size_t errlen)
 		free(z);
 		return (zz_err(err, errlen, "libzfs_init", e));
 	}
-	/*
-	 * The cleanup descriptor. lzc_hold files every hold against
-	 * it, and the kernel drops them all when it closes, however
-	 * the process dies. lib/libzfs/libzfs_diff.c opens the same
-	 * descriptor the same way for its just-in-time snapshot.
-	 */
-	z->zz_cleanupfd = open(ZFS_DEV, O_RDWR | O_CLOEXEC);
-	if (z->zz_cleanupfd < 0) {
-		e = errno;
-		libzfs_fini(z->zz_hdl);
-		free(z);
-		return (zz_err(err, errlen, ZFS_DEV, e));
-	}
 	*out = z;
 	return (0);
 }
@@ -148,38 +126,41 @@ zr_zfs_close(struct zr_zfs *z)
 {
 	if (z == NULL)
 		return;
-	if (z->zz_cleanupfd >= 0)
-		(void) close(z->zz_cleanupfd);
 	if (z->zz_hdl != NULL)
 		libzfs_fini(z->zz_hdl);
 	free(z);
 }
 
 int
-zr_zfs_hold(struct zr_zfs *z, const char *snapshot, char *err, size_t errlen)
+zr_zfs_hold(struct zr_zfs *z, const char *snapshot, const char *tag, char *err,
+    size_t errlen)
 {
 	nvlist_t *errlist, *holds;
 	int rc;
 
 	if (err != NULL && errlen > 0)
 		err[0] = '\0';
-	if (z == NULL || snapshot == NULL)
+	if (z == NULL || snapshot == NULL || tag == NULL || tag[0] == '\0')
 		return (zz_err(err, errlen, "hold", EINVAL));
 	holds = NULL;
 	errlist = NULL;
 	/*
 	 * lzc_hold (lib/libzfs_core/libzfs_core.c): the keys are
 	 * snapshot names and each value is the tag, a string. The
-	 * cleanup descriptor is what makes the hold die with us.
+	 * cleanup descriptor is -1, which is how the hold is made to
+	 * outlive us: lzc_hold puts "cleanup_fd" in the ioctl's
+	 * arguments only when it is not -1, and without it the kernel
+	 * files an ordinary user hold that nothing but a release
+	 * takes away.
 	 */
 	rc = nvlist_alloc(&holds, NV_UNIQUE_NAME, 0);
 	if (rc == 0)
-		rc = nvlist_add_string(holds, snapshot, z->zz_tag);
+		rc = nvlist_add_string(holds, snapshot, tag);
 	if (rc != 0) {
 		nvlist_free(holds);
 		return (zz_err(err, errlen, "hold", rc));
 	}
-	rc = lzc_hold(holds, z->zz_cleanupfd, &errlist);
+	rc = lzc_hold(holds, -1, &errlist);
 	nvlist_free(holds);
 	nvlist_free(errlist);
 	if (rc != 0)
@@ -188,15 +169,15 @@ zr_zfs_hold(struct zr_zfs *z, const char *snapshot, char *err, size_t errlen)
 }
 
 int
-zr_zfs_release(struct zr_zfs *z, const char *snapshot, char *err,
-    size_t errlen)
+zr_zfs_release(struct zr_zfs *z, const char *snapshot, const char *tag,
+    char *err, size_t errlen)
 {
 	nvlist_t *errlist, *holds, *tags;
 	int rc;
 
 	if (err != NULL && errlen > 0)
 		err[0] = '\0';
-	if (z == NULL || snapshot == NULL)
+	if (z == NULL || snapshot == NULL || tag == NULL || tag[0] == '\0')
 		return (zz_err(err, errlen, "release", EINVAL));
 	holds = NULL;
 	tags = NULL;
@@ -205,10 +186,15 @@ zr_zfs_release(struct zr_zfs *z, const char *snapshot, char *err,
 	 * lzc_release (lib/libzfs_core/libzfs_core.c) is shaped one
 	 * level deeper than the hold: the keys are snapshot names and
 	 * each value is an nvlist whose keys are the tags to remove.
+	 * A tag that is not there, and a snapshot that is not there,
+	 * go on the errlist without failing the call
+	 * (dsl_dataset_user_release_check, module/zfs/dsl_userhold.c),
+	 * so releasing twice is not an error and --abort can be run
+	 * again over a half-aborted run.
 	 */
 	rc = nvlist_alloc(&tags, NV_UNIQUE_NAME, 0);
 	if (rc == 0)
-		rc = nvlist_add_boolean(tags, z->zz_tag);
+		rc = nvlist_add_boolean(tags, tag);
 	if (rc == 0)
 		rc = nvlist_alloc(&holds, NV_UNIQUE_NAME, 0);
 	if (rc == 0)
@@ -229,8 +215,10 @@ zr_zfs_release(struct zr_zfs *z, const char *snapshot, char *err,
 
 int
 zr_zfs_clone(struct zr_zfs *z, const char *snapshot, const char *clone,
-    const char *mountpoint, const char *manifest, char *err, size_t errlen)
+    const char *mountpoint, const struct zr_rebase_record *rec, char *err,
+    size_t errlen)
 {
+	char bg[24], fg[24], og[24];
 	zfs_handle_t *zhp;
 	nvlist_t *props;
 	uint64_t ro;
@@ -239,8 +227,18 @@ zr_zfs_clone(struct zr_zfs *z, const char *snapshot, const char *clone,
 	if (err != NULL && errlen > 0)
 		err[0] = '\0';
 	if (z == NULL || snapshot == NULL || clone == NULL ||
-	    mountpoint == NULL || manifest == NULL)
+	    mountpoint == NULL || rec == NULL || rec->base == NULL ||
+	    rec->from == NULL || rec->onto == NULL || rec->made == NULL ||
+	    rec->mode == NULL || rec->form == NULL || rec->tag == NULL ||
+	    rec->verify == NULL || rec->manifest == NULL)
 		return (zz_err(err, errlen, "clone", EINVAL));
+	/* a guid is a uint64; the record spells every value out */
+	(void) snprintf(bg, sizeof (bg), "%llu",
+	    (unsigned long long)rec->base_guid);
+	(void) snprintf(fg, sizeof (fg), "%llu",
+	    (unsigned long long)rec->from_guid);
+	(void) snprintf(og, sizeof (og), "%llu",
+	    (unsigned long long)rec->onto_guid);
 	/*
 	 * readonly is an index property: module/zcommon/zfs_prop.c
 	 * registers it with zprop_register_index, so the value the
@@ -269,19 +267,44 @@ zr_zfs_clone(struct zr_zfs *z, const char *snapshot, const char *clone,
 		rc = nvlist_add_string(props,
 		    zfs_prop_to_name(ZFS_PROP_MOUNTPOINT), mountpoint);
 	/*
-	 * The two markers. A user property is a name with a colon in
-	 * it (zfs_prop_user, module/zcommon/zfs_prop.c) and its value
+	 * The record. A user property is a name with a colon in it
+	 * (zfs_prop_user, module/zcommon/zfs_prop.c) and its value
 	 * must be a string: zfs_set_prop_nvlist (module/zfs/
 	 * zfs_ioctl.c), which zfs_ioc_clone applies these with,
 	 * returns EINVAL for a user property of any other type. It
 	 * takes them on the create path exactly as on the set path,
-	 * so the clone carries the marker from birth and never exists
-	 * for an instant as an unmarked dataset.
+	 * so the clone carries the whole record from birth. zfs_ioc_
+	 * clone makes the head and then applies these with
+	 * ZPROP_SRC_LOCAL, and destroys the head again if that fails,
+	 * so a create that half-worked leaves nothing behind and the
+	 * source of every one of them is the dataset itself, which is
+	 * what zr_zfs_get_user demands of a record. There is no state
+	 * among them: the state is written at the gates the run
+	 * passes.
 	 */
-	if (rc == 0)
-		rc = nvlist_add_string(props, ZR_PROP_STATE, "created");
-	if (rc == 0)
-		rc = nvlist_add_string(props, ZR_PROP_MANIFEST, manifest);
+	if (rc == 0) {
+		const struct {
+			const char	*name;
+			const char	*val;
+		} rp[] = {
+			{ ZR_PROP_BASE, rec->base },
+			{ ZR_PROP_BASE_GUID, bg },
+			{ ZR_PROP_FROM, rec->from },
+			{ ZR_PROP_FROM_GUID, fg },
+			{ ZR_PROP_ONTO, rec->onto },
+			{ ZR_PROP_ONTO_GUID, og },
+			{ ZR_PROP_MADE, rec->made },
+			{ ZR_PROP_MODE, rec->mode },
+			{ ZR_PROP_FORM, rec->form },
+			{ ZR_PROP_TAG, rec->tag },
+			{ ZR_PROP_VERIFY, rec->verify },
+			{ ZR_PROP_MANIFEST, rec->manifest }
+		};
+		size_t i, n = sizeof (rp) / sizeof (rp[0]);
+
+		for (i = 0; rc == 0 && i < n; i++)
+			rc = nvlist_add_string(props, rp[i].name, rp[i].val);
+	}
 	if (rc != 0) {
 		nvlist_free(props);
 		return (zz_err(err, errlen, "clone", rc));
@@ -491,7 +514,7 @@ zr_zfs_get_user(struct zr_zfs *z, const char *dataset, const char *prop,
 {
 	zfs_handle_t *zhp;
 	nvlist_t *props, *val;
-	const char *s;
+	const char *s, *src;
 	int rc;
 
 	if (err != NULL && errlen > 0)
@@ -506,14 +529,28 @@ zr_zfs_get_user(struct zr_zfs *z, const char *dataset, const char *prop,
 	/*
 	 * The user properties come back as one nvlist per property,
 	 * the value under ZPROP_VALUE and the source under
-	 * ZPROP_SOURCE; collect_dataset in cmd/zfs/zfs_main.c reads
-	 * them the same way. The list belongs to the handle, so the
-	 * string is copied out before the handle closes.
+	 * ZPROP_SOURCE; get_callback in cmd/zfs/zfs_main.c reads them
+	 * the same way. The kernel always puts a source there
+	 * (dsl_prop_get_all_impl, module/zfs/dsl_prop.c), and it is
+	 * the name of the dataset the value was set on: this
+	 * dataset's own name for a local value, an ancestor's name
+	 * for an inherited one, and the string "$recvd"
+	 * (ZPROP_SOURCE_VAL_RECVD) for a received one. Only the first
+	 * is ours. A user property inherits down the naming tree, so
+	 * without this test a zfs_rebase:tag set on a pool would make
+	 * every dataset under it look like a result; a received value
+	 * is not ours either, since it names another machine's
+	 * snapshots and another machine's manifest path.
+	 *
+	 * The list belongs to the handle, so the string is copied out
+	 * before the handle closes.
 	 */
 	props = zfs_get_user_props(zhp);
 	rc = 0;
 	if (props != NULL && nvlist_lookup_nvlist(props, prop, &val) == 0 &&
-	    nvlist_lookup_string(val, ZPROP_VALUE, &s) == 0) {
+	    nvlist_lookup_string(val, ZPROP_VALUE, &s) == 0 &&
+	    nvlist_lookup_string(val, ZPROP_SOURCE, &src) == 0 &&
+	    strcmp(src, dataset) == 0) {
 		if (strlen(s) >= buflen) {
 			zfs_close(zhp);
 			return (zz_err(err, errlen, prop, ENAMETOOLONG));
@@ -613,9 +650,8 @@ zz_unbuilt(char *err, size_t errlen)
 }
 
 int
-zr_zfs_open(struct zr_zfs **out, const char *holdtag, char *err, size_t errlen)
+zr_zfs_open(struct zr_zfs **out, char *err, size_t errlen)
 {
-	(void) holdtag;
 	if (out != NULL)
 		*out = NULL;
 	return (zz_unbuilt(err, errlen));
@@ -628,31 +664,35 @@ zr_zfs_close(struct zr_zfs *z)
 }
 
 int
-zr_zfs_hold(struct zr_zfs *z, const char *snapshot, char *err, size_t errlen)
-{
-	(void) z;
-	(void) snapshot;
-	return (zz_unbuilt(err, errlen));
-}
-
-int
-zr_zfs_release(struct zr_zfs *z, const char *snapshot, char *err,
+zr_zfs_hold(struct zr_zfs *z, const char *snapshot, const char *tag, char *err,
     size_t errlen)
 {
 	(void) z;
 	(void) snapshot;
+	(void) tag;
+	return (zz_unbuilt(err, errlen));
+}
+
+int
+zr_zfs_release(struct zr_zfs *z, const char *snapshot, const char *tag,
+    char *err, size_t errlen)
+{
+	(void) z;
+	(void) snapshot;
+	(void) tag;
 	return (zz_unbuilt(err, errlen));
 }
 
 int
 zr_zfs_clone(struct zr_zfs *z, const char *snapshot, const char *clone,
-    const char *mountpoint, const char *manifest, char *err, size_t errlen)
+    const char *mountpoint, const struct zr_rebase_record *rec, char *err,
+    size_t errlen)
 {
 	(void) z;
 	(void) snapshot;
 	(void) clone;
 	(void) mountpoint;
-	(void) manifest;
+	(void) rec;
 	return (zz_unbuilt(err, errlen));
 }
 

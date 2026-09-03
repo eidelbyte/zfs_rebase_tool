@@ -52,14 +52,35 @@ checks the #base line of each manifest for it; the real run spells
 two refusals first: a linear pair (base@base against onto@work, where
 one side is an ancestor of the other) and a pair sharing no origin
 (a dataset created on its own), each exit 2. The rest checks the
-manifest against the expect block and the exit status for each run;
-that no hold is left on any of the three snapshots afterwards, since
-they die with the cleanup descriptor; that the result is exactly
-POOL/result, read-only and mounted at
-/var/run/zfs_rebase/POOL/result/mnt, carrying zfs_rebase:state
-"applied" or, for a conflicted fixture, "conflicts"; and for a clean
-fixture that rebasing from onto the result again is a no-op. Step 4
-aborts the run and checks that the dataset, the manifest file the run
-recorded and the directory under /var/run are all gone, and that a
-second --abort exits 2. KEEP=1 leaves the pool for inspection. Its
-header says what it does not exercise yet.
+manifest against the expect block and the exit status for each run,
+and then the two things that make a rebase outlive its process: the
+holds and the record.
+
+The holds are persistent, one per input snapshot under the tag in the
+record, so what the harness expects depends on where the run stopped:
+a clean fixture reaches done, which releases all three, and zfs holds
+-H prints nothing; a conflicted fixture stops at conflicts and keeps
+them, so each of the three prints exactly one line whose tag is the
+result's zfs_rebase:tag. After --abort all three are empty again
+either way.
+
+The record is read back with zfs get: the three snapshot names, their
+guids against zfs get guid on the snapshots themselves,
+zfs_rebase:form clone, the mode the flag asked for, zfs_rebase:made
+empty (the tool snapshots nothing of its own), zfs_rebase:verify no,
+the tag, the manifest path, and zfs_rebase:state -- "done" for a
+clean fixture, "conflicts" for a conflicted one. Every one of them
+must have source local: before the run the harness sets a bogus
+zfs_rebase:tag and zfs_rebase:manifest on the pool root, because user
+properties inherit down the naming tree, and it also creates a plain
+dataset there, on which --abort must exit 2 and change nothing, since
+that dataset only inherits the properties and is no result of ours.
+For a clean fixture the harness also checks that rebasing from onto
+the result again is a no-op. Step 4 aborts the run and checks that
+the holds, the dataset, the manifest file the run recorded and the
+directory under /var/run are all gone, and that a second --abort
+exits 2. For probe.zrt there are two more: -n --verify creates
+nothing, holds nothing and leaves no run directory, and a real run
+given --verify records zfs_rebase:verify yes under a tag of its own.
+KEEP=1 leaves the pool for inspection. Its header says what it does
+not exercise yet.

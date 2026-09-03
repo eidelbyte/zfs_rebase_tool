@@ -8,46 +8,57 @@
  * FreeBSD build.
  *
  * The tool takes no snapshots and destroys none of the user's. The
- * trees it reads are snapshots the user made, it only holds them for
- * the length of the run, and the one dataset it creates is the
- * result clone, named by --result. Only the two sides are named:
- * the base is the branch point, and the run works it out by walking
- * the two origin chains back to the dataset they share.
+ * trees it reads are snapshots the user made, it holds them for the
+ * life of the rebase, and the one dataset it creates is the result
+ * clone, named by --result. Only the two sides are named: the base
+ * is the branch point, and the run works it out by walking the two
+ * origin chains back to the dataset they share.
  *
- * What survives what. Every hold is filed against the cleanup
- * descriptor on /dev/zfs, so any exit at all -- a clean return, an
- * error, SIGKILL -- closes that descriptor and the kernel drops the
- * holds with it. A crash or a power loss leaves them in the pool,
- * and the next import drops them: dsl_pool_clean_tmp_userrefs, which
- * spa_load calls. So the only things a hard kill can leave behind
- * are the result clone and the manifest file, and
+ * A rebase outlives its process. What makes it one thing rather than
+ * a process's leavings is the record: the user properties the clone
+ * is created with -- the three snapshots and their guids, which of
+ * them the tool made, the mode, the form, the hold tag, whether a
+ * final verify was asked for, and the manifest's path -- and the
+ * three persistent holds, one per input snapshot, filed under that
+ * tag with no cleanup descriptor. While they are there zfs destroy
+ * refuses the snapshots with "dataset is busy" and zfs holds shows
+ * the tag; a stranded rebase holds on purpose, because it is
+ * continuable. The record is read as local values only: user
+ * properties inherit down the naming tree, and an inherited value is
+ * not ours (zfsops.c).
+ *
+ * So a hard kill leaves the clone, the manifest file and the three
+ * holds, and
  *
  *	zfs_rebase --abort --result NAME
  *
- * removes both. While the clone lives, onto's snapshot cannot be
- * destroyed; that is ZFS's own rule about a clone's origin and not
- * something this tool arranges.
+ * releases the holds and takes the rest away. While the clone lives,
+ * onto's snapshot cannot be destroyed either; that is ZFS's own rule
+ * about a clone's origin and not something this tool arranges.
  *
- * The clone carries zfs_rebase:state from birth, and the run moves
- * it through: "created", then "conflicts" (the decision has
- * conflicts, so nothing is applied and the clone is onto's tree
- * unchanged), or "applying" (readonly is off), "applied" (the result
- * verified and readonly is back on), or "failed", or "interrupted".
+ * The state is written at the gates the run passes, and nowhere
+ * else, so that what a kill leaves is the last gate reached:
+ * "applying1" immediately before readonly comes off for the apply,
+ * "conflicts" when the decision has conflicts (nothing is applied
+ * then and the clone is onto's tree unchanged), "done" after the
+ * re-walk verified and readonly is back on -- and before the holds
+ * are released, so that a kill in between leaves a done record whose
+ * holds --abort still finds. At birth there is no state at all.
  *
  * A signal that would ordinarily end the process -- INT, TERM, HUP
  * -- is caught instead and only raises a flag. Before every phase,
  * and between two actions of the apply, the flag is looked at: if it
  * is up the run stops there and says so. Before the apply that
  * destroys the clone as any other failure before the apply does;
- * inside the apply the clone is kept, put back to read-only and
- * marked "interrupted", and --abort takes it away. The handlers do
- * not ask for SA_RESTART, so a read or a write already in a slow
- * call fails with EINTR rather than starting over, and the phase
- * that owns it reports that failure in the ordinary way. SIGPIPE is
- * ignored for the length of the run, which is what zfs(8) does
- * around zfs_show_diffs: the diff runs a thread over a pipe, and a
- * failure at one end must not kill the process before libzfs can say
- * what went wrong.
+ * inside the apply the clone is kept at applying1, put back to
+ * read-only, and a later --continue resumes it or --abort takes it
+ * away. The handlers do not ask for SA_RESTART, so a read or a
+ * write already in a slow call fails with EINTR rather than starting
+ * over, and the phase that owns it reports that failure in the
+ * ordinary way. SIGPIPE is ignored for the length of the run, which
+ * is what zfs(8) does around zfs_show_diffs: the diff runs a thread
+ * over a pipe, and a failure at one end must not kill the process
+ * before libzfs can say what went wrong.
  */
 
 #include <errno.h>
@@ -89,10 +100,13 @@
 #define	ZR_SNAP_MAX	256
 #define	ZR_CHAIN_MAX	32
 
+/* "zr-" and twelve hex digits, with room to spare. */
+#define	ZR_TAG_MAX	32
+
 struct run {
 	struct zr_run_opts	o;
 	struct zr_zfs		*zfs;
-	char			holdtag[64];	/* zfs_rebase-<time>-<pid> */
+	char			tag[ZR_TAG_MAX];	/* the hold tag */
 	char			base[ZR_NAME_MAX];	/* the branch point */
 	char			rundir[ZR_NAME_MAX];	/* WORKDIR/<result> */
 	char			workmnt[ZR_NAME_MAX];	/* <rundir>/mnt */
@@ -101,6 +115,7 @@ struct run {
 	char			frommnt[ZR_NAME_MAX];
 	char			ontomnt[ZR_NAME_MAX];
 	int			dirmade, cloned, walked;
+	int			nheld;		/* holds taken, base first */
 	struct zr_names		*names;
 	struct zr_walk		wb, wf, wo;
 	struct zr_oracle	*oracle;
@@ -164,13 +179,36 @@ stopped(struct run *r)
 	return (-1);
 }
 
-/* Where the run's own state is, and how to be rid of it. */
+/*
+ * A kept result is a rebase and not a leftover: it has its record and
+ * its holds, and both verbs find it by the name the user gave.
+ */
 static void
-abort_hint(const struct run *r)
+kept_hint(const struct run *r)
 {
-	(void) fprintf(stderr, "zfs_rebase: the clone %s is kept; "
-	    "zfs_rebase --abort --result %s removes the run\n", r->o.result,
-	    r->o.result);
+	(void) fprintf(stderr, "zfs_rebase: %s is kept; a later --continue "
+	    "resumes it; zfs_rebase --abort --result %s removes it\n",
+	    r->o.result, r->o.result);
+}
+
+/*
+ * The tag every hold of this rebase is filed under, and the tag its
+ * record carries: "zr-" and twelve hex digits, being the second and
+ * the pid. Two rebases that are alive at once cannot share those --
+ * a pid belongs to one process at a time -- so no run can release
+ * another's hold, which is the whole point of a tag. It is kept
+ * short because zfs holds prints it, and it is derived rather than
+ * random so that "never collides" is a fact and not a probability.
+ */
+static void
+make_tag(struct run *r)
+{
+	uint64_t v;
+
+	v = ((uint64_t)(time(NULL) & 0x7fffffff) << 17) |
+	    ((uint64_t)getpid() & 0x1ffff);
+	(void) snprintf(r->tag, sizeof (r->tag), "zr-%012llx",
+	    (unsigned long long)v);
 }
 
 /* The dataset name of a snapshot or dataset argument, without @snap. */
@@ -503,7 +541,12 @@ rmdir_run(const char *result)
 	}
 }
 
-/* The state marker is a record, not a step: a failure to set it warns. */
+/*
+ * The state is a gate the run has passed, not a step of it: a
+ * failure to write one warns and the run goes on. The values are
+ * "applying1", "conflicts" and "done", and no others; at birth there
+ * is none.
+ */
 static void
 set_state(struct run *r, const char *state)
 {
@@ -515,6 +558,92 @@ set_state(struct run *r, const char *state)
 	    sizeof (e)) != 0)
 		(void) fprintf(stderr, "zfs_rebase: %s=%s: %s\n",
 		    ZR_PROP_STATE, state, e);
+}
+
+/* The inputs in the order they are held: base, from, onto. */
+static const char *
+held_snap(const struct run *r, int i)
+{
+	if (i == 0)
+		return (r->base);
+	return (i == 1 ? r->o.from : r->o.onto);
+}
+
+/*
+ * Give this rebase's tag back, newest hold first. A release that
+ * fails only warns: the others must still go, and a tag that is not
+ * there is not a failure to begin with (zfsops.c).
+ */
+static void
+release_holds(struct run *r)
+{
+	char e[512];
+
+	while (r->nheld > 0) {
+		const char *snap = held_snap(r, --r->nheld);
+
+		if (zr_zfs_release(r->zfs, snap, r->tag, e, sizeof (e)) != 0)
+			(void) fprintf(stderr, "zfs_rebase: release %s: %s\n",
+			    snap, e);
+		else if (r->o.verbose)
+			(void) fprintf(stderr, "zfs_rebase: released %s on "
+			    "%s\n", r->tag, snap);
+	}
+}
+
+/*
+ * One persistent hold per input, taken after the clone exists so
+ * that the tag is in the record before anything is filed under it:
+ * a hold no record names is a hold nobody can find. A failure part
+ * way gives back what was taken.
+ */
+static int
+hold_inputs(struct run *r)
+{
+	int i;
+
+	for (i = 0; i < 3; i++) {
+		if (zr_zfs_hold(r->zfs, held_snap(r, i), r->tag, r->err,
+		    sizeof (r->err)) != 0) {
+			release_holds(r);
+			return (-1);
+		}
+		r->nheld = i + 1;
+	}
+	if (r->o.verbose)
+		(void) fprintf(stderr, "zfs_rebase: the three inputs are held "
+		    "under %s\n", r->tag);
+	return (0);
+}
+
+/*
+ * The record the clone is created with. The guid of each input is
+ * read from the snapshot itself (zfs_prop_get_int, ZFS_PROP_GUID)
+ * and written as a decimal string, since a user property has no
+ * other type; it is what finds a snapshot again after a rename or a
+ * promote. The strings point into the run, which outlives the
+ * create.
+ */
+static int
+fill_record(struct run *r, struct zr_rebase_record *rec)
+{
+	if (zr_zfs_get_int(r->zfs, r->base, "guid", &rec->base_guid, r->err,
+	    sizeof (r->err)) != 0 ||
+	    zr_zfs_get_int(r->zfs, r->o.from, "guid", &rec->from_guid, r->err,
+	    sizeof (r->err)) != 0 ||
+	    zr_zfs_get_int(r->zfs, r->o.onto, "guid", &rec->onto_guid, r->err,
+	    sizeof (r->err)) != 0)
+		return (-1);
+	rec->base = r->base;
+	rec->from = r->o.from;
+	rec->onto = r->o.onto;
+	rec->made = "";		/* the tool snapshots nothing of its own */
+	rec->mode = r->o.mode == ZR_MODE_PERMISSIVE ? "permissive" : "strict";
+	rec->form = "clone";	/* the dataset form is a later issue */
+	rec->tag = r->tag;
+	rec->verify = r->o.verify ? "yes" : "no";
+	rec->manifest = r->manpath;
+	return (0);
 }
 
 /*
@@ -699,7 +828,12 @@ apply_manifest(struct run *r, const struct zr_manifest_hdr *hdr)
 	rewind(fp);
 	if (zr_manifest_parse(fp, &parsed, r->err, sizeof (r->err)) != 0)
 		goto done;
-	set_state(r, "applying");
+	/*
+	 * The gate: written immediately before the result stops being
+	 * read-only, so that a kill from here on leaves a record that
+	 * says the tree was being written to.
+	 */
+	set_state(r, "applying1");
 	if (zr_zfs_set_readonly(r->zfs, r->o.result, 0, r->err,
 	    sizeof (r->err)) != 0)
 		goto done;
@@ -787,6 +921,15 @@ teardown(struct run *r, int keep_clone)
 	if (r->names != NULL)
 		zr_names_destroy(r->names);
 	if (!keep_clone) {
+		/*
+		 * The holds go before the clone, because the record
+		 * that names their tag goes with the clone: a hold
+		 * outliving the only thing that names it is a hold
+		 * nobody can find. Nothing is riskier for the order
+		 * either way -- the clone's origin cannot be
+		 * destroyed while the clone lives, holds or no holds.
+		 */
+		release_holds(r);
 		if (r->cloned) {
 			if (zr_zfs_destroy(r->zfs, r->o.result, r->err,
 			    sizeof (r->err)) != 0)
@@ -806,7 +949,10 @@ teardown(struct run *r, int keep_clone)
 		if (r->dirmade)
 			rmdir_run(r->o.result);
 	}
-	/* holds die with the cleanup descriptor, snapshots stay */
+	/*
+	 * A kept run keeps its holds: they are the rebase, and its
+	 * record names the tag that gives them back.
+	 */
 	if (r->zfs != NULL)
 		zr_zfs_close(r->zfs);
 }
@@ -817,24 +963,20 @@ zr_run(const struct zr_run_opts *o)
 	struct sigaction saved[ZR_NSIG];
 	struct run r;
 	struct zr_manifest_hdr hdr;
+	struct zr_rebase_record rec;
 	FILE *out = stdout;
 	int rc = EXIT_INTERNAL, keep = 0;
 
 	memset(&r, 0, sizeof (r));
+	memset(&rec, 0, sizeof (rec));
 	r.o = *o;
 	if (geteuid() != 0) {
 		(void) fprintf(stderr, "zfs_rebase: must run as root\n");
 		return (EXIT_PRECOND);
 	}
-	/*
-	 * The tag every hold is filed under. Two runs over the same
-	 * snapshots must not collide, and each takes its own tag, so
-	 * one finishing does not release the other's hold.
-	 */
-	(void) snprintf(r.holdtag, sizeof (r.holdtag), "zfs_rebase-%lld-%ld",
-	    (long long)time(NULL), (long)getpid());
+	make_tag(&r);
 	signals_install(saved);
-	if (zr_zfs_open(&r.zfs, r.holdtag, r.err, sizeof (r.err)) != 0) {
+	if (zr_zfs_open(&r.zfs, r.err, sizeof (r.err)) != 0) {
 		rc = fail(&r, EXIT_PRECOND, "libzfs");
 		goto done;
 	}
@@ -843,15 +985,13 @@ zr_run(const struct zr_run_opts *o)
 		goto done;
 	}
 
-	/* 1. hold all three, so that none can go while the run reads it */
-	if (zr_zfs_hold(r.zfs, r.base, r.err, sizeof (r.err)) != 0 ||
-	    zr_zfs_hold(r.zfs, o->from, r.err, sizeof (r.err)) != 0 ||
-	    zr_zfs_hold(r.zfs, o->onto, r.err, sizeof (r.err)) != 0) {
-		rc = fail(&r, EXIT_PRECOND, "hold");
-		goto done;
-	}
-
-	/* 2. the working clone, read-only from birth, unless a dry run */
+	/*
+	 * 1. the working clone, read-only and carrying its whole
+	 * record from birth, and then the three holds, which the
+	 * record's tag names. A dry run creates nothing and holds
+	 * nothing: it only reads, and it leaves no rebase behind to
+	 * be continued or aborted.
+	 */
 	if (!o->dryrun) {
 		if (make_rundir(&r) != 0) {
 			rc = fail(&r, EXIT_PRECOND, "run directory");
@@ -862,18 +1002,26 @@ zr_run(const struct zr_run_opts *o)
 		if (r.manpath[0] == '\0')
 			(void) snprintf(r.manpath, sizeof (r.manpath),
 			    "%s/manifest", r.rundir);
+		if (fill_record(&r, &rec) != 0) {
+			rc = fail(&r, EXIT_PRECOND, "record");
+			goto done;
+		}
 		if (zr_zfs_clone(r.zfs, o->onto, o->result, r.workmnt,
-		    r.manpath, r.err, sizeof (r.err)) != 0) {
+		    &rec, r.err, sizeof (r.err)) != 0) {
 			rc = fail(&r, EXIT_PRECOND, "clone");
 			goto done;
 		}
 		r.cloned = 1;
+		if (hold_inputs(&r) != 0) {
+			rc = fail(&r, EXIT_PRECOND, "hold");
+			goto done;
+		}
 	} else if (o->outpath != NULL) {
 		(void) snprintf(r.manpath, sizeof (r.manpath), "%s",
 		    o->outpath);
 	}
 
-	/* 3. read, 4. decide */
+	/* 2. read, 3. decide */
 	if (read_trees(&r) != 0) {
 		rc = fail(&r, zr_apply_stop != 0 ? EXIT_INTERNAL :
 		    EXIT_PRECOND, "read");
@@ -895,7 +1043,7 @@ zr_run(const struct zr_run_opts *o)
 		goto done;
 	}
 
-	/* 5. the manifest */
+	/* 4. the manifest */
 	hdr.base = r.base;
 	hdr.from = o->from;
 	hdr.onto = o->onto;
@@ -923,7 +1071,7 @@ zr_run(const struct zr_run_opts *o)
 		if (!o->dryrun) {
 			set_state(&r, "conflicts");
 			manifest_note(&r);
-			abort_hint(&r);
+			kept_hint(&r);
 			keep = 1;
 		}
 		rc = EXIT_CONFLICTS;
@@ -934,28 +1082,39 @@ zr_run(const struct zr_run_opts *o)
 		goto done;
 	}
 
-	/* 6. apply, 7. verify */
+	/* 5. apply, 6. verify */
 	if (stopped(&r) != 0) {
 		rc = fail(&r, EXIT_INTERNAL, "apply");
 		goto done;	/* nothing written yet: the clone goes */
 	}
+	/*
+	 * A failure or a signal from here on leaves the state at the
+	 * gate the run reached -- applying1 -- and the result, its
+	 * record and its holds in place. There is no failed state and
+	 * no interrupted state: what a stop leaves is a gate, and a
+	 * later --continue picks the rebase up from it.
+	 */
 	if (apply_manifest(&r, &hdr) != 0) {
 		keep = 1;
 		rc = fail(&r, EXIT_INTERNAL, "apply");
-		set_state(&r, zr_apply_stop != 0 ? "interrupted" : "failed");
 		manifest_note(&r);
-		abort_hint(&r);
+		kept_hint(&r);
 		goto done;
 	}
 	if (verify_clone(&r) != 0) {
 		keep = 1;
 		rc = fail(&r, EXIT_INTERNAL, "verify");
-		set_state(&r, zr_apply_stop != 0 ? "interrupted" : "failed");
 		manifest_note(&r);
-		abort_hint(&r);
+		kept_hint(&r);
 		goto done;
 	}
-	set_state(&r, "applied");
+	/*
+	 * Done, and then the holds: written first so that a kill in
+	 * between leaves a record that says the rebase finished and
+	 * holds that --abort can still find and give back.
+	 */
+	set_state(&r, "done");
+	release_holds(&r);
 	(void) fprintf(stderr, "zfs_rebase: %s is the rebased tree, read-only "
 	    "at %s\n", o->result, r.workmnt);
 	manifest_note(&r);
@@ -968,28 +1127,45 @@ done:
 }
 
 /*
- * --abort: take one run's leavings away and nothing else. A hard
- * kill can leave the result clone and the manifest behind -- the
- * holds go by themselves -- and this is how they go.
+ * --abort: take one rebase away and nothing else. "As if the run
+ * never happened": the holds are released, the result clone is
+ * destroyed, the manifest the record names is unlinked and the run
+ * directories go.
  *
- * The refusal is the point of the marker. Only a dataset that
- * carries zfs_rebase:state is destroyed, so a mistyped or a
- * remembered-wrong name cannot cost the user a dataset of their own;
- * every state is fair game, "applying" included, because a process
- * killed part way through the apply leaves exactly that and this is
- * what clears it. Nothing is removed recursively: the one file this
- * unlinks is the manifest the run itself recorded, and every
- * directory goes by rmdir, which will not touch one that is not
- * empty.
+ * The record is the key, and the refusal is the point of it. A
+ * dataset that does not carry both zfs_rebase:tag and
+ * zfs_rebase:manifest locally is not a zfs_rebase result and is left
+ * alone, so a mistyped or a remembered-wrong name cannot cost the
+ * user a dataset of their own, and neither can an inherited value:
+ * a user property set on a parent shows up on every dataset beneath
+ * it, and zr_zfs_get_user answers for the local value only. Every
+ * state is fair game, applying1 included, because a process killed
+ * part way through the apply leaves exactly that and this is what
+ * clears it.
+ *
+ * It can be run again. The holds are released first, so a destroy
+ * that fails leaves nothing held that a second --abort would have
+ * to redo; a release of a tag that is not there, or of a snapshot
+ * that is not there, is not a failure; a manifest already unlinked
+ * is not one either; and a run whose dataset is gone but whose
+ * directory is not is finished by removing the directory. Only when
+ * there is nothing at all left does --abort say "no such run".
+ * Nothing is removed recursively: the one file this unlinks is the
+ * manifest the record names, and every directory goes by rmdir,
+ * which will not touch one that is not empty.
  */
 int
 zr_abort(const char *result, int verbose)
 {
+	static const char *nameprop[3] = {
+		ZR_PROP_BASE, ZR_PROP_FROM, ZR_PROP_ONTO
+	};
 	char manifest[ZR_NAME_MAX], dir[ZR_NAME_MAX];
+	char snap[ZR_SNAP_MAX], tag[ZR_TAG_MAX];
 	char state[64], err[512];
 	struct zr_zfs *z = NULL;
 	struct stat sb;
-	int rc = EXIT_INTERNAL, hasdir, hasds, hasman = 0;
+	int rc = EXIT_INTERNAL, hasdir, hasds, hasman = 0, i;
 
 	if (geteuid() != 0) {
 		(void) fprintf(stderr, "zfs_rebase: must run as root\n");
@@ -1002,7 +1178,7 @@ zr_abort(const char *result, int verbose)
 		return (EXIT_PRECOND);
 	}
 	hasdir = stat(dir, &sb) == 0;
-	if (zr_zfs_open(&z, "zfs_rebase-abort", err, sizeof (err)) != 0) {
+	if (zr_zfs_open(&z, err, sizeof (err)) != 0) {
 		(void) fprintf(stderr, "zfs_rebase: libzfs: %s\n", err);
 		return (EXIT_PRECOND);
 	}
@@ -1019,8 +1195,8 @@ zr_abort(const char *result, int verbose)
 		goto done;
 	}
 	if (hasds != 0) {
-		int got = zr_zfs_get_user(z, result, ZR_PROP_STATE, state,
-		    sizeof (state), err, sizeof (err));
+		int got = zr_zfs_get_user(z, result, ZR_PROP_TAG, tag,
+		    sizeof (tag), err, sizeof (err));
 
 		if (got < 0) {
 			(void) fprintf(stderr, "zfs_rebase: %s: %s\n", result,
@@ -1028,28 +1204,67 @@ zr_abort(const char *result, int verbose)
 			rc = EXIT_PRECOND;
 			goto done;
 		}
-		if (got == 0) {
+		if (got > 0) {
+			hasman = zr_zfs_get_user(z, result, ZR_PROP_MANIFEST,
+			    manifest, sizeof (manifest), err, sizeof (err));
+			if (hasman < 0) {
+				(void) fprintf(stderr, "zfs_rebase: %s: %s\n",
+				    ZR_PROP_MANIFEST, err);
+				rc = EXIT_PRECOND;
+				goto done;
+			}
+		}
+		if (got == 0 || hasman == 0) {
 			(void) fprintf(stderr, "zfs_rebase: %s is not a "
 			    "zfs_rebase result; nothing was touched\n",
 			    result);
 			rc = EXIT_PRECOND;
 			goto done;
 		}
-		if (verbose)
-			(void) fprintf(stderr, "zfs_rebase: %s is at %s\n",
-			    result, state);
-		hasman = zr_zfs_get_user(z, result, ZR_PROP_MANIFEST, manifest,
-		    sizeof (manifest), err, sizeof (err));
-		if (hasman < 0) {
-			(void) fprintf(stderr, "zfs_rebase: %s: %s\n",
-			    ZR_PROP_MANIFEST, err);
-			hasman = 0;
+		if (verbose) {
+			if (zr_zfs_get_user(z, result, ZR_PROP_STATE, state,
+			    sizeof (state), err, sizeof (err)) > 0)
+				(void) fprintf(stderr, "zfs_rebase: %s is at "
+				    "%s, held under %s\n", result, state, tag);
+			else
+				(void) fprintf(stderr, "zfs_rebase: %s has no "
+				    "state yet, held under %s\n", result, tag);
 		}
-		if (hasman > 0 && unlink(manifest) != 0) {
-			if (errno != ENOENT)
-				(void) fprintf(stderr, "zfs_rebase: %s: %s\n",
-				    manifest, strerror(errno));
-			hasman = 0;
+		/*
+		 * The three inputs by name. One that is missing from
+		 * the record, or gone from the pool, is nothing to
+		 * release; a release that fails for any other reason
+		 * stops the abort with the record intact, so that
+		 * running it again can try the same thing.
+		 */
+		for (i = 0; i < 3; i++) {
+			int ex;
+
+			if (zr_zfs_get_user(z, result, nameprop[i], snap,
+			    sizeof (snap), err, sizeof (err)) <= 0) {
+				if (verbose)
+					(void) fprintf(stderr, "zfs_rebase: "
+					    "%s: no %s in the record\n",
+					    result, nameprop[i]);
+				continue;
+			}
+			ex = zr_zfs_exists(z, snap, err, sizeof (err));
+			if (ex == 0) {
+				if (verbose)
+					(void) fprintf(stderr, "zfs_rebase: "
+					    "%s is gone; nothing to release\n",
+					    snap);
+				continue;
+			}
+			if (ex < 0 || zr_zfs_release(z, snap, tag, err,
+			    sizeof (err)) != 0) {
+				(void) fprintf(stderr, "zfs_rebase: release "
+				    "%s on %s: %s\n", tag, snap, err);
+				goto done;
+			}
+			if (verbose)
+				(void) fprintf(stderr, "zfs_rebase: released "
+				    "%s on %s\n", tag, snap);
 		}
 		if (zr_zfs_destroy(z, result, err, sizeof (err)) != 0) {
 			(void) fprintf(stderr, "zfs_rebase: destroy %s: %s\n",
@@ -1057,9 +1272,12 @@ zr_abort(const char *result, int verbose)
 			goto done;
 		}
 		(void) fprintf(stderr, "zfs_rebase: destroyed %s\n", result);
-		if (hasman > 0)
+		if (unlink(manifest) == 0)
 			(void) fprintf(stderr, "zfs_rebase: removed the "
 			    "manifest %s\n", manifest);
+		else if (errno != ENOENT)
+			(void) fprintf(stderr, "zfs_rebase: %s: %s\n",
+			    manifest, strerror(errno));
 	}
 	if (hasdir) {
 		rmdir_run(result);

@@ -31,7 +31,7 @@
 #define	EXIT_INTERNAL	3
 
 static const char usage[] =
-	"usage: zfs_rebase [-n] [-p] [-v] [-o FILE] "
+	"usage: zfs_rebase [-n] [-p] [-v] [-o FILE] [--verify] "
 	"--from SNAP --onto SNAP --result DATASET\n"
 	"       zfs_rebase --abort --result DATASET\n"
 	"       zfs_rebase --posix [-p] [-o FILE] BASEDIR FROMDIR ONTODIR\n"
@@ -40,9 +40,12 @@ static const char usage[] =
 	"  --onto    the snapshot they are replayed onto; the base is the\n"
 	"            branch point of the two, which the tool works out\n"
 	"  --result  the dataset the rebased clone is created as\n"
-	"  --abort   destroy that result, remove the manifest it recorded\n"
-	"            and its run directory, and nothing else\n"
-	"  -n   dry run: write the manifest, create no clone, apply nothing\n"
+	"  --abort   release the holds that result records, destroy it,\n"
+	"            remove the manifest it recorded and its run\n"
+	"            directory, and nothing else\n"
+	"  --verify  recorded for the final check (a later issue acts on\n"
+	"            it)\n"
+	"  -n   dry run: write the manifest, create nothing, hold nothing\n"
 	"  -p   permissive-merge mode\n"
 	"  -v   report counts on stderr\n"
 	"  -o   write the manifest to FILE\n";
@@ -245,7 +248,7 @@ main(int argc, char **argv)
 	const char *from = NULL, *onto = NULL, *result = NULL;
 	const char *outpath = NULL, *v;
 	zr_mode_t mode = ZR_MODE_STRICT;
-	int dryrun = 0, verbose = 0, abrt = 0, i, t;
+	int dryrun = 0, verbose = 0, abrt = 0, verify = 0, i, t;
 	struct zr_run_opts ro;
 
 	if (argc >= 2 && strcmp(argv[1], "--build-fixture") == 0) {
@@ -264,6 +267,8 @@ main(int argc, char **argv)
 			verbose = 1;
 		} else if (strcmp(argv[i], "--abort") == 0) {
 			abrt = 1;
+		} else if (strcmp(argv[i], "--verify") == 0) {
+			verify = 1;
 		} else if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
 			outpath = argv[++i];
 		} else if ((t = longopt(argc, argv, &i, "--from", &v)) != 0 ||
@@ -287,7 +292,8 @@ main(int argc, char **argv)
 	/* --abort goes alone: the result to be rid of, and -v. */
 	if (abrt) {
 		if (result == NULL || from != NULL || onto != NULL ||
-		    outpath != NULL || dryrun != 0 || mode != ZR_MODE_STRICT)
+		    outpath != NULL || dryrun != 0 || verify != 0 ||
+		    mode != ZR_MODE_STRICT)
 			return (die_usage());
 		return (zr_abort(result, verbose));
 	}
@@ -304,6 +310,7 @@ main(int argc, char **argv)
 	ro.outpath = outpath;
 	ro.mode = mode;
 	ro.dryrun = dryrun;
+	ro.verify = verify;
 	ro.verbose = verbose;
 	return (zr_run(&ro));
 }
