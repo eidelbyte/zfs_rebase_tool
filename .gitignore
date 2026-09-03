@@ -1,0 +1,4 @@
+build/
+zfs_rebase
+*.o
+.DS_Store
