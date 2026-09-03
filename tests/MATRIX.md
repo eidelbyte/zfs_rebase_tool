@@ -124,7 +124,7 @@ nlink {1, 2, 3+}; placement {one dir, across dirs}; depth {1, 64};
 name bytes {every class, NAME_MAX, path near MAXPATHLEN}; empty
 directory; xattrs {none, one namespace, several, empty value,
 binary}; ACL {absent, present}; symlink target; rdev {0, large};
-completeness against st_nlink; faults.
+completeness against st_nlink; the root's .zfs; faults.
 
 | cell | scenario | disposition |
 |------|----------|-------------|
@@ -155,6 +155,7 @@ completeness against st_nlink; faults.
 | ZW25 | the root is the pool named "/" | planned: check_walk.c |
 | ZW26 | an empty root | planned: check_walk.c |
 | ZW27 | rdev 0 and a large rdev both survive | planned: check_walk.c |
+| ZW28 | the root's .zfs is skipped, a nested one is not | planned: check_walk.c |
 
 ## ZC -- content oracle (check_yellow.c)
 

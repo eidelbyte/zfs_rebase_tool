@@ -10,10 +10,10 @@ ZFS_LIBS = -lzfs_core -lzfs -lnvpair
 
 # Library objects are everything but main.o; tests link against them.
 LIB_OBJS = build/vis.o build/name.o build/decide.o build/fixture.o \
-	build/manifest.o
+	build/manifest.o build/walk.o
 CORE_OBJS = build/main.o $(LIB_OBJS)
 FREEBSD_OBJS =
-TESTS = check_vis check_name check_fixture check_manifest
+TESTS = check_vis check_name check_fixture check_manifest check_walk
 
 all: build zfs_rebase
 
@@ -45,6 +45,9 @@ build/fixture.o: src/fixture.c src/fixture.h src/name.h src/vis.h
 
 build/manifest.o: src/manifest.c src/manifest.h src/decide.h src/name.h
 	$(CC) $(CFLAGS) -c -o $@ src/manifest.c
+
+build/walk.o: src/walk.c src/walk.h src/name.h
+	$(CC) $(CFLAGS) -c -o $@ src/walk.c
 
 check: unit battery
 
