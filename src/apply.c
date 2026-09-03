@@ -291,13 +291,24 @@ za_acl_strip(const char *full)
  * A POSIX.1e directory has two ACLs, the one that governs it and the
  * one its new children inherit, and both are written. An NFSv4 ACL
  * has one, inheritance being written into its entries.
+ *
+ * The walk kept the acl_t itself, so what goes on the object here is
+ * the structure the from side's kernel handed out, entry for entry
+ * and bit for bit. There is no text in between to print and parse
+ * back, and so nothing an id that will not resolve, or a spelling
+ * either end renders differently, could change on the way.
+ *
+ * acl_set_link_np sorts a POSIX.1e ACL in place before it submits
+ * it (lib/libc/posix1e/acl_set.c), so this hands the walk's own
+ * structure to a call that may reorder it. That is a normalisation,
+ * not a change of meaning -- a POSIX.1e ACL is a set, and the
+ * kernel stores it sorted anyway -- and an NFSv4 ACL, the ZFS case
+ * and the one whose order is meaning, is never touched.
  */
 static int
 za_setacl(const char *full, const struct zr_attr *at, int isdir)
 {
 	acl_type_t type;
-	acl_t a;
-	int rc;
 
 	if (za_acl_flavor(full, &type) == 0)
 		return (0);
@@ -309,12 +320,7 @@ za_setacl(const char *full, const struct zr_attr *at, int isdir)
 			return (-1);
 		return (0);
 	}
-	a = acl_from_text(at->za_acl);
-	if (a == NULL)
-		return (-1);
-	rc = acl_set_link_np(full, type, a);
-	(void) acl_free(a);
-	if (rc != 0)
+	if (acl_set_link_np(full, type, at->za_acl) != 0)
 		return (-1);
 	if (type != ACL_TYPE_ACCESS || !isdir)
 		return (0);
@@ -324,12 +330,7 @@ za_setacl(const char *full, const struct zr_attr *at, int isdir)
 			return (-1);
 		return (0);
 	}
-	a = acl_from_text(at->za_dacl);
-	if (a == NULL)
-		return (-1);
-	rc = acl_set_link_np(full, ACL_TYPE_DEFAULT, a);
-	(void) acl_free(a);
-	return (rc);
+	return (acl_set_link_np(full, ACL_TYPE_DEFAULT, at->za_dacl));
 }
 
 static int

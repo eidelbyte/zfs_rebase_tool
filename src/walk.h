@@ -9,11 +9,29 @@
 #define	ZR_WALK_H
 
 #include <sys/types.h>
+#if defined(__FreeBSD__)
+#include <sys/acl.h>
+#endif
 
 #include <stddef.h>
 #include <stdint.h>
 
 #include "name.h"
+
+/*
+ * One ACL, in the form the platform gives it. FreeBSD is the target,
+ * and there an ACL is already a list of integers -- libc's acl_t --
+ * so the walk keeps that and nothing is spelled out and read back.
+ * Everywhere else it is the text acl_to_text made, which is the only
+ * form the stand-in's API offers. A NULL is an absent ACL on both,
+ * and zr_acl_equal and zr_acl_free below are all the rest of the
+ * tool asks of one.
+ */
+#if defined(__FreeBSD__)
+typedef acl_t zr_acl_t;
+#else
+typedef char *zr_acl_t;
+#endif
 
 /* One extended attribute. The value is bytes, not a string. */
 struct zr_xattr {
@@ -37,8 +55,17 @@ struct zr_attr {
 	char		*za_target;	/* symlink target, else NULL */
 	struct zr_xattr	*za_xattrs;	/* sorted by name, bytewise */
 	uint32_t	za_nxattrs;
-	char		*za_acl;	/* platform ACL as text, else NULL */
-	char		*za_dacl;	/* POSIX.1e default ACL, else NULL */
+	/*
+	 * The ACL, and NULL where there is none to keep: no ACL at
+	 * all, or -- on FreeBSD -- an NFSv4 ACL that
+	 * acl_is_trivial_np says the mode already expresses in
+	 * full, so that an ordinary file costs nothing. za_dacl is
+	 * the POSIX.1e default ACL, the one a directory hands its
+	 * new children; an NFSv4 ACL has no second list, its
+	 * inheritance being written into its own entries.
+	 */
+	zr_acl_t	za_acl;
+	zr_acl_t	za_dacl;
 };
 
 /*
@@ -74,6 +101,19 @@ int zr_walk(const char *root, struct zr_names *names, struct zr_walk *out,
 
 /* Free the attributes, close the root, and finalise the tree. */
 void zr_walk_fini(struct zr_walk *w);
+
+/*
+ * Two ACLs of the platform's own kind: 1 if they are equal, 0 if
+ * not. Both absent is equal, one absent is not. On FreeBSD this is
+ * the binary comparison -- the brand, the length, and every entry's
+ * fields in order, an NFSv4 ACL being an ordered list where the
+ * order is part of the meaning. The arguments are not const because
+ * libc's entry walk carries its cursor inside the ACL.
+ */
+int zr_acl_equal(zr_acl_t a, zr_acl_t b);
+
+/* Release one ACL. An absent one -- a NULL -- is nothing to free. */
+void zr_acl_free(zr_acl_t a);
 
 /*
  * Open one name of the walked tree relative to the kept root, with

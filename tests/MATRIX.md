@@ -123,9 +123,10 @@ Dimensions: type {file, dir, symlink, chr, blk, fifo, sock};
 nlink {1, 2, 3+}; placement {one dir, across dirs}; depth {1, 64};
 name bytes {every class, NAME_MAX, path near MAXPATHLEN}; empty
 directory; xattrs {none, one namespace, several, empty value,
-binary}; ACL {absent, present}; symlink target; rdev {0, large};
-completeness against st_nlink; the root's .zfs; entry order
-{readdir's, sorted}; faults.
+binary}; ACL {absent, present}; ACL equality {both absent, one
+absent, alike, unlike, reordered, one a prefix of the other};
+symlink target; rdev {0, large}; completeness against st_nlink;
+the root's .zfs; entry order {readdir's, sorted}; faults.
 
 | cell | scenario | disposition |
 |------|----------|-------------|
@@ -146,7 +147,7 @@ completeness against st_nlink; the root's .zfs; entry order
 | ZW15 | several user-namespace xattrs | planned: check_walk.c |
 | ZW16 | a second namespace | deferred: no namespaces on macOS; box-probe |
 | ZW17 | an empty xattr value and a binary one | planned: check_walk.c |
-| ZW18 | an ACL present | deferred: the two ACL models differ; box-probe |
+| ZW18 | an ACL present | deferred: a real ACL needs ZFS or UFS; box, attr-cells |
 | ZW19 | no ACL: absent, not an empty blob | planned: check_walk.c |
 | ZW20 | mode, uid, gid, flags, size, times read | planned: check_walk.c |
 | ZW21 | completeness: st_nlink over names found | planned: check_walk.c |
@@ -158,6 +159,7 @@ completeness against st_nlink; the root's .zfs; entry order
 | ZW27 | rdev 0 and a large rdev both survive | planned: check_walk.c |
 | ZW28 | the root's .zfs is skipped, a nested one is not | planned: check_walk.c |
 | ZW29 | entries interned in sorted order, not readdir's | planned: check_walk.c |
+| ZW30 | zr_acl_equal: absent, alike, unlike, reordered, shorter | planned: check_walk.c |
 
 ZW29 is the cell the two platforms found: readdir's order is the
 filesystem's, so the same three trees were interned in one order on
@@ -167,6 +169,19 @@ order -- came out with its two names swapped. The walk now sorts
 each directory's entries bytewise before interning any of them, so
 the ids follow the manifest's own order on every filesystem and the
 why line is a property of the trees, not of the disk they sit on.
+
+ZW30 is where the two platforms part. On FreeBSD, the target, the
+walk keeps the acl_t libc handed it and the comparison is binary:
+the brand, then the entries in step, each one's tag, qualifier,
+permission mask and -- for an NFSv4 ACL -- entry type and
+inheritance flags, with two lists parting company at the step where
+one cursor runs out. Order is meaning there, so the same two
+entries the other way round are a different ACL, and the row is
+checked on ACLs built in memory with acl_init, which needs no
+filesystem and so runs on the box with every other unit test.
+Everywhere else an ACL is the text acl_to_text printed and the row
+is a string comparison. What stays deferred is an ACL read off a
+real pool and written back, ZW18 and ZC9 below.
 
 ## ZC -- content oracle (check_yellow.c)
 
@@ -186,7 +201,7 @@ face local group}.
 | ZC6 | an xattr value differs | planned: check_yellow.c |
 | ZC7 | an xattr on one side only | planned: check_yellow.c |
 | ZC8 | the same xattrs in a different order | planned: check_yellow.c |
-| ZC9 | an ACL differs | deferred: ACL models differ; box-probe |
+| ZC9 | an ACL differs | deferred: a real ACL needs ZFS; box, attr-cells (ZW30 proves the comparison) |
 | ZC10 | symlink targets equal, then differing | planned: check_yellow.c |
 | ZC11 | device numbers differ | planned: check_yellow.c |
 | ZC12 | two default directories compare equal | planned: check_yellow.c |
@@ -202,6 +217,11 @@ face local group}.
 | ZC22 | handles are scoped to one face local group | planned: check_yellow.c |
 | ZC23 | transitivity: a=b, b=c, one handle | planned: check_yellow.c |
 | ZC24 | a read error is an error, never "equal" | planned: check_yellow.c |
+
+The oracle asks zr_acl_equal for za_acl and za_dacl, so ZC9 is that
+function on two pools of a live filesystem: the comparison itself is
+ZW30's, and what attr-cells adds is a non-trivial NFSv4 ACL that the
+walk really read and apply really wrote back.
 
 ## ZD -- decide (check_battery.c)
 

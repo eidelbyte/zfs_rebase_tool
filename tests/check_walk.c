@@ -8,7 +8,9 @@
  * still ascend in name order. Crossing a mount point is not tested here:
  * making a mount needs root, so that cell stays deferred to the box
  * probe. So is ZW18, an ACL present: the two ACL models differ and
- * setting one on macOS without root proves nothing about ZFS.
+ * setting one on macOS without root proves nothing about ZFS. What
+ * does not need a tree at all is ZW30, zr_acl_equal, which is
+ * checked here on ACLs built in memory.
  */
 
 #define	_XOPEN_SOURCE	700
@@ -605,6 +607,114 @@ check_xattrs(const struct zr_walk *w, struct zr_names *ns)
 	CHECK(memcmp(at->za_xattrs[1].zx_value, XA2VAL, XA2LEN) == 0);
 }
 
+#if defined(__FreeBSD__)
+
+/*
+ * One everyone@ entry appended to *ap, with the entry type, one
+ * permission bit and one inheritance flag. The everyone@ tag is
+ * what brands the ACL NFSv4, so the entry type and the flags are
+ * accepted after it and not before.
+ */
+static void
+nfs4_entry(acl_t *ap, acl_entry_type_t etype, acl_perm_t perm,
+    acl_flag_t flag)
+{
+	acl_permset_t ps;
+	acl_flagset_t fs;
+	acl_entry_t e;
+
+	CHECK(acl_create_entry(ap, &e) == 0);
+	CHECK(acl_set_tag_type(e, ACL_EVERYONE) == 0);
+	CHECK(acl_set_entry_type_np(e, etype) == 0);
+	CHECK(acl_get_permset(e, &ps) == 0);
+	CHECK(acl_clear_perms(ps) == 0);
+	CHECK(acl_add_perm(ps, perm) == 0);
+	CHECK(acl_set_permset(e, ps) == 0);
+	CHECK(acl_get_flagset_np(e, &fs) == 0);
+	CHECK(acl_clear_flags_np(fs) == 0);
+	if (flag != 0)
+		CHECK(acl_add_flag_np(fs, flag) == 0);
+	CHECK(acl_set_flagset_np(e, fs) == 0);
+}
+
+/*
+ * An NFSv4 ACL made in memory, no filesystem touched: shape 0 is an
+ * inheriting allow followed by a deny, shape 1 is the same two the
+ * other way round, and shape 2 is the allow alone.
+ */
+static zr_acl_t
+nfs4_acl(int shape)
+{
+	acl_t a;
+
+	a = acl_init(2);
+	CHECK(a != NULL);
+	if (shape == 1) {
+		nfs4_entry(&a, ACL_ENTRY_TYPE_DENY, ACL_WRITE_DATA, 0);
+		nfs4_entry(&a, ACL_ENTRY_TYPE_ALLOW, ACL_READ_DATA,
+		    ACL_ENTRY_FILE_INHERIT);
+		return (a);
+	}
+	nfs4_entry(&a, ACL_ENTRY_TYPE_ALLOW, ACL_READ_DATA,
+	    ACL_ENTRY_FILE_INHERIT);
+	if (shape == 0)
+		nfs4_entry(&a, ACL_ENTRY_TYPE_DENY, ACL_WRITE_DATA, 0);
+	return (a);
+}
+
+#endif	/* __FreeBSD__ */
+
+/*
+ * ZW30: ACL equality at its edges. Absent against absent is equal,
+ * absent against present is not, two alike are equal and two unlike
+ * are not, and a NULL is safe to free. On FreeBSD an ACL is the
+ * acl_t itself, so two more things are asked of it that no text
+ * comparison could be asked: that a shorter list is not equal to
+ * the longer one it prefixes, and that the same two entries in the
+ * other order are a different ACL, which they are, an NFSv4 ACL
+ * being read in order. Those ACLs are built in memory, so this
+ * needs no ACL-carrying filesystem and runs wherever the FreeBSD
+ * build does. An ACL read off a real pool and written back is ZW18
+ * and ZC9, deferred to the box (issue attr-cells).
+ */
+static void
+check_acl_equal(void)
+{
+#if defined(__FreeBSD__)
+	zr_acl_t a, b, c, d;
+
+	CHECK(zr_acl_equal(NULL, NULL) == 1);
+	a = nfs4_acl(0);
+	b = nfs4_acl(0);
+	c = nfs4_acl(1);
+	d = nfs4_acl(2);
+	CHECK(zr_acl_equal(NULL, a) == 0);
+	CHECK(zr_acl_equal(a, NULL) == 0);
+	CHECK(zr_acl_equal(a, b) == 1);
+	CHECK(zr_acl_equal(a, c) == 0);		/* order is meaning */
+	CHECK(zr_acl_equal(a, d) == 0);		/* the shorter list */
+	CHECK(zr_acl_equal(d, a) == 0);
+	/* again, so that the entry cursor is shown to reset */
+	CHECK(zr_acl_equal(a, b) == 1);
+	zr_acl_free(a);
+	zr_acl_free(b);
+	zr_acl_free(c);
+	zr_acl_free(d);
+#else
+	char one[] = "user::rw-\n";
+	char two[] = "user::rw-\n";
+	char three[] = "user::r--\n";
+
+	CHECK(zr_acl_equal(NULL, NULL) == 1);
+	CHECK(zr_acl_equal(NULL, one) == 0);
+	CHECK(zr_acl_equal(one, NULL) == 0);
+	CHECK(zr_acl_equal(one, two) == 1);
+	CHECK(zr_acl_equal(one, three) == 0);
+	CHECK(zr_acl_equal(one, one) == 1);
+#endif
+	zr_acl_free(NULL);
+}
+
 /*
  * ZW29: the ids of one directory's names ascend in name order, not
  * in the order the entries were created, because the walk sorts a
@@ -771,6 +881,8 @@ main(void)
 {
 	char probe[] = "/tmp/zrwalk.XXXXXX";
 	char odd[] = "/tmp/zrwalko.XXXXXX";
+
+	check_acl_equal();
 
 	CHECK(mkdtemp(probe) != NULL);
 	check_probe(probe);

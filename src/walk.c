@@ -70,12 +70,18 @@
  * Both return 0 on success and -1 with errno set on failure. An
  * entry with no attributes and no ACL is a success, not a failure.
  * ZW_HAVE_ST_FLAGS says the platform's struct stat has st_flags.
+ *
+ * Just after the section come zr_acl_equal and zr_acl_free, the
+ * pair the oracle and the walk's own teardown call by name. What an
+ * ACL is differs with the platform, and so do those two: on FreeBSD
+ * an ACL is libc's acl_t and they are a field-by-field comparison
+ * and acl_free, everywhere else it is text and they are strcmp and
+ * free. Why is at zw_acl below.
  * ---------------------------------------------------------------
  */
 
 #if defined(__FreeBSD__) || defined(__APPLE__)
 #define	ZW_HAVE_ST_FLAGS	1	/* struct stat carries st_flags */
-#define	ZW_HAVE_ACL		1	/* an ACL this can render as text */
 #endif
 #if defined(__FreeBSD__) || defined(__APPLE__) || defined(__linux__)
 #define	ZW_HAVE_XATTRS		1
@@ -157,25 +163,6 @@ zw_xattr_sort(struct zr_attr *at)
 }
 
 #endif	/* ZW_HAVE_XATTRS */
-
-#ifdef ZW_HAVE_ACL
-
-/* Keep an ACL text of the platform's making in memory of ours. */
-static char *
-zw_dup_text(const char *s)
-{
-	size_t len;
-	char *p;
-
-	len = strlen(s);
-	p = malloc(len + 1);
-	if (p == NULL)
-		return (NULL);
-	memcpy(p, s, len + 1);
-	return (p);
-}
-
-#endif	/* ZW_HAVE_ACL */
 
 #if defined(__FreeBSD__)
 
@@ -308,17 +295,27 @@ zw_acl_flavor(const char *full, acl_type_t *typep)
 }
 
 /*
- * One ACL as text. Numeric ids with the name appended keep the text
- * the same on a host that cannot resolve the id, which is what makes
- * two snapshots comparable. A trivial ACL -- one the mode bits
- * already say in full -- is stored as nothing, since the mode is
- * captured anyway and every ordinary file would otherwise carry one.
+ * One ACL, kept as libc handed it over. On the target an ACL is
+ * already a list of integers -- a tag, an id, a permission mask, an
+ * entry type and a flag mask per entry -- and both ends of this
+ * tool speak that: the oracle compares the fields, and apply hands
+ * the same structure back to acl_set_link_np. Rendering it as text
+ * to compare it, and parsing that text to write it, would be a
+ * round trip through a form neither end wants, and one that has to
+ * be pinned to numeric ids to be stable at all. So the acl_t is
+ * stored; the walk owns it from here and frees it in zr_walk_fini.
+ * (The stand-in has no such structure to keep -- acl_to_text is the
+ * only form its API gives -- so there an ACL stays text.)
+ *
+ * A trivial ACL -- one the mode bits already say in full -- is
+ * stored as nothing, since the mode is captured anyway and every
+ * ordinary file would otherwise carry one.
  */
 static int
-zw_acl_text(const char *full, acl_type_t type, int skiptrivial, char **outp)
+zw_acl_get(const char *full, acl_type_t type, int skiptrivial,
+    zr_acl_t *outp)
 {
 	acl_t a;
-	char *txt;
 	int trivial;
 
 	*outp = NULL;
@@ -335,17 +332,7 @@ zw_acl_text(const char *full, acl_type_t type, int skiptrivial, char **outp)
 		(void) acl_free(a);
 		return (0);
 	}
-	txt = acl_to_text_np(a, NULL, ACL_TEXT_NUMERIC_IDS |
-	    ACL_TEXT_APPEND_ID);
-	if (txt != NULL) {
-		*outp = zw_dup_text(txt);
-		(void) acl_free(txt);
-	}
-	(void) acl_free(a);
-	if (txt != NULL && *outp == NULL) {
-		errno = ENOMEM;
-		return (-1);
-	}
+	*outp = a;
 	return (0);
 }
 
@@ -365,12 +352,116 @@ zw_acl(const char *full, const struct stat *st, struct zr_attr *at)
 	if (zw_acl_flavor(full, &type) == 0)
 		return (0);
 	if (type == ACL_TYPE_NFS4)
-		return (zw_acl_text(full, ACL_TYPE_NFS4, 1, &at->za_acl));
-	if (zw_acl_text(full, ACL_TYPE_ACCESS, 0, &at->za_acl) != 0)
+		return (zw_acl_get(full, ACL_TYPE_NFS4, 1, &at->za_acl));
+	if (zw_acl_get(full, ACL_TYPE_ACCESS, 0, &at->za_acl) != 0)
 		return (-1);
 	if (!S_ISDIR(st->st_mode))
 		return (0);
-	return (zw_acl_text(full, ACL_TYPE_DEFAULT, 0, &at->za_dacl));
+	return (zw_acl_get(full, ACL_TYPE_DEFAULT, 0, &at->za_dacl));
+}
+
+/*
+ * One entry of two ACLs, in place. Every ACL has a tag and a
+ * permission mask; the qualifier -- the uid or gid an ACL_USER or
+ * ACL_GROUP entry names, and nothing else carries one -- comes back
+ * from acl_get_qualifier in memory this frees. The entry type and
+ * the inheritance flags are NFSv4's alone, unused in a POSIX.1e ACL
+ * (sys/acl.h) and refused there by libc's accessors, so the brand
+ * decides whether they are asked for at all. A call that fails is
+ * not equality: say no rather than guess.
+ */
+static int
+zw_entry_equal(acl_entry_t ea, acl_entry_t eb, int brand)
+{
+	acl_entry_type_t ta, tb;
+	acl_permset_t pa, pb;
+	acl_flagset_t fa, fb;
+	acl_tag_t ga, gb;
+	uid_t *qa, *qb;
+	int same;
+
+	if (acl_get_tag_type(ea, &ga) != 0 || acl_get_tag_type(eb, &gb) != 0)
+		return (0);
+	if (ga != gb)
+		return (0);
+	if (ga == ACL_USER || ga == ACL_GROUP) {
+		qa = acl_get_qualifier(ea);
+		qb = acl_get_qualifier(eb);
+		same = (qa != NULL && qb != NULL && *qa == *qb);
+		if (qa != NULL)
+			(void) acl_free(qa);
+		if (qb != NULL)
+			(void) acl_free(qb);
+		if (!same)
+			return (0);
+	}
+	if (acl_get_permset(ea, &pa) != 0 || acl_get_permset(eb, &pb) != 0)
+		return (0);
+	if (*pa != *pb)
+		return (0);
+	if (brand != ACL_BRAND_NFS4)
+		return (1);
+	if (acl_get_entry_type_np(ea, &ta) != 0 ||
+	    acl_get_entry_type_np(eb, &tb) != 0)
+		return (0);
+	if (ta != tb)
+		return (0);
+	if (acl_get_flagset_np(ea, &fa) != 0 ||
+	    acl_get_flagset_np(eb, &fb) != 0)
+		return (0);
+	return (*fa == *fb);
+}
+
+/*
+ * Two ACLs. The brand first: a POSIX.1e ACL and an NFSv4 one are
+ * never the same ACL, whatever their entries say. Then the entries,
+ * walked in step, because an NFSv4 ACL is an ordered list -- a deny
+ * before an allow denies, the same two the other way round allow --
+ * so order is meaning and position is what an entry is compared
+ * against. The length is compared by the walk itself: two lists part
+ * company at the step where one cursor runs out and the other does
+ * not.
+ *
+ * libc's own acl_cmp_np does exactly this, but it is FBSD_1.7, new
+ * in FreeBSD 14, and this must build against 13 too. It is also why
+ * the fields are read through the accessors and not out of struct
+ * acl: that structure is behind _ACL_PRIVATE, and to a program that
+ * has not defined it an acl_t is a void *.
+ */
+int
+zr_acl_equal(zr_acl_t a, zr_acl_t b)
+{
+	acl_entry_t ea, eb;
+	int branda, brandb, ra, rb, which;
+
+	if (a == b)			/* both absent, or one ACL twice */
+		return (1);
+	if (a == NULL || b == NULL)
+		return (0);
+	if (acl_get_brand_np(a, &branda) != 0 ||
+	    acl_get_brand_np(b, &brandb) != 0)
+		return (0);
+	if (branda != brandb)
+		return (0);
+	which = ACL_FIRST_ENTRY;
+	for (;;) {
+		ra = acl_get_entry(a, which, &ea);
+		rb = acl_get_entry(b, which, &eb);
+		which = ACL_NEXT_ENTRY;
+		if (ra != rb)		/* one list is the longer */
+			return (0);
+		if (ra != 1)		/* 0 both ended, -1 a failure */
+			return (ra == 0);
+		if (zw_entry_equal(ea, eb, branda) == 0)
+			return (0);
+	}
+}
+
+void
+zr_acl_free(zr_acl_t a)
+{
+	if (a != NULL)
+		(void) acl_free(a);
 }
 
 #elif defined(__APPLE__)
@@ -481,9 +572,26 @@ out:
 	return (rc);
 }
 
+/* Keep an ACL text of the platform's making in memory of ours. */
+static char *
+zw_dup_text(const char *s)
+{
+	size_t len;
+	char *p;
+
+	len = strlen(s);
+	p = malloc(len + 1);
+	if (p == NULL)
+		return (NULL);
+	memcpy(p, s, len + 1);
+	return (p);
+}
+
 /*
  * The stand-in: one extended ACL, no flavors to tell apart and no
- * default ACL to keep. acl_to_text is the only text form there is.
+ * default ACL to keep. Text, not the acl_t the target keeps:
+ * acl_to_text is the only form this API gives that outlives the
+ * call, there being no public field of an acl_t to read here.
  */
 static int
 zw_acl(const char *full, const struct stat *st, struct zr_attr *at)
@@ -627,6 +735,30 @@ zw_acl(const char *full, const struct stat *st, struct zr_attr *at)
 }
 
 #endif	/* platform section ends */
+
+#if !defined(__FreeBSD__)
+
+/*
+ * The ACL pair everywhere but the target, where an ACL is the text
+ * the platform printed: equal is the same bytes, and absent is a
+ * NULL, which is equal only to another absent one. FreeBSD's pair,
+ * which compares the structure itself, is in its section above.
+ */
+int
+zr_acl_equal(zr_acl_t a, zr_acl_t b)
+{
+	if (a == NULL || b == NULL)
+		return (a == b);
+	return (strcmp(a, b) == 0);
+}
+
+void
+zr_acl_free(zr_acl_t a)
+{
+	free(a);
+}
+
+#endif	/* !__FreeBSD__ */
 
 /*
  * One open directory on the descent stack: the name it has, and its
@@ -1319,8 +1451,8 @@ zr_walk_fini(struct zr_walk *w)
 			free(at->za_xattrs[j].zx_value);
 		}
 		free(at->za_xattrs);
-		free(at->za_acl);
-		free(at->za_dacl);
+		zr_acl_free(at->za_acl);
+		zr_acl_free(at->za_dacl);
 	}
 	free(w->zw_attrs);
 	if (w->zw_rootfd >= 0)

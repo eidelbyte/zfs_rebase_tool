@@ -179,7 +179,7 @@ zo_fail(struct zr_oracle *o, int t, zr_name_t nm, const char *what,
 	    what, strerror(errno));
 }
 
-/* An ACL text, a default ACL text or a symlink target: both or one. */
+/* A symlink target: both absent, or the same bytes. */
 static int
 zo_text_equal(const char *a, const char *b)
 {
@@ -224,9 +224,9 @@ zo_attrs_equal(const struct zr_attr *a, const struct zr_attr *b)
 		return (0);
 	if (zo_xattrs_equal(a, b) == 0)
 		return (0);
-	if (zo_text_equal(a->za_acl, b->za_acl) == 0)
+	if (zr_acl_equal(a->za_acl, b->za_acl) == 0)
 		return (0);
-	return (zo_text_equal(a->za_dacl, b->za_dacl));
+	return (zr_acl_equal(a->za_dacl, b->za_dacl));
 }
 
 /* The two read buffers, taken only once a file is really compared. */
