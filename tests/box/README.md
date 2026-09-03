@@ -36,8 +36,30 @@ headers, with the same two flag sets the Makefile uses; it catches
 declaration and type errors in the FreeBSD sections without a box.
 
 run-fixture.sh builds one fixture as real datasets on a throwaway
-pool on a memory disk, runs the tool for real, and checks the
-manifest against the expect block, the exit status, and for a clean
-fixture that the working clone is read-only and that rebasing from
-onto it again is a no-op. KEEP=1 leaves the pool for inspection.
-Its header says what it does not exercise yet.
+pool on a memory disk and runs the tool for real. The tool takes no
+snapshots, so the harness takes them -- base@base, from@work and
+onto@work -- but hands the run only the two sides and names the
+result clone:
+
+    zfs_rebase -n -o FILE --from POOL/from@work --onto POOL/onto@work
+    zfs_rebase -v -o FILE --off-of POOL/from@work \
+        --onto POOL/onto@work --result POOL/result
+    zfs_rebase --abort --result POOL/result
+
+Both runs must derive POOL/base@base for themselves, and the harness
+checks the #base line of each manifest for it; the real run spells
+--from as --off-of, so that alias is exercised too. Step 0 checks the
+two refusals first: a linear pair (base@base against onto@work, where
+one side is an ancestor of the other) and a pair sharing no origin
+(a dataset created on its own), each exit 2. The rest checks the
+manifest against the expect block and the exit status for each run;
+that no hold is left on any of the three snapshots afterwards, since
+they die with the cleanup descriptor; that the result is exactly
+POOL/result, read-only and mounted at
+/var/run/zfs_rebase/POOL/result/mnt, carrying zfs_rebase:state
+"applied" or, for a conflicted fixture, "conflicts"; and for a clean
+fixture that rebasing from onto the result again is a no-op. Step 4
+aborts the run and checks that the dataset, the manifest file the run
+recorded and the directory under /var/run are all gone, and that a
+second --abort exits 2. KEEP=1 leaves the pool for inspection. Its
+header says what it does not exercise yet.
