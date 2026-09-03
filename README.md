@@ -27,3 +27,6 @@ The theory behind the decision rule, the manifest format, and the
 sprint plan live in the author's freebsd-development notes (the v4
 set under zfs-rebase-theory/ and sprints/sprint-4/). The manifest
 format will be copied into doc/ here when the emitter lands.
+
+License: BSD 3-Clause (see LICENSE). tools/cstyle.pl is OpenZFS's
+and remains under CDDL-1.0, as its header says.
