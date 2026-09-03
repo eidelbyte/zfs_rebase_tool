@@ -9,7 +9,7 @@ ZFS_INCLUDE = /usr/include
 ZFS_LIBS = -lzfs_core -lzfs -lnvpair
 
 # Library objects are everything but main.o; tests link against them.
-LIB_OBJS = build/vis.o build/name.o
+LIB_OBJS = build/vis.o build/name.o build/decide.o
 CORE_OBJS = build/main.o $(LIB_OBJS)
 FREEBSD_OBJS =
 TESTS = check_vis check_name
@@ -36,12 +36,22 @@ build/vis.o: src/vis.c src/vis.h
 build/name.o: src/name.c src/name.h
 	$(CC) $(CFLAGS) -c -o $@ src/name.c
 
-check: build $(LIB_OBJS)
+build/decide.o: src/decide.c src/decide.h src/name.h
+	$(CC) $(CFLAGS) -c -o $@ src/decide.c
+
+check: unit battery
+
+unit: build $(LIB_OBJS)
 	@for t in $(TESTS); do \
 	    $(CC) $(CFLAGS) -o build/$$t tests/$$t.c $(LIB_OBJS) || exit 1; \
 	    ./build/$$t || { echo "FAIL $$t"; exit 1; }; \
 	    echo "ok   $$t"; \
 	done
+
+# The M1 gate: every committed battery, both modes.
+battery: build $(LIB_OBJS)
+	$(CC) $(CFLAGS) -o build/check_battery tests/check_battery.c $(LIB_OBJS)
+	./build/check_battery tests/battery/*.txt
 
 gate:
 	sh tools/gate.sh
@@ -49,4 +59,4 @@ gate:
 clean:
 	rm -rf build zfs_rebase
 
-.PHONY: all freebsd check gate clean
+.PHONY: all freebsd check unit battery gate clean
