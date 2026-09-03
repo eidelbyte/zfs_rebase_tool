@@ -8,7 +8,9 @@ LDFLAGS =
 ZFS_INCLUDE = /usr/include
 ZFS_LIBS = -lzfs_core -lzfs -lnvpair
 
-CORE_OBJS = build/main.o
+# Library objects are everything but main.o; tests link against them.
+LIB_OBJS =
+CORE_OBJS = build/main.o $(LIB_OBJS)
 FREEBSD_OBJS =
 TESTS = check_empty
 
@@ -28,9 +30,9 @@ freebsd: build
 build/main.o: src/main.c
 	$(CC) $(CFLAGS) -c -o $@ src/main.c
 
-check: build
+check: build $(LIB_OBJS)
 	@for t in $(TESTS); do \
-	    $(CC) $(CFLAGS) -o build/$$t tests/$$t.c || exit 1; \
+	    $(CC) $(CFLAGS) -o build/$$t tests/$$t.c $(LIB_OBJS) || exit 1; \
 	    ./build/$$t || { echo "FAIL $$t"; exit 1; }; \
 	    echo "ok   $$t"; \
 	done
