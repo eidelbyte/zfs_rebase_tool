@@ -10,8 +10,9 @@ ZFS_LIBS = -lzfs_core -lzfs -lnvpair
 
 # Library objects are everything but main.o; tests link against them.
 LIB_OBJS = build/vis.o build/name.o build/decide.o build/fixture.o \
+	build/manifest.o build/walk.o build/yellow.o build/apply.o \
+	build/diff.o build/zfsops.o
 CORE_OBJS = build/main.o $(LIB_OBJS)
-FREEBSD_OBJS = 
 TESTS = check_vis check_name check_fixture check_manifest check_walk \
 	check_yellow check_roundtrip check_apply check_diff
 
@@ -25,8 +26,7 @@ zfs_rebase: $(CORE_OBJS)
 
 freebsd: build
 	$(MAKE) CFLAGS="$(CFLAGS) -DZR_FREEBSD -I$(ZFS_INCLUDE)" \
-	    LDFLAGS="$(LDFLAGS) $(ZFS_LIBS)" \
-	    CORE_OBJS="$(CORE_OBJS) $(FREEBSD_OBJS)" zfs_rebase
+	    LDFLAGS="$(LDFLAGS) $(ZFS_LIBS)" zfs_rebase
 
 build/main.o: src/main.c src/decide.h src/fixture.h src/manifest.h \
 	src/name.h src/walk.h src/yellow.h
@@ -58,6 +58,9 @@ build/apply.o: src/apply.c src/apply.h src/manifest.h src/walk.h src/name.h
 
 build/diff.o: src/diff.c src/diff.h src/name.h src/walk.h src/yellow.h
 	$(CC) $(CFLAGS) -c -o $@ src/diff.c
+
+build/zfsops.o: src/zfsops.c src/zfsops.h src/diff.h
+	$(CC) $(CFLAGS) -c -o $@ src/zfsops.c
 
 check: unit battery fixtures
 
