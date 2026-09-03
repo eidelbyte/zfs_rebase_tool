@@ -1,0 +1,6 @@
+M	F	/tmp/zrtdiff-mnt/clone/a
+-	F	/tmp/zrtdiff-mnt/clone/b
+M	F	/tmp/zrtdiff-mnt/clone/h2	(+1)
++	F	/tmp/zrtdiff-mnt/clone/n
+M	/	/tmp/zrtdiff-mnt/clone/
+R	/	/tmp/zrtdiff-mnt/clone/d	/tmp/zrtdiff-mnt/clone/e
