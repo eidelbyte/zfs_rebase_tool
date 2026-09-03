@@ -1,0 +1,28 @@
+# s2 zero-overlap: base ({ABCD}) from ({ACD},{B}) onto ({ABD},{C}) [strict]
+# verdict: ({A D}c,{B}c,{C}c)
+tree base
+/A file c
+/B link /A
+/C link /A
+/D link /A
+tree from
+/A file c
+/C link /A
+/D link /A
+/B file c
+tree onto
+/A file c
+/B link /A
+/D link /A
+/C file c
+expect
+#rebase-manifest 4
+#base zrt/base@s
+#from zrt/from@s
+#onto zrt/onto@s
+#mode strict
+#actions 1
+#conflicts 0
+/
+    B cp /B
+    ..

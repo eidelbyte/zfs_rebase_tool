@@ -1,0 +1,22 @@
+# th v1-unilateral-split: base ({AB}v) from ({A}v,{B}v) onto ({AB}v) [strict]
+# verdict: ({A}v,{B}v)
+tree base
+/A file v
+/B link /A
+tree from
+/A file v
+/B file v
+tree onto
+/A file v
+/B link /A
+expect
+#rebase-manifest 4
+#base zrt/base@s
+#from zrt/from@s
+#onto zrt/onto@s
+#mode strict
+#actions 1
+#conflicts 0
+/
+    B cp /B
+    ..

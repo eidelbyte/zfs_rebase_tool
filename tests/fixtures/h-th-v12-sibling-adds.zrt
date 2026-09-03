@@ -1,0 +1,18 @@
+# th v12-sibling-adds: base () from ({A}a) onto ({B}b) [strict]
+# verdict: ({A}a,{B}b)
+tree base
+tree from
+/A file a
+tree onto
+/B file b
+expect
+#rebase-manifest 4
+#base zrt/base@s
+#from zrt/from@s
+#onto zrt/onto@s
+#mode strict
+#actions 1
+#conflicts 0
+/
+    A cp /A
+    ..

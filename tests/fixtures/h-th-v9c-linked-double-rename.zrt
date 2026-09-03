@@ -1,0 +1,30 @@
+# th v9c-linked-double-rename: base ({AB}v) from ({CB}v) onto ({QD}v) [strict]
+# verdict: conflict orphaned-add
+tree base
+/A file v
+/B link /A
+tree from
+/B file v
+/C link /B
+tree onto
+/D file v
+/Q link /D
+expect
+#rebase-manifest 4
+#base zrt/base@s
+#from zrt/from@s
+#onto zrt/onto@s
+#mode strict
+#actions 0
+#conflicts 1
+/
+    C conflict 1
+    ..
+
+# a pool is one file and all its names: {names}letter; same
+# letter, same bytes
+conflict 1 orphaned-add
+  why  /C was added to a pool the other side deleted
+  base ()
+  from ({/C /B}x)
+  onto ()

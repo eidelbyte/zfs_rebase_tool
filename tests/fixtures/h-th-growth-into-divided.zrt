@@ -1,0 +1,33 @@
+# th growth-into-divided: base ({AB}x) from ({A}x,{B}x) onto ({ABE}x) [strict]
+# verdict: conflict healed-split
+tree base
+/A file x
+/B link /A
+tree from
+/A file x
+/B file x
+tree onto
+/A file x
+/B link /A
+/E link /A
+expect
+#rebase-manifest 4
+#base zrt/base@s
+#from zrt/from@s
+#onto zrt/onto@s
+#mode strict
+#actions 0
+#conflicts 1
+/
+    A conflict 1
+    B conflict 1
+    E conflict 1
+    ..
+
+# a pool is one file and all its names: {names}letter; same
+# letter, same bytes
+conflict 1 healed-split
+  why  /A and /B were split on one side and joined by the other
+  base ({/A /B}x)
+  from ({/A}x,{/B}x)
+  onto ({/A /B /E}x)

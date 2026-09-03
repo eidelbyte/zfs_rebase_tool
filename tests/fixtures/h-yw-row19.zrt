@@ -1,0 +1,22 @@
+# yw row19: base ({A}x) from ({A}x,{XY}q) onto ({A}x) [strict]
+# verdict: ({A}x,{X Y}q)
+tree base
+/A file x
+tree from
+/A file x
+/X file q
+/Y link /X
+tree onto
+/A file x
+expect
+#rebase-manifest 4
+#base zrt/base@s
+#from zrt/from@s
+#onto zrt/onto@s
+#mode strict
+#actions 2
+#conflicts 0
+/
+    X cp /X
+    Y ln /X
+    ..

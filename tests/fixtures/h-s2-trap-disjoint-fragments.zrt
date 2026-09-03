@@ -1,0 +1,28 @@
+# s2 trap-disjoint-fragments: base ({ABCD}x) from ({AB}x,{C}x,{D}x) onto ({CD}x,{A}x,{B}x) [strict]
+# verdict: ({A}x,{B}x,{C}x,{D}x)
+tree base
+/A file x
+/B link /A
+/C link /A
+/D link /A
+tree from
+/A file x
+/B link /A
+/C file x
+/D file x
+tree onto
+/A file x
+/B file x
+/C file x
+/D link /C
+expect
+#rebase-manifest 4
+#base zrt/base@s
+#from zrt/from@s
+#onto zrt/onto@s
+#mode strict
+#actions 1
+#conflicts 0
+/
+    D cp /D
+    ..

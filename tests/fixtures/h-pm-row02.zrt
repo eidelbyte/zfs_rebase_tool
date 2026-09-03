@@ -1,0 +1,35 @@
+# pm row02: base ({A},{B},{C}) from ({AB},{C}) onto ({A},{BC}) [strict]
+# verdict: conflict unexpressed-sharing
+tree base
+/A file c
+/B file c
+/C file c
+tree from
+/A file c
+/B link /A
+/C file c
+tree onto
+/A file c
+/B file c
+/C link /B
+expect
+#rebase-manifest 4
+#base zrt/base@s
+#from zrt/from@s
+#onto zrt/onto@s
+#mode strict
+#actions 0
+#conflicts 1
+/
+    A conflict 1
+    B conflict 1
+    C conflict 1
+    ..
+
+# a pool is one file and all its names: {names}letter; same
+# letter, same bytes
+conflict 1 unexpressed-sharing
+  why  /A and /C would share a pool that neither side joined
+  base ({/A}x,{/C}x,{/B}x)
+  from ({/A /B}x,{/C}x)
+  onto ({/A}x,{/B /C}x)

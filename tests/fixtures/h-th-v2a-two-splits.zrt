@@ -1,0 +1,25 @@
+# th v2a-two-splits: base ({ABC}v) from ({A}v,{BC}v) onto ({AB}v,{C}v) [strict]
+# verdict: ({A}v,{B}v,{C}v)
+tree base
+/A file v
+/B link /A
+/C link /A
+tree from
+/A file v
+/B file v
+/C link /B
+tree onto
+/A file v
+/B link /A
+/C file v
+expect
+#rebase-manifest 4
+#base zrt/base@s
+#from zrt/from@s
+#onto zrt/onto@s
+#mode strict
+#actions 1
+#conflicts 0
+/
+    B cp /B
+    ..

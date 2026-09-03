@@ -1,0 +1,17 @@
+# th v5-rename-delete: base ({A}v) from () onto ({B}v) [strict]
+# verdict: ({B}v)
+tree base
+/A file v
+tree from
+tree onto
+/B file v
+expect
+#rebase-manifest 4
+#base zrt/base@s
+#from zrt/from@s
+#onto zrt/onto@s
+#mode strict
+#actions 0
+#conflicts 0
+/
+    ..

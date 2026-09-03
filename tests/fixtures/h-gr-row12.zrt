@@ -1,0 +1,34 @@
+# gr row12: base ({A},{B}) from ({AX},{B}) onto ({A},{BX}) [strict]
+# verdict: conflict contested-home
+tree base
+/A file c
+/B file c
+tree from
+/A file c
+/X link /A
+/B file c
+tree onto
+/A file c
+/B file c
+/X link /B
+expect
+#rebase-manifest 4
+#base zrt/base@s
+#from zrt/from@s
+#onto zrt/onto@s
+#mode strict
+#actions 0
+#conflicts 1
+/
+    A conflict 1
+    B conflict 1
+    X conflict 1
+    ..
+
+# a pool is one file and all its names: {names}letter; same
+# letter, same bytes
+conflict 1 contested-home
+  why  /X was created on both sides in different pools
+  base ({/A}x,{/B}x)
+  from ({/A /X}x,{/B}x)
+  onto ({/A}x,{/B /X}x)

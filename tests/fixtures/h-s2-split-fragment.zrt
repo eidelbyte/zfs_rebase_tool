@@ -1,0 +1,29 @@
+# s2 split-fragment: base ({ABCD}x) from ({AB}x,{CD}x) onto ({ABCD}y) [strict]
+# verdict: ({A B}y,{C D}y)
+tree base
+/A file x
+/B link /A
+/C link /A
+/D link /A
+tree from
+/A file x
+/B link /A
+/C file x
+/D link /C
+tree onto
+/A file y
+/B link /A
+/C link /A
+/D link /A
+expect
+#rebase-manifest 4
+#base zrt/base@s
+#from zrt/from@s
+#onto zrt/onto@s
+#mode strict
+#actions 2
+#conflicts 0
+/
+    C dup /A
+    D ln /C
+    ..

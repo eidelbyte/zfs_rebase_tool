@@ -1,0 +1,34 @@
+# s2 phantom: base ({ABCXY}x) from ({ABC}y,{X}x,{Y}x) onto ({CXY}y,{A}x,{B}x) [strict]
+# verdict: ({A}y,{B}y,{C}y,{X}y,{Y}y)
+tree base
+/A file x
+/B link /A
+/C link /A
+/X link /A
+/Y link /A
+tree from
+/A file y
+/B link /A
+/C link /A
+/X file x
+/Y file x
+tree onto
+/A file x
+/B file x
+/C file y
+/X link /C
+/Y link /C
+expect
+#rebase-manifest 4
+#base zrt/base@s
+#from zrt/from@s
+#onto zrt/onto@s
+#mode strict
+#actions 4
+#conflicts 0
+/
+    A write /A
+    B write /B
+    X dup /C
+    Y dup /C
+    ..

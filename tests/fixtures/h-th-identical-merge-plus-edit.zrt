@@ -1,0 +1,31 @@
+# th identical-merge-plus-edit: base ({A}a,{B}b) from ({AB}a) onto ({AB}c) [strict]
+# verdict: conflict changed-both
+tree base
+/A file a
+/B file b
+tree from
+/A file a
+/B link /A
+tree onto
+/A file c
+/B link /A
+expect
+#rebase-manifest 4
+#base zrt/base@s
+#from zrt/from@s
+#onto zrt/onto@s
+#mode strict
+#actions 0
+#conflicts 1
+/
+    A conflict 1
+    B conflict 1
+    ..
+
+# a pool is one file and all its names: {names}letter; same
+# letter, same bytes
+conflict 1 changed-both
+  why  /B changed on both sides
+  base ({/A}x,{/B}y)
+  from ({/A /B}x)
+  onto ({/A /B}z)

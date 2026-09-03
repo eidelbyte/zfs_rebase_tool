@@ -1,0 +1,31 @@
+# yw row05: base ({A}x,{B}y) from ({AB}x) onto ({A}z,{B}y) [strict]
+# verdict: conflict disagree
+tree base
+/A file x
+/B file y
+tree from
+/A file x
+/B link /A
+tree onto
+/A file z
+/B file y
+expect
+#rebase-manifest 4
+#base zrt/base@s
+#from zrt/from@s
+#onto zrt/onto@s
+#mode strict
+#actions 0
+#conflicts 1
+/
+    A conflict 1
+    B conflict 1
+    ..
+
+# a pool is one file and all its names: {names}letter; same
+# letter, same bytes
+conflict 1 disagree
+  why  /A and /B end in one pool with different contents
+  base ({/A}x,{/B}y)
+  from ({/A /B}x)
+  onto ({/A}z,{/B}y)

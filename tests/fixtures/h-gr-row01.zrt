@@ -1,0 +1,37 @@
+# gr row01: base ({ABC}) from ({ABCD}) onto ({A},{B},{C}) [strict]
+# verdict: conflict healed-split
+tree base
+/A file c
+/B link /A
+/C link /A
+tree from
+/A file c
+/B link /A
+/C link /A
+/D link /A
+tree onto
+/A file c
+/B file c
+/C file c
+expect
+#rebase-manifest 4
+#base zrt/base@s
+#from zrt/from@s
+#onto zrt/onto@s
+#mode strict
+#actions 0
+#conflicts 1
+/
+    A conflict 1
+    B conflict 1
+    C conflict 1
+    D conflict 1
+    ..
+
+# a pool is one file and all its names: {names}letter; same
+# letter, same bytes
+conflict 1 healed-split
+  why  /A and /C were split on one side and joined by the other
+  base ({/A /B /C}x)
+  from ({/A /B /C /D}x)
+  onto ({/A}x,{/C}x,{/B}x)

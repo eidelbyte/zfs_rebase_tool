@@ -1,0 +1,33 @@
+# pm row01: base ({P},{AB},{CD}) from ({ABP},{CD}) onto ({AB},{CDP}) [permissive]
+# verdict: ({A B C D P}c)
+tree base
+/A file c
+/B link /A
+/C file c
+/D link /C
+/P file c
+tree from
+/A file c
+/B link /A
+/P link /A
+/C file c
+/D link /C
+tree onto
+/A file c
+/B link /A
+/C file c
+/D link /C
+/P link /C
+expect
+#rebase-manifest 4
+#base zrt/base@s
+#from zrt/from@s
+#onto zrt/onto@s
+#mode permissive-merge
+#actions 3
+#conflicts 0
+/
+    C ln /A
+    D ln /A
+    P ln /A
+    ..

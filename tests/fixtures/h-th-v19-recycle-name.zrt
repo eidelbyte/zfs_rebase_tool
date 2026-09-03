@@ -1,0 +1,33 @@
+# th v19-recycle-name: base ({AW}v,{Z}z) from ({AW}v,{Z}y) onto ({ZW}v) [strict]
+# verdict: conflict changed-both
+tree base
+/A file v
+/W link /A
+/Z file z
+tree from
+/A file v
+/W link /A
+/Z file y
+tree onto
+/W file v
+/Z link /W
+expect
+#rebase-manifest 4
+#base zrt/base@s
+#from zrt/from@s
+#onto zrt/onto@s
+#mode strict
+#actions 0
+#conflicts 1
+/
+    W conflict 1
+    Z conflict 1
+    ..
+
+# a pool is one file and all its names: {names}letter; same
+# letter, same bytes
+conflict 1 changed-both
+  why  /Z changed on both sides
+  base ({/Z}x)
+  from ({/Z}y,{/W /A}z)
+  onto ({/W /Z}z)

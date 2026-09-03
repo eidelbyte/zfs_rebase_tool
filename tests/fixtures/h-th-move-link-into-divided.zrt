@@ -1,0 +1,35 @@
+# th move-link-into-divided: base ({PQ}x,{S}x) from ({P}x,{Q}x,{S}x) onto ({PQS}x) [strict]
+# verdict: conflict healed-split
+tree base
+/P file x
+/Q link /P
+/S file x
+tree from
+/P file x
+/Q file x
+/S file x
+tree onto
+/P file x
+/Q link /P
+/S link /P
+expect
+#rebase-manifest 4
+#base zrt/base@s
+#from zrt/from@s
+#onto zrt/onto@s
+#mode strict
+#actions 0
+#conflicts 1
+/
+    P conflict 1
+    Q conflict 1
+    S conflict 1
+    ..
+
+# a pool is one file and all its names: {names}letter; same
+# letter, same bytes
+conflict 1 healed-split
+  why  /Q and /P were split on one side and joined by the other
+  base ({/S}x,{/P /Q}x)
+  from ({/S}x,{/Q}x,{/P}x)
+  onto ({/P /Q /S}x)

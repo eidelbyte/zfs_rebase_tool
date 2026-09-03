@@ -1,0 +1,30 @@
+# s2 novel-overlap-diff: base () from ({AB}x) onto ({AC}y) [strict]
+# verdict: conflict contested-home
+tree base
+tree from
+/A file x
+/B link /A
+tree onto
+/A file y
+/C link /A
+expect
+#rebase-manifest 4
+#base zrt/base@s
+#from zrt/from@s
+#onto zrt/onto@s
+#mode strict
+#actions 0
+#conflicts 1
+/
+    A conflict 1
+    B conflict 1
+    C conflict 1
+    ..
+
+# a pool is one file and all its names: {names}letter; same
+# letter, same bytes
+conflict 1 contested-home,disagree
+  why  /A was created on both sides in different pools
+  base ()
+  from ({/A /B}x)
+  onto ({/A /C}y)

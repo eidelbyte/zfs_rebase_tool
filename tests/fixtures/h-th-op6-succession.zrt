@@ -1,0 +1,22 @@
+# th op6-succession: base ({AB}x) from ({C}x,{B}x) onto ({Q}x,{D}x) [strict]
+# verdict: ({C}x,{D}x,{Q}x)
+tree base
+/A file x
+/B link /A
+tree from
+/B file x
+/C file x
+tree onto
+/D file x
+/Q file x
+expect
+#rebase-manifest 4
+#base zrt/base@s
+#from zrt/from@s
+#onto zrt/onto@s
+#mode strict
+#actions 1
+#conflicts 0
+/
+    C cp /C
+    ..

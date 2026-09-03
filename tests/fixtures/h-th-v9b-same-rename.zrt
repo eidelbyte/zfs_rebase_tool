@@ -1,0 +1,18 @@
+# th v9b-same-rename: base ({A}v) from ({X}v) onto ({X}v) [strict]
+# verdict: ({X}v)
+tree base
+/A file v
+tree from
+/X file v
+tree onto
+/X file v
+expect
+#rebase-manifest 4
+#base zrt/base@s
+#from zrt/from@s
+#onto zrt/onto@s
+#mode strict
+#actions 0
+#conflicts 0
+/
+    ..

@@ -1,0 +1,30 @@
+# s2 sever-and-join: base ({ABC},{DE}) from ({BC},{A},{DE}) onto ({BC},{ADE}) [strict]
+# verdict: ({A D E}c,{B C}c)
+tree base
+/A file c
+/B link /A
+/C link /A
+/D file c
+/E link /D
+tree from
+/A file c
+/B file c
+/C link /B
+/D file c
+/E link /D
+tree onto
+/A file c
+/D link /A
+/E link /A
+/B file c
+/C link /B
+expect
+#rebase-manifest 4
+#base zrt/base@s
+#from zrt/from@s
+#onto zrt/onto@s
+#mode strict
+#actions 0
+#conflicts 0
+/
+    ..

@@ -1,0 +1,33 @@
+# s2 divergent-equal: base ({P}a,{AB}a,{CD}a) from ({ABP}a,{CD}a) onto ({AB}a,{CDP}a) [permissive]
+# verdict: ({A B C D P}a)
+tree base
+/A file a
+/B link /A
+/C file a
+/D link /C
+/P file a
+tree from
+/A file a
+/B link /A
+/P link /A
+/C file a
+/D link /C
+tree onto
+/A file a
+/B link /A
+/C file a
+/D link /C
+/P link /C
+expect
+#rebase-manifest 4
+#base zrt/base@s
+#from zrt/from@s
+#onto zrt/onto@s
+#mode permissive-merge
+#actions 3
+#conflicts 0
+/
+    C ln /A
+    D ln /A
+    P ln /A
+    ..

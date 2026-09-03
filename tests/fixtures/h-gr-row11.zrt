@@ -1,0 +1,20 @@
+# gr row11: base ({AB}) from ({A}) onto ({B}) [strict]
+# verdict: ()
+tree base
+/A file c
+/B link /A
+tree from
+/A file c
+tree onto
+/B file c
+expect
+#rebase-manifest 4
+#base zrt/base@s
+#from zrt/from@s
+#onto zrt/onto@s
+#mode strict
+#actions 1
+#conflicts 0
+/
+    B rm
+    ..

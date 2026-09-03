@@ -1,0 +1,30 @@
+# s2 trap-rename-src-vs-pool: base ({A}m) from ({R}m) onto ({AS}m) [strict]
+# verdict: conflict orphaned-add
+tree base
+/A file m
+tree from
+/R file m
+tree onto
+/A file m
+/S link /A
+expect
+#rebase-manifest 4
+#base zrt/base@s
+#from zrt/from@s
+#onto zrt/onto@s
+#mode strict
+#actions 1
+#conflicts 1
+/
+    A conflict 1
+    R cp /R
+    S conflict 1
+    ..
+
+# a pool is one file and all its names: {names}letter; same
+# letter, same bytes
+conflict 1 orphaned-add
+  why  /S was added to a pool the other side deleted
+  base ()
+  from ()
+  onto ({/A /S}x)

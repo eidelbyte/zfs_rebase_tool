@@ -1,0 +1,35 @@
+# th merge-vs-split: base ({AB}x,{C}x) from ({ABC}x) onto ({A}x,{B}x,{C}x) [strict]
+# verdict: conflict healed-split
+tree base
+/A file x
+/B link /A
+/C file x
+tree from
+/A file x
+/B link /A
+/C link /A
+tree onto
+/A file x
+/B file x
+/C file x
+expect
+#rebase-manifest 4
+#base zrt/base@s
+#from zrt/from@s
+#onto zrt/onto@s
+#mode strict
+#actions 0
+#conflicts 1
+/
+    A conflict 1
+    B conflict 1
+    C conflict 1
+    ..
+
+# a pool is one file and all its names: {names}letter; same
+# letter, same bytes
+conflict 1 healed-split
+  why  /A and /B were split on one side and joined by the other
+  base ({/A /B}x,{/C}x)
+  from ({/A /B /C}x)
+  onto ({/A}x,{/C}x,{/B}x)

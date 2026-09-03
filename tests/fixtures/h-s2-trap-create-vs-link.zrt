@@ -1,0 +1,30 @@
+# s2 trap-create-vs-link: base ({B}y) from ({A}y,{B}y) onto ({AB}y) [strict]
+# verdict: conflict contested-home
+tree base
+/B file y
+tree from
+/A file y
+/B file y
+tree onto
+/A file y
+/B link /A
+expect
+#rebase-manifest 4
+#base zrt/base@s
+#from zrt/from@s
+#onto zrt/onto@s
+#mode strict
+#actions 0
+#conflicts 1
+/
+    A conflict 1
+    B conflict 1
+    ..
+
+# a pool is one file and all its names: {names}letter; same
+# letter, same bytes
+conflict 1 contested-home
+  why  /A was created on both sides in different pools
+  base ({/B}x)
+  from ({/A}x,{/B}x)
+  onto ({/A /B}x)

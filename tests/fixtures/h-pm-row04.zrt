@@ -1,0 +1,35 @@
+# pm row04: base ({A}x,{B}y,{C}z) from ({ABC}x) onto ({A}w,{B}y,{C}z) [strict]
+# verdict: conflict disagree
+tree base
+/A file x
+/B file y
+/C file z
+tree from
+/A file x
+/B link /A
+/C link /A
+tree onto
+/A file w
+/B file y
+/C file z
+expect
+#rebase-manifest 4
+#base zrt/base@s
+#from zrt/from@s
+#onto zrt/onto@s
+#mode strict
+#actions 0
+#conflicts 1
+/
+    A conflict 1
+    B conflict 1
+    C conflict 1
+    ..
+
+# a pool is one file and all its names: {names}letter; same
+# letter, same bytes
+conflict 1 disagree
+  why  /A and /C end in one pool with different contents
+  base ({/A}x,{/C}y,{/B}z)
+  from ({/A /B /C}x)
+  onto ({/A}w,{/C}y,{/B}z)

@@ -1,0 +1,24 @@
+# th v20-fidelity: base ({AB}v,{C}c) from ({AB}v,{C}c) onto ({XB}w,{D}d) [strict]
+# verdict: ({B X}w,{D}d)
+tree base
+/A file v
+/B link /A
+/C file c
+tree from
+/A file v
+/B link /A
+/C file c
+tree onto
+/B file w
+/X link /B
+/D file d
+expect
+#rebase-manifest 4
+#base zrt/base@s
+#from zrt/from@s
+#onto zrt/onto@s
+#mode strict
+#actions 0
+#conflicts 0
+/
+    ..

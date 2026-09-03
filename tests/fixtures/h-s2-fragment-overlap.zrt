@@ -1,0 +1,29 @@
+# s2 fragment-overlap: base ({ABCD}) from ({AD},{BC}) onto ({AB},{CD}) [strict]
+# verdict: ({A}c,{B}c,{C}c,{D}c)
+tree base
+/A file c
+/B link /A
+/C link /A
+/D link /A
+tree from
+/A file c
+/D link /A
+/B file c
+/C link /B
+tree onto
+/A file c
+/B link /A
+/C file c
+/D link /C
+expect
+#rebase-manifest 4
+#base zrt/base@s
+#from zrt/from@s
+#onto zrt/onto@s
+#mode strict
+#actions 2
+#conflicts 0
+/
+    B cp /B
+    D cp /D
+    ..

@@ -1,0 +1,21 @@
+# s2 novel-same-content: base () from ({AB}x) onto ({CD}x) [strict]
+# verdict: ({A B}x,{C D}x)
+tree base
+tree from
+/A file x
+/B link /A
+tree onto
+/C file x
+/D link /C
+expect
+#rebase-manifest 4
+#base zrt/base@s
+#from zrt/from@s
+#onto zrt/onto@s
+#mode strict
+#actions 2
+#conflicts 0
+/
+    A cp /A
+    B ln /A
+    ..

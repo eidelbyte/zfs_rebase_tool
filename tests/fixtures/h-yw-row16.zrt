@@ -1,0 +1,21 @@
+# yw row16: base ({A}x,{B}y) from ({AB}x) onto ({B}y) [strict]
+# verdict: ({B}x)
+tree base
+/A file x
+/B file y
+tree from
+/A file x
+/B link /A
+tree onto
+/B file y
+expect
+#rebase-manifest 4
+#base zrt/base@s
+#from zrt/from@s
+#onto zrt/onto@s
+#mode strict
+#actions 1
+#conflicts 0
+/
+    B write /B
+    ..

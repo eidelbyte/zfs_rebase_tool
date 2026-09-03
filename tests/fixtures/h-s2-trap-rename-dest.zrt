@@ -1,0 +1,33 @@
+# s2 trap-rename-dest: base ({A}m,{Q}q) from ({R}m,{Q}q) onto ({A}m,{QR}q) [strict]
+# verdict: conflict contested-home
+tree base
+/A file m
+/Q file q
+tree from
+/Q file q
+/R file m
+tree onto
+/A file m
+/Q file q
+/R link /Q
+expect
+#rebase-manifest 4
+#base zrt/base@s
+#from zrt/from@s
+#onto zrt/onto@s
+#mode strict
+#actions 1
+#conflicts 1
+/
+    A rm
+    Q conflict 1
+    R conflict 1
+    ..
+
+# a pool is one file and all its names: {names}letter; same
+# letter, same bytes
+conflict 1 contested-home,disagree
+  why  /R was created on both sides in different pools
+  base ({/Q}x)
+  from ({/R}y,{/Q}x)
+  onto ({/Q /R}x)

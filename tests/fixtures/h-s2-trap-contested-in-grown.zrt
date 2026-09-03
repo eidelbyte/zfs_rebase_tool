@@ -1,0 +1,34 @@
+# s2 trap-contested-in-grown: base ({AB}x) from ({AB}x,{P}y) onto ({ABP}x) [strict]
+# verdict: conflict contested-home
+tree base
+/A file x
+/B link /A
+tree from
+/A file x
+/B link /A
+/P file y
+tree onto
+/A file x
+/B link /A
+/P link /A
+expect
+#rebase-manifest 4
+#base zrt/base@s
+#from zrt/from@s
+#onto zrt/onto@s
+#mode strict
+#actions 0
+#conflicts 1
+/
+    A conflict 1
+    B conflict 1
+    P conflict 1
+    ..
+
+# a pool is one file and all its names: {names}letter; same
+# letter, same bytes
+conflict 1 contested-home,disagree
+  why  /P was created on both sides in different pools
+  base ({/A /B}x)
+  from ({/A /B}x,{/P}y)
+  onto ({/A /B /P}x)
