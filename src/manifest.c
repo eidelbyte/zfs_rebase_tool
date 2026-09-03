@@ -9,6 +9,7 @@
  * marked are written out as records in the order it named them.
  */
 
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -904,4 +905,1024 @@ zr_manifest_emit(FILE *out, const struct zr_manifest_hdr *hdr,
 done:
 	zm_fini(&m);
 	return (rc);
+}
+
+/*
+ * The parser, the emitter read backwards. The tree section is scoped,
+ * so the enclosing directories are an explicit stack of decoded paths
+ * and a name line's absolute path is that stack and its own name:
+ * nothing here recurses either. Indentation is read past; the stack is
+ * what says where a line sits. Every rejection names its line.
+ */
+
+/* One open directory of the tree section. */
+struct zp_scope {
+	unsigned char	*zs_path;
+	size_t		zs_len;
+};
+
+/* One conflict mark, kept until the records behind it are known. */
+struct zp_ref {
+	uint32_t	zf_num;
+	uint32_t	zf_line;
+};
+
+/* Everything one parse run carries. */
+struct zp {
+	FILE			*zp_in;
+	struct zr_parsed	*zp_out;
+	char			*zp_err;
+	size_t			zp_errlen;
+	char			*zp_line;	/* the line just read */
+	size_t			zp_cap;
+	size_t			zp_len;
+	uint32_t		zp_lineno;
+	struct zp_scope		*zp_stack;
+	uint32_t		zp_depth;
+	uint32_t		zp_scap;
+	uint32_t		zp_acap;
+	uint32_t		zp_rcap;
+	struct zp_ref		*zp_refs;
+	uint32_t		zp_nrefs;
+	uint32_t		zp_fcap;
+	uint32_t		zp_aline;	/* where #actions sits */
+	uint32_t		zp_cline;	/* where #conflicts sits */
+};
+
+/*
+ * Every rejection goes through here, so that every message names the
+ * line the reader must go and look at.
+ */
+static int
+zp_errf(struct zp *p, const char *fmt, ...)
+{
+	va_list ap;
+	char msg[192];
+
+	va_start(ap, fmt);
+	(void) vsnprintf(msg, sizeof (msg), fmt, ap);
+	va_end(ap);
+	if (p->zp_err != NULL && p->zp_errlen > 0)
+		(void) snprintf(p->zp_err, p->zp_errlen, "line %u: %s",
+		    p->zp_lineno, msg);
+	return (-1);
+}
+
+/* One line without its newline. Returns 1, 0 at the end, -1 on failure. */
+static int
+zp_readline(struct zp *p)
+{
+	int c = 0;
+
+	p->zp_len = 0;
+	for (;;) {
+		c = fgetc(p->zp_in);
+		if (c == EOF)
+			break;
+		if (p->zp_len + 2 > p->zp_cap) {
+			size_t cap = p->zp_cap != 0 ? p->zp_cap * 2 : 256;
+			char *nb = realloc(p->zp_line, cap);
+
+			if (nb == NULL)
+				return (-1);
+			p->zp_line = nb;
+			p->zp_cap = cap;
+		}
+		if (c == '\n')
+			break;
+		p->zp_line[p->zp_len++] = (char)c;
+	}
+	if (c == EOF && p->zp_len == 0)
+		return (0);
+	p->zp_line[p->zp_len] = '\0';
+	p->zp_lineno++;
+	return (1);
+}
+
+/* The line just read, without its leading and trailing blanks. */
+static void
+zp_trim(const struct zp *p, const char **s, size_t *len)
+{
+	size_t a = 0, b = p->zp_len;
+
+	while (a < b && (p->zp_line[a] == ' ' || p->zp_line[a] == '\t'))
+		a++;
+	while (b > a && (p->zp_line[b - 1] == ' ' ||
+	    p->zp_line[b - 1] == '\t'))
+		b--;
+	*s = p->zp_line + a;
+	*len = b - a;
+}
+
+/*
+ * The next line that says something. Blank lines are skipped anywhere,
+ * and comments too for every caller but the one reading the header.
+ * Returns 1, 0 at the end of input, -1 on failure.
+ */
+static int
+zp_next(struct zp *p, int skipcomment, const char **s, size_t *len)
+{
+	int rc;
+
+	for (;;) {
+		rc = zp_readline(p);
+		if (rc < 0)
+			return (zp_errf(p, "out of memory"));
+		if (rc == 0)
+			return (0);
+		zp_trim(p, s, len);
+		if (*len == 0)
+			continue;
+		if (skipcomment != 0 && **s == '#')
+			continue;
+		return (1);
+	}
+}
+
+/* The next blank separated field of a line, or 0 at its end. */
+static int
+zp_field(const char *s, size_t len, size_t *pos, const char **f, size_t *flen)
+{
+	size_t i = *pos;
+
+	while (i < len && (s[i] == ' ' || s[i] == '\t'))
+		i++;
+	if (i >= len)
+		return (0);
+	*f = s + i;
+	while (i < len && s[i] != ' ' && s[i] != '\t')
+		i++;
+	*flen = (size_t)(s + i - *f);
+	*pos = i;
+	return (1);
+}
+
+/* A copy of one field as a terminated string. */
+static char *
+zp_dup(const char *s, size_t len)
+{
+	char *d = malloc(len + 1);
+
+	if (d != NULL) {
+		memcpy(d, s, len);
+		d[len] = '\0';
+	}
+	return (d);
+}
+
+/*
+ * Decode one escaped field into bytes of its own. A decoding is never
+ * longer than its text, so one buffer of that size always holds it.
+ */
+static int
+zp_decode(struct zp *p, const char *s, size_t len, const char *what,
+    unsigned char **out, size_t *outlen)
+{
+	unsigned char *buf;
+	size_t n = 0;
+
+	buf = malloc(len + 1);
+	if (buf == NULL)
+		return (zp_errf(p, "out of memory"));
+	if (zr_vis_decode(s, len, buf, len + 1, &n) != 0) {
+		free(buf);
+		return (zp_errf(p, "bad escape in the %s", what));
+	}
+	buf[n] = '\0';
+	*out = buf;
+	*outlen = n;
+	return (0);
+}
+
+/* A count or a record number: decimal digits, and never overlong. */
+static int
+zp_uint(const char *s, size_t len, uint32_t *out)
+{
+	uint32_t v = 0;
+	size_t i;
+
+	if (len == 0 || len > 9)
+		return (-1);
+	for (i = 0; i < len; i++) {
+		if (s[i] < '0' || s[i] > '9')
+			return (-1);
+		v = v * 10 + (uint32_t)(s[i] - '0');
+	}
+	*out = v;
+	return (0);
+}
+
+/*
+ * Manifest order over two absolute paths: component by component as
+ * bytes, a parent before its children. The slash ranks below every
+ * other byte, which is what puts /a/b before /a-1.
+ */
+static int
+zp_path_cmp(const unsigned char *a, size_t alen, const unsigned char *b,
+    size_t blen)
+{
+	size_t i, n = alen < blen ? alen : blen;
+
+	for (i = 0; i < n; i++) {
+		int x = a[i] == '/' ? -1 : (int)a[i];
+		int y = b[i] == '/' ? -1 : (int)b[i];
+
+		if (x != y)
+			return (x < y ? -1 : 1);
+	}
+	if (alen != blen)
+		return (alen < blen ? -1 : 1);
+	return (0);
+}
+
+/* The absolute path of a name line: its scope and its own name. */
+static int
+zp_join(struct zp *p, const unsigned char *dir, size_t dirlen,
+    const unsigned char *name, size_t namelen, unsigned char **out,
+    size_t *outlen)
+{
+	size_t n = dirlen == 1 ? 0 : dirlen;
+	unsigned char *buf;
+
+	buf = malloc(n + namelen + 2);
+	if (buf == NULL)
+		return (zp_errf(p, "out of memory"));
+	if (n > 0)
+		memcpy(buf, dir, n);
+	buf[n] = '/';
+	memcpy(buf + n + 1, name, namelen);
+	buf[n + namelen + 1] = '\0';
+	*out = buf;
+	*outlen = n + namelen + 1;
+	return (0);
+}
+
+/* Open one directory; the stack owns its copy of the path. */
+static int
+zp_push(struct zp *p, const unsigned char *path, size_t len)
+{
+	unsigned char *copy;
+
+	if (p->zp_depth == p->zp_scap) {
+		uint32_t cap = p->zp_scap != 0 ? p->zp_scap * 2 : 16;
+		struct zp_scope *ns;
+
+		ns = realloc(p->zp_stack, (size_t)cap * sizeof (*ns));
+		if (ns == NULL)
+			return (zp_errf(p, "out of memory"));
+		p->zp_stack = ns;
+		p->zp_scap = cap;
+	}
+	copy = malloc(len + 1);
+	if (copy == NULL)
+		return (zp_errf(p, "out of memory"));
+	memcpy(copy, path, len);
+	copy[len] = '\0';
+	p->zp_stack[p->zp_depth].zs_path = copy;
+	p->zp_stack[p->zp_depth].zs_len = len;
+	p->zp_depth++;
+	return (0);
+}
+
+/* Take one action; the parse owns its paths from here on. */
+static int
+zp_add_action(struct zp *p, struct zr_action *a)
+{
+	struct zr_parsed *o = p->zp_out;
+
+	if (o->zp_nactions == p->zp_acap) {
+		uint32_t cap = p->zp_acap != 0 ? p->zp_acap * 2 : 16;
+		struct zr_action *na;
+
+		na = realloc(o->zp_actions, (size_t)cap * sizeof (*na));
+		if (na == NULL) {
+			free(a->za_path);
+			free(a->za_arg);
+			return (zp_errf(p, "out of memory"));
+		}
+		o->zp_actions = na;
+		p->zp_acap = cap;
+	}
+	o->zp_actions[o->zp_nactions++] = *a;
+	return (0);
+}
+
+/* Take one conflict mark, with the line that will be blamed for it. */
+static int
+zp_add_ref(struct zp *p, uint32_t num)
+{
+	if (p->zp_nrefs == p->zp_fcap) {
+		uint32_t cap = p->zp_fcap != 0 ? p->zp_fcap * 2 : 16;
+		struct zp_ref *nr;
+
+		nr = realloc(p->zp_refs, (size_t)cap * sizeof (*nr));
+		if (nr == NULL)
+			return (zp_errf(p, "out of memory"));
+		p->zp_refs = nr;
+		p->zp_fcap = cap;
+	}
+	p->zp_refs[p->zp_nrefs].zf_num = num;
+	p->zp_refs[p->zp_nrefs].zf_line = p->zp_lineno;
+	p->zp_nrefs++;
+	return (0);
+}
+
+/* Take one conflict record. */
+static int
+zp_add_record(struct zp *p, const struct zr_record *r)
+{
+	struct zr_parsed *o = p->zp_out;
+
+	if (o->zp_nrecords == p->zp_rcap) {
+		uint32_t cap = p->zp_rcap != 0 ? p->zp_rcap * 2 : 8;
+		struct zr_record *nr;
+
+		nr = realloc(o->zp_records, (size_t)cap * sizeof (*nr));
+		if (nr == NULL)
+			return (zp_errf(p, "out of memory"));
+		o->zp_records = nr;
+		p->zp_rcap = cap;
+	}
+	o->zp_records[o->zp_nrecords++] = *r;
+	return (0);
+}
+
+/* The six header keys, in the order the format writes them. */
+static const char *const zp_hdrkey[] = {
+	"#base", "#from", "#onto", "#mode", "#actions", "#conflicts"
+};
+
+#define	ZP_NHDR		(sizeof (zp_hdrkey) / sizeof (zp_hdrkey[0]))
+
+/* One header line's value: three names, the mode and the two counts. */
+static int
+zp_header_value(struct zp *p, uint32_t which, const char *v, size_t vlen)
+{
+	struct zr_parsed *o = p->zp_out;
+
+	switch (which) {
+	case 0:
+		o->zp_base = zp_dup(v, vlen);
+		return (o->zp_base != NULL ? 0 : zp_errf(p, "out of memory"));
+	case 1:
+		o->zp_from = zp_dup(v, vlen);
+		return (o->zp_from != NULL ? 0 : zp_errf(p, "out of memory"));
+	case 2:
+		o->zp_onto = zp_dup(v, vlen);
+		return (o->zp_onto != NULL ? 0 : zp_errf(p, "out of memory"));
+	case 3:
+		if (vlen == 6 && memcmp(v, "strict", 6) == 0)
+			o->zp_mode = ZR_MODE_STRICT;
+		else if (vlen == 16 && memcmp(v, "permissive-merge", 16) == 0)
+			o->zp_mode = ZR_MODE_PERMISSIVE;
+		else
+			return (zp_errf(p, "the mode is strict or "
+			    "permissive-merge"));
+		return (0);
+	case 4:
+		p->zp_aline = p->zp_lineno;
+		if (zp_uint(v, vlen, &o->zp_actions_declared) != 0)
+			return (zp_errf(p, "#actions wants a count"));
+		return (0);
+	default:
+		p->zp_cline = p->zp_lineno;
+		if (zp_uint(v, vlen, &o->zp_conflicts_declared) != 0)
+			return (zp_errf(p, "#conflicts wants a count"));
+		return (0);
+	}
+}
+
+/*
+ * The version line, which is the first line of the file and nothing
+ * else, then the six headers in order. Any other line beginning with a
+ * hash between them is a comment and is passed over.
+ */
+static int
+zp_header(struct zp *p)
+{
+	const char *s = NULL;
+	size_t klen, len = 0;
+	uint32_t i;
+	int rc;
+
+	rc = zp_readline(p);
+	if (rc < 0)
+		return (zp_errf(p, "out of memory"));
+	if (rc == 0)
+		return (zp_errf(p, "expected #rebase-manifest 4"));
+	zp_trim(p, &s, &len);
+	if (len != 18 || memcmp(s, "#rebase-manifest 4", 18) != 0)
+		return (zp_errf(p, "expected #rebase-manifest 4"));
+	for (i = 0; i < ZP_NHDR; i++) {
+		klen = strlen(zp_hdrkey[i]);
+		for (;;) {
+			rc = zp_next(p, 0, &s, &len);
+			if (rc < 0)
+				return (-1);
+			if (rc == 0)
+				return (zp_errf(p, "expected %s",
+				    zp_hdrkey[i]));
+			if (len > klen && s[klen] == ' ' &&
+			    memcmp(s, zp_hdrkey[i], klen) == 0)
+				break;
+			if (*s != '#')
+				return (zp_errf(p, "expected %s",
+				    zp_hdrkey[i]));
+		}
+		if (zp_header_value(p, i, s + klen + 1,
+		    len - klen - 1) != 0)
+			return (-1);
+	}
+	return (0);
+}
+
+/*
+ * One name line: NAME, then the action it carries and that action's
+ * one argument. Its path is the open directories and this name, all of
+ * it decoded, and an ln may only name a path the walk has passed.
+ */
+static int
+zp_name_line(struct zp *p, const char *s, size_t len)
+{
+	struct zr_action a;
+	unsigned char *name = NULL, *path = NULL;
+	const char *f0 = NULL, *f1 = NULL, *f2 = NULL, *f3 = NULL;
+	size_t f0len = 0, f1len = 0, f2len = 0, f3len = 0;
+	size_t namelen = 0, pathlen = 0, pos = 0;
+	int isdir = 0, hasarg = 0, hasact = 1, rc;
+
+	memset(&a, 0, sizeof (a));
+	if (zp_field(s, len, &pos, &f0, &f0len) == 0)
+		return (zp_errf(p, "a name line needs a name"));
+	if (f0[f0len - 1] == '/') {
+		isdir = 1;
+		f0len--;
+	}
+	if (f0len == 0)
+		return (zp_errf(p, "a name line needs a name"));
+	if (zp_decode(p, f0, f0len, "name", &name, &namelen) != 0)
+		return (-1);
+	if (zp_join(p, p->zp_stack[p->zp_depth - 1].zs_path,
+	    p->zp_stack[p->zp_depth - 1].zs_len, name, namelen, &path,
+	    &pathlen) != 0) {
+		free(name);
+		return (-1);
+	}
+	free(name);
+	if (zp_field(s, len, &pos, &f1, &f1len) == 0)
+		hasact = 0;
+	else if (f1len == 2 && memcmp(f1, "rm", 2) == 0)
+		a.za_kind = ZR_ACT_RM;
+	else if (f1len == 2 && memcmp(f1, "ln", 2) == 0)
+		a.za_kind = ZR_ACT_LN;
+	else if (f1len == 2 && memcmp(f1, "cp", 2) == 0)
+		a.za_kind = ZR_ACT_CP;
+	else if (f1len == 5 && memcmp(f1, "write", 5) == 0)
+		a.za_kind = ZR_ACT_WRITE;
+	else if (f1len == 8 && memcmp(f1, "conflict", 8) == 0)
+		a.za_kind = ZR_ACT_CONFLICT;
+	else {
+		free(path);
+		return (zp_errf(p, "unknown action \"%.*s\"", (int)f1len,
+		    f1));
+	}
+	if (hasact != 0)
+		hasarg = zp_field(s, len, &pos, &f2, &f2len);
+	if (hasact == 0) {
+		if (isdir == 0) {
+			free(path);
+			return (zp_errf(p, "a name with no action needs a "
+			    "trailing slash"));
+		}
+	} else if (a.za_kind == ZR_ACT_RM) {
+		if (hasarg != 0) {
+			free(path);
+			return (zp_errf(p, "rm takes no argument"));
+		}
+	} else if (a.za_kind == ZR_ACT_CONFLICT) {
+		if (hasarg == 0 || zp_uint(f2, f2len, &a.za_conflict) != 0 ||
+		    a.za_conflict == 0) {
+			free(path);
+			return (zp_errf(p, "conflict wants a record number"));
+		}
+	} else {
+		if (hasarg == 0) {
+			free(path);
+			return (zp_errf(p, "%.*s wants a path", (int)f1len,
+			    f1));
+		}
+		if (f2[0] != '/') {
+			free(path);
+			return (zp_errf(p, "the path must be absolute"));
+		}
+		if (zp_decode(p, f2, f2len, "path", &a.za_arg,
+		    &a.za_arglen) != 0) {
+			free(path);
+			return (-1);
+		}
+	}
+	if (zp_field(s, len, &pos, &f3, &f3len) != 0) {
+		free(path);
+		free(a.za_arg);
+		return (zp_errf(p, "too many fields on a name line"));
+	}
+	if (a.za_kind == ZR_ACT_LN && hasact != 0 &&
+	    zp_path_cmp(a.za_arg, a.za_arglen, path, pathlen) >= 0) {
+		free(path);
+		free(a.za_arg);
+		return (zp_errf(p, "the ln target is not earlier in manifest "
+		    "order"));
+	}
+	a.za_path = path;
+	a.za_pathlen = pathlen;
+	a.za_isdir = isdir;
+	if (hasact != 0) {
+		if (a.za_kind == ZR_ACT_CONFLICT &&
+		    zp_add_ref(p, a.za_conflict) != 0) {
+			free(path);
+			return (-1);
+		}
+		if (zp_add_action(p, &a) != 0)
+			return (-1);
+	}
+	rc = isdir != 0 ? zp_push(p, path, pathlen) : 0;
+	if (hasact == 0)
+		free(path);
+	return (rc);
+}
+
+/*
+ * The tree section: the root line, then name lines and the two dots
+ * that close each open directory, until the two dots that close the
+ * root and end the section.
+ */
+static int
+zp_tree(struct zp *p)
+{
+	const char *s = NULL;
+	size_t len = 0;
+	int rc;
+
+	rc = zp_next(p, 1, &s, &len);
+	if (rc < 0)
+		return (-1);
+	if (rc == 0 || len != 1 || *s != '/')
+		return (zp_errf(p, "expected the root line \"/\""));
+	if (zp_push(p, (const unsigned char *)"/", 1) != 0)
+		return (-1);
+	for (;;) {
+		rc = zp_next(p, 1, &s, &len);
+		if (rc < 0)
+			return (-1);
+		if (rc == 0)
+			return (zp_errf(p, "end of input inside the tree "
+			    "section"));
+		if (len == 2 && s[0] == '.' && s[1] == '.') {
+			p->zp_depth--;
+			free(p->zp_stack[p->zp_depth].zs_path);
+			p->zp_stack[p->zp_depth].zs_path = NULL;
+			if (p->zp_depth == 0)
+				return (0);
+			continue;
+		}
+		if (zp_name_line(p, s, len) != 0)
+			return (-1);
+	}
+}
+
+/* The bit one class name stands for, or 0 if it names no class. */
+static uint32_t
+zp_class(const char *s, size_t len)
+{
+	uint32_t i;
+
+	for (i = 0; i < ZM_NCLASS; i++) {
+		const char *nm = zr_conflict_name(zm_class[i]);
+
+		if (strlen(nm) == len && memcmp(nm, s, len) == 0)
+			return (zm_class[i]);
+	}
+	return (0);
+}
+
+/* A record's class list: class names separated by commas. */
+static int
+zp_classes(struct zp *p, const char *s, size_t len, uint32_t *flags)
+{
+	size_t a = 0, b;
+	uint32_t bit;
+
+	*flags = 0;
+	for (;;) {
+		for (b = a; b < len && s[b] != ','; b++)
+			continue;
+		bit = zp_class(s + a, b - a);
+		if (bit == 0)
+			return (zp_errf(p, "unknown class \"%.*s\"",
+			    (int)(b - a), s + a));
+		*flags |= bit;
+		if (b >= len)
+			return (0);
+		a = b + 1;
+	}
+}
+
+/* One of a record's four indented lines, kept as the text it holds. */
+static int
+zp_record_line(struct zp *p, const char *key, char **out)
+{
+	const char *s = NULL;
+	size_t klen = strlen(key), len = 0, pos;
+	int rc;
+
+	rc = zp_next(p, 1, &s, &len);
+	if (rc < 0)
+		return (-1);
+	if (rc == 0 || len < klen || memcmp(s, key, klen) != 0 ||
+	    (len > klen && s[klen] != ' ' && s[klen] != '\t'))
+		return (zp_errf(p, "expected the %s line of a record", key));
+	pos = klen;
+	while (pos < len && (s[pos] == ' ' || s[pos] == '\t'))
+		pos++;
+	*out = zp_dup(s + pos, len - pos);
+	return (*out != NULL ? 0 : zp_errf(p, "out of memory"));
+}
+
+/*
+ * The conflict section: one line naming a record's number and classes,
+ * then its four lines in order. The records are numbered from 1 in the
+ * order the tree section first named them, so they must arrive so.
+ */
+static int
+zp_records(struct zp *p)
+{
+	struct zr_record r;
+	const char *s = NULL, *f = NULL;
+	size_t len = 0, flen = 0, pos;
+	int rc;
+
+	for (;;) {
+		rc = zp_next(p, 1, &s, &len);
+		if (rc < 0)
+			return (-1);
+		if (rc == 0)
+			return (0);
+		if (len == 2 && s[0] == '.' && s[1] == '.')
+			return (zp_errf(p, "two dots outside the tree "
+			    "section"));
+		memset(&r, 0, sizeof (r));
+		pos = 0;
+		(void) zp_field(s, len, &pos, &f, &flen);
+		if (flen != 8 || memcmp(f, "conflict", 8) != 0)
+			return (zp_errf(p, "expected a conflict record"));
+		if (zp_field(s, len, &pos, &f, &flen) == 0 ||
+		    zp_uint(f, flen, &r.zr_num) != 0 ||
+		    r.zr_num != p->zp_out->zp_nrecords + 1)
+			return (zp_errf(p, "expected conflict %u",
+			    p->zp_out->zp_nrecords + 1));
+		if (zp_field(s, len, &pos, &f, &flen) == 0)
+			return (zp_errf(p, "a record needs a class"));
+		if (zp_classes(p, f, flen, &r.zr_flags) != 0)
+			return (-1);
+		if (zp_field(s, len, &pos, &f, &flen) != 0)
+			return (zp_errf(p, "too many fields on a record"));
+		if (zp_record_line(p, "why", &r.zr_why) != 0 ||
+		    zp_record_line(p, "base", &r.zr_base) != 0 ||
+		    zp_record_line(p, "from", &r.zr_from) != 0 ||
+		    zp_record_line(p, "onto", &r.zr_onto) != 0) {
+			free(r.zr_why);
+			free(r.zr_base);
+			free(r.zr_from);
+			free(r.zr_onto);
+			return (-1);
+		}
+		if (zp_add_record(p, &r) != 0) {
+			free(r.zr_why);
+			free(r.zr_base);
+			free(r.zr_from);
+			free(r.zr_onto);
+			return (-1);
+		}
+	}
+}
+
+/*
+ * What only the whole file can answer: the two counts the header
+ * promised, and a record behind every conflict mark of the tree. The
+ * blame goes to the line that made the promise.
+ */
+static int
+zp_finish(struct zp *p)
+{
+	struct zr_parsed *o = p->zp_out;
+	uint32_t i, n = 0;
+
+	for (i = 0; i < o->zp_nactions; i++)
+		if (o->zp_actions[i].za_kind != ZR_ACT_CONFLICT)
+			n++;
+	if (n != o->zp_actions_declared) {
+		p->zp_lineno = p->zp_aline;
+		return (zp_errf(p, "#actions says %u but the tree has %u",
+		    o->zp_actions_declared, n));
+	}
+	if (o->zp_nrecords != o->zp_conflicts_declared) {
+		p->zp_lineno = p->zp_cline;
+		return (zp_errf(p, "#conflicts says %u but there are %u",
+		    o->zp_conflicts_declared, o->zp_nrecords));
+	}
+	for (i = 0; i < p->zp_nrefs; i++) {
+		if (p->zp_refs[i].zf_num <= o->zp_nrecords)
+			continue;
+		p->zp_lineno = p->zp_refs[i].zf_line;
+		return (zp_errf(p, "no record for conflict %u",
+		    p->zp_refs[i].zf_num));
+	}
+	return (0);
+}
+
+void
+zr_parsed_fini(struct zr_parsed *p)
+{
+	uint32_t i;
+
+	if (p == NULL)
+		return;
+	free(p->zp_base);
+	free(p->zp_from);
+	free(p->zp_onto);
+	for (i = 0; i < p->zp_nactions; i++) {
+		free(p->zp_actions[i].za_path);
+		free(p->zp_actions[i].za_arg);
+	}
+	free(p->zp_actions);
+	for (i = 0; i < p->zp_nrecords; i++) {
+		free(p->zp_records[i].zr_why);
+		free(p->zp_records[i].zr_base);
+		free(p->zp_records[i].zr_from);
+		free(p->zp_records[i].zr_onto);
+	}
+	free(p->zp_records);
+	memset(p, 0, sizeof (*p));
+}
+
+int
+zr_manifest_parse(FILE *in, struct zr_parsed *out, char *err, size_t errlen)
+{
+	struct zp p;
+	int rc;
+
+	if (out == NULL)
+		return (-1);
+	memset(out, 0, sizeof (*out));
+	if (err != NULL && errlen > 0)
+		err[0] = '\0';
+	if (in == NULL)
+		return (-1);
+	memset(&p, 0, sizeof (p));
+	p.zp_in = in;
+	p.zp_out = out;
+	p.zp_err = err;
+	p.zp_errlen = errlen;
+	rc = zp_header(&p);
+	if (rc == 0)
+		rc = zp_tree(&p);
+	if (rc == 0)
+		rc = zp_records(&p);
+	if (rc == 0)
+		rc = zp_finish(&p);
+	while (p.zp_depth > 0)
+		free(p.zp_stack[--p.zp_depth].zs_path);
+	free(p.zp_stack);
+	free(p.zp_refs);
+	free(p.zp_line);
+	return (rc);
+}
+
+/*
+ * Writing a parsed manifest back out. The tree section is not kept as
+ * a tree: the action paths are, and every directory the walk needs is
+ * an ancestor of one of them. Sorting the paths in manifest order puts
+ * them in the walk's own order, and one stack of open directories
+ * turns that list back into the scoped form.
+ */
+
+/* One line of the tree section: an action's path, or a scope. */
+struct zw_ent {
+	const unsigned char	*ze_path;
+	size_t			ze_len;
+	uint32_t		ze_act;		/* index, or ZM_NONE */
+	int			ze_dir;
+};
+
+static int
+zw_cmp(const void *a, const void *b)
+{
+	const struct zw_ent *x = a, *y = b;
+
+	return (zp_path_cmp(x->ze_path, x->ze_len, y->ze_path, y->ze_len));
+}
+
+/* One line per path: fold the repeated ancestors into one entry. */
+static uint32_t
+zw_dedupe(struct zw_ent *e, uint32_t n)
+{
+	uint32_t i, k = 0;
+
+	for (i = 1; i < n; i++) {
+		if (zp_path_cmp(e[k].ze_path, e[k].ze_len, e[i].ze_path,
+		    e[i].ze_len) == 0) {
+			if (e[i].ze_dir != 0)
+				e[k].ze_dir = 1;
+			if (e[i].ze_act != ZM_NONE)
+				e[k].ze_act = e[i].ze_act;
+			continue;
+		}
+		k++;
+		e[k] = e[i];
+	}
+	return (n != 0 ? k + 1 : 0);
+}
+
+/* Every line the tree section needs, in manifest order. */
+static struct zw_ent *
+zw_entries(const struct zr_parsed *pp, uint32_t *np)
+{
+	struct zw_ent *e;
+	uint32_t i, n = 0;
+	size_t cap = 1, j;
+
+	for (i = 0; i < pp->zp_nactions; i++) {
+		cap++;
+		for (j = 1; j < pp->zp_actions[i].za_pathlen; j++)
+			if (pp->zp_actions[i].za_path[j] == '/')
+				cap++;
+	}
+	e = malloc(cap * sizeof (*e));
+	if (e == NULL)
+		return (NULL);
+	e[n].ze_path = (const unsigned char *)"/";
+	e[n].ze_len = 1;
+	e[n].ze_act = ZM_NONE;
+	e[n].ze_dir = 1;
+	n++;
+	for (i = 0; i < pp->zp_nactions; i++) {
+		const struct zr_action *a = &pp->zp_actions[i];
+
+		for (j = 1; j < a->za_pathlen; j++) {
+			if (a->za_path[j] != '/')
+				continue;
+			e[n].ze_path = a->za_path;
+			e[n].ze_len = j;
+			e[n].ze_act = ZM_NONE;
+			e[n].ze_dir = 1;
+			n++;
+		}
+		e[n].ze_path = a->za_path;
+		e[n].ze_len = a->za_pathlen;
+		e[n].ze_act = i;
+		e[n].ze_dir = a->za_isdir;
+		n++;
+	}
+	qsort(e, n, sizeof (*e), zw_cmp);
+	*np = zw_dedupe(e, n);
+	return (e);
+}
+
+/* Does the directory d hold the line e, at any depth below it? */
+static int
+zw_under(const struct zw_ent *d, const struct zw_ent *e)
+{
+	if (e->ze_len <= d->ze_len ||
+	    memcmp(d->ze_path, e->ze_path, d->ze_len) != 0)
+		return (0);
+	return (d->ze_len == 1 || e->ze_path[d->ze_len] == '/');
+}
+
+/* Bytes as the format escapes them, one byte's escaping at a time. */
+static void
+zw_vis(FILE *out, const unsigned char *p, size_t len)
+{
+	char buf[8];
+	size_t i;
+
+	for (i = 0; i < len; i++) {
+		(void) zr_vis_encode(p + i, 1, buf, sizeof (buf));
+		(void) fputs(buf, out);
+	}
+}
+
+/* One tree line: the name, its trailing slash, and its action. */
+static void
+zw_line(FILE *out, const struct zr_parsed *pp, const struct zw_ent *e,
+    uint32_t depth)
+{
+	const struct zr_action *a;
+	const char *leaf;
+	size_t leaflen = 0;
+
+	zm_indent(out, depth);
+	if (e->ze_len == 1) {
+		(void) fputc('/', out);
+	} else {
+		leaf = zm_leaf((const char *)e->ze_path, e->ze_len, &leaflen);
+		zw_vis(out, (const unsigned char *)leaf, leaflen);
+		if (e->ze_dir != 0)
+			(void) fputc('/', out);
+	}
+	if (e->ze_act != ZM_NONE) {
+		a = &pp->zp_actions[e->ze_act];
+		switch (a->za_kind) {
+		case ZR_ACT_RM:
+			(void) fputs(" rm", out);
+			break;
+		case ZR_ACT_LN:
+			(void) fputs(" ln ", out);
+			zw_vis(out, a->za_arg, a->za_arglen);
+			break;
+		case ZR_ACT_CP:
+			(void) fputs(" cp ", out);
+			zw_vis(out, a->za_arg, a->za_arglen);
+			break;
+		case ZR_ACT_WRITE:
+			(void) fputs(" write ", out);
+			zw_vis(out, a->za_arg, a->za_arglen);
+			break;
+		default:
+			(void) fprintf(out, " conflict %u", a->za_conflict);
+			break;
+		}
+	}
+	(void) fputc('\n', out);
+}
+
+/* One conflict record, its classes back in the format's own order. */
+static void
+zw_record(FILE *out, const struct zr_record *r)
+{
+	uint32_t i, nclass = 0;
+
+	(void) fprintf(out, "conflict %u ", r->zr_num);
+	for (i = 0; i < ZM_NCLASS; i++) {
+		if ((r->zr_flags & zm_class[i]) == 0)
+			continue;
+		if (nclass++ > 0)
+			(void) fputc(',', out);
+		(void) fputs(zr_conflict_name(zm_class[i]), out);
+	}
+	(void) fprintf(out, "\n  why  %s\n", zm_text(r->zr_why));
+	(void) fprintf(out, "  base %s\n", zm_text(r->zr_base));
+	(void) fprintf(out, "  from %s\n", zm_text(r->zr_from));
+	(void) fprintf(out, "  onto %s\n", zm_text(r->zr_onto));
+}
+
+int
+zr_parsed_write(FILE *out, const struct zr_parsed *pp)
+{
+	struct zw_ent *e;
+	uint32_t *stack;
+	uint32_t i, n = 0, sd = 0;
+
+	if (out == NULL || pp == NULL)
+		return (-1);
+	e = zw_entries(pp, &n);
+	stack = e != NULL ? malloc((size_t)n * sizeof (*stack)) : NULL;
+	if (e == NULL || stack == NULL) {
+		free(e);
+		free(stack);
+		return (-1);
+	}
+	(void) fputs("#rebase-manifest 4\n", out);
+	(void) fprintf(out, "#base %s\n", zm_text(pp->zp_base));
+	(void) fprintf(out, "#from %s\n", zm_text(pp->zp_from));
+	(void) fprintf(out, "#onto %s\n", zm_text(pp->zp_onto));
+	(void) fprintf(out, "#mode %s\n",
+	    pp->zp_mode == ZR_MODE_PERMISSIVE ? "permissive-merge" :
+	    "strict");
+	(void) fprintf(out, "#actions %u\n", pp->zp_actions_declared);
+	(void) fprintf(out, "#conflicts %u\n", pp->zp_conflicts_declared);
+	for (i = 0; i < n; i++) {
+		while (sd > 0 && zw_under(&e[stack[sd - 1]], &e[i]) == 0) {
+			sd--;
+			zm_indent(out, sd + 1);
+			(void) fputs("..\n", out);
+		}
+		zw_line(out, pp, &e[i], sd);
+		if (e[i].ze_dir != 0)
+			stack[sd++] = i;
+	}
+	while (sd > 0) {
+		sd--;
+		zm_indent(out, sd + 1);
+		(void) fputs("..\n", out);
+	}
+	free(stack);
+	free(e);
+	if (pp->zp_nrecords > 0) {
+		(void) fputs("\n# a pool is one file and all its names: "
+		    "{names}letter; same\n", out);
+		(void) fputs("# letter, same bytes\n", out);
+	}
+	for (i = 0; i < pp->zp_nrecords; i++)
+		zw_record(out, &pp->zp_records[i]);
+	return (ferror(out) != 0 ? -1 : 0);
 }

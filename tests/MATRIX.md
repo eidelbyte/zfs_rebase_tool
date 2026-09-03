@@ -290,16 +290,24 @@ anchor {first name in manifest order, onto-created}; record parts
 | ZM30 | #actions and #conflicts match | planned: check_manifest.c |
 | ZM31 | a clean run: no legend, no section 2 | planned: check_manifest.c |
 | ZM32 | the probe scenario, byte for byte | planned: check_manifest.c |
-| ZM33 | parse rebuilds paths from the scoping | planned: check_manifest.c |
-| ZM34 | parse rejects an unknown action | planned: check_manifest.c |
-| ZM35 | parse rejects a bad escape | planned: check_manifest.c |
-| ZM36 | parse rejects unbalanced scoping | planned: check_manifest.c |
-| ZM37 | parse rejects a missing root line | planned: check_manifest.c |
-| ZM38 | parse rejects an ln before its anchor | planned: check_manifest.c |
-| ZM39 | parse ignores comments and blank lines | planned: check_manifest.c |
-| ZM40 | emit, parse, emit is byte identical | planned: check_roundtrip.c |
-| ZM41 | the expect block parses equal | planned: check_roundtrip.c |
-| ZM42 | escapes.zrt, dir-rm.zrt, wide-pool.zrt | planned: check_roundtrip.c |
+| ZM33 | parse rebuilds paths from the scoping | covered: check_manifest.c |
+| ZM34 | parse rejects an unknown action | covered: check_manifest.c |
+| ZM35 | parse rejects a bad escape | covered: check_manifest.c |
+| ZM36 | parse rejects unbalanced scoping | covered: check_manifest.c |
+| ZM37 | parse rejects a missing root line | covered: check_manifest.c |
+| ZM38 | parse rejects an ln before its anchor | covered: check_manifest.c |
+| ZM39 | parse ignores comments and blank lines | covered: check_manifest.c |
+| ZM40 | emit, parse, emit is byte identical | covered: check_manifest.c |
+| ZM41 | the expect block parses equal | covered: check_manifest.c |
+| ZM42 | escapes.zrt, dir-rm.zrt, wide-pool.zrt | planned: check_manifest.c |
+| ZM43 | parse rejects a first line that is not v4 | covered: check_manifest.c |
+| ZM44 | parse rejects an ln naming its own path | covered: check_manifest.c |
+| ZM45 | parse rejects a child under a leaf line | covered: check_manifest.c |
+| ZM46 | parse rejects a leaf with no slash, no action | covered: check_manifest.c |
+| ZM47 | parse rejects #actions that miscounts | covered: check_manifest.c |
+| ZM48 | parse rejects a conflict mark with no record | covered: check_manifest.c |
+| ZM49 | parse rejects an unknown class | covered: check_manifest.c |
+| ZM50 | parse rejects records out of order | covered: check_manifest.c |
 
 ## ZA -- apply (check_apply.c)
 
