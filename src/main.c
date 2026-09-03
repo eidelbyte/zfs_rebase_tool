@@ -4,8 +4,9 @@
  * This file is the driver. The --posix mode, three plain directories
  * in and a manifest out, is complete and is how the pipeline runs
  * where there is no ZFS. The real mode (snapshots, holds, a clone,
- * zfs diff, apply) lands with the run-driver issue. --build-fixture
- * is a test aid that materializes a fixture's three trees.
+ * zfs diff, apply) is zr_run in run.c and exists only in the FreeBSD
+ * build. --build-fixture is a test aid that materializes a fixture's
+ * three trees.
  */
 
 #include <errno.h>
@@ -19,6 +20,7 @@
 #include "fixture.h"
 #include "manifest.h"
 #include "name.h"
+#include "run.h"
 #include "walk.h"
 #include "yellow.h"
 
@@ -28,11 +30,12 @@
 #define	EXIT_INTERNAL	3
 
 static const char usage[] =
-	"usage: zfs_rebase [-n] [-p] [-o FILE] BASE@SNAP FROM ONTO\n"
+	"usage: zfs_rebase [-n] [-p] [-v] [-o FILE] BASE@SNAP FROM ONTO\n"
 	"       zfs_rebase --posix [-p] [-o FILE] BASEDIR FROMDIR ONTODIR\n"
 	"       zfs_rebase --build-fixture FIXTURE DIR\n"
-	"  -n   dry run: write the manifest, create nothing\n"
+	"  -n   dry run: write the manifest, create no clone, apply nothing\n"
 	"  -p   permissive-merge mode\n"
+	"  -v   report counts on stderr\n"
 	"  -o   write the manifest to FILE instead of stdout\n";
 
 static int
@@ -185,7 +188,8 @@ main(int argc, char **argv)
 {
 	zr_mode_t mode = ZR_MODE_STRICT;
 	const char *outpath = NULL;
-	int posix = 0, dryrun = 0, i;
+	int posix = 0, dryrun = 0, verbose = 0, i;
+	struct zr_run_opts ro;
 
 	if (argc >= 2 && strcmp(argv[1], "--build-fixture") == 0) {
 		if (argc != 4)
@@ -202,6 +206,8 @@ main(int argc, char **argv)
 			mode = ZR_MODE_PERMISSIVE;
 		} else if (strcmp(argv[i], "-n") == 0) {
 			dryrun = 1;
+		} else if (strcmp(argv[i], "-v") == 0) {
+			verbose = 1;
 		} else if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
 			outpath = argv[++i];
 		} else {
@@ -216,7 +222,12 @@ main(int argc, char **argv)
 		return (run_posix(argv[i], argv[i + 1], argv[i + 2], mode,
 		    outpath));
 	}
-	(void) fprintf(stderr, "zfs_rebase: the snapshot mode is not "
-	    "implemented yet; use --posix\n");
-	return (EXIT_PRECOND);
+	ro.base = argv[i];
+	ro.from = argv[i + 1];
+	ro.onto = argv[i + 2];
+	ro.outpath = outpath;
+	ro.mode = mode;
+	ro.dryrun = dryrun;
+	ro.verbose = verbose;
+	return (zr_run(&ro));
 }
