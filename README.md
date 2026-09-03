@@ -1,16 +1,38 @@
 # zfs_rebase
 
 A standalone command that rebases one ZFS filesystem onto another:
-given a base snapshot and two datasets cloned from it, it replays the
-changes of one (from) onto a working clone of the other (onto), or
-tells you exactly which files it could not decide and why.
+given three snapshots -- a base and the two sides that diverged from
+it -- it replays the changes of one (from) onto a clone of the other
+(onto), or tells you exactly which files it could not decide and why.
 
-It is not a zfs(8) verb and it changes nothing in ZFS. It reads three
-snapshots through their .zfs/snapshot directories, asks zfs diff for
-what is unchanged, decides by a small rule over names, hardlink pools
-and content, writes a manifest of actions and conflicts, and applies
-the actions to a clone it created read-only for the purpose. All ZFS
-operations go through libzfs_core and libzfs; nothing is exec'd.
+    zfs_rebase [-n] [-p] [-v] [-o FILE] \
+        --from SNAP --onto SNAP --result DATASET
+
+--from may also be spelled --off-of. --result names the dataset the
+rebased clone is created as; -n is a dry run, which writes the
+manifest and creates nothing.
+
+You name the two sides and not the base. The base is the branch
+point, and the tool works it out: it walks each side's origin chain
+-- the snapshot, then its dataset's origin, then that dataset's
+origin -- back to the nearest dataset they both descend from, and
+takes the older of the two snapshots they name there, by createtxg.
+A base given by hand could only agree with that or disagree with it,
+and a disagreement is not something the tool could act on: the two
+sides are related the way the origin graph says, and no other
+snapshot is the point they last had in common. Two sides that share
+no origin are refused, and so is a pair where the base turns out to
+be one of the arguments -- one side already contains the other, and
+what is wanted there is not a rebase.
+
+It is not a zfs(8) verb, and it takes no snapshots and destroys none
+of yours: the three it reads are yours, and it only holds them for
+the length of the run. It reads them through their .zfs/snapshot
+directories, asks zfs diff for what is unchanged, decides by a small
+rule over names, hardlink pools and content, writes a manifest of
+actions and conflicts, and applies the actions to the result clone,
+which it creates read-only and puts back that way. All ZFS operations
+go through libzfs_core and libzfs; nothing is exec'd.
 
 Two build modes:
 

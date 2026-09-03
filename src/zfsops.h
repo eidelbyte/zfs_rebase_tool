@@ -1,10 +1,14 @@
 /*
- * zfsops: the ZFS operations one run needs -- snapshot, hold, clone
- * and mount, property get and set, release, destroy, and the diff --
+ * zfsops: the ZFS operations one run needs -- hold, clone and mount,
+ * property get and set, existence, release, destroy, and the diff --
  * behind one handle that owns the libzfs handle, the cleanup
- * descriptor every hold is registered against, and the hold tag.
- * All of it is library calls into libzfs_core and libzfs; the tool
- * never execs zfs(8).
+ * descriptor every hold is registered against, and the hold tag. All
+ * of it is library calls into libzfs_core and libzfs; the tool never
+ * execs zfs(8).
+ *
+ * The tool takes no snapshots: the three it works from are the
+ * user's, and it only holds them for the length of the run. The one
+ * dataset it creates is the result clone, which the user names.
  *
  * The bodies compile only with ZR_FREEBSD. Without it every call
  * here fails with "not built with ZR_FREEBSD", which is what the
@@ -22,8 +26,18 @@
 #define	ZR_ZFSOPS_H
 
 #include <stddef.h>
+#include <stdint.h>
 
 #include "diff.h"
+
+/*
+ * The two user properties every result clone carries from birth.
+ * They are what tells a zfs_rebase result from any other dataset, so
+ * that --abort can refuse to touch anything else, and where the run
+ * records the manifest it wrote.
+ */
+#define	ZR_PROP_STATE		"zfs_rebase:state"
+#define	ZR_PROP_MANIFEST	"zfs_rebase:manifest"
 
 struct zr_zfs;
 
@@ -41,10 +55,6 @@ int zr_zfs_open(struct zr_zfs **out, const char *holdtag, char *err,
  */
 void zr_zfs_close(struct zr_zfs *z);
 
-/* Take dataset@snapname. */
-int zr_zfs_snapshot(struct zr_zfs *z, const char *dataset,
-    const char *snapname, char *err, size_t errlen);
-
 /*
  * Hold snapshot under this handle's tag, against the cleanup
  * descriptor, so that the hold dies with the process however it
@@ -58,11 +68,14 @@ int zr_zfs_release(struct zr_zfs *z, const char *snapshot, char *err,
     size_t errlen);
 
 /*
- * Clone snapshot as clone with readonly=on and the given mountpoint,
- * then mount it there.
+ * Clone snapshot as clone with readonly=on, the given mountpoint and
+ * the two zfs_rebase user properties -- state "created" and the path
+ * of the manifest this run writes -- then mount it there. The marker
+ * is set by the create itself, so it exists from the clone's first
+ * instant and no kill can leave a result dataset without one.
  */
 int zr_zfs_clone(struct zr_zfs *z, const char *snapshot, const char *clone,
-    const char *mountpoint, char *err, size_t errlen);
+    const char *mountpoint, const char *manifest, char *err, size_t errlen);
 
 /* Set readonly on or off. */
 int zr_zfs_set_readonly(struct zr_zfs *z, const char *dataset, int on,
@@ -73,11 +86,39 @@ int zr_zfs_destroy(struct zr_zfs *z, const char *dataset, char *err,
     size_t errlen);
 
 /*
+ * Whether a filesystem, snapshot or volume of that name exists.
+ * Returns 1 or 0, or -1 with err set on a bad argument.
+ */
+int zr_zfs_exists(struct zr_zfs *z, const char *dataset, char *err,
+    size_t errlen);
+
+/*
  * One property of dataset as the string zfs(8) would print, which is
- * how mountpoint, mounted, casesensitivity, normalization and acltype
- * are read.
+ * how mountpoint, mounted, casesensitivity, normalization, acltype
+ * and origin are read. A property that has no value and no default
+ * reads as "-", as zfs(8) prints it; origin on a dataset that is not
+ * a clone is the one this tool asks for.
  */
 int zr_zfs_get(struct zr_zfs *z, const char *dataset, const char *prop,
+    char *buf, size_t buflen, char *err, size_t errlen);
+
+/*
+ * One numeric property as the number it is rather than as zfs(8)
+ * would print it, which is how createtxg -- the kernel's own
+ * ordering of the snapshots in a pool -- is read.
+ */
+int zr_zfs_get_int(struct zr_zfs *z, const char *dataset, const char *prop,
+    uint64_t *out, char *err, size_t errlen);
+
+/* Set one "module:name" user property. */
+int zr_zfs_set_user(struct zr_zfs *z, const char *dataset, const char *prop,
+    const char *value, char *err, size_t errlen);
+
+/*
+ * Read one "module:name" user property: 1 with buf set when it is
+ * there, 0 when it is not, -1 on a failure with err set.
+ */
+int zr_zfs_get_user(struct zr_zfs *z, const char *dataset, const char *prop,
     char *buf, size_t buflen, char *err, size_t errlen);
 
 /*

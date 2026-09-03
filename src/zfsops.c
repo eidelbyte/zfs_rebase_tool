@@ -1,8 +1,9 @@
 /*
  * zfsops: the ZFS operations the real run needs, wrapped so that the
- * driver speaks one vocabulary and never execs zfs(8). Snapshot,
- * hold, clone, mount, property get and set, release, destroy and the
- * diff, over libzfs_core and libzfs.
+ * driver speaks one vocabulary and never execs zfs(8). Hold, clone,
+ * mount, property get and set, existence, release, destroy and the
+ * diff, over libzfs_core and libzfs. No snapshot: the three the run
+ * works from are the user's.
  *
  * NOTHING IN THE ZR_FREEBSD HALF OF THIS FILE HAS EVER BEEN COMPILED
  * FOR REAL. It is written against the headers and the sources of the
@@ -91,18 +92,6 @@ zz_hdl_err(struct zr_zfs *z, char *err, size_t errlen, const char *what)
 	return (-1);
 }
 
-/* "dataset@snapname", or -1 when it will not fit. */
-static int
-zz_join(char *buf, size_t buflen, const char *ds, const char *snap)
-{
-	int n;
-
-	n = snprintf(buf, buflen, "%s@%s", ds, snap);
-	if (n < 0 || (size_t)n >= buflen)
-		return (-1);
-	return (0);
-}
-
 int
 zr_zfs_open(struct zr_zfs **out, const char *holdtag, char *err, size_t errlen)
 {
@@ -164,44 +153,6 @@ zr_zfs_close(struct zr_zfs *z)
 	if (z->zz_hdl != NULL)
 		libzfs_fini(z->zz_hdl);
 	free(z);
-}
-
-int
-zr_zfs_snapshot(struct zr_zfs *z, const char *dataset, const char *snapname,
-    char *err, size_t errlen)
-{
-	char full[ZZ_NAME_MAX];
-	nvlist_t *errlist, *snaps;
-	int rc;
-
-	if (err != NULL && errlen > 0)
-		err[0] = '\0';
-	if (z == NULL || dataset == NULL || snapname == NULL)
-		return (zz_err(err, errlen, "snapshot", EINVAL));
-	if (zz_join(full, sizeof (full), dataset, snapname) != 0)
-		return (zz_err(err, errlen, "snapshot", ENAMETOOLONG));
-	snaps = NULL;
-	errlist = NULL;
-	rc = nvlist_alloc(&snaps, NV_UNIQUE_NAME, 0);
-	if (rc == 0)
-		rc = nvlist_add_boolean(snaps, full);
-	if (rc != 0) {
-		nvlist_free(snaps);
-		return (zz_err(err, errlen, "snapshot", rc));
-	}
-	/*
-	 * lzc_snapshot (lib/libzfs_core/libzfs_core.c) takes the
-	 * snapshots to create as the keys of snaps and ignores the
-	 * values, which is why libzfs itself adds them as booleans.
-	 * It returns an errno rather than -1, and hands back an
-	 * errlist we own.
-	 */
-	rc = lzc_snapshot(snaps, NULL, &errlist);
-	nvlist_free(snaps);
-	nvlist_free(errlist);
-	if (rc != 0)
-		return (zz_err(err, errlen, full, rc));
-	return (0);
 }
 
 int
@@ -278,7 +229,7 @@ zr_zfs_release(struct zr_zfs *z, const char *snapshot, char *err,
 
 int
 zr_zfs_clone(struct zr_zfs *z, const char *snapshot, const char *clone,
-    const char *mountpoint, char *err, size_t errlen)
+    const char *mountpoint, const char *manifest, char *err, size_t errlen)
 {
 	zfs_handle_t *zhp;
 	nvlist_t *props;
@@ -288,7 +239,7 @@ zr_zfs_clone(struct zr_zfs *z, const char *snapshot, const char *clone,
 	if (err != NULL && errlen > 0)
 		err[0] = '\0';
 	if (z == NULL || snapshot == NULL || clone == NULL ||
-	    mountpoint == NULL)
+	    mountpoint == NULL || manifest == NULL)
 		return (zz_err(err, errlen, "clone", EINVAL));
 	/*
 	 * readonly is an index property: module/zcommon/zfs_prop.c
@@ -317,6 +268,20 @@ zr_zfs_clone(struct zr_zfs *z, const char *snapshot, const char *clone,
 	if (rc == 0)
 		rc = nvlist_add_string(props,
 		    zfs_prop_to_name(ZFS_PROP_MOUNTPOINT), mountpoint);
+	/*
+	 * The two markers. A user property is a name with a colon in
+	 * it (zfs_prop_user, module/zcommon/zfs_prop.c) and its value
+	 * must be a string: zfs_set_prop_nvlist (module/zfs/
+	 * zfs_ioctl.c), which zfs_ioc_clone applies these with,
+	 * returns EINVAL for a user property of any other type. It
+	 * takes them on the create path exactly as on the set path,
+	 * so the clone carries the marker from birth and never exists
+	 * for an instant as an unmarked dataset.
+	 */
+	if (rc == 0)
+		rc = nvlist_add_string(props, ZR_PROP_STATE, "created");
+	if (rc == 0)
+		rc = nvlist_add_string(props, ZR_PROP_MANIFEST, manifest);
 	if (rc != 0) {
 		nvlist_free(props);
 		return (zz_err(err, errlen, "clone", rc));
@@ -395,6 +360,24 @@ zr_zfs_destroy(struct zr_zfs *z, const char *dataset, char *err, size_t errlen)
 }
 
 int
+zr_zfs_exists(struct zr_zfs *z, const char *dataset, char *err, size_t errlen)
+{
+	if (err != NULL && errlen > 0)
+		err[0] = '\0';
+	if (z == NULL || dataset == NULL)
+		return (zz_err(err, errlen, "exists", EINVAL));
+	/*
+	 * zfs_dataset_exists (lib/libzfs/libzfs_dataset.c) validates
+	 * the name for the types asked for and then tries to make a
+	 * handle: it reports, and never fails.
+	 */
+	if (zfs_dataset_exists(z->zz_hdl, dataset, ZFS_TYPE_FILESYSTEM |
+	    ZFS_TYPE_SNAPSHOT | ZFS_TYPE_VOLUME))
+		return (1);
+	return (0);
+}
+
+int
 zr_zfs_get(struct zr_zfs *z, const char *dataset, const char *prop, char *buf,
     size_t buflen, char *err, size_t errlen)
 {
@@ -425,9 +408,121 @@ zr_zfs_get(struct zr_zfs *z, const char *dataset, const char *prop, char *buf,
 	 */
 	rc = zfs_prop_get(zhp, p, buf, buflen, NULL, NULL, 0, B_FALSE);
 	zfs_close(zhp);
+	if (rc != 0) {
+		/*
+		 * A property with neither a value nor a default fails
+		 * here rather than returning something: origin on a
+		 * dataset that is not a clone is registered with a
+		 * NULL default (module/zcommon/zfs_prop.c), and
+		 * zfs_prop_get's ZFS_PROP_ORIGIN arm returns -1 for
+		 * it. zfs(8) prints "-" for exactly that case --
+		 * get_callback in cmd/zfs/zfs_main.c substitutes it
+		 * when zfs_prop_get fails and the property does apply
+		 * to the type -- and so does this.
+		 */
+		if (!zfs_prop_valid_for_type(p, ZFS_TYPE_DATASET, B_FALSE))
+			return (zz_hdl_err(z, err, errlen, prop));
+		(void) snprintf(buf, buflen, "-");
+	}
+	return (0);
+}
+
+int
+zr_zfs_get_int(struct zr_zfs *z, const char *dataset, const char *prop,
+    uint64_t *out, char *err, size_t errlen)
+{
+	zfs_handle_t *zhp;
+	zfs_prop_t p;
+
+	if (err != NULL && errlen > 0)
+		err[0] = '\0';
+	if (z == NULL || dataset == NULL || prop == NULL || out == NULL)
+		return (zz_err(err, errlen, "property", EINVAL));
+	*out = 0;
+	p = zfs_name_to_prop(prop);
+	if (p == ZPROP_INVAL)
+		return (zz_err(err, errlen, prop, EINVAL));
+	zhp = zfs_open(z->zz_hdl, dataset,
+	    ZFS_TYPE_FILESYSTEM | ZFS_TYPE_SNAPSHOT);
+	if (zhp == NULL)
+		return (zz_hdl_err(z, err, errlen, dataset));
+	/*
+	 * zfs_prop_get_int (lib/libzfs/libzfs_dataset.c) reads the
+	 * number out of the handle's own stats and cannot fail; it
+	 * returns 0 for a property that has no value there. The
+	 * caller asks only for numeric properties of a dataset that
+	 * opened, and createtxg is always in the stats.
+	 */
+	*out = zfs_prop_get_int(zhp, p);
+	zfs_close(zhp);
+	return (0);
+}
+
+int
+zr_zfs_set_user(struct zr_zfs *z, const char *dataset, const char *prop,
+    const char *value, char *err, size_t errlen)
+{
+	zfs_handle_t *zhp;
+	int rc;
+
+	if (err != NULL && errlen > 0)
+		err[0] = '\0';
+	if (z == NULL || dataset == NULL || prop == NULL || value == NULL)
+		return (zz_err(err, errlen, "property", EINVAL));
+	zhp = zfs_open(z->zz_hdl, dataset, ZFS_TYPE_FILESYSTEM);
+	if (zhp == NULL)
+		return (zz_hdl_err(z, err, errlen, dataset));
+	/*
+	 * zfs_prop_set (lib/libzfs/libzfs_dataset.c) is the same call
+	 * a native property goes through; zfs_valid_proplist takes
+	 * the user-property arm for a name with a colon in it and
+	 * passes the string down untouched.
+	 */
+	rc = zfs_prop_set(zhp, prop, value);
+	zfs_close(zhp);
 	if (rc != 0)
 		return (zz_hdl_err(z, err, errlen, prop));
 	return (0);
+}
+
+int
+zr_zfs_get_user(struct zr_zfs *z, const char *dataset, const char *prop,
+    char *buf, size_t buflen, char *err, size_t errlen)
+{
+	zfs_handle_t *zhp;
+	nvlist_t *props, *val;
+	const char *s;
+	int rc;
+
+	if (err != NULL && errlen > 0)
+		err[0] = '\0';
+	if (z == NULL || dataset == NULL || prop == NULL || buf == NULL ||
+	    buflen == 0)
+		return (zz_err(err, errlen, "property", EINVAL));
+	buf[0] = '\0';
+	zhp = zfs_open(z->zz_hdl, dataset, ZFS_TYPE_FILESYSTEM);
+	if (zhp == NULL)
+		return (zz_hdl_err(z, err, errlen, dataset));
+	/*
+	 * The user properties come back as one nvlist per property,
+	 * the value under ZPROP_VALUE and the source under
+	 * ZPROP_SOURCE; collect_dataset in cmd/zfs/zfs_main.c reads
+	 * them the same way. The list belongs to the handle, so the
+	 * string is copied out before the handle closes.
+	 */
+	props = zfs_get_user_props(zhp);
+	rc = 0;
+	if (props != NULL && nvlist_lookup_nvlist(props, prop, &val) == 0 &&
+	    nvlist_lookup_string(val, ZPROP_VALUE, &s) == 0) {
+		if (strlen(s) >= buflen) {
+			zfs_close(zhp);
+			return (zz_err(err, errlen, prop, ENAMETOOLONG));
+		}
+		(void) snprintf(buf, buflen, "%s", s);
+		rc = 1;
+	}
+	zfs_close(zhp);
+	return (rc);
 }
 
 int
@@ -533,16 +628,6 @@ zr_zfs_close(struct zr_zfs *z)
 }
 
 int
-zr_zfs_snapshot(struct zr_zfs *z, const char *dataset, const char *snapname,
-    char *err, size_t errlen)
-{
-	(void) z;
-	(void) dataset;
-	(void) snapname;
-	return (zz_unbuilt(err, errlen));
-}
-
-int
 zr_zfs_hold(struct zr_zfs *z, const char *snapshot, char *err, size_t errlen)
 {
 	(void) z;
@@ -561,12 +646,13 @@ zr_zfs_release(struct zr_zfs *z, const char *snapshot, char *err,
 
 int
 zr_zfs_clone(struct zr_zfs *z, const char *snapshot, const char *clone,
-    const char *mountpoint, char *err, size_t errlen)
+    const char *mountpoint, const char *manifest, char *err, size_t errlen)
 {
 	(void) z;
 	(void) snapshot;
 	(void) clone;
 	(void) mountpoint;
+	(void) manifest;
 	return (zz_unbuilt(err, errlen));
 }
 
@@ -589,8 +675,51 @@ zr_zfs_destroy(struct zr_zfs *z, const char *dataset, char *err, size_t errlen)
 }
 
 int
+zr_zfs_exists(struct zr_zfs *z, const char *dataset, char *err, size_t errlen)
+{
+	(void) z;
+	(void) dataset;
+	return (zz_unbuilt(err, errlen));
+}
+
+int
 zr_zfs_get(struct zr_zfs *z, const char *dataset, const char *prop, char *buf,
     size_t buflen, char *err, size_t errlen)
+{
+	(void) z;
+	(void) dataset;
+	(void) prop;
+	if (buf != NULL && buflen > 0)
+		buf[0] = '\0';
+	return (zz_unbuilt(err, errlen));
+}
+
+int
+zr_zfs_get_int(struct zr_zfs *z, const char *dataset, const char *prop,
+    uint64_t *out, char *err, size_t errlen)
+{
+	(void) z;
+	(void) dataset;
+	(void) prop;
+	if (out != NULL)
+		*out = 0;
+	return (zz_unbuilt(err, errlen));
+}
+
+int
+zr_zfs_set_user(struct zr_zfs *z, const char *dataset, const char *prop,
+    const char *value, char *err, size_t errlen)
+{
+	(void) z;
+	(void) dataset;
+	(void) prop;
+	(void) value;
+	return (zz_unbuilt(err, errlen));
+}
+
+int
+zr_zfs_get_user(struct zr_zfs *z, const char *dataset, const char *prop,
+    char *buf, size_t buflen, char *err, size_t errlen)
 {
 	(void) z;
 	(void) dataset;

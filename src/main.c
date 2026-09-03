@@ -3,10 +3,11 @@
  *
  * This file is the driver. The --posix mode, three plain directories
  * in and a manifest out, is complete and is how the pipeline runs
- * where there is no ZFS. The real mode (snapshots, holds, a clone,
- * zfs diff, apply) is zr_run in run.c and exists only in the FreeBSD
- * build. --build-fixture is a test aid that materializes a fixture's
- * three trees.
+ * where there is no ZFS. The real mode (holds on the three snapshots
+ * the user names, a clone under the name the user chooses, zfs diff,
+ * apply) is zr_run in run.c and exists only in the FreeBSD build.
+ * --build-fixture is a test aid that materializes a fixture's three
+ * trees.
  */
 
 #include <errno.h>
@@ -30,13 +31,18 @@
 #define	EXIT_INTERNAL	3
 
 static const char usage[] =
-	"usage: zfs_rebase [-n] [-p] [-v] [-o FILE] BASE@SNAP FROM ONTO\n"
+	"usage: zfs_rebase [-n] [-p] [-v] [-o FILE] "
+	"--from SNAP --onto SNAP --result DATASET\n"
 	"       zfs_rebase --posix [-p] [-o FILE] BASEDIR FROMDIR ONTODIR\n"
 	"       zfs_rebase --build-fixture FIXTURE DIR\n"
+	"  --from    the snapshot whose changes are replayed (--off-of)\n"
+	"  --onto    the snapshot they are replayed onto; the base is the\n"
+	"            branch point of the two, which the tool works out\n"
+	"  --result  the dataset the rebased clone is created as\n"
 	"  -n   dry run: write the manifest, create no clone, apply nothing\n"
 	"  -p   permissive-merge mode\n"
 	"  -v   report counts on stderr\n"
-	"  -o   write the manifest to FILE instead of stdout\n";
+	"  -o   write the manifest to FILE\n";
 
 static int
 die_usage(void)
@@ -183,12 +189,60 @@ build_fixture(const char *path, const char *dir)
 	return (EXIT_CLEAN);
 }
 
-int
-main(int argc, char **argv)
+/*
+ * One long option with its value, written either way round: --name
+ * VALUE or --name=VALUE. Returns 1 with *val set and *i advanced
+ * over the value, 0 when argv[*i] is some other option, and -1 when
+ * it is this one with nothing to give.
+ */
+static int
+longopt(int argc, char **argv, int *i, const char *name, const char **val)
+{
+	const char *a = argv[*i];
+	size_t n = strlen(name);
+
+	if (strncmp(a, name, n) != 0)
+		return (0);
+	if (a[n] == '=') {
+		*val = a + n + 1;
+		return ((*val)[0] == '\0' ? -1 : 1);
+	}
+	if (a[n] != '\0')
+		return (0);		/* --namesomething, not this one */
+	if (*i + 1 >= argc)
+		return (-1);
+	*val = argv[++(*i)];
+	return (1);
+}
+
+/* --posix: the options are leading, the three directories follow. */
+static int
+main_posix(int argc, char **argv)
 {
 	zr_mode_t mode = ZR_MODE_STRICT;
 	const char *outpath = NULL;
-	int posix = 0, dryrun = 0, verbose = 0, i;
+	int i;
+
+	for (i = 2; i < argc && argv[i][0] == '-'; i++) {
+		if (strcmp(argv[i], "-p") == 0)
+			mode = ZR_MODE_PERMISSIVE;
+		else if (strcmp(argv[i], "-o") == 0 && i + 1 < argc)
+			outpath = argv[++i];
+		else
+			return (die_usage());
+	}
+	if (argc - i != 3)
+		return (die_usage());
+	return (run_posix(argv[i], argv[i + 1], argv[i + 2], mode, outpath));
+}
+
+int
+main(int argc, char **argv)
+{
+	const char *from = NULL, *onto = NULL, *result = NULL;
+	const char *outpath = NULL, *v;
+	zr_mode_t mode = ZR_MODE_STRICT;
+	int dryrun = 0, verbose = 0, i, t;
 	struct zr_run_opts ro;
 
 	if (argc >= 2 && strcmp(argv[1], "--build-fixture") == 0) {
@@ -196,12 +250,9 @@ main(int argc, char **argv)
 			return (die_usage());
 		return (build_fixture(argv[2], argv[3]));
 	}
-	i = 1;
-	if (argc >= 2 && strcmp(argv[1], "--posix") == 0) {
-		posix = 1;
-		i = 2;
-	}
-	for (; i < argc && argv[i][0] == '-'; i++) {
+	if (argc >= 2 && strcmp(argv[1], "--posix") == 0)
+		return (main_posix(argc, argv));
+	for (i = 1; i < argc; i++) {
 		if (strcmp(argv[i], "-p") == 0) {
 			mode = ZR_MODE_PERMISSIVE;
 		} else if (strcmp(argv[i], "-n") == 0) {
@@ -210,21 +261,34 @@ main(int argc, char **argv)
 			verbose = 1;
 		} else if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
 			outpath = argv[++i];
+		} else if ((t = longopt(argc, argv, &i, "--from", &v)) != 0 ||
+		    (t = longopt(argc, argv, &i, "--off-of", &v)) != 0) {
+			if (t < 0)
+				return (die_usage());
+			from = v;
+		} else if ((t = longopt(argc, argv, &i, "--onto", &v)) != 0) {
+			if (t < 0)
+				return (die_usage());
+			onto = v;
+		} else if ((t = longopt(argc, argv, &i, "--result",
+		    &v)) != 0) {
+			if (t < 0)
+				return (die_usage());
+			result = v;
 		} else {
 			return (die_usage());
 		}
 	}
-	if (argc - i != 3)
+	if (from == NULL || onto == NULL || (result == NULL && !dryrun))
 		return (die_usage());
-	if (posix) {
-		if (dryrun)
-			return (die_usage());
-		return (run_posix(argv[i], argv[i + 1], argv[i + 2], mode,
-		    outpath));
+	if (strchr(from, '@') == NULL || strchr(onto, '@') == NULL) {
+		(void) fprintf(stderr, "zfs_rebase: --from and --onto must "
+		    "name snapshots, as pool/dataset@snapshot\n");
+		return (EXIT_PRECOND);
 	}
-	ro.base = argv[i];
-	ro.from = argv[i + 1];
-	ro.onto = argv[i + 2];
+	ro.from = from;
+	ro.onto = onto;
+	ro.result = dryrun ? NULL : result;
 	ro.outpath = outpath;
 	ro.mode = mode;
 	ro.dryrun = dryrun;
