@@ -67,7 +67,10 @@ enum zr_outcome {
 #define	ZR_MISS_ONTO	0x1
 #define	ZR_MISS_FROM	0x2
 
-/* No action had that outcome: what zv_first carries then. */
+/*
+ * No action had that outcome: what zv_first carries then. A line of
+ * the resolution is indexed the same way, so zv_rfirst carries it too.
+ */
 #define	ZR_ACTION_NONE	((uint32_t)-1)
 
 /*
@@ -136,6 +139,21 @@ struct zr_verify_report {
 	uint32_t	zv_ndiffs;
 	uint32_t	zv_dcount[ZR_DF_COUNT];
 	zr_name_t	zv_dfirst[ZR_DF_COUNT];
+	/*
+	 * And the resolution, where one was given: one entry per line
+	 * of its zs_lines and in that order, owned here. A line whose
+	 * choice is keep or "-" is given ZR_OC_DONE and counted
+	 * nowhere -- the first is never compared, because the result
+	 * stands there by the person's word, and the second is a
+	 * conflicted name nobody has answered yet -- so the counts and
+	 * the firsts are over the onto and the from lines alone, and a
+	 * first is the index of a line. Without a resolution the array
+	 * is empty and the counts are 0.
+	 */
+	enum zr_outcome	*zv_rline;	/* one per line; owned here */
+	uint32_t	zv_nrlines;
+	uint32_t	zv_rcount[ZR_OC_COUNT];
+	uint32_t	zv_rfirst[ZR_OC_COUNT];
 };
 
 /*
@@ -168,6 +186,38 @@ int zr_verify(const struct zr_parsed *m, struct zr_oracle *o,
     const struct zr_walk *onto, const struct zr_walk *from,
     const struct zr_walk *result, unsigned missing,
     struct zr_verify_report *out, char *err, size_t errlen);
+
+/*
+ * The same classification with the resolution as its third input,
+ * which is what every gate from conflicts on has to hand it. res may
+ * be NULL, which is exactly zr_verify.
+ *
+ * A name one of its lines covers is spoken for by the resolution and
+ * not by the second pass: it is left out of the name list as a
+ * conflicted name is, and a line on a directory covers the names
+ * beneath it, which is the manifest's own scoping. What the line then
+ * says of that name is its choice:
+ *
+ *	keep	never compared, on either axis. The result stands
+ *		there because the person said so, hand merges and all.
+ *	onto	the expected object is onto's at this name, or absence
+ *		where onto had none.
+ *	from	the same of from.
+ *	"-"	unanswered, so still a conflicted name: skipped.
+ *
+ * An onto or a from line is done where the result holds the expected
+ * object, pending where it still holds onto's own and the expected
+ * differs from it -- which is every from line before applying2 --
+ * drifted where it holds neither, and unchecked where the side it
+ * names is one of the trees that is not there. Pooling is asked with
+ * the bytes: the names of one conflict group that chose one side pool
+ * in the result as that side pools them, and a name holding the right
+ * object outside that pool is drifted, as a dup that never severed is.
+ */
+int zr_verify_with(const struct zr_parsed *m, const struct zr_resolution *res,
+    struct zr_oracle *o, const struct zr_walk *onto,
+    const struct zr_walk *from, const struct zr_walk *result,
+    unsigned missing, struct zr_verify_report *out, char *err, size_t errlen);
 
 void zr_verify_report_fini(struct zr_verify_report *r);
 

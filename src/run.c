@@ -2367,6 +2367,9 @@ struct resume {
 	struct zr_oracle	*oracle;
 	struct zr_parsed	man;		/* the recorded manifest */
 	int			parsed;
+	struct zr_resolution	res;		/* the recorded resolution */
+	int			hasres;		/* 1 read, 0 gone, -1 bad */
+	char			reserr[512];	/* why, when it is -1 */
 	int			writable;	/* readonly is off just now */
 	char			err[512];
 };
@@ -3070,26 +3073,76 @@ unanswered_note(const struct resume *s, uint32_t left, uint32_t total)
 }
 
 static void
-conflicts_note(struct resume *s)
+conflicts_note(const struct resume *s)
 {
-	struct zr_resolution res;
-
-	if (read_resolution(s, &res) <= 0)
+	if (s->hasres <= 0)
 		(void) fprintf(stderr, "zfs_rebase: the resolution is %s\n",
 		    s->respath);
 	else
-		unanswered_note(s, zr_resolution_unanswered(&res),
-		    res.zs_nlines);
-	zr_resolution_fini(&res);
+		unanswered_note(s, zr_resolution_unanswered(&s->res),
+		    s->res.zs_nlines);
 }
 
-/* Hold one manifest against the trees as they stand. */
+/*
+ * Hold one manifest against the trees as they stand, with the
+ * resolution where the record had one: from the conflicts gate on it
+ * is the third input, and it says which names are the person's and
+ * which side a resolved name is to be held against.
+ */
 static int
 classify(struct resume *s, const struct zr_parsed *m,
     struct zr_verify_report *out)
 {
-	return (zr_verify(m, s->oracle, &s->w[ZS_ONTO], &s->w[ZS_FROM],
-	    &s->w[ZS_RESULT], s->miss, out, s->err, sizeof (s->err)));
+	return (zr_verify_with(m, s->hasres > 0 ? &s->res : NULL, s->oracle,
+	    &s->w[ZS_ONTO], &s->w[ZS_FROM], &s->w[ZS_RESULT], s->miss, out,
+	    s->err, sizeof (s->err)));
+}
+
+/*
+ * The resolution's own block of the same report: one line per outcome
+ * with its count and the first name that had it, and under -v every
+ * line of the document with its choice and its outcome. A keep is
+ * counted nowhere, because it is never compared -- the result stands
+ * there by the person's word -- and neither is a name still
+ * unanswered, so a document of nothing but those prints five zeroes,
+ * which is the truth about it.
+ */
+static void
+print_choices(const struct resume *s, const struct zr_verify_report *rep)
+{
+	uint32_t first;
+	int i;
+
+	if (rep->zv_nrlines == 0)
+		return;
+	for (i = 0; i < ZR_OC_COUNT; i++) {
+		first = rep->zv_rfirst[i];
+		if (first == ZR_ACTION_NONE) {
+			(void) fprintf(stderr, "zfs_rebase:   the resolution: "
+			    "%s %u\n", zr_outcome_str((enum zr_outcome)i),
+			    rep->zv_rcount[i]);
+			continue;
+		}
+		(void) fprintf(stderr, "zfs_rebase:   the resolution: %s %u, "
+		    "first %s\n", zr_outcome_str((enum zr_outcome)i),
+		    rep->zv_rcount[i],
+		    (const char *)s->res.zs_lines[first].zl_path);
+	}
+}
+
+/* And, under -v, every line of it: its name, its choice, its outcome. */
+static void
+print_lines(const struct resume *s, const struct zr_verify_report *rep)
+{
+	const struct zr_rline *l;
+	uint32_t j;
+
+	for (j = 0; j < rep->zv_nrlines; j++) {
+		l = &s->res.zs_lines[j];
+		(void) fprintf(stderr, "zfs_rebase:     %s %s %s\n",
+		    (const char *)l->zl_path, zr_choice_str(l->zl_choice),
+		    zr_outcome_str(rep->zv_rline[j]));
+	}
 }
 
 /*
@@ -3137,6 +3190,7 @@ print_report(const struct resume *s, const struct zr_parsed *m,
 		    "%s %u, first %s\n", zr_diff_str((enum zr_diff)i),
 		    rep->zv_dcount[i], nm);
 	}
+	print_choices(s, rep);
 	if (s->verbose == 0)
 		return;
 	for (j = 0; j < rep->zv_ndiffs; j++) {
@@ -3145,6 +3199,7 @@ print_report(const struct resume *s, const struct zr_parsed *m,
 		    zr_diff_str(rep->zv_diffs[j].zn_kind),
 		    nm != NULL ? nm : "?");
 	}
+	print_lines(s, rep);
 }
 
 /*
@@ -3256,6 +3311,123 @@ final_check(struct resume *s, const struct zr_parsed *m, const char *what)
 	return (rc);
 }
 
+/* Does the resolution already have a line on this exact name? */
+static int
+covered(const struct zr_resolution *r, const char *path, size_t len)
+{
+	uint32_t i;
+
+	for (i = 0; i < r->zs_nlines; i++) {
+		if (r->zs_lines[i].zl_pathlen == len &&
+		    memcmp(r->zs_lines[i].zl_path, path, len) == 0)
+			return (1);
+	}
+	return (0);
+}
+
+/*
+ * Is this name a directory? The result is asked first and onto after
+ * it, since a name the result no longer holds is exactly what a gone
+ * entry is. It decides one thing: the trailing slash of the line the
+ * document gets, which is what says a name can scope others.
+ */
+static int
+name_isdir(const struct resume *s, zr_name_t nm)
+{
+	const struct zr_tree *t;
+	zr_pool_t p;
+	int i;
+
+	for (i = 0; i < 2; i++) {
+		t = &s->w[i == 0 ? ZS_RESULT : ZS_ONTO].zw_tree;
+		p = zr_tree_pool(t, nm);
+		if (p != ZR_POOL_NONE)
+			return (t->zt_pools[p].zp_type == ZR_T_DIR);
+	}
+	return (0);
+}
+
+/*
+ * The drift the conflicts gate found, written into the resolution for
+ * the picker to show. Every entry of the name list -- gone, extra,
+ * changed, unpooled -- becomes one drift line with the choice keep,
+ * which is what the tree already holds; the person may leave it at
+ * that, or say onto to have the name put back as onto had it, or from
+ * to have the manifest's own action made again. A name the resolution
+ * already covers is not added a second time, and a conflicted name is
+ * in no entry of that list to begin with.
+ *
+ * Only a --continue writes here, and only with --verify: a standalone
+ * --verify writes nothing at any state, and nothing is written at
+ * applying2 or at done. The document goes back to its recorded path
+ * whole, as the manifest and the skeleton were written; nothing here
+ * is a temporary file, since the file is the tool's own and a failure
+ * to write it is a failure of the gate.
+ *
+ * Returns 0, or -1 with err set.
+ */
+static int
+add_drift(struct resume *s, const struct zr_verify_report *rep)
+{
+	const char *nm;
+	FILE *out;
+	size_t len;
+	uint32_t i, n = 0;
+
+	for (i = 0; i < rep->zv_ndiffs; i++) {
+		len = 0;
+		nm = zr_names_str(s->names, rep->zv_diffs[i].zn_name, &len);
+		if (nm == NULL || len == 0 || covered(&s->res, nm, len) != 0)
+			continue;
+		if (zr_resolution_add_drift(&s->res,
+		    (const unsigned char *)nm, len,
+		    name_isdir(s, rep->zv_diffs[i].zn_name),
+		    ZR_CH_KEEP) != 0) {
+			(void) snprintf(s->err, sizeof (s->err), "%s: cannot "
+			    "take the drift line %s", s->respath, nm);
+			return (-1);
+		}
+		n++;
+	}
+	if (n == 0)
+		return (0);
+	out = fopen(s->respath, "w");
+	if (out == NULL) {
+		(void) snprintf(s->err, sizeof (s->err), "%s: %s", s->respath,
+		    strerror(errno));
+		return (-1);
+	}
+	if (zr_resolution_write(out, &s->res) != 0 || fclose(out) != 0) {
+		(void) snprintf(s->err, sizeof (s->err), "%s: write failed",
+		    s->respath);
+		return (-1);
+	}
+	(void) fprintf(stderr, "zfs_rebase: %u drift line%s added to the "
+	    "resolution %s\n", n, n == 1 ? "" : "s", s->respath);
+	return (0);
+}
+
+/*
+ * The conflicts gate's own verify: the manifest and the resolution
+ * held against the result and reported, and then the drift written
+ * into the resolution. Nothing here touches the tree.
+ */
+static int
+conflicts_check(struct resume *s)
+{
+	struct zr_verify_report rep;
+	int rc;
+
+	memset(&rep, 0, sizeof (rep));
+	rc = classify(s, &s->man, &rep);
+	if (rc == 0) {
+		print_report(s, &s->man, &rep, "the manifest");
+		rc = add_drift(s, &rep);
+	}
+	zr_verify_report_fini(&rep);
+	return (rc);
+}
+
 /*
  * The last gate. A record that asked for the final check gets it
  * here, over the manifest, and only then is done written and the
@@ -3263,10 +3435,12 @@ final_check(struct resume *s, const struct zr_parsed *m, const char *what)
  * a record that says the rebase finished and holds that --abort can
  * still find.
  *
- * The resolution is not classified here. Its lines are choices and
- * not actions, and holding a choice against the side it names is
- * verify-choices' work; until that lands every choice is keep, which
- * is the one choice a verify never compares.
+ * The resolution is classified with it, since the check is one call:
+ * a name kept is never compared, and a name answered onto or from is
+ * held against that side's object. Neither a pending nor a drifted
+ * line blocks this gate, any more than a pending action does -- an
+ * edit made while the conflicts were being answered is the person's
+ * work, and a gate that failed on it would block done for good.
  */
 static int
 done_gate(struct resume *s)
@@ -3366,6 +3540,48 @@ apply_choices(struct resume *s, const struct zr_resolution *res)
  * at on its own, and a stage cannot begin without the document it is
  * the stage of.
  */
+/*
+ * After the choices: the classification the second pass already
+ * implies, made anyway, so that applying2 is checked the way
+ * applying1 is -- by the one verify. Every onto and from line must
+ * be done. The one exception is a directory line that reads
+ * pending: its side has no such directory, and a name kept beneath
+ * it holds it open, which is the choice's form of blocked and no
+ * fault of the apply.
+ */
+static int
+choices_hold(struct resume *s)
+{
+	struct zr_verify_report rep;
+	uint32_t i;
+	int rc = -1;
+
+	if (s->hasres <= 0) {
+		(void) snprintf(s->err, sizeof (s->err), "%s was not read "
+		    "when this verb opened the rebase", s->respath);
+		return (-1);
+	}
+	memset(&rep, 0, sizeof (rep));
+	if (classify(s, &s->man, &rep) != 0)
+		goto out;
+	for (i = 0; i < rep.zv_nrlines; i++) {
+		const struct zr_rline *l = &s->res.zs_lines[i];
+
+		if (rep.zv_rline[i] == ZR_OC_DONE)
+			continue;
+		if (rep.zv_rline[i] == ZR_OC_PENDING && l->zl_isdir)
+			continue;
+		(void) snprintf(s->err, sizeof (s->err), "after the choices, "
+		    "%s reads %s", (const char *)l->zl_path,
+		    zr_outcome_str(rep.zv_rline[i]));
+		goto out;
+	}
+	rc = 0;
+out:
+	zr_verify_report_fini(&rep);
+	return (rc);
+}
+
 static int
 stage2(struct resume *s)
 {
@@ -3402,7 +3618,7 @@ stage2(struct resume *s)
 	 * just changed: the done gate classifies against the result as
 	 * it stands now.
 	 */
-	if (rescan_result(s) != 0)
+	if (rescan_result(s) != 0 || choices_hold(s) != 0)
 		goto out;
 	rc = 0;
 out:
@@ -3424,34 +3640,31 @@ out:
  * move is made on human input, and nothing but the person who
  * answered the conflicts can say they are answered.
  *
- * A verify asked for here reports and does nothing else. The tree is
- * the person's from this gate on -- they are answering conflicts in
- * it, by hand or through a picker -- and nothing here can tell an
- * edit of theirs from a stray, so nothing here writes. The one fix
- * in the tool is applying1's own self-check, which ran before this
- * gate was ever written.
+ * A verify asked for here reports, and writes into the resolution and
+ * nowhere else. The tree is the person's from this gate on -- they
+ * are answering conflicts in it, by hand or through a picker -- and
+ * nothing here can tell an edit of theirs from a stray, so nothing
+ * here touches the tree. What it does instead is say what it found:
+ * every name that no longer stands as onto had it becomes a drift
+ * line with the choice keep, which the person can change to onto or
+ * to from. The one fix in the tool is applying1's own self-check,
+ * which ran before this gate was ever written.
  */
 static int
 stage_conflicts(struct resume *s)
 {
-	struct zr_resolution res;
 	uint32_t left, total;
-	int rc;
 
-	if (s->verify && final_check(s, &s->man, "the manifest") != 0)
-		return (vfail(s, EXIT_INTERNAL, "verify"));
-	rc = read_resolution(s, &res);
-	if (rc < 0) {
-		zr_resolution_fini(&res);
+	if (s->hasres < 0) {
+		(void) snprintf(s->err, sizeof (s->err), "%s", s->reserr);
 		return (vfail(s, EXIT_PRECOND, "resolution"));
 	}
-	if (rc == 0) {
-		zr_resolution_fini(&res);
+	if (s->hasres == 0)
 		return (no_resolution(s));
-	}
-	left = zr_resolution_unanswered(&res);
-	total = res.zs_nlines;
-	zr_resolution_fini(&res);
+	if (s->verify && conflicts_check(s) != 0)
+		return (vfail(s, EXIT_INTERNAL, "verify"));
+	left = zr_resolution_unanswered(&s->res);
+	total = s->res.zs_nlines;
 	if (left != 0) {
 		(void) fprintf(stderr, "zfs_rebase: %s: conflicts "
 		    "unresolved\n", s->result);
@@ -3461,10 +3674,44 @@ stage_conflicts(struct resume *s)
 	return (stage2(s));
 }
 
-/* applying1: the recorded manifest, and the gate that follows it. */
+/*
+ * Record that this rebase asks for the final check, in the word a
+ * fresh run with --verify writes. It is the record's own property and
+ * not this process's flag: the run may stop at conflicts and be
+ * finished by another --continue that says nothing about verify, and
+ * the check is made at done either way.
+ */
+static void
+record_verify(struct resume *s)
+{
+	char e[512];
+
+	if (zr_zfs_set_user(s->zfs, s->result, ZR_PROP_VERIFY, "yes", e,
+	    sizeof (e)) != 0) {
+		(void) fprintf(stderr, "zfs_rebase: %s=yes: %s\n",
+		    ZR_PROP_VERIFY, e);
+		return;
+	}
+	(void) snprintf(s->rb.verify, sizeof (s->rb.verify), "yes");
+	if (s->verbose)
+		(void) fprintf(stderr, "zfs_rebase: %s is recorded on %s; the "
+		    "check is made at done\n", ZR_PROP_VERIFY, s->result);
+}
+
+/*
+ * applying1: the recorded manifest, and the gate that follows it.
+ *
+ * --verify has no other meaning at this gate. The fix here is the
+ * stage's own self-check, which is always on and is no flag's, and
+ * the report the stage prints is the one stage_apply already makes;
+ * what is left for the flag to do is to ask for the final check, so
+ * it is written into the record and the done gate makes it.
+ */
 static int
 stage1(struct resume *s)
 {
+	if (s->verify && verify_asked(&s->rb) == 0)
+		record_verify(s);
 	if (stage_apply(s, &s->man, ZR_STATE_APPLYING1, "the manifest") != 0)
 		return (vfail(s, EXIT_INTERNAL, "apply"));
 	if (vstopped(s) != 0)
@@ -3484,8 +3731,8 @@ stage1(struct resume *s)
 /*
  * A rebase that is already finished. Without --verify there is
  * nothing left but the cleanup a kill between the done gate and the
- * release would have skipped. With it, the manifest is reported over
- * one more time and nothing is written: after done the result is the
+ * release would have skipped. With it, the two documents are reported
+ * over one more time and nothing is written: after done the result is the
  * user's, new work in it is indistinguishable from drift, and a tool
  * that put onto's bytes back over it would be destroying work the
  * rebase never asked about.
@@ -3552,6 +3799,17 @@ resume_open(struct resume *s, const char *result, int byguid)
 	if (read_record(s) != 0 || resume_paths(s) != 0 ||
 	    find_inputs(s, byguid) != 0)
 		return (vfail(s, EXIT_PRECOND, NULL));
+	/*
+	 * The resolution, read once and kept: every gate from
+	 * conflicts on classifies against it, and every verb that has
+	 * to act on it reads it here rather than again. A document
+	 * that cannot be read is not a refusal of its own -- the
+	 * report says so and checks what it can -- so what went wrong
+	 * is kept beside the verdict, for the verbs that do refuse.
+	 */
+	s->hasres = read_resolution(s, &s->res);
+	if (s->hasres < 0)
+		(void) snprintf(s->reserr, sizeof (s->reserr), "%s", s->err);
 	if (s->verbose)
 		(void) fprintf(stderr, "zfs_rebase: %s is at %s, held under "
 		    "%s\n", s->result, s->rb.state[0] != '\0' ? s->rb.state :
@@ -3603,6 +3861,7 @@ resume_close(struct resume *s)
 		zr_names_destroy(s->names);
 	if (s->parsed != 0)
 		zr_parsed_fini(&s->man);
+	zr_resolution_fini(&s->res);
 	/*
 	 * The dataset form gives the dataset back wherever the verb
 	 * stops, and only now, with the walks closed: the snapshots
@@ -3693,6 +3952,19 @@ reset_resolution(struct resume *s)
 		    "%u name%s to answer\n", s->respath, res.zs_nlines,
 		    res.zs_nlines == 1 ? "" : "s");
 	zr_resolution_fini(&res);
+	/*
+	 * And the copy this verb goes on with, read back off the file
+	 * that was just written: the classification the stage after
+	 * this one makes must be against the document on disk, not
+	 * against the answers the restart has just discarded.
+	 */
+	if (rc == 0) {
+		zr_resolution_fini(&s->res);
+		s->hasres = read_resolution(s, &s->res);
+		if (s->hasres < 0)
+			(void) snprintf(s->reserr, sizeof (s->reserr), "%s",
+			    s->err);
+	}
 	return (rc);
 }
 
@@ -3875,9 +4147,8 @@ out:
 int
 zr_report(const char *result, int verbose)
 {
-	struct zr_resolution res;
 	struct resume s;
-	int rc, code;
+	int code;
 
 	memset(&s, 0, sizeof (s));
 	s.verify = 1;			/* the report is the whole verb */
@@ -3901,24 +4172,22 @@ zr_report(const char *result, int verbose)
 		    s.result);
 	code = report_one(&s, &s.man, "the manifest");
 	/*
-	 * And the resolution, which is not classified: its lines are
-	 * choices, and holding a choice against the side it names is
-	 * verify-choices' work. What a report can say about it now is
-	 * how much of it is still unanswered, which is what says
-	 * whether the rebase can move at all. It is a report: an
-	 * unreadable resolution is said and does not change the
-	 * outcome of the check that was asked for.
+	 * The resolution was classified with it, line by line, and
+	 * what is left to say of it is how much is still unanswered,
+	 * which is what says whether the rebase can move at all. It is
+	 * a report and it writes nothing: an unreadable resolution is
+	 * said and does not change the outcome of the check that was
+	 * asked for, and no drift line is added here -- that is the
+	 * conflicts gate's, and only under a --continue.
 	 */
-	rc = read_resolution(&s, &res);
-	if (rc < 0)
-		(void) fprintf(stderr, "zfs_rebase: %s\n", s.err);
-	else if (rc == 0)
+	if (s.hasres < 0)
+		(void) fprintf(stderr, "zfs_rebase: %s\n", s.reserr);
+	else if (s.hasres == 0)
 		(void) fprintf(stderr, "zfs_rebase: the resolution %s is "
 		    "gone\n", s.respath);
 	else
-		unanswered_note(&s, zr_resolution_unanswered(&res),
-		    res.zs_nlines);
-	zr_resolution_fini(&res);
+		unanswered_note(&s, zr_resolution_unanswered(&s.res),
+		    s.res.zs_nlines);
 done:
 	resume_close(&s);
 	return (code);

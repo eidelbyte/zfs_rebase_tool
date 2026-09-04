@@ -29,12 +29,22 @@
  * rebase, with one of its two sources gone, which is unchecked and
  * not drift.
  *
+ * Last of all the resolution, which is the classifier's third input
+ * from the conflicts gate on: a keep line that exempts a name from
+ * every comparison, an onto and a from line through done, pending,
+ * drifted and unchecked, the absences of both sides, a group of two
+ * names pooled as the side pools them, a line nobody has answered, a
+ * directory line over its children, and the round trip a --continue
+ * --verify makes -- an entry of the name list written into the
+ * document as a drift line and read back.
+ *
  * The family is ZY of tests/MATRIX.md, and ZC25 of the oracle's is
  * here too, since the pair entry point this classifier asks
  * everything through is new with it. Covered: ZY1 through ZY36, ZY40
- * through ZY45 and ZY60 through ZY69. ZY37, ZY38 and ZY39 are the
- * box's -- a real ACL and both extended attribute namespaces in a
- * comparison, a kill at a gate, and the dataset form.
+ * through ZY45, ZY60 through ZY69 and ZY80 through ZY93. ZY37, ZY38,
+ * ZY39 and ZY94 are the box's -- a real ACL and both extended
+ * attribute namespaces in a comparison, a kill at a gate, the dataset
+ * form, and a drift line written into a real resolution.
  */
 
 #define	_XOPEN_SOURCE	700
@@ -297,6 +307,43 @@ idx_of(const struct zr_parsed *p, const char *path)
 }
 
 /*
+ * The resolution document around one tree section body: the same
+ * three snapshots the manifest above carries, since a verb holds the
+ * two against each other, and the two counts the parse checks against
+ * the lines.
+ */
+static void
+parse_res(struct zr_resolution *r, const char *body, int nnames, int nunans)
+{
+	char text[TEXTMAX], err[256];
+	FILE *f;
+	int n;
+
+	memset(r, 0, sizeof (*r));
+	n = snprintf(text, sizeof (text),
+	    "#rebase-resolution 4\n"
+	    "#base b\n"
+	    "#from f\n"
+	    "#onto o\n"
+	    "#mode strict\n"
+	    "#names %d\n"
+	    "#unanswered %d\n"
+	    "/\n"
+	    "%s"
+	    "..\n", nnames, nunans, body);
+	CHECK(n > 0 && (size_t)n < sizeof (text));
+	f = tmpfile();
+	CHECK(f != NULL);
+	CHECK(fputs(text, f) != EOF);
+	rewind(f);
+	err[0] = '\0';
+	if (zr_resolution_parse(f, r, err, sizeof (err)) != 0)
+		printf("  resolution: %s\n", err);
+	CHECK(err[0] == '\0');
+	CHECK(fclose(f) == 0);
+}
+
+/*
  * ---------------------------------------------------------------
  * The outcome grid: one onto tree, one from tree, one result tree,
  * all three by hand, and a manifest written as text.
@@ -343,8 +390,9 @@ vshape_fini(struct vshape *v)
  * what it needs the oracle for.
  */
 static void
-vshape_run(struct vshape *v, const char *body, int nactions, int nconf,
-    const char *records, struct zr_parsed *p, struct zr_verify_report *rep)
+vshape_run_res(struct vshape *v, const char *body, int nactions, int nconf,
+    const char *records, const struct zr_resolution *res, struct zr_parsed *p,
+    struct zr_verify_report *rep)
 {
 	struct zr_walk wo, wf, wr;
 	struct zr_oracle *o;
@@ -357,13 +405,22 @@ vshape_run(struct vshape *v, const char *body, int nactions, int nconf,
 	CHECK(zr_walk(v->vs_res, v->vs_ns, &wr, err, sizeof (err)) == 0);
 	CHECK(zr_oracle_init(&o, &wo, &wf, &wr) == 0);
 	err[0] = '\0';
-	if (zr_verify(p, o, &wo, &wf, &wr, 0, rep, err, sizeof (err)) != 0)
+	if (zr_verify_with(p, res, o, &wo, &wf, &wr, 0, rep, err,
+	    sizeof (err)) != 0)
 		printf("  verify: %s\n", err);
 	CHECK(err[0] == '\0');
 	zr_oracle_fini(o);
 	zr_walk_fini(&wr);
 	zr_walk_fini(&wf);
 	zr_walk_fini(&wo);
+}
+
+/* The same with no resolution at all, which is zr_verify itself. */
+static void
+vshape_run(struct vshape *v, const char *body, int nactions, int nconf,
+    const char *records, struct zr_parsed *p, struct zr_verify_report *rep)
+{
+	vshape_run_res(v, body, nactions, nconf, records, NULL, p, rep);
 }
 
 /* One action, one expected outcome, and an empty name list. */
@@ -1530,14 +1587,15 @@ check_check_nofix(void)
 
 static void
 vshape_run_miss(struct vshape *v, const char *body, int nactions, int nconf,
-    unsigned miss, struct zr_parsed *p, struct zr_verify_report *rep)
+    const char *records, unsigned miss, const struct zr_resolution *res,
+    struct zr_parsed *p, struct zr_verify_report *rep)
 {
 	struct zr_walk wo, wf, wr, we;
 	struct zr_walk *po, *pf;
 	struct zr_oracle *o;
 	char none[PATHMAX], err[512];
 
-	parse_doc(p, body, nactions, nconf, "");
+	parse_doc(p, body, nactions, nconf, records);
 	join(none, sizeof (none), v->vs_root, "/none");
 	CHECK(mkdir(none, 0755) == 0 || errno == EEXIST);
 	err[0] = '\0';
@@ -1549,7 +1607,8 @@ vshape_run_miss(struct vshape *v, const char *body, int nactions, int nconf,
 	pf = (miss & ZR_MISS_FROM) != 0 ? &we : &wf;
 	CHECK(zr_oracle_init(&o, po, pf, &wr) == 0);
 	err[0] = '\0';
-	if (zr_verify(p, o, po, pf, &wr, miss, rep, err, sizeof (err)) != 0)
+	if (zr_verify_with(p, res, o, po, pf, &wr, miss, rep, err,
+	    sizeof (err)) != 0)
 		printf("  verify: %s\n", err);
 	CHECK(err[0] == '\0');
 	zr_oracle_fini(o);
@@ -1568,7 +1627,7 @@ vshape_one_miss(struct vshape *v, const char *body, const char *path,
 	struct zr_parsed p;
 	uint32_t i;
 
-	vshape_run_miss(v, body, 1, 0, miss, &p, &rep);
+	vshape_run_miss(v, body, 1, 0, "", miss, NULL, &p, &rep);
 	i = idx_of(&p, path);
 	if (rep.zv_outcome[i] != want) {
 		printf("  %s: %s, wanted %s\n", path,
@@ -1670,12 +1729,456 @@ check_miss_still_answered(void)
 	CHECK(rep.zv_ndiffs == 1);
 	zr_verify_report_fini(&rep);
 	zr_parsed_fini(&p);
-	vshape_run_miss(&v, "    n cp /n\n", 1, 0, ZR_MISS_ONTO, &p, &rep);
+	vshape_run_miss(&v, "    n cp /n\n", 1, 0, "", ZR_MISS_ONTO, NULL, &p,
+	    &rep);
 	CHECK(rep.zv_ndiffs == 0);
 	CHECK(rep.zv_dfirst[ZR_DF_CHANGED] == ZR_NAME_NONE);
 	CHECK(rep.zv_dfirst[ZR_DF_GONE] == ZR_NAME_NONE);
 	zr_verify_report_fini(&rep);
 	zr_parsed_fini(&p);
+	vshape_fini(&v);
+}
+
+/*
+ * ---------------------------------------------------------------
+ * The resolution: the classifier's third input from the conflicts
+ * gate on. A choice of keep is never compared and a name it covers
+ * is nobody's business but the person's; a choice of onto or from is
+ * held against that side's object at the name, absence included.
+ * ---------------------------------------------------------------
+ */
+
+/* The manifest every one-name choice test below is written against. */
+static const char one_conflict[] = "    x conflict 1\n";
+static const char one_record[] =
+	"\n"
+	"conflict 1 changed-both\n"
+	"  why  /x changed on both sides\n"
+	"  base ()\n"
+	"  from ()\n"
+	"  onto ({/x}x)\n";
+
+/* One choice on /x, and what the classifier makes of it. */
+static void
+choice_one(struct vshape *v, const char *choice, enum zr_outcome want)
+{
+	struct zr_verify_report rep;
+	struct zr_resolution res;
+	struct zr_parsed p;
+	char rbody[64];
+	int n;
+
+	n = snprintf(rbody, sizeof (rbody), "    x conflict 1 %s\n", choice);
+	CHECK(n > 0 && (size_t)n < sizeof (rbody));
+	parse_res(&res, rbody, 1, 0);
+	vshape_run_res(v, one_conflict, 0, 1, one_record, &res, &p, &rep);
+	CHECK(rep.zv_nrlines == 1);
+	if (rep.zv_rline[0] != want) {
+		printf("  /x %s: %s, wanted %s\n", choice,
+		    zr_outcome_str(rep.zv_rline[0]), zr_outcome_str(want));
+	}
+	CHECK(rep.zv_rline[0] == want);
+	CHECK(rep.zv_rcount[want] == 1);
+	CHECK(rep.zv_rfirst[want] == 0);
+	CHECK(rep.zv_ndiffs == 0);
+	zr_verify_report_fini(&rep);
+	zr_parsed_fini(&p);
+	zr_resolution_fini(&res);
+}
+
+/* The same with one of the two sides not there to be read. */
+static void
+choice_miss(struct vshape *v, const char *choice, unsigned miss,
+    enum zr_outcome want)
+{
+	struct zr_verify_report rep;
+	struct zr_resolution res;
+	struct zr_parsed p;
+	char rbody[64];
+	int n;
+
+	n = snprintf(rbody, sizeof (rbody), "    x conflict 1 %s\n", choice);
+	CHECK(n > 0 && (size_t)n < sizeof (rbody));
+	parse_res(&res, rbody, 1, 0);
+	vshape_run_miss(v, one_conflict, 0, 1, one_record, miss, &res, &p,
+	    &rep);
+	CHECK(rep.zv_nrlines == 1);
+	if (rep.zv_rline[0] != want) {
+		printf("  /x %s: %s, wanted %s\n", choice,
+		    zr_outcome_str(rep.zv_rline[0]), zr_outcome_str(want));
+	}
+	CHECK(rep.zv_rline[0] == want);
+	CHECK(rep.zv_rcount[want] == 1);
+	zr_verify_report_fini(&rep);
+	zr_parsed_fini(&p);
+	zr_resolution_fini(&res);
+}
+
+/*
+ * ZY80, ZY93: a keep line. The name is never compared on either axis
+ * -- neither the conflicted one the person merged by hand nor the
+ * clean one a drift line covers -- and the same trees with no
+ * resolution over them say what the exemption is worth.
+ */
+static void
+check_choice_keep(void)
+{
+	struct zr_verify_report rep;
+	struct zr_resolution res;
+	struct zr_parsed p;
+	struct vshape v;
+	static const char rbody[] =
+	    "    k drift keep\n"
+	    "    x conflict 1 keep\n";
+
+	vshape_init(&v);
+	mkfile(v.vs_onto, "/x", "onto bytes\n", 0644);
+	mkfile(v.vs_onto, "/k", "onto keeps\n", 0644);
+	mkfile(v.vs_from, "/x", "from bytes\n", 0644);
+	/* both edited while the conflicts were being answered */
+	mkfile(v.vs_res, "/x", "a hand merge\n", 0644);
+	mkfile(v.vs_res, "/k", "and a stray\n", 0644);
+	parse_res(&res, rbody, 2, 0);
+	vshape_run_res(&v, one_conflict, 0, 1, one_record, &res, &p, &rep);
+	CHECK(rep.zv_nrlines == 2);
+	CHECK(rep.zv_rline[0] == ZR_OC_DONE);
+	CHECK(rep.zv_rline[1] == ZR_OC_DONE);
+	CHECK(rep.zv_rcount[ZR_OC_DONE] == 0);
+	CHECK(rep.zv_rfirst[ZR_OC_DONE] == ZR_ACTION_NONE);
+	CHECK(rep.zv_ndiffs == 0);
+	zr_verify_report_fini(&rep);
+	zr_parsed_fini(&p);
+	/* the same tree with nothing keeping /k: an entry again */
+	vshape_run(&v, one_conflict, 0, 1, one_record, &p, &rep);
+	CHECK(rep.zv_ndiffs == 1);
+	CHECK(rep.zv_dcount[ZR_DF_CHANGED] == 1);
+	CHECK(rep.zv_dfirst[ZR_DF_CHANGED] ==
+	    zr_names_lookup(v.vs_ns, "/k", 2));
+	zr_verify_report_fini(&rep);
+	zr_parsed_fini(&p);
+	/* ZY93: and the name axis is exempt with it */
+	rmname(v.vs_res, "/k");
+	vshape_run_res(&v, one_conflict, 0, 1, one_record, &res, &p, &rep);
+	CHECK(rep.zv_ndiffs == 0);
+	zr_verify_report_fini(&rep);
+	zr_parsed_fini(&p);
+	vshape_run(&v, one_conflict, 0, 1, one_record, &p, &rep);
+	CHECK(rep.zv_ndiffs == 1);
+	CHECK(rep.zv_dcount[ZR_DF_GONE] == 1);
+	zr_verify_report_fini(&rep);
+	zr_parsed_fini(&p);
+	zr_resolution_fini(&res);
+	vshape_fini(&v);
+}
+
+/*
+ * ZY81, ZY82: a choice of onto. The expected object and onto's own
+ * original are one and the same here, so there is no pending state to
+ * reach: the result holds onto's object or it has drifted.
+ */
+static void
+check_choice_onto(void)
+{
+	struct vshape v;
+
+	vshape_init(&v);
+	mkfile(v.vs_onto, "/x", "onto bytes\n", 0644);
+	mkfile(v.vs_from, "/x", "from bytes\n", 0644);
+	mkfile(v.vs_res, "/x", "onto bytes\n", 0644);
+	choice_one(&v, "onto", ZR_OC_DONE);
+	mkfile(v.vs_res, "/x", "a hand merge\n", 0644);
+	choice_one(&v, "onto", ZR_OC_DRIFTED);
+	mkfile(v.vs_res, "/x", "from bytes\n", 0644);
+	choice_one(&v, "onto", ZR_OC_DRIFTED);
+	vshape_fini(&v);
+}
+
+/*
+ * ZY83, ZY84, ZY85: a choice of from. Before applying2 the name still
+ * holds onto's own, which is pending and not drift; after it, from's
+ * object, which is done; anything else is drift.
+ */
+static void
+check_choice_from(void)
+{
+	struct vshape v;
+
+	vshape_init(&v);
+	mkfile(v.vs_onto, "/x", "onto bytes\n", 0644);
+	mkfile(v.vs_from, "/x", "from bytes\n", 0644);
+	mkfile(v.vs_res, "/x", "onto bytes\n", 0644);
+	choice_one(&v, "from", ZR_OC_PENDING);
+	mkfile(v.vs_res, "/x", "from bytes\n", 0644);
+	choice_one(&v, "from", ZR_OC_DONE);
+	mkfile(v.vs_res, "/x", "a third thing\n", 0644);
+	choice_one(&v, "from", ZR_OC_DRIFTED);
+	vshape_fini(&v);
+}
+
+/*
+ * ZY86, ZY87: the side the choice names has no such name, so what it
+ * says is absence. A from line over a name from deleted is pending
+ * while onto's object is still there and done once it is gone; an
+ * onto line over a name onto never had is done only where the result
+ * does not hold it, since absence is the original there too.
+ */
+static void
+check_choice_absent(void)
+{
+	struct vshape v;
+
+	vshape_init(&v);
+	mkfile(v.vs_onto, "/x", "onto bytes\n", 0644);
+	mkfile(v.vs_res, "/x", "onto bytes\n", 0644);
+	choice_one(&v, "from", ZR_OC_PENDING);
+	mkfile(v.vs_res, "/x", "a third thing\n", 0644);
+	choice_one(&v, "from", ZR_OC_DRIFTED);
+	rmname(v.vs_res, "/x");
+	choice_one(&v, "from", ZR_OC_DONE);
+	vshape_fini(&v);
+
+	vshape_init(&v);
+	mkfile(v.vs_from, "/x", "from bytes\n", 0644);
+	mkfile(v.vs_res, "/x", "from bytes\n", 0644);
+	choice_one(&v, "onto", ZR_OC_DRIFTED);
+	rmname(v.vs_res, "/x");
+	choice_one(&v, "onto", ZR_OC_DONE);
+	vshape_fini(&v);
+}
+
+/*
+ * ZY88: two names of one group that chose from. From holds them as
+ * one object, so the result must too: the right bytes under two
+ * objects are not what the choice said, which is the tearing zv_ln
+ * and zv_make report on an action.
+ */
+static void
+check_choice_group(void)
+{
+	struct zr_verify_report rep;
+	struct zr_resolution res;
+	struct zr_parsed p;
+	struct vshape v;
+	static const char body[] =
+	    "    p conflict 1\n"
+	    "    q conflict 1\n";
+	static const char records[] =
+	    "\n"
+	    "conflict 1 changed-both\n"
+	    "  why  /p and /q changed on both sides\n"
+	    "  base ()\n"
+	    "  from ({/p,/q}y)\n"
+	    "  onto ({/p}x {/q}z)\n";
+	static const char rbody[] =
+	    "    p conflict 1 from\n"
+	    "    q conflict 1 from\n";
+
+	vshape_init(&v);
+	mkfile(v.vs_onto, "/p", "onto p\n", 0644);
+	mkfile(v.vs_onto, "/q", "onto q\n", 0644);
+	mkfile(v.vs_from, "/p", "one object\n", 0644);
+	mklink(v.vs_from, "/q", "/p");
+	/* the two names as from pools them */
+	mkfile(v.vs_res, "/p", "one object\n", 0644);
+	mklink(v.vs_res, "/q", "/p");
+	parse_res(&res, rbody, 2, 0);
+	vshape_run_res(&v, body, 0, 1, records, &res, &p, &rep);
+	CHECK(rep.zv_nrlines == 2);
+	CHECK(rep.zv_rline[0] == ZR_OC_DONE);
+	CHECK(rep.zv_rline[1] == ZR_OC_DONE);
+	CHECK(rep.zv_rcount[ZR_OC_DONE] == 2);
+	CHECK(rep.zv_rfirst[ZR_OC_DONE] == 0);
+	zr_verify_report_fini(&rep);
+	zr_parsed_fini(&p);
+	/* and the same bytes as two objects, which from does not say */
+	rmname(v.vs_res, "/q");
+	mkfile(v.vs_res, "/q", "one object\n", 0644);
+	vshape_run_res(&v, body, 0, 1, records, &res, &p, &rep);
+	CHECK(rep.zv_rline[0] == ZR_OC_DRIFTED);
+	CHECK(rep.zv_rline[1] == ZR_OC_DRIFTED);
+	CHECK(rep.zv_rcount[ZR_OC_DRIFTED] == 2);
+	CHECK(rep.zv_rcount[ZR_OC_DONE] == 0);
+	zr_verify_report_fini(&rep);
+	zr_parsed_fini(&p);
+	zr_resolution_fini(&res);
+	vshape_fini(&v);
+}
+
+/*
+ * ZY89: a line still unanswered is a conflicted name and nothing
+ * else. It is classified as nothing, counted in no outcome, and the
+ * name it names is no more the second pass's than it was before.
+ */
+static void
+check_choice_unanswered(void)
+{
+	struct zr_verify_report rep;
+	struct zr_resolution res;
+	struct zr_parsed p;
+	struct vshape v;
+	int i;
+
+	vshape_init(&v);
+	mkfile(v.vs_onto, "/x", "onto bytes\n", 0644);
+	mkfile(v.vs_from, "/x", "from bytes\n", 0644);
+	mkfile(v.vs_res, "/x", "a hand merge\n", 0644);
+	parse_res(&res, "    x conflict 1 -\n", 1, 1);
+	CHECK(zr_resolution_unanswered(&res) == 1);
+	vshape_run_res(&v, one_conflict, 0, 1, one_record, &res, &p, &rep);
+	CHECK(rep.zv_nrlines == 1);
+	CHECK(rep.zv_rline[0] == ZR_OC_DONE);
+	for (i = 0; i < ZR_OC_COUNT; i++) {
+		CHECK(rep.zv_rcount[i] == 0);
+		CHECK(rep.zv_rfirst[i] == ZR_ACTION_NONE);
+	}
+	CHECK(rep.zv_ndiffs == 0);
+	zr_verify_report_fini(&rep);
+	zr_parsed_fini(&p);
+	zr_resolution_fini(&res);
+	vshape_fini(&v);
+}
+
+/*
+ * ZY90: a directory line covers the names beneath it, which is the
+ * manifest's own scoping asked of the other document. One line over
+ * /d exempts an edit under it and a deletion under it alike.
+ */
+static void
+check_choice_dir(void)
+{
+	struct zr_verify_report rep;
+	struct zr_resolution res;
+	struct zr_parsed p;
+	struct vshape v;
+
+	vshape_init(&v);
+	mkdirp(v.vs_onto, "/d", 0755);
+	mkfile(v.vs_onto, "/d/x", "untouched\n", 0644);
+	mkfile(v.vs_onto, "/d/y", "untouched too\n", 0644);
+	mkdirp(v.vs_res, "/d", 0755);
+	mkfile(v.vs_res, "/d/x", "an edit!!\n", 0644);
+	vshape_run(&v, "", 0, 0, "", &p, &rep);
+	CHECK(rep.zv_ndiffs == 2);
+	CHECK(rep.zv_dcount[ZR_DF_CHANGED] == 1);
+	CHECK(rep.zv_dcount[ZR_DF_GONE] == 1);
+	zr_verify_report_fini(&rep);
+	zr_parsed_fini(&p);
+	parse_res(&res, "    d/ drift keep\n        ..\n", 1, 0);
+	CHECK(res.zs_nlines == 1);
+	CHECK(res.zs_lines[0].zl_isdir == 1);
+	vshape_run_res(&v, "", 0, 0, "", &res, &p, &rep);
+	CHECK(rep.zv_ndiffs == 0);
+	CHECK(rep.zv_nrlines == 1);
+	zr_verify_report_fini(&rep);
+	zr_parsed_fini(&p);
+	zr_resolution_fini(&res);
+	vshape_fini(&v);
+}
+
+/*
+ * ZY91: the side a choice names is one of the trees that is not
+ * there, so nobody can say what it holds. Unchecked, as an action
+ * that reads a missing tree is -- and what a choice does not need it
+ * does not miss: an onto line answers with from gone.
+ */
+static void
+check_choice_miss(void)
+{
+	struct vshape v;
+
+	vshape_init(&v);
+	mkfile(v.vs_onto, "/x", "onto bytes\n", 0644);
+	mkfile(v.vs_from, "/x", "from bytes\n", 0644);
+	mkfile(v.vs_res, "/x", "onto bytes\n", 0644);
+	choice_miss(&v, "from", ZR_MISS_FROM, ZR_OC_UNCHECKED);
+	choice_miss(&v, "onto", ZR_MISS_ONTO, ZR_OC_UNCHECKED);
+	choice_miss(&v, "onto", ZR_MISS_FROM, ZR_OC_DONE);
+	/* onto gone: from's bytes still answer, onto's cannot */
+	choice_miss(&v, "from", ZR_MISS_ONTO, ZR_OC_UNCHECKED);
+	mkfile(v.vs_res, "/x", "from bytes\n", 0644);
+	choice_miss(&v, "from", ZR_MISS_ONTO, ZR_OC_DONE);
+	vshape_fini(&v);
+}
+
+/*
+ * ZY92: the round trip the conflicts gate makes. Every entry of the
+ * name list becomes a drift line with the choice keep, through the
+ * one library call run.c makes; the document is written and read back,
+ * which is what a --continue leaves on disk; and a classification
+ * with it says nothing about those names any more.
+ */
+static void
+check_choice_roundtrip(void)
+{
+	struct zr_verify_report rep;
+	struct zr_resolution res, back;
+	struct zr_parsed p;
+	struct vshape v;
+	const char *nm;
+	char err[256];
+	size_t len;
+	FILE *f;
+	uint32_t i;
+
+	vshape_init(&v);
+	mkdirp(v.vs_onto, "/d", 0755);
+	mkfile(v.vs_onto, "/d/x", "untouched\n", 0644);
+	mkfile(v.vs_onto, "/g", "goes away\n", 0644);
+	mkdirp(v.vs_res, "/d", 0755);
+	mkfile(v.vs_res, "/d/x", "an edit!!\n", 0644);
+	mkfile(v.vs_res, "/new", "brand new\n", 0644);
+	chmodp(v.vs_res, "/d", 0700);
+	vshape_run(&v, "", 0, 0, "", &p, &rep);
+	CHECK(rep.zv_ndiffs == 4);
+	CHECK(rep.zv_dcount[ZR_DF_CHANGED] == 2);
+	CHECK(rep.zv_dcount[ZR_DF_GONE] == 1);
+	CHECK(rep.zv_dcount[ZR_DF_EXTRA] == 1);
+	CHECK(zr_resolution_skeleton(&p, ZR_CH_NONE, &res) == 0);
+	CHECK(res.zs_nlines == 0);
+	/*
+	 * The directory among them goes in as a directory line, which
+	 * is what run.c asks the walk for: a line that can scope
+	 * others is written with its trailing slash and its two dots.
+	 */
+	for (i = 0; i < rep.zv_ndiffs; i++) {
+		len = 0;
+		nm = zr_names_str(v.vs_ns, rep.zv_diffs[i].zn_name, &len);
+		CHECK(nm != NULL && len > 0);
+		CHECK(zr_resolution_add_drift(&res,
+		    (const unsigned char *)nm, len,
+		    strcmp(nm, "/d") == 0 ? 1 : 0, ZR_CH_KEEP) == 0);
+	}
+	zr_verify_report_fini(&rep);
+	zr_parsed_fini(&p);
+	/* written as the gate writes it, and read back */
+	f = tmpfile();
+	CHECK(f != NULL);
+	CHECK(zr_resolution_write(f, &res) == 0);
+	rewind(f);
+	memset(&back, 0, sizeof (back));
+	err[0] = '\0';
+	if (zr_resolution_parse(f, &back, err, sizeof (err)) != 0)
+		printf("  resolution: %s\n", err);
+	CHECK(err[0] == '\0');
+	CHECK(fclose(f) == 0);
+	CHECK(back.zs_nlines == 4);
+	CHECK(zr_resolution_unanswered(&back) == 0);
+	for (i = 0; i < back.zs_nlines; i++) {
+		CHECK(back.zs_lines[i].zl_kind == ZR_RL_DRIFT);
+		CHECK(back.zs_lines[i].zl_choice == ZR_CH_KEEP);
+		CHECK(back.zs_lines[i].zl_group == 0);
+		nm = (const char *)back.zs_lines[i].zl_path;
+		CHECK(back.zs_lines[i].zl_isdir == (strcmp(nm, "/d") == 0));
+	}
+	vshape_run_res(&v, "", 0, 0, "", &back, &p, &rep);
+	CHECK(rep.zv_ndiffs == 0);
+	CHECK(rep.zv_nrlines == 4);
+	CHECK(rep.zv_rcount[ZR_OC_DONE] == 0);
+	CHECK(rep.zv_rcount[ZR_OC_DRIFTED] == 0);
+	zr_verify_report_fini(&rep);
+	zr_parsed_fini(&p);
+	zr_resolution_fini(&back);
+	zr_resolution_fini(&res);
 	vshape_fini(&v);
 }
 
@@ -1705,6 +2208,15 @@ main(void)
 	check_miss_from();
 	check_miss_onto();
 	check_miss_still_answered();
+	check_choice_keep();
+	check_choice_onto();
+	check_choice_from();
+	check_choice_absent();
+	check_choice_group();
+	check_choice_unanswered();
+	check_choice_dir();
+	check_choice_miss();
+	check_choice_roundtrip();
 
 	printf("check_verify: %d checks passed\n", checks);
 	return (0);

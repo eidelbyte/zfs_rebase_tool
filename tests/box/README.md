@@ -298,8 +298,9 @@ which is what every gate before applying2 relies on.
     sudo sh tests/box/run-strays.sh [FIXTURE.zrt ...]
 
 puts edits where the tool is not looking and asks what happens to
-them. Same fixtures, both forms, four cases each, every one ending
-in --abort with the pool proved to be the fixture again.
+them. Same fixtures, both forms, four cases each and a fifth on the
+conflicted ones, every one ending in --abort with the pool proved to
+be the fixture again.
 
 Paused at action:1, with the result writable and no action
 performed, the harness edits a file the manifest keeps untouched,
@@ -336,6 +337,18 @@ manifest is the expect block to the byte. In the dataset form onto
 is not even where it lives just then, so its own mount point is an
 empty directory of the pool's root dataset, and a write there is
 hidden the moment the dataset comes home.
+
+And, on the conflicted fixtures, the one place a drift line is
+written: an edit to a clean file while the rebase waits at the
+conflicts gate, then --continue --verify, which turns every entry of
+the name list into a drift line with the choice keep, writes the
+resolution back and goes on. The document gains one name, the count
+of unanswered stays at zero because a keep is an answer, the rebase
+reaches done with the edit still in the tree, and a --verify
+afterwards has nothing outside the manifest to say about that name:
+it is the resolution's now, and a keep is never compared. Answering
+the skeleton first is a hand edit, so the header's count is edited
+with the lines.
 
 The dataset form is given from as a snapshot here rather than as a
 dataset, because a verify that cannot read from can only say

@@ -12,6 +12,12 @@
  * is exactly what a stray delete leaves, and a pass that only walked
  * what the result holds could never see it.
  *
+ * From the conflicts gate on there is a third document, the
+ * resolution, and a third pass: every name one of its lines covers is
+ * spoken for by the choice on that line and not by the second pass,
+ * and an onto or a from line is held against the object that side has
+ * at the name, the way an action is held against the object it makes.
+ *
  * The trees are the oracle's three positions: onto, from, result.
  * Nothing here opens a file itself -- every read is the oracle's, and
  * so is every memo of a pair already settled.
@@ -34,16 +40,18 @@
 #define	ZV_FROM		1
 #define	ZV_RESULT	2
 
-/* What the manifest said about one name, kept by name id. */
+/* What the two documents said about one name, kept by name id. */
 #define	ZV_ACTED	0x1	/* an action line names it */
 #define	ZV_CONFLICT	0x2	/* and that line is a conflict mark */
 #define	ZV_RMDIR	0x4	/* and that line removes a directory */
+#define	ZV_CHOSEN	0x8	/* a resolution line names it */
 
 /* How many entries the name list starts at and grows by. */
 #define	ZV_DIFF_MIN	16
 
 struct zv_ctx {
 	const struct zr_parsed	*zc_m;
+	const struct zr_resolution *zc_res;	/* NULL before conflicts */
 	struct zr_oracle	*zc_o;
 	const struct zr_walk	*zc_w[3];
 	const struct zr_names	*zc_names;
@@ -350,6 +358,7 @@ static void
 zv_marks(struct zv_ctx *c)
 {
 	const struct zr_action *a;
+	const struct zr_rline *l;
 	zr_pool_t pr;
 	zr_name_t nm;
 	uint32_t i;
@@ -368,22 +377,43 @@ zv_marks(struct zv_ctx *c)
 		if (pr != ZR_POOL_NONE && pr < c->zc_npools)
 			c->zc_pmark[pr] = 1;
 	}
+	/*
+	 * And every name a resolution line covers, which is the name
+	 * itself and, where the line is a directory, everything under
+	 * it: the manifest's own scoping, asked the same way. The
+	 * result pool is not marked here as an action's is. A choice
+	 * speaks for a name and not for an object, and a name that
+	 * merely shares an object with a chosen one is nobody's
+	 * choice: leaving it in the list is what lets a hand edit to
+	 * it still be seen.
+	 */
+	if (c->zc_res == NULL)
+		return;
+	for (i = 0; i < c->zc_res->zs_nlines; i++) {
+		l = &c->zc_res->zs_lines[i];
+		nm = zv_name(c, l->zl_path, l->zl_pathlen);
+		if (nm == ZR_NAME_NONE || nm >= c->zc_nnames)
+			continue;
+		c->zc_mark[nm] |= ZV_CHOSEN;
+	}
 }
 
 /*
  * Is this name one the second pass may speak about at all? A name
  * some action names has its own outcome; a name a conflict covers is
- * nobody's to judge; and a name that shares a result pool with a name
- * an action made is that action's doing.
+ * nobody's to judge; a name a resolution line covers is spoken for by
+ * that choice, which is the same exemption for the same reason; and a
+ * name that shares a result pool with a name an action made is that
+ * action's doing.
  */
 static int
 zv_untouched(const struct zv_ctx *c, zr_name_t nm)
 {
 	zr_pool_t pr;
 
-	if ((c->zc_mark[nm] & ZV_ACTED) != 0)
+	if ((c->zc_mark[nm] & (ZV_ACTED | ZV_CHOSEN)) != 0)
 		return (0);
-	if (zv_under(c, nm, ZV_CONFLICT) != 0)
+	if (zv_under(c, nm, ZV_CONFLICT | ZV_CHOSEN) != 0)
 		return (0);
 	pr = zv_pool(c, ZV_RESULT, nm);
 	if (pr != ZR_POOL_NONE && pr < c->zc_npools && c->zc_pmark[pr] != 0)
@@ -537,11 +567,126 @@ zv_names(struct zv_ctx *c, struct zr_verify_report *out)
 	return (0);
 }
 
+/*
+ * Are the names of one conflict group that chose this side still one
+ * object in the result, as that side holds them? The resolution says
+ * "the names of one group that chose the same side pool as that side
+ * pools them", so a name holding the right bytes outside that pool is
+ * not what was chosen -- it is the tearing a dup makes, reported for
+ * the operator to look at exactly as zv_kept_pool reports a write's.
+ *
+ * A drift line is nobody's group: it is one name a verify found
+ * changed, and group 0 is not a group, so nothing is asked of it.
+ * Absence has no pool either, and there is nothing to ask there.
+ */
+static int
+zv_group_pooled(const struct zv_ctx *c, uint32_t li, int side, zr_pool_t ps,
+    zr_pool_t pr)
+{
+	const struct zr_resolution *res = c->zc_res;
+	const struct zr_rline *l = &res->zs_lines[li];
+	const struct zr_rline *o;
+	zr_name_t nm;
+	uint32_t i;
+
+	if (ps == ZR_POOL_NONE || l->zl_kind != ZR_RL_CONFLICT ||
+	    l->zl_group == 0)
+		return (1);
+	for (i = 0; i < res->zs_nlines; i++) {
+		o = &res->zs_lines[i];
+		if (i == li || o->zl_kind != ZR_RL_CONFLICT ||
+		    o->zl_group != l->zl_group ||
+		    o->zl_choice != l->zl_choice)
+			continue;
+		nm = zv_name(c, o->zl_path, o->zl_pathlen);
+		if (zv_pool(c, side, nm) != ps)
+			continue;
+		if (zv_pool(c, ZV_RESULT, nm) != pr)
+			return (0);
+	}
+	return (1);
+}
+
+/*
+ * One choice of onto or from. The expected object is that side's at
+ * the name and absence where the side had none; the original is
+ * onto's, as it is for an action. The side is asked first, so that a
+ * name already holding what was chosen is done whatever became of
+ * onto -- which is zv_make's own order -- and onto is asked only when
+ * the answer was no.
+ */
+static int
+zv_choice(struct zv_ctx *c, uint32_t li, zr_name_t nm, zr_pool_t po,
+    zr_pool_t pr, enum zr_outcome *out)
+{
+	const struct zr_rline *l = &c->zc_res->zs_lines[li];
+	zr_pool_t ps;
+	int side, eq;
+
+	side = l->zl_choice == ZR_CH_FROM ? ZV_FROM : ZV_ONTO;
+	if (zv_gone(c, side) != 0) {
+		*out = ZR_OC_UNCHECKED;
+		return (0);
+	}
+	ps = zv_pool(c, side, nm);
+	eq = zv_same(c, side, ps, ZV_RESULT, pr);
+	if (eq < 0)
+		return (-1);
+	if (eq != 0) {
+		*out = zv_group_pooled(c, li, side, ps, pr) != 0 ?
+		    ZR_OC_DONE : ZR_OC_DRIFTED;
+		return (0);
+	}
+	if (zv_gone(c, ZV_ONTO) != 0) {
+		*out = ZR_OC_UNCHECKED;
+		return (0);
+	}
+	eq = zv_same(c, ZV_ONTO, po, ZV_RESULT, pr);
+	if (eq < 0)
+		return (-1);
+	*out = eq != 0 ? ZR_OC_PENDING : ZR_OC_DRIFTED;
+	return (0);
+}
+
+/*
+ * The resolution, line by line and in its own order. keep is never
+ * compared and "-" is a conflict nobody has answered: both are given
+ * done, which is the outcome of a line there is nothing to do about,
+ * and counted nowhere -- the counts are the onto and the from lines,
+ * which are the only ones that can be held against anything.
+ */
+static int
+zv_lines(struct zv_ctx *c, struct zr_verify_report *out)
+{
+	const struct zr_rline *l;
+	enum zr_outcome oc;
+	zr_pool_t po, pr;
+	zr_name_t nm;
+	uint32_t i;
+
+	for (i = 0; i < c->zc_res->zs_nlines; i++) {
+		l = &c->zc_res->zs_lines[i];
+		out->zv_rline[i] = ZR_OC_DONE;
+		if (l->zl_choice != ZR_CH_ONTO && l->zl_choice != ZR_CH_FROM)
+			continue;
+		nm = zv_name(c, l->zl_path, l->zl_pathlen);
+		po = zv_pool(c, ZV_ONTO, nm);
+		pr = zv_pool(c, ZV_RESULT, nm);
+		if (zv_choice(c, i, nm, po, pr, &oc) != 0)
+			return (-1);
+		out->zv_rline[i] = oc;
+		if (out->zv_rcount[oc] == 0)
+			out->zv_rfirst[oc] = i;
+		out->zv_rcount[oc]++;
+	}
+	return (0);
+}
+
 int
-zr_verify(const struct zr_parsed *m, struct zr_oracle *o,
-    const struct zr_walk *onto, const struct zr_walk *from,
-    const struct zr_walk *result, unsigned missing,
-    struct zr_verify_report *out, char *err, size_t errlen)
+zr_verify_with(const struct zr_parsed *m, const struct zr_resolution *res,
+    struct zr_oracle *o, const struct zr_walk *onto,
+    const struct zr_walk *from, const struct zr_walk *result,
+    unsigned missing, struct zr_verify_report *out, char *err, size_t errlen)
 {
 	const struct zr_action *a;
 	enum zr_outcome oc = ZR_OC_DONE;
@@ -554,8 +699,10 @@ zr_verify(const struct zr_parsed *m, struct zr_oracle *o,
 	if (out == NULL)
 		return (-1);
 	memset(out, 0, sizeof (struct zr_verify_report));
-	for (i = 0; i < ZR_OC_COUNT; i++)
+	for (i = 0; i < ZR_OC_COUNT; i++) {
 		out->zv_first[i] = ZR_ACTION_NONE;
+		out->zv_rfirst[i] = ZR_ACTION_NONE;
+	}
 	for (i = 0; i < ZR_DF_COUNT; i++)
 		out->zv_dfirst[i] = ZR_NAME_NONE;
 	if (err != NULL && errlen > 0)
@@ -567,6 +714,7 @@ zr_verify(const struct zr_parsed *m, struct zr_oracle *o,
 	}
 	memset(&c, 0, sizeof (struct zv_ctx));
 	c.zc_m = m;
+	c.zc_res = res;
 	c.zc_o = o;
 	c.zc_w[ZV_ONTO] = onto;
 	c.zc_w[ZV_FROM] = from;
@@ -607,6 +755,15 @@ zr_verify(const struct zr_parsed *m, struct zr_oracle *o,
 			goto done;
 		}
 	}
+	out->zv_nrlines = res != NULL ? res->zs_nlines : 0;
+	if (out->zv_nrlines != 0) {
+		out->zv_rline = malloc((size_t)out->zv_nrlines *
+		    sizeof (enum zr_outcome));
+		if (out->zv_rline == NULL) {
+			zv_failx(err, errlen, "verify: out of memory");
+			goto done;
+		}
+	}
 	zv_marks(&c);
 	for (i = 0; i < m->zp_nactions; i++) {
 		a = &m->zp_actions[i];
@@ -641,11 +798,25 @@ zr_verify(const struct zr_parsed *m, struct zr_oracle *o,
 			out->zv_first[oc] = i;
 		out->zv_count[oc]++;
 	}
+	if (out->zv_nrlines != 0 && zv_lines(&c, out) != 0) {
+		rc = -1;
+		goto done;
+	}
 	rc = zv_names(&c, out);
 done:
 	free(c.zc_pmark);
 	free(c.zc_mark);
 	return (rc);
+}
+
+int
+zr_verify(const struct zr_parsed *m, struct zr_oracle *o,
+    const struct zr_walk *onto, const struct zr_walk *from,
+    const struct zr_walk *result, unsigned missing,
+    struct zr_verify_report *out, char *err, size_t errlen)
+{
+	return (zr_verify_with(m, NULL, o, onto, from, result, missing, out,
+	    err, errlen));
 }
 
 void
@@ -657,9 +828,12 @@ zr_verify_report_fini(struct zr_verify_report *r)
 		return;
 	free(r->zv_outcome);
 	free(r->zv_diffs);
+	free(r->zv_rline);
 	memset(r, 0, sizeof (struct zr_verify_report));
-	for (i = 0; i < ZR_OC_COUNT; i++)
+	for (i = 0; i < ZR_OC_COUNT; i++) {
 		r->zv_first[i] = ZR_ACTION_NONE;
+		r->zv_rfirst[i] = ZR_ACTION_NONE;
+	}
 	for (i = 0; i < ZR_DF_COUNT; i++)
 		r->zv_dfirst[i] = ZR_NAME_NONE;
 }

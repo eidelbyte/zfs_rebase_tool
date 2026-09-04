@@ -787,6 +787,17 @@ Rows ZY60 and up were plotted 2026-09-04, before their tests, for
 the one-verify issue: the second pass became a per-name list over
 the whole name table, and applying1 gained the repair over it.
 
+Rows ZY80 and up were plotted 2026-09-04, before their tests, for
+the verify-choices issue, which gave the classifier its third
+input. Two dimensions come with it: the choice on a line {keep,
+onto, from, "-"} and what the side it names holds at that name {an
+object, absence}, crossed with what the result holds {the chosen
+object, onto's original, neither, nothing} and with the pooling of a
+group that chose one side {one object as that side holds them,
+torn}. The name a line covers is crossed with the second pass as
+well: a covered name is exempt from it on both axes, and a
+directory line covers the names beneath it.
+
 The whole grid runs on the Mac: three directories, a manifest as
 text or one the pipeline emitted, and a result doctored by hand,
 which is the --posix form of everything but the attributes only ZFS
@@ -856,6 +867,22 @@ snapshot, a clone and a kill need the box.
 | ZY67 | the check without the fix, which is applying2 and done: the names are not looked at and nothing is written | covered: check_verify.c |
 | ZY68 | onto gone: the list is empty, as the info count was | covered: check_verify.c |
 | ZY69 | one doctored tree down both applying1 paths, a fresh run's and a --continue's: one function, one repair, one tree | covered: check_verify.c |
+| ZY80 | a keep line: the name is never compared and never an entry of the name list, however it was edited | covered: check_verify.c |
+| ZY81 | an onto line: the result holds onto's object, which is done | covered: check_verify.c |
+| ZY82 | an onto line: the result holds anything else, which is drifted -- the expected and the original are one object here, so pending cannot arise | covered: check_verify.c |
+| ZY83 | a from line before applying2: the result still holds onto's own and from's differs, which is pending | covered: check_verify.c |
+| ZY84 | a from line: the result holds from's object, which is done | covered: check_verify.c |
+| ZY85 | a from line: the result holds neither side's object, which is drifted | covered: check_verify.c |
+| ZY86 | a from line where from has no such name: the expected is absence, so pending while onto's object is still there, done once it is gone, drifted where a third object stands | covered: check_verify.c |
+| ZY87 | an onto line where onto has no such name: absence again, done only where the result does not hold it | covered: check_verify.c |
+| ZY88 | a group of two names that chose from: one object in the result, as from pools them, is done; two copies of the right bytes is drifted | covered: check_verify.c |
+| ZY89 | a "-" line and a keep line: classified as nothing and counted in no outcome, so the counts and the firsts are the onto and the from lines alone | covered: check_verify.c |
+| ZY90 | a directory line covers the names beneath it, which is the manifest's own scoping | covered: check_verify.c |
+| ZY91 | a line whose side is one of the trees that is not there: unchecked, for either side | covered: check_verify.c |
+| ZY92 | the drift round trip through the library: every entry of the name list becomes a drift keep line, written and parsed back, and the classification with that document says nothing about those names | covered: check_verify.c |
+| ZY93 | a name a resolution line covers, deleted or added: no entry on the name axis either | covered: check_verify.c |
+| ZY94 | a stray edit to a clean name at the conflicts gate: --continue --verify writes it into the resolution as a drift keep line, the rebase reaches done with the edit intact, and --verify afterwards reports the name under the resolution and not as drift | planned: box, box/run-strays.sh |
+| ZY95 | --verify on a --continue at applying1: the record gains zfs_rebase:verify and the final check is made at done as if the fresh run had asked for it | deferred: needs ZFS and root, and no box script kills at applying1 and continues with --verify in one pass; unblocked by box-resolution, which touches run-kills.sh, where the assertion is one recval on the record |
 
 ZY40 to ZY45 are the post-done verify's: a tree that is not there
 any more is walked as the empty tree and named in the missing mask,

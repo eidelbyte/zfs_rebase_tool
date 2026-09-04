@@ -61,6 +61,17 @@
 #    is empty and a write there lands in the pool's root dataset and
 #    is hidden the moment the dataset comes home.
 #
+# 5. A stray edit at the conflicts gate, which --continue --verify
+#    writes into the resolution rather than into the tree. The edit
+#    is to a file the manifest says nothing about, so it is one entry
+#    of the name list; the gate turns every such entry into a drift
+#    line with the choice keep, writes the document back and goes on.
+#    The rebase reaches done with the edit still there -- keep means
+#    the result stands -- and a --verify afterwards has nothing
+#    outside the manifest to say about the name, because the name is
+#    the resolution's now. Conflicted fixtures only: a clean rebase
+#    never stops at that gate.
+#
 # Every case ends in --abort, and the pool is proved to be the
 # fixture again before the next one starts.
 #
@@ -496,8 +507,71 @@ case_live() {
 	return 0
 }
 
+# --- 5. a stray edit at the conflicts gate, written into the
+#        resolution as a drift line and never into the tree ---
+case_driftline() {
+	case_id="$fixture $form a drift line at the conflicts gate"
+	run_fg
+	st=$?
+	[ $st -eq $wrun ] || { cat "$log"; fail "the run exited $st, want $wrun"; }
+	[ "$(statenow "$rds")" = conflicts ] || \
+	    fail "the run is at $(statenow "$rds"), want conflicts"
+	kept=$(kept_name "$man" "$hmnt")
+	[ -n "$kept" ] || fail "the fixture has no untouched file to edit"
+	names0=$(sed -n 's/^#names //p' "$res")
+	[ -n "$names0" ] || { head -8 "$res"; fail "$res has no #names"; }
+	# The edit the person makes while answering the conflicts. It
+	# is to a name the manifest says nothing about, so nothing but
+	# the second pass can see it.
+	ro0=$(recval readonly "$rds")
+	zfs set readonly=off "$rds" || fail "readonly=off"
+	printf 'drift\n' >> "$hmnt$kept" || fail "cannot edit $kept"
+	zfs set "readonly=$ro0" "$rds" || fail "readonly=$ro0"
+	# Answering is one field per line and the header's count with
+	# them, as tests/box/README.md says a hand edit must do.
+	sed -e 's/ -$/ keep/' -e 's/^#unanswered .*$/#unanswered 0/' \
+	    "$res" > "$res.answered" || fail "cannot answer $res"
+	mv "$res.answered" "$res" || fail "cannot answer $res"
+	"$bin" --continue --verify --result "$rds" > "$tmp/drift" 2>&1
+	st=$?
+	[ $st -eq 0 ] || \
+	    { cat "$tmp/drift"; fail "--continue --verify exited $st, want 0"; }
+	grep -q '1 drift line added to the resolution' "$tmp/drift" || \
+	    { cat "$tmp/drift"; fail "the gate added no drift line"; }
+	# The document says so, in the tree grammar: the leaf of the
+	# name, the word drift and the choice keep.
+	leaf=$(basename "$kept")
+	grep -q "^ *$leaf drift keep\$" "$res" || \
+	    { cat "$res"; fail "$res has no drift line for $kept"; }
+	names1=$(sed -n 's/^#names //p' "$res")
+	[ "$names1" = "$((names0 + 1))" ] || \
+	    { head -8 "$res"; fail "#names is $names1, want $((names0 + 1))"; }
+	[ "$(sed -n 's/^#unanswered //p' "$res")" = 0 ] || \
+	    { head -8 "$res"; fail "a drift keep line is not answered"; }
+	# And the tree is untouched: keep means the result stands, so
+	# the rebase went on to done with the edit still in it.
+	[ "$(statenow "$rds")" = done ] || \
+	    fail "the state is $(statenow "$rds"), want done"
+	grep -q drift "$hmnt$kept" || fail "a verb wrote over the edit to $kept"
+
+	# A verify afterwards has nothing outside the manifest to say:
+	# the name is the resolution's now, and a keep is never
+	# compared.
+	"$bin" --verify --result "$rds" > "$tmp/driftv" 2>&1
+	st=$?
+	[ $st -eq 0 ] || { cat "$tmp/driftv"; fail "--verify exited $st, want 0"; }
+	no_outside "$tmp/driftv" || \
+	    { cat "$tmp/driftv"; fail "the drift is still outside the manifest"; }
+	grep -q 'the resolution: drifted 0' "$tmp/driftv" || \
+	    { cat "$tmp/driftv"; fail "--verify did not report the resolution"; }
+	grep -q drift "$hmnt$kept" || fail "--verify wrote over the edit"
+	echo "ok   $case_id: $kept is a drift keep line, the edit stands"
+	end_case
+}
+
 # ---------------------------------------------------------------
-# One fixture in one form: the four cases, each ending in --abort.
+# One fixture in one form: the cases above, each ending in --abort.
+# The last of them is the conflicted fixtures' alone.
 # ---------------------------------------------------------------
 stray_pass() {
 	form=$1
@@ -514,12 +588,17 @@ stray_pass() {
 	else
 		hmnt=$MNT/onto
 	fi
+	res=$rundir/resolution
 	log=$tmp/pass.log
 	say "$fixture, the $form form"
 	case_strays
 	case_delete
 	case_drift
 	case_live
+	# The conflicts gate is the only place a drift line is written,
+	# and a clean rebase never stops there.
+	[ $clean -eq 0 ] && case_driftline
+	return 0
 }
 
 one_fixture() {

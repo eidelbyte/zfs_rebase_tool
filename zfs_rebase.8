@@ -250,14 +250,28 @@ verified and before anything is released, and the request is written into
 the record so a kill and a
 .Fl -continue
 still honour it.
+On a
+.Fl -continue
+from the
+.Sy applying1
+gate that is all it does, since the fix there is the stage's own; from the
+.Sy conflicts
+gate on the tree is being edited by hand and nothing can tell that work
+from a stray, so a verify there reports.
 It never repairs, whatever it finds.
 The one fix in this tool is the self-check the
 .Sy applying1
-stage makes on itself, which is always on and belongs to no flag; from the
+stage makes on itself, which is always on and belongs to no flag.
+The one thing a verify writes is at the
 .Sy conflicts
-gate on the tree is being edited by hand and nothing can tell that work
-from a stray, so a verify there reports and stops.
-Alone on a result it is a verb; see below.
+gate and only with
+.Fl -continue :
+every name that no longer stands as onto had it goes into the resolution as
+a drift line with the choice
+.Sy keep ,
+so that the person answering the conflicts sees it and can leave it, put it
+back as onto had it or have the manifest's own action made again.
+Alone on a result it is a verb, and writes nothing anywhere; see below.
 .El
 .Pp
 The verbs work on a rebase that already exists.
@@ -281,8 +295,13 @@ run, a resumed one and a repair are one code path.
 With
 .Fl -verify
 it prints, before each stage and at the gate after it, how every action of
-the document stands and what the result holds outside it.
-It writes nothing of its own.
+the document stands, how every answered name of the resolution stands
+against the side it names, and what the result holds outside them both.
+It writes nothing into the tree, and the only document it writes is the
+resolution, at the
+.Sy conflicts
+gate, where the drift it found becomes lines with the choice
+.Sy keep .
 What mends a result is the
 .Sy applying1
 stage's own self-check, which redoes any clean action that did not land and
@@ -489,7 +508,9 @@ was applied to
 apply the manifest again and go on
 .It Sy conflicts
 go on when the resolution is complete, else say how many of its names are
-still unanswered and exit 1
+still unanswered and exit 1; with
+.Fl -verify ,
+write the drift found into the resolution first
 .It Sy applying2
 carry the choices out again and go on
 .It Sy done
