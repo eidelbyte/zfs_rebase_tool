@@ -4,8 +4,8 @@
  * This file is the driver. The --posix mode, three plain directories
  * in and a manifest out, is complete and is how the pipeline runs
  * where there is no ZFS. The real mode (holds on the three snapshots
- * the user names, a clone under the name the user chooses, zfs diff,
- * apply) is zr_run in run.c and exists only in the FreeBSD build.
+ * the user names, a clone under the name the user chooses, apply) is
+ * zr_run in run.c and exists only in the FreeBSD build.
  * --build-fixture is a test aid that materializes a fixture's three
  * trees.
  */

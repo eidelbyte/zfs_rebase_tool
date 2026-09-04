@@ -1,10 +1,10 @@
 /*
  * zfsops: the ZFS operations the real run needs, wrapped so that the
  * driver speaks one vocabulary and never execs zfs(8). Hold, clone,
- * mount, property get and set, existence, release, destroy and the
- * diff, over libzfs_core and libzfs. No snapshot: the three the run
- * works from are the user's, and the holds it takes on them outlive
- * the process, because a rebase does.
+ * mount, property get and set, existence, release and destroy, over
+ * libzfs_core and libzfs. No snapshot: the three the run works from
+ * are the user's, and the holds it takes on them outlive the
+ * process, because a rebase does.
  *
  * NOTHING IN THE ZR_FREEBSD HALF OF THIS FILE HAS EVER BEEN COMPILED
  * FOR REAL. It is written against the headers and the sources of the
@@ -34,7 +34,6 @@
 #include <stddef.h>
 #include <stdio.h>
 
-#include "diff.h"
 #include "zfsops.h"
 
 #ifdef ZR_FREEBSD
@@ -729,81 +728,6 @@ zr_zfs_get_user(struct zr_zfs *z, const char *dataset, const char *prop,
 	return (rc);
 }
 
-int
-zr_zfs_diff(struct zr_zfs *z, const char *fromsnap, const char *to,
-    const char *mountpoint, struct zr_diff *out, char *err, size_t errlen)
-{
-	char ds[ZZ_NAME_MAX];
-	zfs_handle_t *zhp;
-	FILE *fp;
-	size_t n;
-	int fd, rc;
-
-	if (err != NULL && errlen > 0)
-		err[0] = '\0';
-	if (out != NULL) {
-		out->zd_entries = NULL;
-		out->zd_n = 0;
-	}
-	if (z == NULL || fromsnap == NULL || to == NULL ||
-	    mountpoint == NULL || out == NULL)
-		return (zz_err(err, errlen, "diff", EINVAL));
-	/*
-	 * The handle wants to be the filesystem and not either
-	 * snapshot: cmd/zfs/zfs_main.c's zfs_do_diff cuts the name at
-	 * the '@' and opens what is left as ZFS_TYPE_FILESYSTEM.
-	 */
-	n = strcspn(to, "@");
-	if (n >= sizeof (ds))
-		return (zz_err(err, errlen, "diff", ENAMETOOLONG));
-	(void) memcpy(ds, to, n);
-	ds[n] = '\0';
-	fp = tmpfile();
-	if (fp == NULL)
-		return (zz_err(err, errlen, "diff", errno));
-	/*
-	 * The descriptor libzfs gets is a duplicate: its differ
-	 * thread fdopens what it is handed and fcloses it at the end
-	 * (lib/libzfs/libzfs_diff.c), which would take our own out
-	 * from under us. On the paths where zfs_show_diffs fails
-	 * before that thread runs the duplicate leaks, and it is left
-	 * to leak rather than closed twice; the run is over either
-	 * way.
-	 */
-	fd = dup(fileno(fp));
-	if (fd < 0) {
-		rc = errno;
-		(void) fclose(fp);
-		return (zz_err(err, errlen, "diff", rc));
-	}
-	zhp = zfs_open(z->zz_hdl, ds, ZFS_TYPE_FILESYSTEM);
-	if (zhp == NULL) {
-		(void) close(fd);
-		(void) fclose(fp);
-		return (zz_hdl_err(z, err, errlen, ds));
-	}
-	/*
-	 * ZFS_DIFF_CLASSIFY adds the type column that src/diff.c
-	 * reads and ZFS_DIFF_PARSEABLE makes the separators tabs; the
-	 * timestamp flag is the one we leave off.
-	 */
-	rc = zfs_show_diffs(zhp, fd, fromsnap, to,
-	    ZFS_DIFF_CLASSIFY | ZFS_DIFF_PARSEABLE);
-	zfs_close(zhp);
-	if (rc != 0) {
-		(void) fclose(fp);
-		return (zz_hdl_err(z, err, errlen, "diff"));
-	}
-	if (fseek(fp, 0L, SEEK_SET) != 0) {
-		rc = errno;
-		(void) fclose(fp);
-		return (zz_err(err, errlen, "diff", rc));
-	}
-	rc = zr_diff_parse(fp, mountpoint, out, err, errlen);
-	(void) fclose(fp);
-	return (rc);
-}
-
 #else	/* ZR_FREEBSD */
 
 #define	ZZ_UNBUILT	"not built with ZR_FREEBSD"
@@ -963,21 +887,6 @@ zr_zfs_get_user(struct zr_zfs *z, const char *dataset, const char *prop,
 	(void) prop;
 	if (buf != NULL && buflen > 0)
 		buf[0] = '\0';
-	return (zz_unbuilt(err, errlen));
-}
-
-int
-zr_zfs_diff(struct zr_zfs *z, const char *fromsnap, const char *to,
-    const char *mountpoint, struct zr_diff *out, char *err, size_t errlen)
-{
-	(void) z;
-	(void) fromsnap;
-	(void) to;
-	(void) mountpoint;
-	if (out != NULL) {
-		out->zd_entries = NULL;
-		out->zd_n = 0;
-	}
 	return (zz_unbuilt(err, errlen));
 }
 

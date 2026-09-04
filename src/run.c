@@ -2,7 +2,8 @@
  * The real run: holds on the three snapshots the user named, a
  * read-only working clone of onto's snapshot under the name the user
  * asked for, the walk of those three snapshots through .zfs/snapshot,
- * zfs diff for the unchanged set, decide, manifest, apply, re-walk.
+ * the unchanged set read off those walks, decide, manifest, apply,
+ * re-walk.
  * Everything here is library calls; nothing is exec'd. The ZFS
  * operations themselves are in zfsops.c and exist only in the
  * FreeBSD build.
@@ -80,10 +81,7 @@
  * away. The handlers do not ask for SA_RESTART, so a read or a
  * write already in a slow call fails with EINTR rather than starting
  * over, and the phase that owns it reports that failure in the
- * ordinary way. SIGPIPE is ignored for the length of the run, which
- * is what zfs(8) does around zfs_show_diffs: the diff runs a thread
- * over a pipe, and a failure at one end must not kill the process
- * before libzfs can say what went wrong.
+ * ordinary way.
  */
 
 #include <errno.h>
@@ -100,7 +98,6 @@
 
 #include "apply.h"
 #include "decide.h"
-#include "diff.h"
 #include "manifest.h"
 #include "name.h"
 #include "run.h"
@@ -163,6 +160,13 @@ struct run {
 	char			frommnt[ZR_NAME_MAX];
 	char			ontomnt[ZR_NAME_MAX];
 	int			dirmade, cloned, walked;
+	/*
+	 * Whether the unchanged set may be read off the walks. It may
+	 * when base was derived from the two sides, which is what
+	 * puts all three in one object-number space;
+	 * --allow-unrelated will clear it.
+	 */
+	int			prune;
 	int			nheld;		/* holds taken, base first */
 	struct zr_names		*names;
 	struct zr_walk		wb, wf, wo;
@@ -172,11 +176,11 @@ struct run {
 };
 
 /*
- * The signals the run catches, and SIGPIPE, which it ignores. The
- * handler does the one thing a handler may do here: raise the flag
- * apply.c and every phase boundary read.
+ * The signals the run catches. The handler does the one thing a
+ * handler may do here: raise the flag apply.c and every phase
+ * boundary read.
  */
-static const int zr_sigs[] = { SIGPIPE, SIGINT, SIGTERM, SIGHUP };
+static const int zr_sigs[] = { SIGINT, SIGTERM, SIGHUP };
 #define	ZR_NSIG		(sizeof (zr_sigs) / sizeof (zr_sigs[0]))
 
 static void
@@ -195,10 +199,9 @@ signals_install(struct sigaction *saved)
 	memset(&sa, 0, sizeof (sa));
 	(void) sigemptyset(&sa.sa_mask);
 	sa.sa_flags = 0;	/* no SA_RESTART: a slow call fails EINTR */
-	for (i = 0; i < ZR_NSIG; i++) {
-		sa.sa_handler = zr_sigs[i] == SIGPIPE ? SIG_IGN : on_signal;
+	sa.sa_handler = on_signal;
+	for (i = 0; i < ZR_NSIG; i++)
 		(void) sigaction(zr_sigs[i], &sa, &saved[i]);
-	}
 }
 
 static void
@@ -457,6 +460,14 @@ preconditions(struct run *r)
 
 	if (derive_base(r) != 0)
 		return (-1);
+	/*
+	 * The base is the branch point of the two sides, so the three
+	 * snapshots share one object-number space and the walks can
+	 * say what is unchanged. That is the only thing that licenses
+	 * it: --posix has no base at all and never comes here, and
+	 * --allow-unrelated will clear this again.
+	 */
+	r->prune = 1;
 	dataset_of(r->base, ds[0], sizeof (ds[0]));
 	dataset_of(r->o.from, ds[1], sizeof (ds[1]));
 	dataset_of(r->o.onto, ds[2], sizeof (ds[2]));
@@ -789,8 +800,7 @@ static int
 read_trees(struct run *r)
 {
 	char path[ZR_NAME_MAX * 2];
-	struct zr_diff df, dfo;
-	int marked;
+	uint32_t marked, m;
 
 	r->names = zr_names_create();
 	if (r->names == NULL)
@@ -818,23 +828,26 @@ read_trees(struct run *r)
 		(void) snprintf(r->err, sizeof (r->err), "out of memory");
 		return (-1);
 	}
-	/* zfs diff from the base snapshot to each side: the unchanged set */
-	if (zr_zfs_diff(r->zfs, r->base, r->o.from, r->frommnt, &df,
-	    r->err, sizeof (r->err)) != 0)
-		return (-1);
-	marked = zr_diff_apply_unchanged(&df, &r->wb, &r->wf, 1, r->oracle);
-	zr_diff_fini(&df);
-	if (stopped(r) != 0)
-		return (-1);
-	if (zr_zfs_diff(r->zfs, r->base, r->o.onto, r->ontomnt, &dfo,
-	    r->err, sizeof (r->err)) != 0)
-		return (-1);
-	marked += zr_diff_apply_unchanged(&dfo, &r->wb, &r->wo, 2, r->oracle);
-	zr_diff_fini(&dfo);
+	/*
+	 * The unchanged set, off the three walks and nothing else: a
+	 * pool of either side that base holds under the same object
+	 * number, generation, ctime, link count, type and names is
+	 * what base holds, and is never read (yellow.c).
+	 */
+	marked = 0;
+	if (r->prune) {
+		if (zr_oracle_prune(r->oracle, 1, &marked) != 0 ||
+		    zr_oracle_prune(r->oracle, 2, &m) != 0) {
+			(void) snprintf(r->err, sizeof (r->err),
+			    "the unchanged set");
+			return (-1);
+		}
+		marked += m;
+	}
 	if (stopped(r) != 0)
 		return (-1);
 	if (r->o.verbose)
-		(void) fprintf(stderr, "zfs_rebase: %d pools unchanged\n",
+		(void) fprintf(stderr, "zfs_rebase: %u pools unchanged\n",
 		    marked);
 	if (zr_oracle_assign(r->oracle, r->err, sizeof (r->err)) != 0)
 		return (-1);

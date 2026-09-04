@@ -217,12 +217,11 @@ on is not touched: the object keeps its inode, its generation number
 and its ctime, and only what differs is removed, created, relinked,
 written or given new attributes.
 
-That is the point of the mode. zfs diff calls an object unchanged
+That is the point of the mode. The tool calls an object unchanged
 when its object number is the same on both snapshots and neither its
 gen nor its ctime moved, so a replay that rebuilt each side from
 nothing would offer every object as new and prune nothing. A side
-edited in place offers a real diff, with real unchanged objects in
-it.
+edited in place offers real unchanged objects.
 
 One decision is taken per name, over the union of the names DIR
 holds and the names TREE lists, the root apart. The tests are made

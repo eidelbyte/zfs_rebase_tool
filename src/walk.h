@@ -15,6 +15,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <time.h>
 
 #include "name.h"
 
@@ -52,6 +53,17 @@ struct zr_attr {
 	uint32_t	za_flags;	/* st_flags where there is one */
 	uint64_t	za_size;
 	uint64_t	za_rdev;
+	/*
+	 * The two the pruning compares, straight from the lstat the
+	 * walk already made: the generation number, which ZFS fills
+	 * from the ZPL's z_gen (module/os/freebsd/zfs/zfs_vnops_os.c,
+	 * zfs_getattr), and the change time, which is z_ctime. A
+	 * platform with no st_gen leaves za_gen 0 and the pruning
+	 * there compares 0 with 0, which is why it is the real mode
+	 * on FreeBSD that prunes and nothing else.
+	 */
+	uint64_t	za_gen;
+	struct timespec	za_ctime;
 	char		*za_target;	/* symlink target, else NULL */
 	struct zr_xattr	*za_xattrs;	/* sorted by name, bytewise */
 	uint32_t	za_nxattrs;

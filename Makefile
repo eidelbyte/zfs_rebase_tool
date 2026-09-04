@@ -27,10 +27,10 @@ ZFSOPS_CFLAGS =
 # Library objects are everything but main.o; tests link against them.
 LIB_OBJS = build/vis.o build/name.o build/decide.o build/fixture.o \
 	build/manifest.o build/walk.o build/yellow.o build/verify.o \
-	build/apply.o build/diff.o build/zfsops.o build/run.o
+	build/apply.o build/zfsops.o build/run.o
 CORE_OBJS = build/main.o $(LIB_OBJS)
 TESTS = check_vis check_name check_fixture check_manifest check_walk \
-	check_yellow check_roundtrip check_apply check_verify check_diff
+	check_yellow check_roundtrip check_apply check_verify
 
 all: build zfs_rebase
 
@@ -92,13 +92,10 @@ build/apply.o: src/apply.c src/apply.h src/verify.h src/manifest.h src/walk.h \
 	src/name.h
 	$(CC) $(CFLAGS) -c -o $@ src/apply.c
 
-build/diff.o: src/diff.c src/diff.h src/name.h src/walk.h src/yellow.h
-	$(CC) $(CFLAGS) -c -o $@ src/diff.c
-
-build/zfsops.o: src/zfsops.c src/zfsops.h src/diff.h
+build/zfsops.o: src/zfsops.c src/zfsops.h
 	$(CC) $(CFLAGS) $(ZFSOPS_CFLAGS) -c -o $@ src/zfsops.c
 
-build/run.o: src/run.c src/run.h src/apply.h src/decide.h src/diff.h \
+build/run.o: src/run.c src/run.h src/apply.h src/decide.h \
 	src/manifest.h src/name.h src/verify.h src/walk.h src/yellow.h \
 	src/zfsops.h
 	$(CC) $(CFLAGS) -c -o $@ src/run.c

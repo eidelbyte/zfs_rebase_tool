@@ -38,8 +38,10 @@ what is wanted there is not a rebase.
 
 It is not a zfs(8) verb, and it takes no snapshots and destroys none
 of yours: the three it reads are yours. It reads them through their
-.zfs/snapshot directories, asks zfs diff for what is unchanged,
-decides by a small rule over names, hardlink pools and content,
+.zfs/snapshot directories, takes the unchanged set off those walks
+-- an object whose number, generation number and change time all
+stood still since base is the object base holds, and is never read
+-- decides by a small rule over names, hardlink pools and content,
 writes a manifest of actions and conflicts, and applies the actions
 to the result clone, which it creates read-only and puts back that
 way. All ZFS operations go through libzfs_core and libzfs; nothing is

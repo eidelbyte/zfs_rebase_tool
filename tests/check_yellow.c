@@ -2,10 +2,11 @@
  * The content oracle's tests: small trees built as directories,
  * walked into one shared name table and handed to the oracle, then
  * read back as handles and as a count of the bytes it took to reach
- * them. Cells ZC1, ZC3 to ZC8, ZC10, ZC12 to ZC20, ZC23 and ZC24.
- * ZC20 here is only the oracle's half of the fast path, the word
- * taken without a read; the diff layer that speaks it is
- * check_diff.c's. ZC2 (uid, gid, flags) and ZC11 (device numbers)
+ * them. Cells ZC1, ZC3 to ZC8, ZC10, ZC12 to ZC20, ZC23, ZC24 and
+ * ZC26 to ZC37. ZC20 is the oracle's own half of the fast path, the
+ * word taken without a read; ZC26 onwards are where that word comes
+ * from, the pruning rule over one tree walked twice.
+ * ZC2 (uid, gid, flags) and ZC11 (device numbers)
  * want root, so they stay deferred to the box probe with ZC9, the
  * ACL, whose two models differ; ZC21 is the driver's and ZC22 the
  * decision's.
@@ -671,6 +672,393 @@ check_readerr(void)
 	trees_close(&t);
 }
 
+
+/*
+ * ---------------------------------------------------------------
+ * The pruning, ZC26 to ZC37. One directory is walked as base and
+ * then again as each side, because the rule is about one object
+ * seen twice: the same object number, the same generation number,
+ * the same change time, the same link count, type and names. Only
+ * one directory read twice offers that on a filesystem a test may
+ * write to; on ZFS a snapshot and a clone of it offer it, which is
+ * the case the box replays.
+ * ---------------------------------------------------------------
+ */
+
+/*
+ * What the changed case is worth reading, and nothing else is:
+ * /linked against base from each side, /touched between the two
+ * sides -- base's copy of it is a size apart, which is settled
+ * before a byte -- and /added, which only the two sides have. Every
+ * pool that pruned is unread.
+ *
+ * The three walks are of one directory, so a file's bytes are
+ * whatever is on disk when the oracle reads them, while its
+ * attributes are the ones its own walk captured. That is where the
+ * base of this test differs from a real base, which is a snapshot
+ * and cannot move; nothing below leans on the bytes of a pool whose
+ * attributes changed.
+ */
+#define	PRUNE_BYTES	((uint64_t)(2 * 2 * 5 + 2 * 5 + 2 * 4))
+#define	PRUNE_POOLS	8	/* what build_prune leaves behind */
+
+/*
+ * The tree the pruning walks: one of every shape the rule tells
+ * apart, so that a pool which must not prune is never the only pool
+ * in the tree.
+ */
+static void
+build_prune(int dfd)
+{
+	int d;
+
+	wrs(dfd, "keep", "keep\n", 0644);
+	wrs(dfd, "touched", "aaa\n", 0644);
+	wrs(dfd, "linked", "link\n", 0644);
+	wrs(dfd, "h1", "hh\n", 0644);
+	CHECK(linkat(dfd, "h1", dfd, "h2", 0) == 0);
+	CHECK(symlinkat("target", dfd, "sym") == 0);
+	mkd(dfd, "sub", 0755);
+	d = openat(dfd, "sub", O_RDONLY | O_DIRECTORY);
+	CHECK(d >= 0);
+	wrs(d, "deep", "deep\n", 0644);
+	CHECK(close(d) == 0);
+}
+
+/* One more walk of the one directory, into the tree at which. */
+static void
+prune_walk(struct trees *t, int which)
+{
+	char err[256];
+
+	err[0] = '\0';
+	if (zr_walk(t->t_dir[0], t->t_ns, &t->t_w[which], err,
+	    sizeof (err)) != 0)
+		printf("  walk: %s\n", err);
+	CHECK(err[0] == '\0');
+}
+
+/*
+ * The tree built and walked once, as base. The caller changes what
+ * it likes and walks the two sides itself, which is the whole point:
+ * the change has to fall between the two walks.
+ */
+static void
+prune_open(struct trees *t, char *tmpl)
+{
+	int i;
+
+	trees_open(t, tmpl);
+	build_prune(t->t_fd[0]);
+	for (i = 0; i < 3; i++) {
+		CHECK(close(t->t_fd[i]) == 0);
+		t->t_fd[i] = -1;
+	}
+	t->t_ns = zr_names_create();
+	CHECK(t->t_ns != NULL);
+	prune_walk(t, 0);
+}
+
+/* The two sides walked, and the oracle over the three. */
+static void
+prune_sides(struct trees *t)
+{
+	prune_walk(t, 1);
+	prune_walk(t, 2);
+	CHECK(zr_oracle_init(&t->t_o, &t->t_w[0], &t->t_w[1],
+	    &t->t_w[2]) == 0);
+}
+
+/* One pair asked of the oracle: 1 equal, 0 different, never -1. */
+static int
+pair(struct trees *t, int ta, const char *pa, int tb, const char *pb)
+{
+	char err[256];
+	int rc;
+
+	err[0] = '\0';
+	rc = zr_oracle_equal(t->t_o, ta, poolof(t, ta, pa), tb,
+	    poolof(t, tb, pb), err, sizeof (err));
+	if (rc < 0)
+		printf("  equal: %s\n", err);
+	CHECK(rc >= 0);
+	return (rc);
+}
+
+static const struct zr_attr *
+attrof(const struct trees *t, int which, const char *path)
+{
+	return (&t->t_w[which].zw_attrs[poolof(t, which, path)]);
+}
+
+/*
+ * ZC26: nothing changed between the walks, so every pool of both
+ * sides prunes and the oracle reads not one byte to hand out its
+ * handles. This is the cell that says the fast path runs at all.
+ */
+static void
+check_prune_all(void)
+{
+	char tmpl[] = "/tmp/zryellowp.XXXXXX";
+	char err[256];
+	struct trees t;
+	uint32_t npools, marked, n, k;
+	zr_pool_t p0, pk;
+	zr_name_t nm;
+
+	prune_open(&t, tmpl);
+	prune_sides(&t);
+	npools = t.t_w[0].zw_tree.zt_npools;
+	CHECK(npools == PRUNE_POOLS);
+	CHECK(t.t_w[1].zw_tree.zt_npools == npools);
+	CHECK(t.t_w[2].zw_tree.zt_npools == npools);
+
+	marked = 0;
+	CHECK(zr_oracle_prune(t.t_o, 1, &marked) == 0);
+	CHECK(marked == npools);
+	marked = 0;
+	CHECK(zr_oracle_prune(t.t_o, 2, &marked) == 0);
+	CHECK(marked == npools);
+
+	/* the arguments the oracle cannot place */
+	CHECK(zr_oracle_prune(NULL, 1, &marked) == -1);
+	CHECK(zr_oracle_prune(t.t_o, 0, &marked) == -1);
+	CHECK(zr_oracle_prune(t.t_o, 3, &marked) == -1);
+	CHECK(zr_oracle_prune(t.t_o, 1, NULL) == -1);
+
+	err[0] = 'x';
+	CHECK(zr_oracle_assign(t.t_o, err, sizeof (err)) == 0);
+	CHECK(err[0] == '\0');
+	CHECK(zr_oracle_bytes_read(t.t_o) == 0);
+
+	/* one class per pool, and every name of it in all three trees */
+	n = zr_names_count(t.t_ns);
+	for (nm = 0; nm < n; nm++) {
+		p0 = zr_tree_pool(&t.t_w[0].zw_tree, nm);
+		if (p0 == ZR_POOL_NONE)
+			continue;
+		for (k = 1; k < 3; k++) {
+			pk = zr_tree_pool(&t.t_w[k].zw_tree, nm);
+			CHECK(pk != ZR_POOL_NONE);
+			CHECK(t.t_w[k].zw_tree.zt_pools[pk].zp_content ==
+			    t.t_w[0].zw_tree.zt_pools[p0].zp_content);
+		}
+	}
+	CHECK(handle_uses(&t, hand(&t, 0, "/keep")) == 3);
+	CHECK(handle_uses(&t, hand(&t, 0, "/h1")) == 3);
+	check_dense(&t);
+	trees_close(&t);
+}
+
+/*
+ * ZC27 to ZC30: three changes between the base walk and the two side
+ * walks -- bytes written through one name at the same length, a
+ * second name linked onto another object, and an object base never
+ * had. Their pools do not prune, nor does the root, which gained two
+ * names and moved its own ctime doing it; every other pool does. The
+ * handles afterwards are still right: a pruned pool takes base's
+ * without a read, the rewritten one does not take it, and the pool
+ * that only gained a name is equal by comparison anyway.
+ */
+static void
+check_prune_changed(void)
+{
+	char tmpl[] = "/tmp/zryellowc.XXXXXX";
+	char err[256];
+	struct trees t;
+	uint32_t npools, marked, other;
+	zr_name_t nm;
+	int d, fd;
+
+	prune_open(&t, tmpl);
+	npools = t.t_w[0].zw_tree.zt_npools;
+	CHECK(npools == PRUNE_POOLS);
+
+	d = open(t.t_dir[0], O_RDONLY | O_DIRECTORY);
+	CHECK(d >= 0);
+	/* ZC27: one byte written through a name, which moves the ctime */
+	fd = openat(d, "touched", O_WRONLY | O_APPEND);
+	CHECK(fd >= 0);
+	CHECK(write(fd, "b", 1) == 1);
+	CHECK(close(fd) == 0);
+	/* ZC28: a second name, which moves the link count and the ctime */
+	CHECK(linkat(d, "linked", d, "linked2", 0) == 0);
+	/* ZC30: an object base never had at all */
+	wrs(d, "added", "add\n", 0644);
+	CHECK(close(d) == 0);
+
+	prune_sides(&t);
+	CHECK(t.t_w[1].zw_tree.zt_npools == npools + 1);
+
+	/*
+	 * The four that stay out: /touched, /linked, /added and the
+	 * root. Both sides are the one tree, so both say the same.
+	 */
+	marked = 0;
+	CHECK(zr_oracle_prune(t.t_o, 1, &marked) == 0);
+	CHECK(marked == npools + 1 - 4);
+	other = 0;
+	CHECK(zr_oracle_prune(t.t_o, 2, &other) == 0);
+	CHECK(other == marked);
+
+	/* a pruned pool answers with no read; the two that moved are read */
+	CHECK(zr_oracle_bytes_read(t.t_o) == 0);
+	CHECK(pair(&t, 0, "/keep", 1, "/keep") == 1);
+	CHECK(pair(&t, 0, "/h1", 1, "/h1") == 1);
+	CHECK(pair(&t, 0, "/sub/deep", 1, "/sub/deep") == 1);
+	CHECK(zr_oracle_bytes_read(t.t_o) == 0);
+	CHECK(pair(&t, 0, "/touched", 1, "/touched") == 0);
+	CHECK(zr_oracle_bytes_read(t.t_o) == 0);	/* a size apart */
+	CHECK(pair(&t, 0, "/linked", 1, "/linked") == 1);
+	CHECK(zr_oracle_bytes_read(t.t_o) == 2 * 5);
+
+	/* ZC29: why the root stayed out -- a name went into it */
+	CHECK(attrof(&t, 0, "/")->za_ctime.tv_sec !=
+	    attrof(&t, 1, "/")->za_ctime.tv_sec ||
+	    attrof(&t, 0, "/")->za_ctime.tv_nsec !=
+	    attrof(&t, 1, "/")->za_ctime.tv_nsec);
+	/* and the two that did stay in are the same object untouched */
+	CHECK(attrof(&t, 0, "/keep")->za_ctime.tv_sec ==
+	    attrof(&t, 1, "/keep")->za_ctime.tv_sec);
+	CHECK(attrof(&t, 0, "/keep")->za_ctime.tv_nsec ==
+	    attrof(&t, 1, "/keep")->za_ctime.tv_nsec);
+	CHECK(attrof(&t, 0, "/keep")->za_gen ==
+	    attrof(&t, 1, "/keep")->za_gen);
+
+	err[0] = 'x';
+	CHECK(zr_oracle_assign(t.t_o, err, sizeof (err)) == 0);
+	CHECK(err[0] == '\0');
+
+	CHECK(hand(&t, 0, "/keep") == hand(&t, 1, "/keep"));
+	CHECK(hand(&t, 0, "/keep") == hand(&t, 2, "/keep"));
+	CHECK(hand(&t, 0, "/h1") == hand(&t, 1, "/h1"));
+	CHECK(hand(&t, 0, "/sub/deep") == hand(&t, 1, "/sub/deep"));
+	CHECK(hand(&t, 0, "/touched") != hand(&t, 1, "/touched"));
+	CHECK(hand(&t, 1, "/touched") == hand(&t, 2, "/touched"));
+	CHECK(hand(&t, 0, "/linked") == hand(&t, 1, "/linked"));
+	CHECK(hand(&t, 0, "/") == hand(&t, 1, "/"));
+	CHECK(hand(&t, 1, "/added") == hand(&t, 2, "/added"));
+
+	/* the new name is on the old pool, and base has no such name */
+	CHECK(poolof(&t, 1, "/linked") == poolof(&t, 1, "/linked2"));
+	nm = zr_names_lookup(t.t_ns, "/linked2", strlen("/linked2"));
+	CHECK(nm != ZR_NAME_NONE);
+	CHECK(zr_tree_pool(&t.t_w[0].zw_tree, nm) == ZR_POOL_NONE);
+
+	CHECK(zr_oracle_bytes_read(t.t_o) == PRUNE_BYTES);
+	check_dense(&t);
+	trees_close(&t);
+}
+
+/* The conditions of the rule, one per pass of the loop below. */
+enum {
+	PF_INO,
+	PF_GEN,
+	PF_SEC,
+	PF_NSEC,
+	PF_NLINK,
+	PF_TYPE,
+	PF_NAMES,
+	PF_MAP,
+	PF_N
+};
+
+/*
+ * ZC31 to ZC37: the rule condition by condition. No filesystem call
+ * moves one of these fields and leaves the rest alone -- a write
+ * moves the ctime, a link moves the ctime and the link count, and
+ * nothing at all moves an object number or a generation number
+ * without making a new object -- so each field is moved here, in the
+ * side walk the rule reads, one at a time. Every one of them alone
+ * must keep its own pool out of the unchanged set and leave every
+ * other pool in it; the other side, untouched, prunes whole through
+ * all of it.
+ */
+static void
+check_prune_fields(void)
+{
+	char tmpl[] = "/tmp/zryellowf.XXXXXX";
+	struct trees t;
+	struct zr_pool *sp, *hp;
+	struct zr_attr *sa;
+	struct timespec ct;
+	uint64_t ino, gen;
+	uint32_t npools, marked, nlink, nnames;
+	zr_type_t type;
+	zr_name_t keep, was;
+	int i;
+
+	prune_open(&t, tmpl);
+	prune_sides(&t);
+	zr_oracle_fini(t.t_o);
+	t.t_o = NULL;
+	npools = t.t_w[1].zw_tree.zt_npools;
+	sp = &t.t_w[1].zw_tree.zt_pools[poolof(&t, 1, "/keep")];
+	sa = &t.t_w[1].zw_attrs[poolof(&t, 1, "/keep")];
+	hp = &t.t_w[1].zw_tree.zt_pools[poolof(&t, 1, "/h1")];
+	CHECK(hp->zp_nnames == 2);
+	keep = zr_names_lookup(t.t_ns, "/keep", strlen("/keep"));
+	CHECK(keep != ZR_NAME_NONE);
+	ino = sp->zp_ino;
+	gen = sa->za_gen;
+	ct = sa->za_ctime;
+	nlink = sp->zp_nlink;
+	type = sp->zp_type;
+	nnames = hp->zp_nnames;
+	was = hp->zp_names[1];
+	for (i = 0; i < PF_N; i++) {
+		switch (i) {
+		case PF_INO:
+			sp->zp_ino = ino ^ 1;
+			break;
+		case PF_GEN:
+			sa->za_gen = gen ^ 1;
+			break;
+		case PF_SEC:
+			sa->za_ctime.tv_sec = ct.tv_sec + 1;
+			break;
+		case PF_NSEC:
+			sa->za_ctime.tv_nsec = ct.tv_nsec + 1;
+			break;
+		case PF_NLINK:
+			sp->zp_nlink = nlink + 1;
+			break;
+		case PF_TYPE:
+			sp->zp_type = ZR_T_FIFO;
+			break;
+		case PF_NAMES:
+			hp->zp_nnames = nnames - 1;
+			break;
+		case PF_MAP:
+			hp->zp_names[1] = keep;
+			break;
+		}
+		CHECK(zr_oracle_init(&t.t_o, &t.t_w[0], &t.t_w[1],
+		    &t.t_w[2]) == 0);
+		marked = 0;
+		CHECK(zr_oracle_prune(t.t_o, 1, &marked) == 0);
+		CHECK(marked == npools - 1);
+		marked = 0;
+		CHECK(zr_oracle_prune(t.t_o, 2, &marked) == 0);
+		CHECK(marked == npools);
+		zr_oracle_fini(t.t_o);
+		t.t_o = NULL;
+		sp->zp_ino = ino;
+		sa->za_gen = gen;
+		sa->za_ctime = ct;
+		sp->zp_nlink = nlink;
+		sp->zp_type = type;
+		hp->zp_nnames = nnames;
+		hp->zp_names[1] = was;
+	}
+	/* whole again, so the loop put every field back */
+	CHECK(zr_oracle_init(&t.t_o, &t.t_w[0], &t.t_w[1], &t.t_w[2]) == 0);
+	marked = 0;
+	CHECK(zr_oracle_prune(t.t_o, 1, &marked) == 0);
+	CHECK(marked == npools);
+	trees_close(&t);
+}
+
 int
 main(void)
 {
@@ -681,6 +1069,9 @@ main(void)
 	check_big(MEG, 0, 0, 2 * (uint64_t)CHUNK);
 	check_trans();
 	check_readerr();
+	check_prune_all();
+	check_prune_changed();
+	check_prune_fields();
 	printf("check_yellow: %d checks passed\n", checks);
 	return (0);
 }

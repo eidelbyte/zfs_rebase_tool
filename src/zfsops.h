@@ -1,9 +1,8 @@
 /*
  * zfsops: the ZFS operations one run needs -- hold, clone and mount,
- * property get and set, existence, release, destroy, and the diff --
- * behind one handle that owns the libzfs handle. All of it is
- * library calls into libzfs_core and libzfs; the tool never execs
- * zfs(8).
+ * property get and set, existence, release and destroy -- behind one
+ * handle that owns the libzfs handle. All of it is library calls
+ * into libzfs_core and libzfs; the tool never execs zfs(8).
  *
  * The tool takes no snapshots: the three it works from are the
  * user's, and it holds them for the life of the rebase, not the life
@@ -27,8 +26,6 @@
 
 #include <stddef.h>
 #include <stdint.h>
-
-#include "diff.h"
 
 /*
  * The record: the user properties a result carries, every one of
@@ -213,19 +210,5 @@ int zr_zfs_set_user(struct zr_zfs *z, const char *dataset, const char *prop,
  */
 int zr_zfs_get_user(struct zr_zfs *z, const char *dataset, const char *prop,
     char *buf, size_t buflen, char *err, size_t errlen);
-
-/*
- * Run the diff fromsnap -> to and parse it. mountpoint is the
- * dataset's mountpoint, which is what zfs diff prints in front of
- * every path. out must be handed to zr_diff_fini either way.
- *
- * The caller should be ignoring SIGPIPE, as zfs(8) does around its
- * own call: the diff runs a thread over a pipe, and a failure on one
- * end can otherwise kill the process before libzfs can say what went
- * wrong. Setting a signal disposition is the driver's business, not
- * this layer's.
- */
-int zr_zfs_diff(struct zr_zfs *z, const char *fromsnap, const char *to,
-    const char *mountpoint, struct zr_diff *out, char *err, size_t errlen);
 
 #endif	/* ZR_ZFSOPS_H */

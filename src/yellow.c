@@ -7,6 +7,11 @@
  * the first chunk that differs. Equal pairs are unioned, so equality
  * travels through shared names, and one dense handle per class is
  * written into every pool of all three trees.
+ *
+ * Before any of that a caller may say that a side pool holds what a
+ * base pool holds, and zr_oracle_prune says it for every pool the
+ * two walks agree on down to the object number, the generation
+ * number and the change time. Those pairs are never read at all.
  */
 
 #define	_XOPEN_SOURCE	700
@@ -474,6 +479,73 @@ zr_oracle_unchanged(struct zr_oracle *o, int tree, zr_pool_t pool,
 		return (-1);
 	zo_union(o->zo_parent, o->zo_off[tree] + pool,
 	    o->zo_off[0] + base_pool);
+	return (0);
+}
+
+/*
+ * One side pool against the base pool holding its first name, by the
+ * fields the walk kept. Every condition of the rule is here and in
+ * this order: the cheap integers first, then the names, which is the
+ * only part that costs a lookup per name. Returns 1 unchanged, 0
+ * not.
+ */
+static int
+zo_unmoved(const struct zr_walk *bw, zr_pool_t b, const struct zr_walk *sw,
+    zr_pool_t p)
+{
+	const struct zr_pool *bp = &bw->zw_tree.zt_pools[b];
+	const struct zr_pool *sp = &sw->zw_tree.zt_pools[p];
+	const struct zr_attr *ba = &bw->zw_attrs[b];
+	const struct zr_attr *sa = &sw->zw_attrs[p];
+	uint32_t j;
+
+	if (bp->zp_ino != sp->zp_ino || bp->zp_type != sp->zp_type ||
+	    bp->zp_nlink != sp->zp_nlink || bp->zp_nnames != sp->zp_nnames)
+		return (0);
+	if (ba->za_gen != sa->za_gen ||
+	    ba->za_ctime.tv_sec != sa->za_ctime.tv_sec ||
+	    ba->za_ctime.tv_nsec != sa->za_ctime.tv_nsec)
+		return (0);
+	/*
+	 * The first name found the base pool, so it is in it; the
+	 * rest have to be in that same one, or a name moved between
+	 * two objects whose ctimes both stood still.
+	 */
+	for (j = 1; j < sp->zp_nnames; j++) {
+		if (zr_tree_pool(&bw->zw_tree, sp->zp_names[j]) != b)
+			return (0);
+	}
+	return (1);
+}
+
+int
+zr_oracle_prune(struct zr_oracle *o, int side, uint32_t *marked)
+{
+	const struct zr_walk *bw, *sw;
+	const struct zr_pool *sp;
+	zr_pool_t b, p;
+	uint32_t n;
+
+	if (o == NULL || marked == NULL || (side != 1 && side != 2))
+		return (-1);
+	*marked = 0;
+	bw = o->zo_w[0];
+	sw = o->zo_w[side];
+	n = 0;
+	for (p = 0; p < o->zo_npools[side]; p++) {
+		sp = &sw->zw_tree.zt_pools[p];
+		if (sp->zp_nnames == 0)
+			continue;
+		b = zr_tree_pool(&bw->zw_tree, sp->zp_names[0]);
+		if (b == ZR_POOL_NONE)
+			continue;	/* a name base never had */
+		if (zo_unmoved(bw, b, sw, p) == 0)
+			continue;
+		if (zr_oracle_unchanged(o, side, p, b) != 0)
+			return (-1);
+		n++;
+	}
+	*marked = n;
 	return (0);
 }
 

@@ -32,7 +32,7 @@ or the manifest text. Three levels, in order of preference:
   directories, the emitted manifest compared with the fixture's
   expect block (tests/run-fixtures.sh).
 - box: tests/box/run-fixture.sh on FreeBSD, the only
-  place snapshots, holds, clones and zfs diff exist.
+  place snapshots, holds and clones exist.
 
 Fixtures are tests/fixtures/*.zrt (issue fixture-format): one
 three-tree spec built as plain directories on the Mac and as real
@@ -47,7 +47,8 @@ deferred. A planned row names the file that will close it. A row
 whose only reachable level is FreeBSD says "box" in its reason and
 stays planned: the box exists, the test does not. A deferred row
 names a concrete reason and the unblocking issue key from
-sprints/sprint-4/zfs-rebase-sprint-4.json.
+sprints/sprint-4/zfs-rebase-sprint-4.json, or from sprint 5's
+tracker where the work is sprint 5's.
 
 ## ZV -- vis codec (check_vis.c)
 
@@ -126,7 +127,8 @@ directory; xattrs {none, one namespace, several, empty value,
 binary}; ACL {absent, present}; ACL equality {both absent, one
 absent, alike, unlike, reordered, one a prefix of the other};
 symlink target; rdev {0, large}; completeness against st_nlink;
-the root's .zfs; entry order {readdir's, sorted}; faults.
+the generation number; the change time; the root's .zfs; entry
+order {readdir's, sorted}; faults.
 
 | cell | scenario | disposition |
 |------|----------|-------------|
@@ -160,6 +162,18 @@ the root's .zfs; entry order {readdir's, sorted}; faults.
 | ZW28 | the root's .zfs is skipped, a nested one is not | planned: check_walk.c |
 | ZW29 | entries interned in sorted order, not readdir's | planned: check_walk.c |
 | ZW30 | zr_acl_equal: absent, alike, unlike, reordered, shorter | planned: check_walk.c |
+| ZW31 | za_gen is st_gen, and 0 where the platform has none | covered: check_walk.c |
+| ZW32 | za_ctime is st_ctim, seconds and nanoseconds | covered: check_walk.c |
+
+ZW31 and ZW32 are the two fields the pruning of ZC26 below reads,
+and the walk pays nothing for them: it lstat'd every object
+already. They are checked against a second lstat the test makes
+itself, on every pool of the probe trees. On FreeBSD st_gen is the
+ZPL's z_gen and st_ctim is z_ctime, which is what makes the rule
+mean what zfs diff meant (sprints/sprint-5/string-audit.md); macOS
+has both fields too, so the rule can be tested here; Linux has no
+st_gen, and there za_gen is 0 for every object, which is one more
+reason pruning belongs to the real mode alone.
 
 ZW29 is the cell the two platforms found: readdir's order is the
 filesystem's, so the same three trees were interned in one order on
@@ -189,8 +203,12 @@ close, and ZC9 below, which they close beside it.
 Dimensions: compared aspect {type, mode, uid, gid, flags, size,
 bytes, xattrs, ACL, symlink target, rdev, times}; kind {file,
 dir, symlink, device}; verdict {equal, differ}; handle source
-{base, via the diff fast path, by comparison}; handle scope {one
-face local group}.
+{base, via the pruning, by comparison}; handle scope {one face
+local group}. The pruning adds its own: the field that moved
+{object number, generation number, ctime seconds, ctime
+nanoseconds, link count, type, name count, a name in another
+pool, none}; and what the change was {bytes through a name, a
+name added, an object added, an entry added to a directory}.
 
 | cell | scenario | disposition |
 |------|----------|-------------|
@@ -213,12 +231,45 @@ face local group}.
 | ZC17 | two empty files | planned: check_yellow.c |
 | ZC18 | a multi-block file, identical | planned: check_yellow.c |
 | ZC19 | a hole against explicit zeros | planned: check_yellow.c |
-| ZC20 | unchanged from base: base's handle, no read | planned: check_diff.c |
+| ZC20 | unchanged from base: base's handle, no read | covered: check_yellow.c |
 | ZC21 | --posix reads every byte, same verdicts | planned: run-fixtures.sh |
 | ZC22 | handles are scoped to one face local group | planned: check_yellow.c |
 | ZC23 | transitivity: a=b, b=c, one handle | planned: check_yellow.c |
 | ZC24 | a read error is an error, never "equal" | planned: check_yellow.c |
 | ZC25 | the pair entry point: the memo answers, unread | covered: check_verify.c |
+| ZC26 | nothing moved: every pool of both sides prunes, no byte read | covered: check_yellow.c |
+| ZC27 | bytes written through a name: that pool does not prune | covered: check_yellow.c |
+| ZC28 | a second name linked on: that pool does not prune | covered: check_yellow.c |
+| ZC29 | a directory that gained an entry does not prune, and is equal anyway | covered: check_yellow.c |
+| ZC30 | a pool base never had is passed over, not pruned | covered: check_yellow.c |
+| ZC31 | the object number alone | covered: check_yellow.c |
+| ZC32 | the generation number alone | covered: check_yellow.c |
+| ZC33 | the ctime seconds alone | covered: check_yellow.c |
+| ZC34 | the ctime nanoseconds alone | covered: check_yellow.c |
+| ZC35 | the link count alone | covered: check_yellow.c |
+| ZC36 | the type alone | covered: check_yellow.c |
+| ZC37 | the name count alone, and a name in another base pool | covered: check_yellow.c |
+| ZC38 | pruning refused: --posix, and an unrelated base | planned: run.c has the flag; box, allow-unrelated |
+| ZC39 | the pruning over real snapshots, positively | planned: box, box/run-replay.sh (replay-harness) |
+
+ZC20 and ZC26 to ZC37 are the unchanged set, which sprint 5 took
+off zfs diff and put on the walk (sprints/sprint-5/string-audit.md
+section 2): a side pool is what its base pool is when the object
+number, the generation number, the ctime to the nanosecond, the
+link count, the type, the name count and every name agree. ZC26 to
+ZC30 are that rule over one directory walked as base and then as
+both sides, with the change falling between the walks -- the only
+way a filesystem a test may write to offers one object twice.
+ZC31 to ZC37 are the conditions one at a time, and they cannot be
+reached that way at all: no call moves a ctime without moving what
+caused it, and none moves an object number or a generation number
+without making another object. Those rows move the field in the
+walk the rule reads, which is where a wrong condition would show.
+ZC39 is the positive proof on real ZFS and waits for the replay
+harness, whose fixtures edit a clone of base in place so that real
+objects survive unmoved; until it runs, the box's own suite exercises
+the rule in its negative direction only, since it builds each side
+from nothing.
 
 The oracle asks zr_acl_equal for za_acl and za_dacl, so ZC9 is that
 function on two pools of a live filesystem: the comparison itself is
@@ -386,32 +437,30 @@ check; the copy path {copy_file_range, read/write}.
 | ZA29 | an ACL applied | deferred: the two ACL models differ; box-probe |
 | ZA30 | the whole probe manifest applies | covered: check_apply.c |
 
-## ZX -- the ZFS layer (diff parse, zfs ops, driver, guards)
+## ZX -- the ZFS layer (zfs ops, driver, guards)
 
-Dimensions: diff line {M, -, +, R}; link delta; zfs diff's own
-escaping; derived sets {unchanged, renamed dirs, modified dirs};
+Dimensions: the unchanged set {pruned, not pruned, not attempted};
 zfs ops {hold, clone, mount, prop flip, release, destroy}; the
 record {every property, guids, local against inherited, the states};
 the gates {applying1, conflicts, applying2, done, and what a stop
 leaves}; guards {securelevel, private mountpoint, readonly flip,
-re-walk}; driver {flags, preconditions, exit status}. The parser
-rows run on the Mac over a captured file; everything from ZX13 on
-is box only.
+re-walk}; driver {flags, preconditions, exit status}. Every row
+here is box only.
 
 | cell | scenario | disposition |
 |------|----------|-------------|
-| ZX1 | an M line: a changed object, one path | planned: check_diff.c |
-| ZX2 | a "-" line: a removed name | planned: check_diff.c |
-| ZX3 | a "+" line: an added name | planned: check_diff.c |
-| ZX4 | an R line: the renamed pair | planned: check_diff.c |
-| ZX5 | the (+N)/(-N) link delta on an M line | planned: check_diff.c |
-| ZX6 | zfs diff's own escaping, a torture name | planned: check_diff.c |
-| ZX7 | unreported paths inherit base's handle | planned: check_diff.c |
-| ZX8 | under a renamed dir is not unchanged | planned: check_diff.c |
-| ZX9 | the modified-directory list is produced | planned: check_diff.c |
-| ZX10 | a malformed diff line errors | planned: check_diff.c |
-| ZX11 | the parser over tests/data/probe.diff | planned: check_diff.c |
-| ZX12 | the escaping rules confirmed live | planned: box, box/run-fixture.sh |
+| ZX1 | the unchanged count over snapshots the fixture left alone | planned: box, box/run-replay.sh (replay-harness) |
+| ZX2 | an edited object is not in that count, and the manifest still matches | planned: box, box/run-replay.sh (replay-harness) |
+| ZX3 | a side rebuilt from nothing prunes not one pool | planned: box, box/run-fixture.sh |
+| ZX4 | pruning is not attempted at all in --posix | covered: run.c reaches read_trees only in the real mode |
+| ZX5 | pruning off with an unrelated base | deferred: the flag exists; box, allow-unrelated |
+| ZX6 | (retired with zfs diff) | -- |
+| ZX7 | (retired with zfs diff) | -- |
+| ZX8 | (retired with zfs diff) | -- |
+| ZX9 | (retired with zfs diff) | -- |
+| ZX10 | (retired with zfs diff) | -- |
+| ZX11 | (retired with zfs diff) | -- |
+| ZX12 | (retired with zfs diff) | -- |
 | ZX13 | snapshot from and onto @rebase-ID | deferred: the tool takes none until input-forms |
 | ZX14 | one hold per input, under the record's tag | planned: box, box/run-fixture.sh |
 | ZX15 | the holds outlive the process; done and --abort release them | planned: box, box/run-fixture.sh |
@@ -462,6 +511,18 @@ is box only.
 | ZX60 | a result left unmounted (a reboot) is mounted again by a verb | deferred: a reboot, or zfs unmount by hand; box |
 | ZX61 | a dataset carrying no record: every verb exits 2 and touches nothing | planned: box, box/run-fixture.sh |
 | ZX62 | --verify on a fresh run: the final check at the done gate, before the release | planned: box, box/run-fixture.sh |
+
+ZX1 to ZX5 replace the diff parser's cells, which went out with the
+text: ZX1 to ZX12 used to be the "zfs diff -F -H" lines, their
+escaping, the derived sets and the captured tests/data/probe.diff,
+and the whole of that -- src/diff.c, src/diff.h, tests/check_diff.c,
+the file and zr_zfs_diff -- was removed in sprint 5 for the walk's
+own rule (ZC26 and the note under it). ZX6 to ZX12 are left standing
+empty so that ZX13 and everything after it still mean what they
+meant. ZX1 and ZX2 are the positive proof that the pruning does
+anything at all on real ZFS, and they wait on the replay harness;
+ZX3 is what the box can say today, which is only that a tree built
+from nothing prunes nothing.
 
 Note on ZX23: securelevel cannot be raised without a reboot of the
 box, so the refusal path stays deferred. Unblocking work is a

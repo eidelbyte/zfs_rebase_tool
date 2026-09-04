@@ -33,14 +33,43 @@ int zr_oracle_init(struct zr_oracle **out, struct zr_walk *base,
     struct zr_walk *from, struct zr_walk *onto);
 
 /*
- * The caller knows -- from zfs diff, which reads the dnode and not
- * the bytes -- that pool of tree, 1 for from and 2 for onto, holds
- * exactly what base_pool of base holds. The two are put in one class
- * on that word, and neither is ever read. Returns 0, or -1 on an
- * argument the oracle cannot place.
+ * The caller knows -- without reading either -- that pool of tree, 1
+ * for from and 2 for onto, holds exactly what base_pool of base
+ * holds. The two are put in one class on that word, and neither is
+ * ever read. Returns 0, or -1 on an argument the oracle cannot
+ * place. zr_oracle_prune below is the one caller that knows it from
+ * the walk itself; a caller with another source of the same word is
+ * welcome to this.
  */
 int zr_oracle_unchanged(struct zr_oracle *o, int tree, zr_pool_t pool,
     zr_pool_t base_pool);
+
+/*
+ * The unchanged set, from the walks alone. side is 1 for from and 2
+ * for onto. Every pool of that side whose first name base holds too
+ * is compared with the base pool holding it, by the fields the walk
+ * already has, and told to zr_oracle_unchanged when every one of
+ * them agrees:
+ *
+ *	the object number, the generation number, the change time
+ *	to the nanosecond, the link count, the type, the number of
+ *	names, and every one of those names in that same base pool
+ *
+ * which is what "unchanged" means to ZFS itself: lib/libzfs/
+ * libzfs_diff.c prints nothing for an object whose gen and ctime
+ * both match, and the ioctl it asks reads the same ZPL attributes
+ * the walk's lstat did. The name condition is this layer's own and
+ * catches a rename or a link change that happened inside the tick
+ * ctime is stored at. Nothing is read from disk and nothing is
+ * asked of ZFS.
+ *
+ * The object numbers only mean the same thing on both sides when the
+ * side really descends from base, so this belongs to the real mode
+ * with a derived base and to nothing else. *marked comes back with
+ * the number of pools put in a class. Returns 0, or -1 on an
+ * argument the oracle cannot place.
+ */
+int zr_oracle_prune(struct zr_oracle *o, int side, uint32_t *marked);
 
 /*
  * One pair, asked for directly: pool pa of tree ta against pool pb

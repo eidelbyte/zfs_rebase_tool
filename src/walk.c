@@ -69,7 +69,9 @@
  *
  * Both return 0 on success and -1 with errno set on failure. An
  * entry with no attributes and no ACL is a success, not a failure.
- * ZW_HAVE_ST_FLAGS says the platform's struct stat has st_flags.
+ * ZW_HAVE_ST_FLAGS says the platform's struct stat has st_flags,
+ * ZW_HAVE_ST_GEN that it has st_gen, and ZW_CTIM names the change
+ * time, which POSIX spells st_ctim and macOS st_ctimespec.
  *
  * Just after the section come zr_acl_equal and zr_acl_free, the
  * pair the oracle and the walk's own teardown call by name. What an
@@ -82,6 +84,20 @@
 
 #if defined(__FreeBSD__) || defined(__APPLE__)
 #define	ZW_HAVE_ST_FLAGS	1	/* struct stat carries st_flags */
+/*
+ * FreeBSD's st_gen is the vnode's va_gen, which ZFS fills from z_gen
+ * (module/os/freebsd/zfs/zfs_vnops_os.c, zfs_getattr; sys/kern/
+ * vfs_default.c copies it into the stat buffer unconditionally). The
+ * Mac has the field too. Linux's struct stat has none, so there
+ * za_gen is 0 for everything and the pruning that reads it never
+ * runs: the real mode is FreeBSD's alone.
+ */
+#define	ZW_HAVE_ST_GEN		1
+#endif
+#if defined(__APPLE__)
+#define	ZW_CTIM(st)	((st)->st_ctimespec)
+#else
+#define	ZW_CTIM(st)	((st)->st_ctim)
 #endif
 #if defined(__FreeBSD__) || defined(__APPLE__) || defined(__linux__)
 #define	ZW_HAVE_XATTRS		1
@@ -1236,6 +1252,12 @@ zw_capture(struct zw_ctx *c, zr_pool_t pool, zr_name_t nm,
 #endif
 	at->za_size = (uint64_t)st->st_size;
 	at->za_rdev = (uint64_t)st->st_rdev & ZW_DEVMASK;
+#ifdef ZW_HAVE_ST_GEN
+	at->za_gen = (uint64_t)st->st_gen;
+#else
+	at->za_gen = 0;
+#endif
+	at->za_ctime = ZW_CTIM(st);
 	if (S_ISLNK(st->st_mode) &&
 	    zw_readlink(dfd, leaf, st, &at->za_target) != 0)
 		return (-1);

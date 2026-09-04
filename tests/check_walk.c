@@ -10,7 +10,9 @@
  * probe. So is ZW18, an ACL present: the two ACL models differ and
  * setting one on macOS without root proves nothing about ZFS. What
  * does not need a tree at all is ZW30, zr_acl_equal, which is
- * checked here on ACLs built in memory.
+ * checked here on ACLs built in memory. ZW31 and ZW32, the
+ * generation number and the change time the pruning compares, ride
+ * along with ZW20 on every pool of the probe trees.
  */
 
 #define	_XOPEN_SOURCE	700
@@ -47,6 +49,22 @@
 #define	PATHMAX		1024
 #define	WALK_MIN	16
 #define	DEEP		64
+
+/*
+ * The two fields the pruning reads, spelled as walk.c spells them:
+ * POSIX's st_ctim, which macOS calls st_ctimespec, and st_gen, which
+ * only the BSDs have.
+ */
+#if defined(__APPLE__)
+#define	ST_CTIM(st)	((st).st_ctimespec)
+#else
+#define	ST_CTIM(st)	((st).st_ctim)
+#endif
+#if defined(__FreeBSD__) || defined(__APPLE__)
+#define	ST_GEN(st)	((uint64_t)(st).st_gen)
+#else
+#define	ST_GEN(st)	((uint64_t)0)
+#endif
 
 /* a space, a backslash, a hash, a control byte and two UTF-8 bytes */
 #define	ODD		"o \\#\001\303\251x"
@@ -272,7 +290,10 @@ check_token(const struct zr_walk *w, struct zr_names *ns, const char *path,
 	CHECK(buf[want - 1] == '\n');
 }
 
-/* ZW20: what the pool recorded is what a direct lstat says. */
+/*
+ * ZW20, ZW31 and ZW32: what the pool recorded is what a direct lstat
+ * says, the generation number and the change time among it.
+ */
 static void
 check_attr(const struct zr_walk *w, struct zr_names *ns, const char *root,
     const char *path)
@@ -294,6 +315,9 @@ check_attr(const struct zr_walk *w, struct zr_names *ns, const char *root,
 #else
 	CHECK(at->za_flags == 0);
 #endif
+	CHECK(at->za_gen == ST_GEN(st));		/* ZW31 */
+	CHECK(at->za_ctime.tv_sec == ST_CTIM(st).tv_sec);	/* ZW32 */
+	CHECK(at->za_ctime.tv_nsec == ST_CTIM(st).tv_nsec);
 }
 
 /*

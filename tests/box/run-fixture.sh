@@ -82,8 +82,8 @@
 #      the abort), which is where --verify is due;
 #
 # The from and onto datasets are made by clearing a clone of base and
-# extracting the fixture's tree with tar, so every object looks
-# changed to zfs diff; the unchanged-pool pruning is exercised only
+# extracting the fixture's tree with tar, so every object is new and
+# none of them prunes; the unchanged-pool pruning is exercised only
 # in its negative direction here. A replay that edits in place is
 # the next harness.
 set -u
