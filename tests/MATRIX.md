@@ -446,6 +446,14 @@ directory close}; ln {new name, replacing a name, bad
 destination}; write {in place, through every name}; the re-stat
 check; the copy path {copy_file_range, read/write}.
 
+And, from ZA40 on, the other document: choice {keep, onto, from,
+"-"}; the chosen side {has the name, has it not}; line kind
+{conflict with a group, drift with none}; the group's pooling
+{one side and one pool there, one side and two, two sides}; the
+chosen type {file, directory, symlink}; the blocked directory
+removal {freed by the choices, held by one of them}; the pass
+{first, second}.
+
 | cell | scenario | disposition |
 |------|----------|-------------|
 | ZA1 | cp of a regular file: bytes and type | covered: check_apply.c |
@@ -478,6 +486,24 @@ check; the copy path {copy_file_range, read/write}.
 | ZA28 | xattrs applied, the user namespace | covered: check_apply.c |
 | ZA29 | an ACL applied | deferred: the two ACL models differ; box-probe |
 | ZA30 | the whole probe manifest applies | covered: check_apply.c |
+| ZA40 | choice keep: an edited name is left exactly as it is | covered: check_apply.c |
+| ZA41 | choice onto: onto's bytes and attributes back over an edit | covered: check_apply.c |
+| ZA42 | choice onto where onto has no such name: the name goes | covered: check_apply.c |
+| ZA43 | choice from: from's object made at the name | covered: check_apply.c |
+| ZA44 | choice from where from has no such name: the name goes | covered: check_apply.c |
+| ZA45 | one group, one side, one pool there: one object here | covered: check_apply.c |
+| ZA46 | one group, one side, two pools there: two objects here | covered: check_apply.c |
+| ZA47 | one group, two sides: two objects, neither pooled | covered: check_apply.c |
+| ZA48 | a directory chosen, with names under it | covered: check_apply.c |
+| ZA49 | a symlink chosen: the target, not a copy of the file | covered: check_apply.c |
+| ZA50 | a drift line: no group, so it pools with nobody | covered: check_apply.c |
+| ZA51 | a name already holding the side's object is left alone | covered: check_apply.c |
+| ZA52 | a second pass over the same document changes nothing | covered: check_apply.c |
+| ZA53 | the blocked rm goes through once the choices empty it | covered: check_apply.c |
+| ZA54 | the blocked rm stays when a choice leaves a name under it | covered: check_apply.c |
+| ZA55 | a choice still "-": refused, and nothing is written | covered: check_apply.c |
+| ZA56 | applying2 end to end: the gate, readonly, the self-check | deferred: no ZFS here; box-resolution |
+| ZA57 | a choice over a name carrying an ACL | deferred: the two ACL models differ; box-probe |
 
 ## ZX -- the ZFS layer (zfs ops, driver, guards)
 

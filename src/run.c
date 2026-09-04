@@ -3303,15 +3303,68 @@ vstopped(struct resume *s)
 }
 
 /*
+ * The choices of a complete resolution, made true on the result, and
+ * the check that they hold. The check is idempotence: the same call
+ * is made a second time over the same document and must change
+ * nothing -- no name made the chosen side's, none removed, none
+ * pooled onto its anchor, no directory freed -- because every line
+ * that would change something now is a line the first call did not
+ * make true. When one does, the message names it, and that is an
+ * internal failure and not drift: it is the apply not doing what the
+ * document said, which is this program's fault.
+ *
+ * Once verify-choices lands, this should also classify the
+ * resolution against the trees after the second pass -- keep never
+ * compared, onto and from held against that side -- the way
+ * stage_apply does for a manifest, and print it under --verify.
+ */
+static int
+apply_choices(struct resume *s, const struct zr_resolution *res)
+{
+	struct zr_apply_stats st, again;
+	const char *first;
+
+	if (zr_apply_choices(res, &s->man, s->workmnt, s->names,
+	    &s->w[ZS_ONTO], &s->w[ZS_FROM], &st, s->err,
+	    sizeof (s->err)) != 0)
+		return (-1);
+	if (s->verbose)
+		(void) fprintf(stderr, "zfs_rebase: the choices: %llu kept, "
+		    "%llu made, %llu removed, %llu linked, %llu director%s "
+		    "freed, %llu left alone, %llu bytes\n",
+		    (unsigned long long)st.zs_kept,
+		    (unsigned long long)st.zs_made,
+		    (unsigned long long)st.zs_dropped,
+		    (unsigned long long)st.zs_linked,
+		    (unsigned long long)st.zs_latedirs,
+		    st.zs_latedirs == 1 ? "y" : "ies",
+		    (unsigned long long)st.zs_skipped,
+		    (unsigned long long)st.zs_bytes);
+	if (zr_apply_choices(res, &s->man, s->workmnt, s->names,
+	    &s->w[ZS_ONTO], &s->w[ZS_FROM], &again, s->err,
+	    sizeof (s->err)) != 0)
+		return (-1);
+	if (again.zs_made == 0 && again.zs_dropped == 0 &&
+	    again.zs_linked == 0 && again.zs_latedirs == 0)
+		return (0);
+	first = again.zs_line == ZR_LINE_NONE ? "a blocked directory" :
+	    (const char *)res->zs_lines[again.zs_line].zl_path;
+	(void) snprintf(s->err, sizeof (s->err), "a second pass over %s "
+	    "changed %llu name%s and freed %llu director%s, first %s, so the "
+	    "first pass did not make the document true", s->respath,
+	    (unsigned long long)(again.zs_made + again.zs_dropped +
+	    again.zs_linked), again.zs_made + again.zs_dropped +
+	    again.zs_linked == 1 ? "" : "s",
+	    (unsigned long long)again.zs_latedirs,
+	    again.zs_latedirs == 1 ? "y" : "ies", first);
+	return (-1);
+}
+
+/*
  * applying2: the choices of the resolution, carried out. The document
  * is read again here, because this is a gate a --continue can arrive
  * at on its own, and a stage cannot begin without the document it is
  * the stage of.
- *
- * In this issue every choice is treated as keep -- the result stands
- * as it is -- so the stage takes readonly off, has nothing to write
- * and puts it back. apply-choices turns the choices into actions
- * here, and this is the shape it fills.
  */
 static int
 stage2(struct resume *s)
@@ -3330,19 +3383,34 @@ stage2(struct resume *s)
 		return (no_resolution(s));
 	}
 	left = zr_resolution_unanswered(&res);
-	zr_resolution_fini(&res);
 	if (left != 0) {
+		zr_resolution_fini(&res);
 		(void) snprintf(s->err, sizeof (s->err), "%s is at applying2 "
 		    "and %u name%s of %s went back to unanswered", s->result,
 		    left, left == 1 ? "" : "s", s->respath);
 		return (vfail(s, EXIT_PRECOND, NULL));
 	}
 	put_state(s->zfs, s->result, ZR_STATE_APPLYING2);
+	rc = EXIT_INTERNAL;
 	if (ro_off(s) != 0)
-		return (vfail(s, EXIT_INTERNAL, "apply"));
+		goto out;
 	zr_pause(ZR_STATE_APPLYING2);
+	if (apply_choices(s, &res) != 0)
+		goto out;
+	/*
+	 * And the trees this verb goes on with, which the choices have
+	 * just changed: the done gate classifies against the result as
+	 * it stands now.
+	 */
+	if (rescan_result(s) != 0)
+		goto out;
+	rc = 0;
+out:
+	zr_resolution_fini(&res);
 	if (ro_on(s) != 0)
-		return (vfail(s, EXIT_INTERNAL, "apply"));
+		rc = EXIT_INTERNAL;
+	if (rc != 0)
+		return (vfail(s, rc, "apply"));
 	if (vstopped(s) != 0)
 		return (vfail(s, EXIT_INTERNAL, "apply"));
 	return (done_gate(s));

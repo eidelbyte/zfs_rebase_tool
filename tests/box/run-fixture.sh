@@ -610,9 +610,10 @@ case "$fixture" in
 	done
 	[ "$(zfs get -H -o value readonly "$POOL/result")" = on ] || \
 	    fail "done left the result writable"
-	# Every choice is keep for now, so applying2 wrote nothing and
-	# the tree is still the one stage 1 made: a second rebase has no
-	# action and the same conflicts. apply-choices changes this.
+	# This case answers every conflict with keep, the one choice
+	# that changes nothing, so the tree is still the one stage 1
+	# made: a second rebase has no action and the same conflicts.
+	# The choices that do change something are box-resolution's.
 	again "$tmp/again4"
 	idempotent "$tmp/again4" "$want_conf"
 	echo "ok   answered: --continue -> done, holds released, tree equal"

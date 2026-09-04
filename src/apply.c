@@ -56,6 +56,16 @@
 #define	ZA_PERM		07777		/* the mode bits chmod sets */
 #define	ZA_CREAT	0777		/* the mode a create asks for */
 
+/*
+ * Which document is being applied, which is the whole of what the
+ * steps below need to know about their caller: the same copy, link
+ * and unlink serve all three, and only the counter they add to
+ * differs.
+ */
+#define	ZA_BY_MANIFEST	0		/* the manifest's own actions */
+#define	ZA_BY_REPAIR	1		/* applying1's repair, out of onto */
+#define	ZA_BY_CHOICE	2		/* the resolution's choices */
+
 /* The driver's stop flag; see apply.h. */
 volatile sig_atomic_t zr_apply_stop = 0;
 
@@ -538,7 +548,7 @@ za_setflags(const char *full, uint32_t flags)
  */
 struct za_ctx {
 	int			zc_rootfd;
-	int			zc_repair;	/* not the manifest's actions */
+	int			zc_by;		/* one of ZA_BY_ above */
 	const struct zr_parsed	*zc_m;		/* for the conflict marks */
 	const struct zr_walk	*zc_from;
 	const struct zr_walk	*zc_onto;	/* dup source, or NULL */
@@ -1081,8 +1091,10 @@ za_do_cp(struct za_ctx *c, const struct zr_action *a,
 	if (za_attrs(c, a, &src, &fst) != 0 ||
 	    za_verify(c, a, &src, what, size) != 0)
 		return (-1);
-	if (c->zc_repair != 0)
+	if (c->zc_by == ZA_BY_REPAIR)
 		c->zc_st->zs_restored++;
+	else if (c->zc_by == ZA_BY_CHOICE)
+		c->zc_st->zs_made++;
 	else if (w == c->zc_from)
 		c->zc_st->zs_cp++;
 	else
@@ -1183,30 +1195,39 @@ za_do_write(struct za_ctx *c, const struct zr_action *a)
 
 /*
  * Are these two names one object already? Two stats and no write:
- * how the ln below knows there is nothing left to do, and how the
- * apply confirms an ln a report called done before it takes the
- * report's word for it.
+ * how the ln below knows there is nothing left to do, how the apply
+ * confirms an ln a report called done before it takes the report's
+ * word for it, and how a choice knows a name is pooled where the
+ * resolution wants it.
  */
 static int
-za_linked(struct za_ctx *c, const struct zr_action *a)
+za_pooled(struct za_ctx *c, const unsigned char *path,
+    const unsigned char *anchor)
 {
 	struct stat st, ast;
 
-	if (fstatat(c->zc_rootfd, za_rel(a->za_path), &st,
-	    AT_SYMLINK_NOFOLLOW) != 0)
+	if (fstatat(c->zc_rootfd, za_rel(path), &st, AT_SYMLINK_NOFOLLOW) != 0)
 		return (0);
-	if (fstatat(c->zc_rootfd, za_rel(a->za_arg), &ast,
+	if (fstatat(c->zc_rootfd, za_rel(anchor), &ast,
 	    AT_SYMLINK_NOFOLLOW) != 0)
 		return (0);
 	return (st.st_ino == ast.st_ino && st.st_dev == ast.st_dev);
+}
+
+static int
+za_linked(struct za_ctx *c, const struct zr_action *a)
+{
+	return (za_pooled(c, a->za_path, a->za_arg));
 }
 
 /* One link made or found standing, counted for whoever asked for it. */
 static void
 za_linked_up(struct za_ctx *c)
 {
-	if (c->zc_repair != 0)
+	if (c->zc_by == ZA_BY_REPAIR)
 		c->zc_st->zs_relinked++;
+	else if (c->zc_by == ZA_BY_CHOICE)
+		c->zc_st->zs_linked++;
 	else
 		c->zc_st->zs_ln++;
 }
@@ -1601,6 +1622,52 @@ za_made(struct zr_action *a, enum zr_act_kind kind, struct za_pathbuf *path,
 	a->za_arglen = arg != NULL ? arglen : 0;
 }
 
+/*
+ * One name made again out of the tree w, which is the side that has
+ * it: its bytes, its type and its attributes, at the very same path.
+ * That is one operation with two callers -- the repair, which puts a
+ * name back as onto had it, and a choice of onto or from, which puts
+ * a name where that side has it -- so it is written once. A dup is
+ * what it is: the argument is the path itself, read out of the tree
+ * the caller names rather than out of the manifest's from.
+ */
+static int
+za_put_back(struct za_ctx *c, struct za_pathbuf *pb, const char *path,
+    size_t len, const struct zr_walk *w, const char *what)
+{
+	struct zr_action a;
+
+	if (za_stash(pb, path, len) != 0) {
+		errno = ENOMEM;
+		return (za_failp(c, (const unsigned char *)path, "memory"));
+	}
+	za_made(&a, ZR_ACT_DUP, pb, len, pb, len);
+	if (za_path_ok(c, &a, a.za_path, a.za_pathlen) != 0)
+		return (-1);
+	return (za_do_cp(c, &a, w, what));
+}
+
+/*
+ * One name made another name of the object at anchor, both of them
+ * in the tree being written. The repair mends a torn pool with it and
+ * a choice pools the names of a group with it.
+ */
+static int
+za_link_onto(struct za_ctx *c, struct za_pathbuf *pb, const char *path,
+    size_t len, struct za_pathbuf *ab, const char *anchor, size_t alen)
+{
+	struct zr_action a;
+
+	if (za_stash(pb, path, len) != 0 || za_stash(ab, anchor, alen) != 0) {
+		errno = ENOMEM;
+		return (za_failp(c, (const unsigned char *)path, "memory"));
+	}
+	za_made(&a, ZR_ACT_LN, pb, len, ab, alen);
+	if (za_path_ok(c, &a, a.za_path, a.za_pathlen) != 0)
+		return (-1);
+	return (za_do_ln(c, &a));
+}
+
 /* One name nothing expected, whatever kind of thing it turned out to be. */
 static int
 za_rm_one(struct za_ctx *c, const struct zr_action *a)
@@ -1618,7 +1685,10 @@ za_rm_one(struct za_ctx *c, const struct zr_action *a)
 	if (unlinkat(c->zc_rootfd, rel, isdir ? AT_REMOVEDIR : 0) != 0 &&
 	    errno != ENOENT)
 		return (za_fail(c, a, isdir ? "rmdir" : "unlink"));
-	c->zc_st->zs_removed++;
+	if (c->zc_by == ZA_BY_CHOICE)
+		c->zc_st->zs_dropped++;
+	else
+		c->zc_st->zs_removed++;
 	return (0);
 }
 
@@ -1657,7 +1727,7 @@ zr_apply_repair(const struct zr_verify_report *rep, const char *onto_root,
 	memset(&pb, 0, sizeof (struct za_pathbuf));
 	memset(&ab, 0, sizeof (struct za_pathbuf));
 	c.zc_rootfd = -1;
-	c.zc_repair = 1;
+	c.zc_by = ZA_BY_REPAIR;
 	c.zc_onto = onto;
 	c.zc_err = err;
 	c.zc_errlen = errlen;
@@ -1759,8 +1829,7 @@ zr_apply_repair(const struct zr_verify_report *rep, const char *onto_root,
 		if (it->zi_kind != ZR_DF_GONE &&
 		    it->zi_kind != ZR_DF_CHANGED)
 			continue;
-		if (za_stopped(&c) != 0 ||
-		    za_stash(&pb, it->zi_path, it->zi_len) != 0)
+		if (za_stopped(&c) != 0)
 			goto out;
 		anchor = it->zi_anchor;
 		po = zr_tree_pool(&onto->zw_tree, it->zi_name);
@@ -1769,20 +1838,18 @@ zr_apply_repair(const struct zr_verify_report *rep, const char *onto_root,
 			anchor = made[po];
 		if (anchor != ZR_NAME_NONE) {
 			ap = zr_names_str(names, anchor, &alen);
-			if (ap == NULL || za_stash(&ab, ap, alen) != 0) {
-				errno = ap == NULL ? EINVAL : ENOMEM;
+			if (ap == NULL) {
+				errno = EINVAL;
 				(void) za_failp(&c, self, "the anchor");
 				goto out;
 			}
-			za_made(&a, ZR_ACT_LN, &pb, it->zi_len, &ab, alen);
-			if (za_path_ok(&c, &a, a.za_path, a.za_pathlen) != 0 ||
-			    za_do_ln(&c, &a) != 0)
+			if (za_link_onto(&c, &pb, it->zi_path, it->zi_len, &ab,
+			    ap, alen) != 0)
 				goto out;
 			continue;
 		}
-		za_made(&a, ZR_ACT_DUP, &pb, it->zi_len, &pb, it->zi_len);
-		if (za_path_ok(&c, &a, a.za_path, a.za_pathlen) != 0 ||
-		    za_do_cp(&c, &a, onto, "restore") != 0)
+		if (za_put_back(&c, &pb, it->zi_path, it->zi_len, onto,
+		    "restore") != 0)
 			goto out;
 		if (made != NULL && po != ZR_POOL_NONE)
 			made[po] = it->zi_name;
@@ -1794,18 +1861,15 @@ zr_apply_repair(const struct zr_verify_report *rep, const char *onto_root,
 		    it->zi_anchor == ZR_NAME_NONE)
 			continue;
 		ap = zr_names_str(names, it->zi_anchor, &alen);
-		if (za_stopped(&c) != 0 || ap == NULL ||
-		    za_stash(&pb, it->zi_path, it->zi_len) != 0 ||
-		    za_stash(&ab, ap, alen) != 0) {
-			if (c.zc_err != NULL && c.zc_err[0] == '\0') {
-				errno = ap == NULL ? EINVAL : ENOMEM;
-				(void) za_failp(&c, self, "the anchor");
-			}
+		if (za_stopped(&c) != 0)
+			goto out;
+		if (ap == NULL) {
+			errno = EINVAL;
+			(void) za_failp(&c, self, "the anchor");
 			goto out;
 		}
-		za_made(&a, ZR_ACT_LN, &pb, it->zi_len, &ab, alen);
-		if (za_path_ok(&c, &a, a.za_path, a.za_pathlen) != 0 ||
-		    za_do_ln(&c, &a) != 0)
+		if (za_link_onto(&c, &pb, it->zi_path, it->zi_len, &ab, ap,
+		    alen) != 0)
 			goto out;
 	}
 	rc = 0;
@@ -1917,5 +1981,357 @@ out:
 		zr_oracle_fini(o);
 	if (walked != 0)
 		zr_walk_fini(&wr);
+	return (rc);
+}
+
+/*
+ * ---------------------------------------------------------------
+ * The resolution's choices. The manifest says what to do; the
+ * resolution says which side won, and the actions are derived here.
+ * A name that chose a side becomes that side's object at that same
+ * name, or goes where the side has no such name; the names of one
+ * group that chose one side are pooled as that side pools them; a
+ * name that chose keep is not touched at all. Last come the
+ * directory removals a conflict blocked, which go through when the
+ * choices left the directory empty.
+ * ---------------------------------------------------------------
+ */
+
+/* No earlier line of the document is this one's anchor. */
+#define	ZA_NO_ANCHOR	((uint32_t)-1)
+
+/*
+ * What one line comes to, worked out before a byte is written: the
+ * tree its choice names and the pool it has there, whether that tree
+ * has the name at all, and which earlier line this one is pooled
+ * with.
+ */
+struct za_pick {
+	const struct zr_walk	*zk_side;	/* NULL for keep */
+	int			zk_tree;	/* the oracle's 0 or 1 */
+	zr_pool_t		zk_pool;	/* in that side's tree */
+	uint32_t		zk_anchor;	/* an earlier line, or none */
+	int			zk_drop;	/* the side has no such name */
+};
+
+/*
+ * Does this tree hold that name, and in which of its pools? A name
+ * the tree does not have, or has without a pool the walk kept
+ * attributes for, is a name a choice of that side removes.
+ */
+static int
+za_side_pool(const struct zr_walk *w, const unsigned char *path, size_t len,
+    zr_pool_t *poolp)
+{
+	zr_name_t nm;
+	zr_pool_t po;
+
+	*poolp = ZR_POOL_NONE;
+	nm = zr_names_lookup(w->zw_tree.zt_names, (const char *)path, len);
+	if (nm == ZR_NAME_NONE)
+		return (0);
+	po = zr_tree_pool(&w->zw_tree, nm);
+	if (po == ZR_POOL_NONE || po >= w->zw_nattrs)
+		return (0);
+	*poolp = po;
+	return (1);
+}
+
+/*
+ * Does the result already hold the chosen side's object at this
+ * name? The oracle's word -- the type, the attributes and the bytes
+ * of a regular file, and never the times -- asked of the result walk
+ * this apply made before it wrote anything. That walk stays an
+ * honest source of the answer while the apply runs, because nothing
+ * here writes into an object that already exists: a copy unlinks the
+ * name and makes a new one, a link only moves a name, and the one
+ * thing kept in place, a directory that is already there, is a pool
+ * of one name that no later line can ask about again.
+ *
+ * Returns 1 equal, 0 not, -1 when the comparison could not be made.
+ */
+static int
+za_choice_done(struct za_ctx *c, struct zr_oracle *o, const struct zr_walk *rw,
+    int tree, zr_pool_t spool, const unsigned char *path, size_t len)
+{
+	zr_pool_t rp;
+
+	if (za_side_pool(rw, path, len, &rp) == 0)
+		return (0);
+	return (zr_oracle_equal(o, 2, rp, tree, spool, c->zc_err,
+	    c->zc_errlen));
+}
+
+/* The first line a choice changed, which is what a failed check names. */
+static void
+za_first_line(struct za_ctx *c, uint32_t i)
+{
+	if (c->zc_st->zs_line == ZR_LINE_NONE || i < c->zc_st->zs_line)
+		c->zc_st->zs_line = i;
+}
+
+/*
+ * The removals the conflicts blocked, now that the choices have had
+ * their say. In reverse manifest order, so a child directory is
+ * tried before its parent: one that is gone was removed at applying1
+ * and is nothing to do; one that is empty goes now; one that still
+ * holds something stays, because the resolution cemented a name
+ * under it or the person put one there, and that is a state and not
+ * a fault.
+ */
+static int
+za_late_rmdirs(struct za_ctx *c, const struct zr_parsed *m)
+{
+	const struct zr_action *a;
+	uint32_t i;
+
+	for (i = m->zp_nactions; i > 0; i--) {
+		a = &m->zp_actions[i - 1];
+		if (a->za_kind != ZR_ACT_RM || a->za_isdir == 0)
+			continue;
+		if (za_stopped(c) != 0 ||
+		    za_path_ok(c, a, a->za_path, a->za_pathlen) != 0)
+			return (-1);
+		if (unlinkat(c->zc_rootfd, za_rel(a->za_path),
+		    AT_REMOVEDIR) == 0) {
+			c->zc_st->zs_latedirs++;
+			continue;
+		}
+		if (errno == ENOENT)
+			continue;
+		if (errno == ENOTEMPTY || errno == EEXIST) {
+			c->zc_st->zs_skipped++;
+			continue;
+		}
+		return (za_failp(c, a->za_path, "rmdir"));
+	}
+	return (0);
+}
+
+/* Every line's pick, and the pooling that ties some of them together. */
+static void
+za_picks(const struct zr_resolution *res, struct za_pick *picks,
+    struct zr_walk *onto, struct zr_walk *from)
+{
+	const struct zr_rline *l, *al;
+	struct za_pick *p;
+	uint32_t i, j;
+
+	for (i = 0; i < res->zs_nlines; i++) {
+		l = &res->zs_lines[i];
+		p = &picks[i];
+		p->zk_side = NULL;
+		p->zk_tree = -1;
+		p->zk_pool = ZR_POOL_NONE;
+		p->zk_anchor = ZA_NO_ANCHOR;
+		p->zk_drop = 0;
+		if (l->zl_choice == ZR_CH_KEEP)
+			continue;
+		p->zk_side = l->zl_choice == ZR_CH_ONTO ? onto : from;
+		p->zk_tree = l->zl_choice == ZR_CH_ONTO ? 0 : 1;
+		if (za_side_pool(p->zk_side, l->zl_path, l->zl_pathlen,
+		    &p->zk_pool) == 0) {
+			p->zk_drop = 1;
+			continue;
+		}
+		/*
+		 * The anchor is the first line of this same group that
+		 * chose this same side and that the side holds in this
+		 * same pool. A drift line has no group and is never
+		 * anybody's anchor, and never has one.
+		 */
+		if (l->zl_kind != ZR_RL_CONFLICT)
+			continue;
+		for (j = 0; j < i; j++) {
+			al = &res->zs_lines[j];
+			if (al->zl_kind != ZR_RL_CONFLICT ||
+			    al->zl_group != l->zl_group ||
+			    al->zl_choice != l->zl_choice ||
+			    picks[j].zk_drop != 0 ||
+			    picks[j].zk_pool != p->zk_pool)
+				continue;
+			p->zk_anchor = picks[j].zk_anchor == ZA_NO_ANCHOR ?
+			    j : picks[j].zk_anchor;
+			break;
+		}
+	}
+}
+
+int
+zr_apply_choices(const struct zr_resolution *res, const struct zr_parsed *m,
+    const char *root, struct zr_names *names, struct zr_walk *onto,
+    struct zr_walk *from, struct zr_apply_stats *st, char *err, size_t errlen)
+{
+	static const unsigned char self[] = "(the choices)";
+	struct zr_apply_stats spare;
+	struct za_pathbuf pb, ab;
+	struct za_pick *picks = NULL;
+	struct zr_oracle *o = NULL;
+	const struct zr_rline *l, *al;
+	struct zr_action a;
+	struct za_ctx c;
+	struct zr_walk wr;
+	uint64_t was;
+	uint32_t i;
+	int walked = 0, eq, rc = -1;
+
+	memset(&c, 0, sizeof (struct za_ctx));
+	memset(&pb, 0, sizeof (struct za_pathbuf));
+	memset(&ab, 0, sizeof (struct za_pathbuf));
+	memset(&a, 0, sizeof (struct zr_action));
+	c.zc_rootfd = -1;
+	c.zc_by = ZA_BY_CHOICE;
+	c.zc_m = m;
+	c.zc_from = from;
+	c.zc_onto = onto;
+	c.zc_err = err;
+	c.zc_errlen = errlen;
+	c.zc_st = st != NULL ? st : &spare;
+	memset(c.zc_st, 0, sizeof (struct zr_apply_stats));
+	c.zc_st->zs_line = ZR_LINE_NONE;
+	if (err != NULL && errlen > 0)
+		err[0] = '\0';
+	if (res == NULL || m == NULL || root == NULL || names == NULL ||
+	    onto == NULL || from == NULL || onto->zw_rootfd < 0 ||
+	    from->zw_rootfd < 0) {
+		errno = EINVAL;
+		return (za_failp(&c, self, "arguments"));
+	}
+	/*
+	 * Every line read before any of them is acted on, so that a
+	 * document that is not complete, or that spells a path this
+	 * apply will not touch, leaves the tree exactly as it was.
+	 */
+	for (i = 0; i < res->zs_nlines; i++) {
+		l = &res->zs_lines[i];
+		a.za_path = l->zl_path;
+		a.za_pathlen = l->zl_pathlen;
+		if (l->zl_choice == ZR_CH_NONE)
+			return (za_failpx(&c, l->zl_path, "the choice is "
+			    "still \"-\" and the resolution is not complete"));
+		if (za_path_ok(&c, &a, a.za_path, a.za_pathlen) != 0)
+			return (-1);
+	}
+	/*
+	 * The result as it stands before any of this is done, which is
+	 * what the oracle is asked about. A walk that failed is still a
+	 * walk to finalise, which is why the flag is set first.
+	 */
+	walked = 1;
+	if (zr_walk(root, names, &wr, err, errlen) != 0)
+		goto out;
+	if (zr_oracle_init(&o, onto, from, &wr) != 0) {
+		(void) za_failpx(&c, self, "the two sides and the result do "
+		    "not make an oracle");
+		goto out;
+	}
+	if (res->zs_nlines != 0) {
+		picks = malloc((size_t)res->zs_nlines *
+		    sizeof (struct za_pick));
+		if (picks == NULL) {
+			errno = ENOMEM;
+			(void) za_failp(&c, self, "memory");
+			goto out;
+		}
+		za_picks(res, picks, onto, from);
+	}
+	if (za_root_copy(&c, root) != 0) {
+		errno = ENOMEM;
+		(void) za_failp(&c, (const unsigned char *)root, "memory");
+		goto out;
+	}
+	c.zc_buf = malloc(ZA_BUFSZ);
+	if (c.zc_buf == NULL) {
+		errno = ENOMEM;
+		(void) za_failp(&c, (const unsigned char *)root, "memory");
+		goto out;
+	}
+	c.zc_rootfd = open(root, O_RDONLY | O_DIRECTORY | O_NOFOLLOW |
+	    O_CLOEXEC);
+	if (c.zc_rootfd < 0) {
+		(void) za_failp(&c, (const unsigned char *)root, "open");
+		goto out;
+	}
+	/*
+	 * First what the choices make, in document order, which is the
+	 * walk's, so that a directory is there before the names under
+	 * it. A name already holding the side's object is left alone,
+	 * and so is one already pooled where the group wants it.
+	 */
+	for (i = 0; i < res->zs_nlines; i++) {
+		l = &res->zs_lines[i];
+		if (za_stopped(&c) != 0)
+			goto out;
+		if (l->zl_choice == ZR_CH_KEEP) {
+			c.zc_st->zs_kept++;
+			continue;
+		}
+		if (picks[i].zk_drop != 0)
+			continue;
+		if (picks[i].zk_anchor != ZA_NO_ANCHOR) {
+			al = &res->zs_lines[picks[i].zk_anchor];
+			if (za_pooled(&c, l->zl_path, al->zl_path) != 0) {
+				c.zc_st->zs_skipped++;
+				continue;
+			}
+			za_first_line(&c, i);
+			if (za_link_onto(&c, &pb, (const char *)l->zl_path,
+			    l->zl_pathlen, &ab, (const char *)al->zl_path,
+			    al->zl_pathlen) != 0)
+				goto out;
+			continue;
+		}
+		eq = za_choice_done(&c, o, &wr, picks[i].zk_tree,
+		    picks[i].zk_pool, l->zl_path, l->zl_pathlen);
+		if (eq < 0)
+			goto out;
+		if (eq > 0) {
+			c.zc_st->zs_skipped++;
+			continue;
+		}
+		za_first_line(&c, i);
+		if (za_put_back(&c, &pb, (const char *)l->zl_path,
+		    l->zl_pathlen, picks[i].zk_side,
+		    zr_choice_str(l->zl_choice)) != 0)
+			goto out;
+	}
+	/*
+	 * Then what the choices take away, backwards, so that a
+	 * directory neither side has is empty of the names neither
+	 * side has by the time its own turn comes.
+	 */
+	for (i = res->zs_nlines; i > 0; i--) {
+		l = &res->zs_lines[i - 1];
+		if (picks[i - 1].zk_drop == 0)
+			continue;
+		if (za_stopped(&c) != 0)
+			goto out;
+		if (za_stash(&pb, (const char *)l->zl_path,
+		    l->zl_pathlen) != 0) {
+			errno = ENOMEM;
+			(void) za_failp(&c, l->zl_path, "memory");
+			goto out;
+		}
+		za_made(&a, ZR_ACT_RM, &pb, l->zl_pathlen, NULL, 0);
+		was = c.zc_st->zs_dropped;
+		if (za_rm_one(&c, &a) != 0)
+			goto out;
+		if (c.zc_st->zs_dropped == was)
+			c.zc_st->zs_skipped++;
+		else
+			za_first_line(&c, i - 1);
+	}
+	if (za_late_rmdirs(&c, m) != 0)
+		goto out;
+	rc = 0;
+out:
+	free(picks);
+	free(pb.zb_buf);
+	free(ab.zb_buf);
+	if (o != NULL)
+		zr_oracle_fini(o);
+	if (walked != 0)
+		zr_walk_fini(&wr);
+	za_ctx_fini(&c);
 	return (rc);
 }

@@ -164,7 +164,8 @@ under the same tag, with the same three holds and the same tree, with
 the resolution put back to its skeleton; and then that skeleton
 answered -- every "-" to keep, and #unanswered to 0 with them -- must
 take --continue to done and release the holds, leaving the tree as it
-was, since every choice is keep until apply-choices lands.
+was, since keep is the one choice that changes nothing. A choice of
+onto or from does change something, and that is box-resolution's.
 
 Step 4 aborts the run and checks that the holds, the dataset, the
 two documents the run recorded and the directory under /var/db are
@@ -212,9 +213,9 @@ next thing has not started:
                 message (a fresh run or --continue)
     applying2   that state is written and readonly is off, before
                 the choices of the resolution are carried out
-                (--continue). Until apply-choices lands there is
-                nothing to carry out and the stage only opens and
-                closes the gate
+                (--continue). A document answered keep throughout
+                carries out to nothing, which is what the conflicted
+                fixtures answer today
     done        that state is written, before the holds are released
     action:<n>  inside the apply, before the n'th action it performs,
                 counting the ones it performs and not the ones a

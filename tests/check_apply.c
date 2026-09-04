@@ -20,14 +20,21 @@
  * tries to climb out of the root, and a write onto a symlink that
  * points out of the tree.
  *
+ * And last the other document: the resolution's choices over three
+ * trees, where keep, onto and from each say what the result's name
+ * comes to, one group's names are pooled as the side pools them,
+ * and the directory removal a conflict blocked goes through or does
+ * not by what the choices left inside it.
+ *
  * The family is ZA of tests/MATRIX.md. Covered here: ZA1, ZA2, ZA3,
  * ZA6, ZA8, ZA9, ZA10, ZA11, ZA12, ZA13, ZA14, ZA15, ZA16, ZA17,
- * ZA19, ZA20, ZA22, ZA24, ZA25, ZA26, ZA27, ZA28, ZA30. ZA4 and ZA5
- * need mknod, which needs root; ZA7 is a socket, which has no
- * portable create; ZA18 cannot see the chown at all, since an apply
- * run by the tree's own owner skips it; ZA21 wants an immutable
- * file and ZA23 a forced re-stat mismatch, both of which need root;
- * ZA29 is the ACL cell already deferred in the matrix.
+ * ZA19, ZA20, ZA22, ZA24, ZA25, ZA26, ZA27, ZA28, ZA30, and ZA40 to
+ * ZA55. ZA4 and ZA5 need mknod, which needs root; ZA7 is a socket,
+ * which has no portable create; ZA18 cannot see the chown at all,
+ * since an apply run by the tree's own owner skips it; ZA21 wants an
+ * immutable file and ZA23 a forced re-stat mismatch, both of which
+ * need root; ZA29 and ZA57 are the ACL cells already deferred in the
+ * matrix, and ZA56 is applying2 itself, which needs the box.
  */
 
 #define	_XOPEN_SOURCE	700
@@ -860,6 +867,767 @@ check_write_symlink_out(void)
 	shape_fini(&sh);
 }
 
+/*
+ * ---------------------------------------------------------------
+ * The other document: the resolution's choices. Three trees by hand
+ * -- onto, from, and the result the applying1 stage left -- a
+ * manifest written as text so that its conflict marks and its
+ * blocked removals are real, and the skeleton the tool itself would
+ * write beside it, answered here the way a picker answers it.
+ * ---------------------------------------------------------------
+ */
+
+struct pick {
+	char		pk_root[PATHMAX];
+	char		pk_onto[PATHMAX];
+	char		pk_from[PATHMAX];
+	char		pk_res[PATHMAX];
+	struct zr_names	*pk_ns;
+};
+
+static void
+pick_init(struct pick *p)
+{
+	char tmpl[] = "/tmp/zrchoice.XXXXXX";
+
+	memset(p, 0, sizeof (*p));
+	CHECK(mkdtemp(tmpl) != NULL);
+	join(p->pk_root, sizeof (p->pk_root), tmpl, "");
+	join(p->pk_onto, sizeof (p->pk_onto), tmpl, "/onto");
+	join(p->pk_from, sizeof (p->pk_from), tmpl, "/from");
+	join(p->pk_res, sizeof (p->pk_res), tmpl, "/res");
+	CHECK(mkdir(p->pk_onto, 0755) == 0);
+	CHECK(mkdir(p->pk_from, 0755) == 0);
+	CHECK(mkdir(p->pk_res, 0755) == 0);
+	p->pk_ns = zr_names_create();
+	CHECK(p->pk_ns != NULL);
+}
+
+static void
+pick_fini(struct pick *p)
+{
+	zr_names_destroy(p->pk_ns);
+	rmtree(p->pk_root);
+}
+
+/* The two documents of one rebase: the manifest and its skeleton. */
+struct doc {
+	struct zr_parsed	dc_m;
+	struct zr_resolution	dc_r;
+};
+
+/*
+ * The manifest around one tree section body and the conflict records
+ * its marks point at, and then the skeleton of it, which is the
+ * document write_skeleton() puts beside the manifest in a real run.
+ */
+static void
+doc_build(struct doc *d, const char *body, int nactions, int nconf,
+    const char *records)
+{
+	char text[TEXTMAX], err[256];
+	FILE *f;
+	int n;
+
+	memset(d, 0, sizeof (*d));
+	n = snprintf(text, sizeof (text),
+	    "#rebase-manifest 4\n"
+	    "#base b\n"
+	    "#from f\n"
+	    "#onto o\n"
+	    "#mode strict\n"
+	    "#actions %d\n"
+	    "#conflicts %d\n"
+	    "/\n"
+	    "%s"
+	    "..\n"
+	    "%s", nactions, nconf, body, records);
+	CHECK(n > 0 && (size_t)n < sizeof (text));
+	f = tmpfile();
+	CHECK(f != NULL);
+	CHECK(fputs(text, f) != EOF);
+	rewind(f);
+	err[0] = '\0';
+	if (zr_manifest_parse(f, &d->dc_m, err, sizeof (err)) != 0)
+		printf("  parse: %s\n", err);
+	CHECK(err[0] == '\0');
+	CHECK(fclose(f) == 0);
+	CHECK(zr_resolution_skeleton(&d->dc_m, ZR_CH_NONE, &d->dc_r) == 0);
+}
+
+static void
+doc_fini(struct doc *d)
+{
+	zr_resolution_fini(&d->dc_r);
+	zr_parsed_fini(&d->dc_m);
+}
+
+/* One conflicted name answered, as the picker would answer it. */
+static void
+doc_choose(struct doc *d, const char *path, enum zr_choice ch)
+{
+	uint32_t i;
+
+	for (i = 0; i < d->dc_r.zs_nlines; i++) {
+		if (strcmp((const char *)d->dc_r.zs_lines[i].zl_path,
+		    path) == 0) {
+			d->dc_r.zs_lines[i].zl_choice = ch;
+			return;
+		}
+	}
+	printf("  no resolution line for %s\n", path);
+	CHECK(0);
+}
+
+/* One clean name a verify found changed, with the choice it took. */
+static void
+doc_drift(struct doc *d, const char *path, enum zr_choice ch)
+{
+	CHECK(zr_resolution_add_drift(&d->dc_r, (const unsigned char *)path,
+	    strlen(path), 0, ch) == 0);
+}
+
+/*
+ * The two sides walked afresh -- they never change, but the result
+ * does, and the apply walks that itself -- and the choices carried
+ * out on the result tree.
+ */
+static int
+pick_apply(struct pick *p, struct doc *d, struct zr_apply_stats *st, char *err,
+    size_t errlen)
+{
+	struct zr_walk wo, wf;
+	char werr[256];
+	int rc;
+
+	werr[0] = '\0';
+	CHECK(zr_walk(p->pk_onto, p->pk_ns, &wo, werr, sizeof (werr)) == 0);
+	CHECK(zr_walk(p->pk_from, p->pk_ns, &wf, werr, sizeof (werr)) == 0);
+	rc = zr_apply_choices(&d->dc_r, &d->dc_m, p->pk_res, p->pk_ns, &wo,
+	    &wf, st, err, errlen);
+	zr_walk_fini(&wf);
+	zr_walk_fini(&wo);
+	return (rc);
+}
+
+/* The apply must succeed, and its message must have stayed empty. */
+static void
+pick_ok(struct pick *p, struct doc *d, struct zr_apply_stats *st)
+{
+	char err[512];
+
+	err[0] = '\0';
+	if (pick_apply(p, d, st, err, sizeof (err)) != 0)
+		printf("  choices: %s\n", err);
+	CHECK(err[0] == '\0');
+}
+
+/*
+ * ZA52: the same document again, which must find everything it asks
+ * for already true. That is the check applying2 makes on itself, so
+ * every shape below ends with it.
+ */
+static void
+pick_stable(struct pick *p, struct doc *d)
+{
+	struct zr_apply_stats st;
+
+	pick_ok(p, d, &st);
+	CHECK(st.zs_made == 0);
+	CHECK(st.zs_dropped == 0);
+	CHECK(st.zs_linked == 0);
+	CHECK(st.zs_latedirs == 0);
+	CHECK(st.zs_line == ZR_LINE_NONE);
+}
+
+/* The apply must refuse, and say so with the word in it. */
+static void
+pick_refused(struct pick *p, struct doc *d, const char *word)
+{
+	struct zr_apply_stats st;
+	char err[512];
+
+	err[0] = '\0';
+	CHECK(pick_apply(p, d, &st, err, sizeof (err)) == -1);
+	if (strstr(err, word) == NULL)
+		printf("  message lacks \"%s\": %s\n", word, err);
+	CHECK(strstr(err, word) != NULL);
+}
+
+/* One name's bytes, held against the text the test named. */
+static void
+has_bytes(const char *root, const char *rel, const char *text)
+{
+	char full[PATHMAX], buf[TEXTMAX];
+	size_t n;
+
+	join(full, sizeof (full), root, rel);
+	n = slurp(full, buf, sizeof (buf));
+	if (n != strlen(text) || memcmp(buf, text, n) != 0)
+		printf("  %s: not the bytes the test wanted\n", full);
+	CHECK(n == strlen(text));
+	CHECK(memcmp(buf, text, n) == 0);
+}
+
+/* Two names of one tree: are they one object? */
+static int
+one_object(const char *root, const char *a, const char *b)
+{
+	struct stat sa, sb;
+
+	lstat_at(root, a, &sa);
+	lstat_at(root, b, &sb);
+	return (sa.st_ino == sb.st_ino && sa.st_dev == sb.st_dev);
+}
+
+/* One hard link inside a tree the test is building. */
+static void
+mklink(const char *root, const char *from, const char *to)
+{
+	char a[PATHMAX], b[PATHMAX];
+
+	join(a, sizeof (a), root, from);
+	join(b, sizeof (b), root, to);
+	CHECK(link(a, b) == 0);
+}
+
+/* One symbolic link inside a tree the test is building. */
+static void
+mksym(const char *root, const char *rel, const char *target)
+{
+	char full[PATHMAX];
+
+	join(full, sizeof (full), root, rel);
+	CHECK(symlink(target, full) == 0);
+}
+
+/*
+ * ZA40: the choice keep leaves the name exactly as the person left
+ * it. The result holds a hand merge, which is neither side's object,
+ * and both the object and its bytes are still there afterwards.
+ */
+static void
+check_choice_keep(void)
+{
+	struct zr_apply_stats st;
+	struct stat before, after;
+	struct pick p;
+	struct doc d;
+	static const char body[] = "    k conflict 1\n";
+	static const char records[] =
+	    "\n"
+	    "conflict 1 changed-both\n"
+	    "  why  /k changed on both sides\n"
+	    "  base ()\n"
+	    "  from ({/k}y)\n"
+	    "  onto ({/k}z)\n";
+
+	pick_init(&p);
+	mkfile(p.pk_onto, "/k", "onto bytes\n", 0644);
+	mkfile(p.pk_from, "/k", "from bytes\n", 0644);
+	mkfile(p.pk_res, "/k", "the hand merge\n", 0644);
+	doc_build(&d, body, 0, 1, records);
+	doc_choose(&d, "/k", ZR_CH_KEEP);
+	lstat_at(p.pk_res, "/k", &before);
+	pick_ok(&p, &d, &st);
+	CHECK(st.zs_kept == 1);
+	CHECK(st.zs_made == 0);
+	CHECK(st.zs_dropped == 0);
+	CHECK(st.zs_linked == 0);
+	CHECK(st.zs_line == ZR_LINE_NONE);
+	lstat_at(p.pk_res, "/k", &after);
+	CHECK(before.st_ino == after.st_ino);
+	has_bytes(p.pk_res, "/k", "the hand merge\n");
+	pick_stable(&p, &d);
+	doc_fini(&d);
+	pick_fini(&p);
+}
+
+/*
+ * ZA41, ZA51: the choice onto puts onto's bytes, mode and extended
+ * attribute back over an edit, and a name the result already holds
+ * as onto has it is left alone and counted as skipped.
+ */
+static void
+check_choice_onto(void)
+{
+	struct zr_apply_stats st;
+	char full[PATHMAX], val[16];
+	struct pick p;
+	struct doc d;
+	struct stat sr;
+	static const char body[] =
+	    "    e conflict 1\n"
+	    "    s conflict 2\n";
+	static const char records[] =
+	    "\n"
+	    "conflict 1 changed-both\n"
+	    "  why  /e changed on both sides\n"
+	    "  base ()\n"
+	    "  from ({/e}y)\n"
+	    "  onto ({/e}z)\n"
+	    "conflict 2 changed-both\n"
+	    "  why  /s changed on both sides\n"
+	    "  base ()\n"
+	    "  from ({/s}y)\n"
+	    "  onto ({/s}z)\n";
+
+	pick_init(&p);
+	mkfile(p.pk_onto, "/e", "onto bytes\n", 0640);
+	join(full, sizeof (full), p.pk_onto, "/e");
+	CHECK(setx(full, XNAME, XVAL, XLEN) == 0);
+	mkfile(p.pk_from, "/e", "from bytes\n", 0644);
+	mkfile(p.pk_res, "/e", "somebody edited this\n", 0600);
+	mkfile(p.pk_onto, "/s", "same both ways\n", 0644);
+	mkfile(p.pk_from, "/s", "other bytes\n", 0644);
+	mkfile(p.pk_res, "/s", "same both ways\n", 0644);
+	doc_build(&d, body, 0, 2, records);
+	doc_choose(&d, "/e", ZR_CH_ONTO);
+	doc_choose(&d, "/s", ZR_CH_ONTO);
+	pick_ok(&p, &d, &st);
+	CHECK(st.zs_made == 1);
+	CHECK(st.zs_skipped == 1);
+	CHECK(st.zs_dropped == 0);
+	CHECK(st.zs_line == 0);
+	has_bytes(p.pk_res, "/e", "onto bytes\n");
+	lstat_at(p.pk_res, "/e", &sr);
+	CHECK((sr.st_mode & 07777) == 0640);
+	join(full, sizeof (full), p.pk_res, "/e");
+	CHECK(getx(full, XNAME, val, sizeof (val)) == XLEN);
+	CHECK(memcmp(val, XVAL, XLEN) == 0);
+	has_bytes(p.pk_res, "/s", "same both ways\n");
+	pick_stable(&p, &d);
+	doc_fini(&d);
+	pick_fini(&p);
+}
+
+/*
+ * ZA43, ZA49: the choice from makes the name from's object -- its
+ * bytes and its mode for a file, and its target for a symbolic link,
+ * which replaces the regular file the result held there.
+ */
+static void
+check_choice_from(void)
+{
+	struct zr_apply_stats st;
+	char full[PATHMAX], buf[TEXTMAX];
+	struct pick p;
+	struct doc d;
+	struct stat sr;
+	static const char body[] =
+	    "    g conflict 1\n"
+	    "    l conflict 2\n";
+	static const char records[] =
+	    "\n"
+	    "conflict 1 changed-both\n"
+	    "  why  /g changed on both sides\n"
+	    "  base ()\n"
+	    "  from ({/g}y)\n"
+	    "  onto ({/g}z)\n"
+	    "conflict 2 contested-home\n"
+	    "  why  /l was made on both sides\n"
+	    "  base ()\n"
+	    "  from ({/l}y)\n"
+	    "  onto ({/l}z)\n";
+
+	pick_init(&p);
+	mkfile(p.pk_from, "/g", "from bytes\n", 0600);
+	mksym(p.pk_from, "/l", "a/target");
+	mkfile(p.pk_onto, "/g", "onto bytes\n", 0644);
+	mkfile(p.pk_onto, "/l", "not a link\n", 0644);
+	mkfile(p.pk_res, "/g", "onto bytes\n", 0644);
+	mkfile(p.pk_res, "/l", "not a link\n", 0644);
+	doc_build(&d, body, 0, 2, records);
+	doc_choose(&d, "/g", ZR_CH_FROM);
+	doc_choose(&d, "/l", ZR_CH_FROM);
+	pick_ok(&p, &d, &st);
+	CHECK(st.zs_made == 2);
+	CHECK(st.zs_skipped == 0);
+	has_bytes(p.pk_res, "/g", "from bytes\n");
+	lstat_at(p.pk_res, "/g", &sr);
+	CHECK((sr.st_mode & 07777) == 0600);
+	lstat_at(p.pk_res, "/l", &sr);
+	CHECK(S_ISLNK(sr.st_mode));
+	join(full, sizeof (full), p.pk_res, "/l");
+	CHECK(readlink(full, buf, sizeof (buf)) == (ssize_t)strlen("a/target"));
+	CHECK(memcmp(buf, "a/target", strlen("a/target")) == 0);
+	pick_stable(&p, &d);
+	doc_fini(&d);
+	pick_fini(&p);
+}
+
+/*
+ * ZA42, ZA44: a choice of a side that has no such name takes the
+ * name away -- onto's absence for one name, from's for the other --
+ * and a second pass finds both already gone.
+ */
+static void
+check_choice_gone(void)
+{
+	struct zr_apply_stats st;
+	struct pick p;
+	struct doc d;
+	static const char body[] =
+	    "    x conflict 1\n"
+	    "    y conflict 2\n";
+	static const char records[] =
+	    "\n"
+	    "conflict 1 orphaned-add\n"
+	    "  why  /x was added on one side only\n"
+	    "  base ()\n"
+	    "  from ({/x}y)\n"
+	    "  onto ()\n"
+	    "conflict 2 orphaned-add\n"
+	    "  why  /y was added on one side only\n"
+	    "  base ()\n"
+	    "  from ()\n"
+	    "  onto ({/y}z)\n";
+
+	pick_init(&p);
+	mkfile(p.pk_from, "/x", "from only\n", 0644);
+	mkfile(p.pk_onto, "/y", "onto only\n", 0644);
+	mkfile(p.pk_res, "/x", "from only\n", 0644);
+	mkfile(p.pk_res, "/y", "onto only\n", 0644);
+	doc_build(&d, body, 0, 2, records);
+	doc_choose(&d, "/x", ZR_CH_ONTO);
+	doc_choose(&d, "/y", ZR_CH_FROM);
+	pick_ok(&p, &d, &st);
+	CHECK(st.zs_dropped == 2);
+	CHECK(st.zs_made == 0);
+	CHECK(st.zs_line == 0);
+	CHECK(absent(p.pk_res, "/x"));
+	CHECK(absent(p.pk_res, "/y"));
+	pick_stable(&p, &d);
+	doc_fini(&d);
+	pick_fini(&p);
+}
+
+/*
+ * ZA45, ZA46: one group, one side, and the pooling that side has.
+ * The two names from holds as one file end as one object here, the
+ * first of them copied and the second linked onto it; the two names
+ * from holds apart end as two.
+ */
+static void
+check_choice_pool(void)
+{
+	struct zr_apply_stats st;
+	struct pick p;
+	struct doc d;
+	struct stat s1;
+	static const char body[] =
+	    "    p1 conflict 1\n"
+	    "    p2 conflict 1\n"
+	    "    q1 conflict 2\n"
+	    "    q2 conflict 2\n";
+	static const char records[] =
+	    "\n"
+	    "conflict 1 disagree\n"
+	    "  why  /p1 and /p2 are one file on one side only\n"
+	    "  base ()\n"
+	    "  from ({/p1 /p2}y)\n"
+	    "  onto ({/p1}z {/p2}w)\n"
+	    "conflict 2 disagree\n"
+	    "  why  /q1 and /q2 disagree\n"
+	    "  base ()\n"
+	    "  from ({/q1}y {/q2}w)\n"
+	    "  onto ({/q1}v {/q2}u)\n";
+
+	pick_init(&p);
+	mkfile(p.pk_from, "/p1", "shared\n", 0644);
+	mklink(p.pk_from, "/p1", "/p2");
+	mkfile(p.pk_from, "/q1", "one\n", 0644);
+	mkfile(p.pk_from, "/q2", "two\n", 0644);
+	mkfile(p.pk_onto, "/p1", "onto p1\n", 0644);
+	mkfile(p.pk_onto, "/p2", "onto p2\n", 0644);
+	mkfile(p.pk_onto, "/q1", "onto q1\n", 0644);
+	mkfile(p.pk_onto, "/q2", "onto q2\n", 0644);
+	mkfile(p.pk_res, "/p1", "onto p1\n", 0644);
+	mkfile(p.pk_res, "/p2", "onto p2\n", 0644);
+	mkfile(p.pk_res, "/q1", "onto q1\n", 0644);
+	mkfile(p.pk_res, "/q2", "onto q2\n", 0644);
+	doc_build(&d, body, 0, 2, records);
+	doc_choose(&d, "/p1", ZR_CH_FROM);
+	doc_choose(&d, "/p2", ZR_CH_FROM);
+	doc_choose(&d, "/q1", ZR_CH_FROM);
+	doc_choose(&d, "/q2", ZR_CH_FROM);
+	pick_ok(&p, &d, &st);
+	CHECK(st.zs_made == 3);
+	CHECK(st.zs_linked == 1);
+	CHECK(one_object(p.pk_res, "/p1", "/p2"));
+	lstat_at(p.pk_res, "/p1", &s1);
+	CHECK(s1.st_nlink == 2);
+	has_bytes(p.pk_res, "/p1", "shared\n");
+	has_bytes(p.pk_res, "/p2", "shared\n");
+	CHECK(!one_object(p.pk_res, "/q1", "/q2"));
+	has_bytes(p.pk_res, "/q1", "one\n");
+	has_bytes(p.pk_res, "/q2", "two\n");
+	pick_stable(&p, &d);
+	doc_fini(&d);
+	pick_fini(&p);
+}
+
+/*
+ * ZA47: one group, two choices. Both sides hold the two names as one
+ * file; the name that chose onto and the name that chose from end as
+ * two objects, each holding its own side's bytes, neither pooled.
+ */
+static void
+check_choice_mixed(void)
+{
+	struct zr_apply_stats st;
+	struct pick p;
+	struct doc d;
+	struct stat s1, s2;
+	static const char body[] =
+	    "    m1 conflict 1\n"
+	    "    m2 conflict 1\n";
+	static const char records[] =
+	    "\n"
+	    "conflict 1 disagree\n"
+	    "  why  /m1 and /m2 changed on both sides\n"
+	    "  base ()\n"
+	    "  from ({/m1 /m2}y)\n"
+	    "  onto ({/m1 /m2}z)\n";
+
+	pick_init(&p);
+	mkfile(p.pk_onto, "/m1", "onto shared\n", 0644);
+	mklink(p.pk_onto, "/m1", "/m2");
+	mkfile(p.pk_from, "/m1", "from shared\n", 0644);
+	mklink(p.pk_from, "/m1", "/m2");
+	mkfile(p.pk_res, "/m1", "edited\n", 0644);
+	mklink(p.pk_res, "/m1", "/m2");
+	doc_build(&d, body, 0, 1, records);
+	doc_choose(&d, "/m1", ZR_CH_ONTO);
+	doc_choose(&d, "/m2", ZR_CH_FROM);
+	pick_ok(&p, &d, &st);
+	CHECK(st.zs_made == 2);
+	CHECK(st.zs_linked == 0);
+	CHECK(!one_object(p.pk_res, "/m1", "/m2"));
+	has_bytes(p.pk_res, "/m1", "onto shared\n");
+	has_bytes(p.pk_res, "/m2", "from shared\n");
+	lstat_at(p.pk_res, "/m1", &s1);
+	lstat_at(p.pk_res, "/m2", &s2);
+	CHECK(s1.st_nlink == 1);
+	CHECK(s2.st_nlink == 1);
+	pick_stable(&p, &d);
+	doc_fini(&d);
+	pick_fini(&p);
+}
+
+/*
+ * ZA48: a directory line with a name under it. The directory comes
+ * first in the document, so it is made before the child that goes
+ * inside it, and both take the chosen side's mode and bytes.
+ */
+static void
+check_choice_dir(void)
+{
+	struct zr_apply_stats st;
+	struct pick p;
+	struct doc d;
+	struct stat sd, sc;
+	static const char body[] =
+	    "    d/ conflict 1\n"
+	    "        c conflict 1\n"
+	    "        ..\n";
+	static const char records[] =
+	    "\n"
+	    "conflict 1 contested-home\n"
+	    "  why  /d and /d/c were made on both sides\n"
+	    "  base ()\n"
+	    "  from ({/d}y {/d/c}w)\n"
+	    "  onto ({/d}z {/d/c}v)\n";
+
+	pick_init(&p);
+	mkdirp(p.pk_onto, "/d", 0700);
+	mkfile(p.pk_onto, "/d/c", "onto child\n", 0644);
+	mkdirp(p.pk_from, "/d", 0755);
+	mkfile(p.pk_from, "/d/c", "from child\n", 0640);
+	mkdirp(p.pk_res, "/d", 0700);
+	mkfile(p.pk_res, "/d/c", "onto child\n", 0644);
+	doc_build(&d, body, 0, 1, records);
+	doc_choose(&d, "/d", ZR_CH_FROM);
+	doc_choose(&d, "/d/c", ZR_CH_FROM);
+	pick_ok(&p, &d, &st);
+	CHECK(st.zs_made == 2);
+	lstat_at(p.pk_res, "/d", &sd);
+	CHECK(S_ISDIR(sd.st_mode));
+	CHECK((sd.st_mode & 07777) == 0755);
+	lstat_at(p.pk_res, "/d/c", &sc);
+	CHECK((sc.st_mode & 07777) == 0640);
+	has_bytes(p.pk_res, "/d/c", "from child\n");
+	pick_stable(&p, &d);
+	doc_fini(&d);
+	pick_fini(&p);
+}
+
+/*
+ * ZA50: drift lines, which carry no group. Two of them naming names
+ * from holds as one file are still two names of their own here --
+ * pooling is a group's, and a drift line is in none -- and a third
+ * with keep is not touched.
+ */
+static void
+check_choice_drift(void)
+{
+	struct zr_apply_stats st;
+	struct pick p;
+	struct doc d;
+	struct stat s1, s2;
+
+	pick_init(&p);
+	mkfile(p.pk_from, "/a", "from bytes\n", 0644);
+	mklink(p.pk_from, "/a", "/b");
+	mkfile(p.pk_onto, "/a", "onto a\n", 0644);
+	mkfile(p.pk_onto, "/b", "onto b\n", 0644);
+	mkfile(p.pk_onto, "/c", "onto c\n", 0644);
+	mkfile(p.pk_res, "/a", "edited a\n", 0644);
+	mkfile(p.pk_res, "/b", "edited b\n", 0644);
+	mkfile(p.pk_res, "/c", "edited c\n", 0644);
+	doc_build(&d, "", 0, 0, "");
+	doc_drift(&d, "/a", ZR_CH_FROM);
+	doc_drift(&d, "/b", ZR_CH_FROM);
+	doc_drift(&d, "/c", ZR_CH_KEEP);
+	pick_ok(&p, &d, &st);
+	CHECK(st.zs_made == 2);
+	CHECK(st.zs_linked == 0);
+	CHECK(st.zs_kept == 1);
+	has_bytes(p.pk_res, "/a", "from bytes\n");
+	has_bytes(p.pk_res, "/b", "from bytes\n");
+	has_bytes(p.pk_res, "/c", "edited c\n");
+	CHECK(!one_object(p.pk_res, "/a", "/b"));
+	lstat_at(p.pk_res, "/a", &s1);
+	lstat_at(p.pk_res, "/b", &s2);
+	CHECK(s1.st_nlink == 1);
+	CHECK(s2.st_nlink == 1);
+	pick_stable(&p, &d);
+	doc_fini(&d);
+	pick_fini(&p);
+}
+
+/*
+ * ZA53: the removal a conflict blocked. The manifest removes /d, and
+ * applying1 could not, because /d/c was conflicted; the choice takes
+ * /d/c away, and the directory goes with it after the choices.
+ */
+static void
+check_choice_frees_dir(void)
+{
+	struct zr_apply_stats st;
+	struct pick p;
+	struct doc d;
+	static const char body[] =
+	    "    d/ rm\n"
+	    "        c conflict 1\n"
+	    "        ..\n";
+	static const char records[] =
+	    "\n"
+	    "conflict 1 orphaned-add\n"
+	    "  why  /d/c is an add whose anchors the other side deleted\n"
+	    "  base ()\n"
+	    "  from ()\n"
+	    "  onto ({/d/c}z)\n";
+
+	pick_init(&p);
+	mkdirp(p.pk_onto, "/d", 0755);
+	mkfile(p.pk_onto, "/d/c", "onto child\n", 0644);
+	mkdirp(p.pk_res, "/d", 0755);
+	mkfile(p.pk_res, "/d/c", "onto child\n", 0644);
+	doc_build(&d, body, 1, 1, records);
+	doc_choose(&d, "/d/c", ZR_CH_FROM);
+	pick_ok(&p, &d, &st);
+	CHECK(st.zs_dropped == 1);
+	CHECK(st.zs_latedirs == 1);
+	CHECK(absent(p.pk_res, "/d/c"));
+	CHECK(absent(p.pk_res, "/d"));
+	pick_stable(&p, &d);
+	doc_fini(&d);
+	pick_fini(&p);
+}
+
+/*
+ * ZA54: the same removal, and a choice that cements a name under it.
+ * The directory stays, which is the blocked-rm rule's other half,
+ * and the removal is counted as one more thing left alone.
+ */
+static void
+check_choice_holds_dir(void)
+{
+	struct zr_apply_stats st;
+	struct pick p;
+	struct doc d;
+	static const char body[] =
+	    "    d/ rm\n"
+	    "        c conflict 1\n"
+	    "        ..\n";
+	static const char records[] =
+	    "\n"
+	    "conflict 1 orphaned-add\n"
+	    "  why  /d/c is an add whose anchors the other side deleted\n"
+	    "  base ()\n"
+	    "  from ()\n"
+	    "  onto ({/d/c}z)\n";
+
+	pick_init(&p);
+	mkdirp(p.pk_onto, "/d", 0755);
+	mkfile(p.pk_onto, "/d/c", "onto child\n", 0644);
+	mkdirp(p.pk_res, "/d", 0755);
+	mkfile(p.pk_res, "/d/c", "the hand merge\n", 0644);
+	doc_build(&d, body, 1, 1, records);
+	doc_choose(&d, "/d/c", ZR_CH_KEEP);
+	pick_ok(&p, &d, &st);
+	CHECK(st.zs_kept == 1);
+	CHECK(st.zs_latedirs == 0);
+	CHECK(st.zs_skipped == 1);
+	has_bytes(p.pk_res, "/d/c", "the hand merge\n");
+	pick_stable(&p, &d);
+	doc_fini(&d);
+	pick_fini(&p);
+}
+
+/*
+ * ZA55: a document with a choice still "-" is refused, and refused
+ * before anything is written: the name that was answered is left as
+ * the result had it.
+ */
+static void
+check_choice_unanswered(void)
+{
+	struct pick p;
+	struct doc d;
+	static const char body[] =
+	    "    a conflict 1\n"
+	    "    u conflict 2\n";
+	static const char records[] =
+	    "\n"
+	    "conflict 1 changed-both\n"
+	    "  why  /a changed on both sides\n"
+	    "  base ()\n"
+	    "  from ({/a}y)\n"
+	    "  onto ({/a}z)\n"
+	    "conflict 2 changed-both\n"
+	    "  why  /u changed on both sides\n"
+	    "  base ()\n"
+	    "  from ({/u}y)\n"
+	    "  onto ({/u}z)\n";
+
+	pick_init(&p);
+	mkfile(p.pk_onto, "/a", "onto a\n", 0644);
+	mkfile(p.pk_onto, "/u", "onto u\n", 0644);
+	mkfile(p.pk_from, "/a", "from a\n", 0644);
+	mkfile(p.pk_from, "/u", "from u\n", 0644);
+	mkfile(p.pk_res, "/a", "edited\n", 0644);
+	mkfile(p.pk_res, "/u", "edited\n", 0644);
+	doc_build(&d, body, 0, 2, records);
+	doc_choose(&d, "/a", ZR_CH_ONTO);
+	pick_refused(&p, &d, "/u");
+	has_bytes(p.pk_res, "/a", "edited\n");
+	has_bytes(p.pk_res, "/u", "edited\n");
+	doc_fini(&d);
+	pick_fini(&p);
+}
+
 /* One walked probe tree, plus the pieces the pipeline needs. */
 struct world {
 	char			w_base[PATHMAX];
@@ -1170,6 +1938,18 @@ main(void)
 	check_rm_nonempty();
 	check_escape();
 	check_write_symlink_out();
+
+	check_choice_keep();
+	check_choice_onto();
+	check_choice_from();
+	check_choice_gone();
+	check_choice_pool();
+	check_choice_mixed();
+	check_choice_dir();
+	check_choice_drift();
+	check_choice_frees_dir();
+	check_choice_holds_dir();
+	check_choice_unanswered();
 
 	printf("check_apply: %d checks passed\n", checks);
 	return (0);

@@ -49,11 +49,21 @@ struct zr_apply_stats {
 	uint64_t	zs_dup;
 	uint64_t	zs_bytes;	/* file bytes copied out of from */
 	uint64_t	zs_skipped;	/* actions left alone, see below */
-	/* and what the repair below did, which is the other three */
+	/* and what the repair below did, which is the next three */
 	uint64_t	zs_restored;	/* names put back out of onto */
 	uint64_t	zs_removed;	/* names nothing expected, taken away */
 	uint64_t	zs_relinked;	/* names linked back into their pool */
+	/* and what the choices of a resolution did, which is the rest */
+	uint64_t	zs_kept;	/* names the choice keep left alone */
+	uint64_t	zs_made;	/* names made the side's object */
+	uint64_t	zs_dropped;	/* names the side does not have */
+	uint64_t	zs_linked;	/* names pooled onto their anchor */
+	uint64_t	zs_latedirs;	/* directories the choices freed */
+	uint32_t	zs_line;	/* the first line a choice changed */
 };
+
+/* No line of the resolution was changed: what zs_line carries then. */
+#define	ZR_LINE_NONE	((uint32_t)-1)
 
 /*
  * Apply m to the tree at onto_root, reading from's bytes and
@@ -81,6 +91,52 @@ int zr_apply_with(const struct zr_parsed *m, const char *onto_root,
     const struct zr_walk *from, const struct zr_walk *onto,
     const struct zr_verify_report *skip, struct zr_apply_stats *st,
     char *err, size_t errlen);
+
+/*
+ * The other document: the resolution's choices, made true on the
+ * tree at root. m is the manifest the resolution answers, needed for
+ * the removals a conflict blocked; names, onto and from are the
+ * shared name table and the two sides, which this walks the result
+ * beside to know what is already true.
+ *
+ * One line at a time, in the document's order, which is the walk's,
+ * so a parent is made before its children:
+ *
+ *	keep	nothing at all; the result stands as it is
+ *	onto	the name becomes onto's object at that same name --
+ *		bytes, type and attributes -- or goes if onto has no
+ *		such name
+ *	from	the same out of from's tree
+ *	"-"	refused: the caller proves the document complete
+ *		before it calls, and nothing is written when one is met
+ *
+ * The names of one conflict group that chose the same side and that
+ * that side pools together are one object in the result too: the
+ * first of them in document order is copied and the rest are linked
+ * onto it. Names of a group that chose different sides, names that
+ * side keeps apart, and drift lines, which have no group, are each
+ * their own. The removals wait for the makes and then run backwards,
+ * children before parents.
+ *
+ * Last come the directory removals of the manifest that a conflict
+ * blocked, in reverse manifest order: one goes if the choices left
+ * it empty and stays if they did not, which is the plan's blocked-rm
+ * rule.
+ *
+ * It is idempotent like the rest of the apply. A name that already
+ * holds the chosen side's object -- the content oracle's word, over
+ * an oracle this builds itself -- is left alone and counted in
+ * zs_skipped, and so is a name already pooled where it belongs and a
+ * removal already made. A second call over the same document
+ * therefore changes nothing, which is how the stage checks itself.
+ *
+ * Returns 0 with the choice fields of *st filled and zs_line naming
+ * the first line that was changed, or -1 with a message in err when
+ * errlen is not 0.
+ */
+int zr_apply_choices(const struct zr_resolution *res, const struct zr_parsed *m,
+    const char *root, struct zr_names *names, struct zr_walk *onto,
+    struct zr_walk *from, struct zr_apply_stats *st, char *err, size_t errlen);
 
 /*
  * The other half of an apply: the names no action spoke for, put
