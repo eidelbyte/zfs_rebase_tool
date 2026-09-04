@@ -113,6 +113,7 @@
  */
 
 #include <errno.h>
+#include <limits.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -295,6 +296,67 @@ signals_restore(const struct sigaction *saved)
 
 	for (i = 0; i < ZR_NSIG; i++)
 		(void) sigaction(zr_sigs[i], &saved[i], NULL);
+}
+
+/*
+ * ZFS_REBASE_PAUSE=<gate>: the box harness's way into the middle of a
+ * run. At the gate it names the tool stops itself with SIGSTOP; the
+ * harness, which is waiting for exactly that, kills it, edits the
+ * tree behind its back or looks at what it has written so far, and
+ * sends SIGCONT. It is read once, at the start of a run and of the
+ * verbs that pass a gate, and it exists for tests/box/run-kills.sh
+ * and tests/box/run-strays.sh alone: it is documented in
+ * tests/box/README.md, is in no usage text, and a name that is no
+ * gate of ours is ignored in silence, since a test aid must never be
+ * able to fail a real run.
+ *
+ * A gate is a point where the thing it names has just happened and
+ * the next has not started:
+ *
+ *	held		the three holds are taken
+ *	cloned		the clone is there, or the dataset is the
+ *			run's own at its private mount, before any walk
+ *	read		the walks and the pruning are done, before
+ *			anything is decided
+ *	decided		the manifest is written and recorded, before
+ *			applying1 is written
+ *	applying1	that gate is written and readonly is off,
+ *			before the first action
+ *	conflicts	that gate is written, before the hand-back
+ *	applying2	that gate is written and readonly is off,
+ *			before the first resolution action
+ *	done		that gate is written, before the release
+ *	action:<n>	inside the apply, before the n'th action it
+ *			performs (apply.c, zr_apply_pause_at)
+ *
+ * --posix reaches none of them and ignores the variable altogether.
+ */
+#define	ZR_PAUSE_ENV	"ZFS_REBASE_PAUSE"
+#define	ZR_PAUSE_ACTION	"action:"
+
+static const char *zr_pause_gate;
+
+static void
+zr_pause_open(void)
+{
+	unsigned long n;
+	char *end;
+
+	zr_pause_gate = getenv(ZR_PAUSE_ENV);
+	if (zr_pause_gate == NULL || strncmp(zr_pause_gate, ZR_PAUSE_ACTION,
+	    sizeof (ZR_PAUSE_ACTION) - 1) != 0)
+		return;
+	n = strtoul(zr_pause_gate + sizeof (ZR_PAUSE_ACTION) - 1, &end, 10);
+	if (*end == '\0' && n > 0 && n <= UINT_MAX)
+		zr_apply_pause_at((unsigned int)n);
+}
+
+/* At this gate, and at no other, stop and wait for the harness. */
+static void
+zr_pause(const char *gate)
+{
+	if (zr_pause_gate != NULL && strcmp(zr_pause_gate, gate) == 0)
+		(void) raise(SIGSTOP);
 }
 
 static int
@@ -1613,6 +1675,7 @@ apply_manifest(struct run *r)
 	if (zr_zfs_set_readonly(r->zfs, r->rds, 0, r->err,
 	    sizeof (r->err)) != 0)
 		goto done;
+	zr_pause(ZR_STATE_APPLYING1);
 	/*
 	 * No report: what a fresh run applies to is onto's tree
 	 * exactly -- a clone of the snapshot, or the dataset the
@@ -1851,6 +1914,7 @@ zr_run(const struct zr_run_opts *o)
 	memset(&r, 0, sizeof (r));
 	memset(&rec, 0, sizeof (rec));
 	r.o = *o;
+	zr_pause_open();
 	if (geteuid() != 0) {
 		(void) fprintf(stderr, "zfs_rebase: must run as root\n");
 		return (EXIT_PRECOND);
@@ -1971,6 +2035,7 @@ zr_run(const struct zr_run_opts *o)
 			rc = fail(&r, EXIT_PRECOND, "hold");
 			goto done;
 		}
+		zr_pause("held");
 		/*
 		 * And the exclusivity, which is the unmount: from
 		 * here the dataset is the run's alone and is handed
@@ -1989,8 +2054,10 @@ zr_run(const struct zr_run_opts *o)
 	 * dataset over; a real one reads it through the private
 	 * mount.
 	 */
-	if (!o->dryrun)
+	if (!o->dryrun) {
 		retarget(&r);
+		zr_pause("cloned");
+	}
 
 	/* 4. read, 5. decide */
 	if (read_trees(&r) != 0) {
@@ -1998,6 +2065,7 @@ zr_run(const struct zr_run_opts *o)
 		    EXIT_PRECOND, "read");
 		goto done;
 	}
+	zr_pause("read");
 	if (zr_decide(&r.wb.zw_tree, &r.wf.zw_tree, &r.wo.zw_tree, o->mode,
 	    &r.d) != 0) {
 		(void) snprintf(r.err, sizeof (r.err), "out of memory");
@@ -2052,6 +2120,7 @@ zr_run(const struct zr_run_opts *o)
 	}
 
 	/* 7. applying1: the clean actions, 8. the re-walk */
+	zr_pause("decided");
 	if (stopped(&r) != 0) {
 		rc = fail(&r, EXIT_INTERNAL, "apply");
 		goto done;	/* nothing written yet: the run goes */
@@ -2104,6 +2173,7 @@ zr_run(const struct zr_run_opts *o)
 		 * --continue takes the rebase on from there.
 		 */
 		set_state(&r, ZR_STATE_CONFLICTS);
+		zr_pause(ZR_STATE_CONFLICTS);
 		resolution_path(res, sizeof (res), r.rds);
 		(void) fprintf(stderr, "zfs_rebase: %u conflict%s; the clean "
 		    "actions are applied and %s waits at conflicts\n",
@@ -2141,6 +2211,7 @@ zr_run(const struct zr_run_opts *o)
 		r.privmnt = 0;		/* and the dataset with them */
 	} else {
 		set_state(&r, ZR_STATE_DONE);
+		zr_pause(ZR_STATE_DONE);
 		release_holds(&r);
 		r.dropfrom = r.madefrom;
 		if (in_dataset_form(&r))
@@ -2972,6 +3043,12 @@ stage_apply(struct resume *s, const struct zr_parsed *m, const char *state,
 		put_state(s->zfs, s->result, state);
 	if (ro_off(s) != 0)
 		return (-1);
+	/*
+	 * The gate this stage has just written, for the harness. A
+	 * repair passes no gate and stops at none.
+	 */
+	if (state != NULL)
+		zr_pause(state);
 	if (classify(s, m, &rep) != 0)
 		goto out;
 	if (s->verify)
@@ -3072,6 +3149,7 @@ done_gate(struct resume *s)
 			return (code);
 	}
 	put_state(s->zfs, s->result, ZR_STATE_DONE);
+	zr_pause(ZR_STATE_DONE);
 	release_record(s);
 	/*
 	 * The from snapshot goes with the rebase when the tool took
@@ -3163,6 +3241,7 @@ stage1(struct resume *s)
 	if (s->man.zp_conflicts_declared == 0)
 		return (done_gate(s));
 	put_state(s->zfs, s->result, ZR_STATE_CONFLICTS);
+	zr_pause(ZR_STATE_CONFLICTS);
 	(void) fprintf(stderr, "zfs_rebase: %u conflict%s; the clean actions "
 	    "are applied and %s waits at conflicts\n",
 	    s->man.zp_conflicts_declared,
@@ -3367,6 +3446,7 @@ zr_continue(const char *result, int verify, int verbose)
 	memset(&s, 0, sizeof (s));
 	s.verify = verify;
 	s.verbose = verbose;
+	zr_pause_open();
 	signals_install(saved);
 	rc = resume_open(&s, result, 0);
 	if (rc == EXIT_CLEAN) {
@@ -3387,6 +3467,7 @@ zr_restart(const char *result, int verbose)
 
 	memset(&s, 0, sizeof (s));
 	s.verbose = verbose;
+	zr_pause_open();
 	signals_install(saved);
 	rc = resume_open(&s, result, 0);
 	if (rc != EXIT_CLEAN)

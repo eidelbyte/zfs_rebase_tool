@@ -59,6 +59,19 @@
 volatile sig_atomic_t zr_apply_stop = 0;
 
 /*
+ * The action the harness's gate names, or zero for no gate at all;
+ * see apply.h. One process runs one rebase, so a file static is the
+ * whole of what it takes to get the number here.
+ */
+static unsigned int za_pause_at;
+
+void
+zr_apply_pause_at(unsigned int n)
+{
+	za_pause_at = n;
+}
+
+/*
  * ---------------------------------------------------------------
  * The platform section. Everything outside it is plain POSIX; here
  * are the extended attributes, the ACL and the file flags, and the
@@ -1377,6 +1390,7 @@ zr_apply_with(const struct zr_parsed *m, const char *onto_root,
 	struct zr_apply_stats spare;
 	const struct zr_action *a;
 	struct za_ctx c;
+	unsigned int performed = 0;
 	uint32_t i;
 	int rc = -1;
 
@@ -1455,6 +1469,14 @@ zr_apply_with(const struct zr_parsed *m, const char *onto_root,
 			c.zc_st->zs_skipped++;
 			continue;
 		}
+		/*
+		 * The harness's gate, counted over the actions this
+		 * apply really performs: the one before it is
+		 * finished and this one has not begun, which is the
+		 * same place a signal leaves the loop.
+		 */
+		if (++performed == za_pause_at)
+			(void) raise(SIGSTOP);
 		switch (a->za_kind) {
 		case ZR_ACT_RM:
 			if (za_do_rm(&c, a) != 0)

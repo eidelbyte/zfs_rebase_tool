@@ -28,6 +28,18 @@
  */
 extern volatile sig_atomic_t zr_apply_stop;
 
+/*
+ * The box harness's way into the middle of an apply: with n above
+ * zero the apply stops itself with SIGSTOP immediately before it
+ * performs its n'th action, counting the actions it performs and not
+ * the ones a report let it leave alone, so that a kill or a stray
+ * edit can land between two writes. run.c sets it from the gate
+ * ZFS_REBASE_PAUSE names and nothing else does; zero, which is the
+ * default, is no gate at all. A test aid, documented in
+ * tests/box/README.md and in no usage text.
+ */
+void zr_apply_pause_at(unsigned int n);
+
 /* What the apply did, for the report and for the tests. */
 struct zr_apply_stats {
 	uint64_t	zs_rm;

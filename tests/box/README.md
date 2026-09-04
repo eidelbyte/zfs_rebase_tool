@@ -176,3 +176,56 @@ does not exercise yet.
 run-suite.sh walks tests/fixtures/ and tests/fixtures/freebsd/ and
 runs every one of them through both forms; a failure prints the log's
 last "==" heading, which names the form and the step it stopped at.
+
+## The pause hook
+
+    ZFS_REBASE_PAUSE=<gate> zfs_rebase ...
+
+is how the harness gets inside a run. At the gate it names the tool
+raises SIGSTOP on itself and stops there; the harness waits for the
+process to go into the T state, does what it came to do -- signal it,
+edit the result behind its back, look at the record, try to destroy a
+held snapshot -- and sends SIGCONT, and the run goes on from exactly
+that point. It is a test aid: it is in no usage text, an unknown gate
+name is ignored in silence, and --posix reaches no gate at all and
+ignores the variable.
+
+A gate is a point where the thing it names has just happened and the
+next thing has not started:
+
+    held        the three holds are taken (a fresh run)
+    cloned      the clone is there, or the dataset is the run's own
+                at its private mount, before any walk
+    read        the walks and the pruning are done, before anything
+                is decided
+    decided     the manifest is written and recorded, before
+                applying1 is written
+    applying1   that state is written and readonly is off, before
+                the first action (a fresh run or --continue)
+    conflicts   that state is written, before the hand-back and the
+                message (a fresh run or --continue)
+    applying2   that state is written and readonly is off, before
+                the first action of the resolution (--continue)
+    done        that state is written, before the holds are released
+    action:<n>  inside the apply, before the n'th action it performs,
+                counting the ones it performs and not the ones a
+                report let it leave alone
+
+So ZFS_REBASE_PAUSE=applying1 stops a run with the result writable
+and nothing applied yet, action:2 stops it with the first action made
+and the second not, and done stops it with the state written and the
+holds still there. The verbs read the variable too, so a --continue
+can be stopped at applying1, conflicts, applying2 or done; --verify
+alone and --abort pass no gate and never stop.
+
+The shape of every use of it is the same:
+
+    ZFS_REBASE_PAUSE=applying1 zfs_rebase ... &
+    pid=$!
+    until [ "$(ps -o stat= -p $pid | cut -c1)" = T ]; do sleep 0.2; done
+    ... whatever the test came to do ...
+    kill -CONT $pid
+    wait $pid
+
+A SIGKILL needs no CONT; every other signal is delivered when the
+process is continued, so the CONT comes after it.
