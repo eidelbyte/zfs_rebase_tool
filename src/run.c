@@ -2682,9 +2682,19 @@ resume_paths(struct resume *s)
 		return (-1);
 	}
 	(void) snprintf(s->workmnt, sizeof (s->workmnt), "%s/mnt", s->rundir);
+	/*
+	 * A record without the resolution's path is one a kill caught
+	 * between the manifest and the skeleton (the "manifest" pause
+	 * sits there). The path is then what the run would have chosen:
+	 * beside the manifest, wherever the manifest went.
+	 */
 	if (s->rb.resolution[0] != '\0')
 		(void) snprintf(s->respath, sizeof (s->respath), "%s",
 		    s->rb.resolution);
+	else if (s->rb.manifest[0] != '\0' &&
+	    strncmp(s->rb.manifest, s->rundir, strlen(s->rundir)) != 0)
+		resolution_beside(s->respath, sizeof (s->respath),
+		    s->rb.manifest);
 	else
 		resolution_path(s->respath, sizeof (s->respath), s->result);
 	return (0);
@@ -4124,6 +4134,22 @@ reset_resolution(struct resume *s)
 		    res.zs_nlines == 1 ? "" : "s",
 		    zr_resolution_unanswered(&res));
 	zr_resolution_fini(&res);
+	/*
+	 * A record that never had the path (a kill between the manifest
+	 * and the skeleton) gets it now, so that --abort can take the
+	 * document this restart has just written away with the rest.
+	 */
+	if (rc == 0 && s->rb.resolution[0] == '\0') {
+		char e[512];
+
+		if (zr_zfs_set_user(s->zfs, s->result, ZR_PROP_RESOLUTION,
+		    s->respath, e, sizeof (e)) != 0)
+			(void) fprintf(stderr, "zfs_rebase: %s=%s: %s\n",
+			    ZR_PROP_RESOLUTION, s->respath, e);
+		else
+			(void) snprintf(s->rb.resolution,
+			    sizeof (s->rb.resolution), "%s", s->respath);
+	}
 	/*
 	 * And the copy this verb goes on with, read back off the file
 	 * that was just written: the classification the stage after
