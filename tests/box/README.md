@@ -124,9 +124,12 @@ The record is read back with zfs get: the three snapshot names, their
 guids against zfs get guid on the snapshots themselves,
 zfs_rebase:form clone, the mode the flag asked for, zfs_rebase:made
 empty (the tool snapshots nothing of its own), zfs_rebase:verify no,
-the tag, the manifest path, the resolution path -- FILE.resolution
-beside the -o manifest, and the file itself an unanswered skeleton
-with one line per conflicted name -- and zfs_rebase:state -- "done" for a
+zfs_rebase:take "-" (no --take flag was given, so the skeleton was
+written unanswered, and --restart reads this back to write the same
+one again), the tag, the manifest path, the resolution path --
+FILE.resolution beside the -o manifest, and the file itself an
+unanswered skeleton with one line per conflicted name -- and
+zfs_rebase:state -- "done" for a
 clean fixture, "conflicts" for a conflicted one, the gates being
 applying1, conflicts, applying2 and done. The run directory is
 /var/db/zfs_rebase/<result>, not /var/run: cleanvar empties /var/run
@@ -292,6 +295,22 @@ header's #unanswered goes to zero with them -- a hand edit has to
 change the count too, since the parser refuses a header that does
 not match its lines. An unanswered skeleton stops at conflicts,
 which is what every gate before applying2 relies on.
+
+The gate keys on that completeness and on the command, and never on
+the file being there. Every run in this harness is given no --take
+flag, so every skeleton it writes is unanswered and every run stops
+at the gate as it always did. Three things change that, and all
+three belong to box-resolution: --take-onto and --take-from write
+the skeleton answered, which makes it complete from the start, so
+the fresh run hands the result back and goes on to done in the same
+process (its record then reads zfs_rebase:take onto or from, and
+--restart writes that same answered skeleton again); --no-merge
+stops a run or a --continue at the gate however the resolution
+reads, and leaves the gate where it is for the next --continue
+without it; and --no-merge on a --continue whose record is already
+at applying2 or done is refused with "past the merge", exit 2, the
+gate unmoved. --no-gui is accepted on a fresh run and on --continue
+and changes nothing while there is no picker.
 
 ## run-strays.sh
 

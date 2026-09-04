@@ -27,10 +27,10 @@ ZFSOPS_CFLAGS =
 # Library objects are everything but main.o; tests link against them.
 LIB_OBJS = build/vis.o build/name.o build/decide.o build/fixture.o \
 	build/manifest.o build/walk.o build/yellow.o build/verify.o \
-	build/apply.o build/zfsops.o build/run.o
+	build/apply.o build/zfsops.o build/run.o build/args.o
 CORE_OBJS = build/main.o $(LIB_OBJS)
 TESTS = check_vis check_name check_fixture check_manifest check_walk \
-	check_yellow check_roundtrip check_apply check_verify
+	check_yellow check_roundtrip check_apply check_verify check_args
 
 all: build zfs_rebase
 
@@ -59,9 +59,12 @@ check-freebsd:
 	    ZFSOPS_CFLAGS="$(ZFS_CFLAGS)" \
 	    LDFLAGS="$(LDFLAGS) $(ZFS_LIBS)" check
 
-build/main.o: src/main.c src/decide.h src/fixture.h src/manifest.h \
-	src/name.h src/run.h src/walk.h src/yellow.h
+build/main.o: src/main.c src/args.h src/decide.h src/fixture.h \
+	src/manifest.h src/name.h src/run.h src/walk.h src/yellow.h
 	$(CC) $(CFLAGS) -c -o $@ src/main.c
+
+build/args.o: src/args.c src/args.h src/decide.h
+	$(CC) $(CFLAGS) -c -o $@ src/args.c
 
 build/vis.o: src/vis.c src/vis.h
 	$(CC) $(CFLAGS) -c -o $@ src/vis.c

@@ -7,7 +7,8 @@
  * the user names, a clone under the name the user chooses, apply) is
  * zr_run in run.c and exists only in the FreeBSD build.
  * --build-fixture is a test aid that materializes a fixture's three
- * trees.
+ * trees. The command line itself is args.c: this file dispatches on
+ * what that parse left and does nothing else with argv.
  */
 
 #include <errno.h>
@@ -17,6 +18,7 @@
 #include <unistd.h>
 #include <sys/stat.h>
 
+#include "args.h"
 #include "decide.h"
 #include "fixture.h"
 #include "manifest.h"
@@ -31,71 +33,64 @@
 #define	EXIT_INTERNAL	3
 
 static const char usage[] =
-	"usage: zfs_rebase [-n] [-p] [-v] [-o FILE] [--verify] [--overwrite]\n"
+	"usage: zfs_rebase [-p] [-v] [--manifest FILE] [--verify] "
+	    "[--overwrite]\n"
 	"                  [--allow-unrelated [--base SNAP]]\n"
-	"                  --from SNAP|DATASET --onto SNAP|DATASET "
-	"--result NAME\n"
-	"       zfs_rebase --continue [--verify] [-v] --result DATASET\n"
-	"       zfs_rebase --restart [-v] --result DATASET\n"
-	"       zfs_rebase --abort [-v] --result DATASET\n"
-	"       zfs_rebase --verify [-v] --result DATASET\n"
+	"                  [--take-onto | --take-from] [--no-gui] "
+	    "[--no-merge]\n"
+	"                  --from SNAP|DATASET --onto SNAP|DATASET --result "
+	    "NAME\n"
+	"       zfs_rebase --dry-run [-p] [--manifest FILE]\n"
+	"                  --from SNAP|DATASET --onto SNAP|DATASET\n"
+	"       zfs_rebase --continue [--verify] [--no-gui] [--no-merge]\n"
+	"                  --result NAME\n"
+	"       zfs_rebase --restart --result NAME\n"
+	"       zfs_rebase --abort --result NAME\n"
+	"       zfs_rebase --verify --result NAME\n"
 	"       zfs_rebase --posix [-p] [-o FILE] BASEDIR FROMDIR ONTODIR\n"
 	"       zfs_rebase --build-fixture FIXTURE DIR\n"
 	"       zfs_rebase --edit-fixture FIXTURE TREE DIR\n"
-	"  --from      the side whose changes are replayed (--off-of): a\n"
-	"              snapshot, or a dataset the tool snapshots itself\n"
-	"              and destroys again when the rebase ends\n"
-	"  --onto      the side they are replayed onto, and the form of\n"
-	"              the run: a snapshot, which is cloned as --result,\n"
-	"              or a dataset, which is rebased in place. The base\n"
-	"              is the branch point of the two, which the tool\n"
-	"              works out\n"
-	"  --result    with --onto SNAP, the dataset the rebased clone is\n"
-	"              created as; with --onto DATASET, the name of the\n"
-	"              snapshot taken of it before anything is applied,\n"
-	"              which is kept as the before-image -- the short\n"
-	"              name, or a full name whose dataset part is onto.\n"
-	"              For every verb it is the dataset carrying the\n"
-	"              record, and a snapshot name is taken as its\n"
-	"              dataset\n"
-	"  --overwrite in the dataset form, replace a record whose rebase\n"
-	"              reached done; an open rebase is never overwritten\n"
-	"  --allow-unrelated  rebase two sides that share no origin: no\n"
-	"              derivation and no pruning\n"
-	"  --base      with --allow-unrelated only, the base to rebase\n"
-	"              from: a snapshot no newer than either side, and\n"
-	"              without it the empty tree\n"
-	"  --continue  take the rebase on from the gate it stopped at\n"
-	"  --restart   put the result back as onto was -- the clone made\n"
-	"              again, or the dataset rolled back to the pre-apply\n"
-	"              snapshot -- and apply the recorded manifest from\n"
-	"              the first gate\n"
-	"  --abort     release the holds that result records, put the\n"
-	"              result back (the clone destroyed, or the dataset\n"
-	"              rolled back and the record taken off), destroy any\n"
-	"              snapshot the tool took itself, remove the manifest\n"
-	"              it recorded and its run directory, and nothing else\n"
-	"  --verify    alone on a result, report what is done, pending,\n"
-	"              blocked, drifted or unchecked, and what the result\n"
-	"              holds outside the manifest -- gone, extra, changed\n"
-	"              or unpooled -- writing nothing; with a rebase or a\n"
-	"              --continue, ask for the same report at the last\n"
-	"              gate. With --continue at the conflicts gate it\n"
-	"              also writes the drift it found into the resolution\n"
-	"              as lines with the choice keep. It never repairs:\n"
-	"              the one fix is the applying1 stage's own\n"
-	"              self-check, which is no flag\n"
-	"  -n   dry run: write the manifest, hold nothing, and leave\n"
-	"       nothing behind; --result is ignored\n"
-	"  -p   permissive-merge mode\n"
-	"  -v   report counts on stderr\n"
-	"  -o   write the manifest to FILE, the resolution to\n"
-	"       FILE.resolution beside it\n"
+	"every flag has both forms, and the two parse to the same run:\n"
+	"  -f, --from SNAP|DS      the side whose changes are replayed "
+	    "(--off-of)\n"
+	"  -t, --onto SNAP|DS      the side they go onto (--to); it sets the "
+	    "form\n"
+	"  -r, --result NAME       the name the run makes; a verb's rebase\n"
+	"  -p, --permissive-merge  permissive merge; strict is the default\n"
+	"  -v, --verbose           counts and steps on stderr\n"
+	"  -o, --manifest FILE     where the manifest goes, resolution beside "
+	    "it\n"
+	"  -V, --verify            report the final check; it never repairs\n"
+	"  -O, --take-onto         answer every conflict of the skeleton onto\n"
+	"  -F, --take-from         answer every conflict of the skeleton from\n"
+	"  -G, --no-gui            go on at the conflicts gate when the\n"
+	"                          resolution is complete and stop when it is\n"
+	"                          not: the only behavior while there is no\n"
+	"                          picker\n"
+	"  -M, --no-merge          stop at the conflicts gate however the\n"
+	"                          resolution is answered; an error past it\n"
+	"  -c, --continue          take the rebase on from the gate it left\n"
+	"  -R, --restart           the result back as onto was, applied again\n"
+	"  -a, --abort             the rebase undone, as if it never happened\n"
+	"  -n, --dry-run           the manifest only; --result is ignored\n"
+	"  -w, --overwrite         in-place form: replace a record that is "
+	    "done\n"
+	"  -u, --allow-unrelated   no derivation of the base, and no pruning\n"
+	"  -b, --base SNAP         with --allow-unrelated only: the base\n"
+	"--posix, --build-fixture and --edit-fixture are the project's own\n"
+	"test aids: they are long only and take the first argument position.\n"
 	"exit: 0 done, 1 stopped at conflicts, 2 refused, 3 failed\n";
 
+/*
+ * A command that was not understood: the one line saying what was
+ * wrong with it, and then the whole of the usage, since the reader
+ * has just been told a flag is not where they thought it was.
+ */
 static int
-die_usage(void)
+die_usage(const char *why)
 {
+	if (why != NULL && why[0] != '\0')
+		(void) fprintf(stderr, "zfs_rebase: %s\n", why);
 	(void) fputs(usage, stderr);
 	return (EXIT_PRECOND);
 }
@@ -285,148 +280,44 @@ edit_fixture(const char *path, const char *tree, const char *dir)
 }
 
 /*
- * One long option with its value, written either way round: --name
- * VALUE or --name=VALUE. Returns 1 with *val set and *i advanced
- * over the value, 0 when argv[*i] is some other option, and -1 when
- * it is this one with nothing to give.
+ * The command line is args.c's; what is left here is the dispatch
+ * over what it parsed. Nothing below reads argv again.
+ *
+ * --no-gui is parsed, refused where it does not belong, and goes no
+ * further: what it asks of the conflicts gate -- go on when the
+ * resolution is complete, stop when it is not -- is what the gate
+ * does while there is no picker to launch, so there is nothing for
+ * the run or the verb to do differently under it.
  */
-static int
-longopt(int argc, char **argv, int *i, const char *name, const char **val)
-{
-	const char *a = argv[*i];
-	size_t n = strlen(name);
-
-	if (strncmp(a, name, n) != 0)
-		return (0);
-	if (a[n] == '=') {
-		*val = a + n + 1;
-		return ((*val)[0] == '\0' ? -1 : 1);
-	}
-	if (a[n] != '\0')
-		return (0);		/* --namesomething, not this one */
-	if (*i + 1 >= argc)
-		return (-1);
-	*val = argv[++(*i)];
-	return (1);
-}
-
-/* --posix: the options are leading, the three directories follow. */
-static int
-main_posix(int argc, char **argv)
-{
-	zr_mode_t mode = ZR_MODE_STRICT;
-	const char *outpath = NULL;
-	int i;
-
-	for (i = 2; i < argc && argv[i][0] == '-'; i++) {
-		if (strcmp(argv[i], "-p") == 0)
-			mode = ZR_MODE_PERMISSIVE;
-		else if (strcmp(argv[i], "-o") == 0 && i + 1 < argc)
-			outpath = argv[++i];
-		else
-			return (die_usage());
-	}
-	if (argc - i != 3)
-		return (die_usage());
-	return (run_posix(argv[i], argv[i + 1], argv[i + 2], mode, outpath));
-}
-
 int
 main(int argc, char **argv)
 {
-	const char *from = NULL, *onto = NULL, *result = NULL;
-	const char *outpath = NULL, *base = NULL, *v;
-	zr_mode_t mode = ZR_MODE_STRICT;
-	int dryrun = 0, verbose = 0, abrt = 0, verify = 0, cont = 0, rest = 0;
-	int overwrite = 0, unrelated = 0;
+	struct zr_args a;
 	struct zr_run_opts ro;
-	int i, t;
+	char err[512];
 
-	if (argc >= 2 && strcmp(argv[1], "--build-fixture") == 0) {
-		if (argc != 4)
-			return (die_usage());
-		return (build_fixture(argv[2], argv[3]));
-	}
-	if (argc >= 2 && strcmp(argv[1], "--edit-fixture") == 0) {
-		if (argc != 5)
-			return (die_usage());
-		return (edit_fixture(argv[2], argv[3], argv[4]));
-	}
-	if (argc >= 2 && strcmp(argv[1], "--posix") == 0)
-		return (main_posix(argc, argv));
-	for (i = 1; i < argc; i++) {
-		if (strcmp(argv[i], "-p") == 0) {
-			mode = ZR_MODE_PERMISSIVE;
-		} else if (strcmp(argv[i], "-n") == 0) {
-			dryrun = 1;
-		} else if (strcmp(argv[i], "-v") == 0) {
-			verbose = 1;
-		} else if (strcmp(argv[i], "--abort") == 0) {
-			abrt = 1;
-		} else if (strcmp(argv[i], "--continue") == 0) {
-			cont = 1;
-		} else if (strcmp(argv[i], "--restart") == 0) {
-			rest = 1;
-		} else if (strcmp(argv[i], "--verify") == 0) {
-			verify = 1;
-		} else if (strcmp(argv[i], "--overwrite") == 0) {
-			overwrite = 1;
-		} else if (strcmp(argv[i], "--allow-unrelated") == 0) {
-			unrelated = 1;
-		} else if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
-			outpath = argv[++i];
-		} else if ((t = longopt(argc, argv, &i, "--from", &v)) != 0 ||
-		    (t = longopt(argc, argv, &i, "--off-of", &v)) != 0) {
-			if (t < 0)
-				return (die_usage());
-			from = v;
-		} else if ((t = longopt(argc, argv, &i, "--onto", &v)) != 0) {
-			if (t < 0)
-				return (die_usage());
-			onto = v;
-		} else if ((t = longopt(argc, argv, &i, "--result",
-		    &v)) != 0) {
-			if (t < 0)
-				return (die_usage());
-			result = v;
-		} else if ((t = longopt(argc, argv, &i, "--base", &v)) != 0) {
-			if (t < 0)
-				return (die_usage());
-			base = v;
-		} else {
-			return (die_usage());
-		}
-	}
-	/*
-	 * The verbs on a result. Each goes alone -- one --result, -v,
-	 * and nothing else -- and no two of them go together.
-	 * --verify is the odd one: with a rebase or a --continue it is
-	 * a flag, asking for the final check, and on its own with a
-	 * --result it is the verb that reports and writes nothing.
-	 */
-	if (abrt + cont + rest > 1)
-		return (die_usage());
-	if (abrt != 0 || cont != 0 || rest != 0 ||
-	    (verify != 0 && from == NULL && onto == NULL)) {
-		/*
-		 * --overwrite belongs to a fresh run in the dataset
-		 * form: there is nothing for a verb to overwrite, and
-		 * an open rebase is settled by --continue or --abort.
-		 */
-		if (result == NULL || from != NULL || onto != NULL ||
-		    outpath != NULL || dryrun != 0 || overwrite != 0 ||
-		    unrelated != 0 || base != NULL ||
-		    mode != ZR_MODE_STRICT)
-			return (die_usage());
-		if (abrt != 0 || rest != 0) {
-			if (verify != 0)
-				return (die_usage());
-			return (abrt != 0 ? zr_abort(result, verbose) :
-			    zr_restart(result, verbose));
-		}
-		if (cont != 0)
-			return (zr_continue(result, verify, verbose));
-		return (zr_report(result, verbose));
+	if (zr_args_parse(argc, argv, &a, err, sizeof (err)) != 0)
+		return (die_usage(err));
+	switch (a.za_verb) {
+	case ZR_VERB_BUILD_FIXTURE:
+		return (build_fixture(a.za_arg[0], a.za_arg[1]));
+	case ZR_VERB_EDIT_FIXTURE:
+		return (edit_fixture(a.za_arg[0], a.za_arg[1], a.za_arg[2]));
+	case ZR_VERB_POSIX:
+		return (run_posix(a.za_arg[0], a.za_arg[1], a.za_arg[2],
+		    a.za_mode, a.za_manifest));
+	case ZR_VERB_CONTINUE:
+		return (zr_continue(a.za_result, a.za_verify, a.za_nomerge,
+		    a.za_verbose));
+	case ZR_VERB_RESTART:
+		return (zr_restart(a.za_result, a.za_verbose));
+	case ZR_VERB_ABORT:
+		return (zr_abort(a.za_result, a.za_verbose));
+	case ZR_VERB_REPORT:
+		return (zr_report(a.za_result, a.za_verbose));
+	case ZR_VERB_RUN:
+	default:
+		break;
 	}
 	/*
 	 * Each side is a snapshot or a dataset -- an argument with an
@@ -435,26 +326,19 @@ main(int argc, char **argv)
 	 * snapshot's in the other, and a dry run ignores it, since it
 	 * creates nothing that would need a name.
 	 */
-	if (from == NULL || onto == NULL || (result == NULL && !dryrun))
-		return (die_usage());
-	/*
-	 * A base is given only where there is none to work out: with
-	 * a shared origin the branch point is what it is, and a
-	 * second opinion about it is not something the tool could act
-	 * on.
-	 */
-	if (base != NULL && unrelated == 0)
-		return (die_usage());
-	ro.from = from;
-	ro.onto = onto;
-	ro.result = dryrun ? NULL : result;
-	ro.outpath = outpath;
-	ro.base = base;
-	ro.mode = mode;
-	ro.dryrun = dryrun;
-	ro.overwrite = overwrite;
-	ro.unrelated = unrelated;
-	ro.verify = verify;
-	ro.verbose = verbose;
+	ro.from = a.za_from;
+	ro.onto = a.za_onto;
+	ro.result = a.za_dryrun ? NULL : a.za_result;
+	ro.outpath = a.za_manifest;
+	ro.base = a.za_base;
+	ro.mode = a.za_mode;
+	ro.dryrun = a.za_dryrun;
+	ro.overwrite = a.za_overwrite;
+	ro.unrelated = a.za_unrelated;
+	ro.verify = a.za_verify;
+	ro.takeonto = a.za_takeonto;
+	ro.takefrom = a.za_takefrom;
+	ro.nomerge = a.za_nomerge;
+	ro.verbose = a.za_verbose;
 	return (zr_run(&ro));
 }

@@ -50,6 +50,26 @@ struct zr_run_opts {
 	int		overwrite;	/* replace a record that is done */
 	int		unrelated;	/* --allow-unrelated: no derivation */
 	int		verify;		/* the demand for a final check */
+	/*
+	 * The three flags of the conflicts gate. takeonto and
+	 * takefrom write the skeleton answered onto or from instead
+	 * of unanswered, which the record keeps so that --restart
+	 * writes the same document again; they exclude each other and
+	 * the driver refuses both. nomerge holds the run at the gate
+	 * however the skeleton reads, for a script that means to edit
+	 * it before the merge. Where neither takes hold, a run whose
+	 * skeleton came out complete goes on through the gate by
+	 * itself, since a complete resolution plus the command that
+	 * asked for the rebase is the signal the gate waits for.
+	 *
+	 * --no-gui is not here. What it asks of the gate -- go on
+	 * when the resolution is complete, stop when it is not -- is
+	 * what the gate does while there is no picker to launch, so
+	 * nothing in the run reads it.
+	 */
+	int		takeonto;
+	int		takefrom;
+	int		nomerge;
 	int		verbose;
 };
 
@@ -69,7 +89,10 @@ int zr_run(const struct zr_run_opts *);
  * holds. An unanswered resolution is where the rebase waits.
  * With verify it prints the classification of every action as it
  * goes and repairs drift on the clean ones; conflicted names are
- * never touched.
+ * never touched. With nomerge it stops at the conflicts gate
+ * whatever the resolution says, and refuses altogether from a
+ * record already past the merge: applying2 and done have no gate
+ * left for the flag to hold.
  *
  * zr_restart puts the result back as onto was and applies again from
  * the first gate: the clone form destroys the clone and makes it
@@ -84,7 +107,7 @@ int zr_run(const struct zr_run_opts *);
  * saying which actions it could not check and why. Exit 0 when
  * nothing is pending or drifted, 3 when something is.
  */
-int zr_continue(const char *result, int verify, int verbose);
+int zr_continue(const char *result, int verify, int nomerge, int verbose);
 int zr_restart(const char *result, int verbose);
 int zr_report(const char *result, int verbose);
 

@@ -8,7 +8,7 @@
 .\" BSD 3-Clause License, reproduced in the LICENSE file of this
 .\" distribution, are met.
 .\"
-.Dd September 3, 2026
+.Dd September 4, 2026
 .Dt ZFS_REBASE 8
 .Os
 .Sh NAME
@@ -16,33 +16,43 @@
 .Nd rebase one ZFS filesystem onto another
 .Sh SYNOPSIS
 .Nm
-.Op Fl n
-.Op Fl p
-.Op Fl v
-.Op Fl o Ar file
-.Op Fl -verify
-.Op Fl -overwrite
-.Oo Fl -allow-unrelated Oo Fl -base Ar snapshot Oc Oc
-.Fl -from Ar snapshot Ns | Ns Ar dataset
-.Fl -onto Ar snapshot Ns | Ns Ar dataset
-.Fl -result Ar name
+.Op Fl p | Fl -permissive-merge
+.Op Fl v | Fl -verbose
+.Op Fl o | Fl -manifest Ar file
+.Op Fl V | Fl -verify
+.Op Fl w | Fl -overwrite
+.Oo Fl u | Fl -allow-unrelated Oo Fl b | Fl -base Ar snapshot Oc Oc
+.Oo Fl O | Fl -take-onto | Fl F | Fl -take-from Oc
+.Op Fl G | Fl -no-gui
+.Op Fl M | Fl -no-merge
+.Fl f | Fl -from Ar snapshot Ns | Ns Ar dataset
+.Fl t | Fl -onto Ar snapshot Ns | Ns Ar dataset
+.Fl r | Fl -result Ar name
 .Nm
-.Fl -continue
-.Op Fl -verify
-.Op Fl v
-.Fl -result Ar dataset
+.Fl n | Fl -dry-run
+.Op Fl p | Fl -permissive-merge
+.Op Fl o | Fl -manifest Ar file
+.Fl f | Fl -from Ar snapshot Ns | Ns Ar dataset
+.Fl t | Fl -onto Ar snapshot Ns | Ns Ar dataset
 .Nm
-.Fl -restart
-.Op Fl v
-.Fl -result Ar dataset
+.Fl c | Fl -continue
+.Op Fl V | Fl -verify
+.Op Fl G | Fl -no-gui
+.Op Fl M | Fl -no-merge
+.Op Fl v | Fl -verbose
+.Fl r | Fl -result Ar dataset
 .Nm
-.Fl -abort
-.Op Fl v
-.Fl -result Ar dataset
+.Fl R | Fl -restart
+.Op Fl v | Fl -verbose
+.Fl r | Fl -result Ar dataset
 .Nm
-.Fl -verify
-.Op Fl v
-.Fl -result Ar dataset
+.Fl a | Fl -abort
+.Op Fl v | Fl -verbose
+.Fl r | Fl -result Ar dataset
+.Nm
+.Fl V | Fl -verify
+.Op Fl v | Fl -verbose
+.Fl r | Fl -result Ar dataset
 .Nm
 .Fl -posix
 .Op Fl p
@@ -167,20 +177,44 @@ passes; see
 and
 .Sx THE GATES .
 .Sh OPTIONS
+Every flag has a long form and a short form, and the two are the same
+flag: the letters are given with the words below and are the letters
+the usage text and
+.Pa README.md
+carry.
+.Fl -off-of
+is another spelling of
+.Fl -from
+and
+.Fl -to
+of
+.Fl -onto ,
+neither with a letter of its own, and the three test aids at the end
+of this section are long only.
+A long form takes its value as
+.Fl -from Ar snapshot
+or as
+.Fl -from Ns = Ns Ar snapshot ;
+a short form takes the argument after it, and short flags do not
+bundle.
+.Pp
 The inputs and the form of the run:
 .Bl -tag -width indent
-.It Fl -from Ar snapshot Ns | Ns Ar dataset
+.It Fl f , Fl -from Ar snapshot Ns | Ns Ar dataset
 The side whose changes are replayed.
 Spelled
 .Fl -off-of
 as well.
 A dataset here is snapshotted by the tool.
-.It Fl -onto Ar snapshot Ns | Ns Ar dataset
+.It Fl t , Fl -onto Ar snapshot Ns | Ns Ar dataset
 The side they are replayed onto, and the form of the run: a snapshot is
 cloned as
 .Fl -result ,
 a dataset is rebased in place.
-.It Fl -result Ar name
+Spelled
+.Fl -to
+as well.
+.It Fl r , Fl -result Ar name
 Two meanings, one per form.
 With
 .Fl -onto
@@ -193,21 +227,21 @@ the short name after the
 or a full name whose dataset part is onto.
 For every verb it is the dataset carrying the record, and a snapshot name
 is taken as its dataset, so both spellings find the same rebase.
-.It Fl -allow-unrelated
+.It Fl u , Fl -allow-unrelated
 Rebase two sides that share no origin.
 The base is not derived; it is
 .Fl -base
 or the empty tree.
 Pruning is turned off with it, because object numbers mean nothing across
 lineages.
-.It Fl -base Ar snapshot
+.It Fl b , Fl -base Ar snapshot
 Only with
 .Fl -allow-unrelated :
 the tree to treat as the branch point.
 Its
 .Sy createtxg
 must be at or below that of both inputs.
-.It Fl -overwrite
+.It Fl w , Fl -overwrite
 In the dataset form, replace a record whose rebase reached done.
 An open rebase is never overwritten by any flag:
 .Fl -continue
@@ -220,29 +254,82 @@ dataset with a fresh record.
 .Pp
 The flags:
 .Bl -tag -width indent
-.It Fl n
+.It Fl n , Fl -dry-run
 Dry run.
 The manifest is written and nothing else: no clone, no record, no holds,
-and
+no resolution, and
 .Fl -result
 is ignored.
+It is the run leaving before the
+.Sy applying1
+gate, which is also the path a caught signal takes there.
 Where a side was given as a dataset the tool still snapshots it, because
 there has to be something to read, and destroys that snapshot again before
 it exits.
-.It Fl p
+.It Fl p , Fl -permissive-merge
 Permissive-merge mode.
 Sharing that strict mode raises as an
 .Sy unexpressed-sharing
 conflict is resolved instead.
-.It Fl v
+Strict is the default, and the mode is recorded.
+.It Fl v , Fl -verbose
 Report counts and the steps taken on standard error.
-.It Fl o Ar file
+.It Fl o , Fl -manifest Ar file
 Write the manifest to
 .Ar file
-rather than into the run directory.
-The file is yours: the tool records the path and does not remove it, where
-its own manifest goes with the run.
-.It Fl -verify
+rather than into the run directory, and the resolution to
+.Ar file Ns .resolution
+beside it.
+Both paths are recorded.
+The files are yours: the tool records them and does not remove them, where
+its own two go with the run.
+.It Fl O , Fl -take-onto
+Write the resolution's skeleton with every conflict answered
+.Sy onto
+rather than unanswered, and record that this is what was asked for.
+The document is then complete from its first byte, so the run passes its
+own
+.Sy conflicts
+gate and carries on to
+.Sy done
+unless
+.Fl -no-merge
+holds it; and a later
+.Fl -restart ,
+which puts the resolution back to its skeleton, puts back the skeleton
+this flag asked for and not an unanswered one.
+It belongs to a fresh run: no verb writes a skeleton, and giving it to one
+is a usage error.
+.It Fl F , Fl -take-from
+The same, answering every conflict
+.Sy from .
+The two exclude each other.
+.It Fl G , Fl -no-gui
+At the
+.Sy conflicts
+gate, go on without the picker when the resolution is complete and stop
+when it is not.
+That is what the gate does anyway while there is no picker to launch, so
+the flag changes nothing today: it is accepted on a fresh run and on
+.Fl -continue ,
+and it is the only behavior there is.
+.It Fl M , Fl -no-merge
+Stop at the
+.Sy conflicts
+gate however the resolution reads, complete or not, which is what a script
+that means to edit the document before the merge asks for.
+The gate is left where it is, so the next
+.Fl -continue
+without the flag passes it.
+Once the gate is passed it is an error: a
+.Fl -continue
+from
+.Sy applying2
+or from
+.Sy done
+is past the merge and has no gate left for the flag to hold, and it is
+refused rather than run.
+.It Fl V , Fl -verify
 Asked for at the start of a run, or with
 .Fl -continue ,
 this is the flag: the final check is made once, after the last stage
@@ -278,15 +365,16 @@ The verbs work on a rebase that already exists.
 Each takes
 .Fl -result
 and
-.Fl v
-and nothing else, no two of them go together, and every one keys on the
-record and on nothing else: a dataset that carries none is refused
-untouched.
+.Fl v ,
+.Fl -continue
+takes the flags of the gate as well, and nothing else is theirs: no two of
+them go together, and every one keys on the record and on nothing else, so
+that a dataset that carries none is refused untouched.
 Each also checks that every snapshot the record names is still the snapshot
 it named, by guid, since a snapshot destroyed and taken again under the
 same name is another snapshot.
 .Bl -tag -width indent
-.It Fl -continue
+.It Fl c , Fl -continue
 Take the rebase on from the gate its record names, through the gates that
 are left, in one process.
 Applying is idempotent \(em every action means "make this true" \(em so what is
@@ -307,14 +395,14 @@ What mends a result is the
 stage's own self-check, which redoes any clean action that did not land and
 puts back the names no action speaks for, with or without the flag;
 conflicted names are never touched, because no action names one.
-.It Fl -restart
+.It Fl R , Fl -restart
 Put the result back as onto was \(em the clone destroyed and made again from
 the recorded onto snapshot with the same record, or the dataset rolled back
 to its pre-apply snapshot \(em and apply the recorded manifest from the first
 gate, with the resolution put back to its skeleton.
 Nothing is decided again: the manifest is the decision.
 A resolution's edits are discarded by definition.
-.It Fl -abort
+.It Fl a , Fl -abort
 Release the holds, put the result back \(em the clone destroyed, or the
 dataset rolled back to its pre-apply snapshot, that snapshot destroyed,
 every one of its
@@ -323,7 +411,7 @@ properties taken off it and the dataset mounted where it belongs again \(em
 destroy any snapshot the tool took for itself, unlink the manifest and the
 resolution the record names, and remove the run directory.
 As if the run never happened.
-.It Fl -verify
+.It Fl V , Fl -verify
 Alone on a result, report and write nothing at all, so that a deliberate
 edit to a rebased file is shown and never overwritten.
 Every action of the manifest is classified as
@@ -401,6 +489,17 @@ the tag its holds are filed under
 whether
 .Fl -verify
 was asked for
+.It Sy zfs_rebase:take
+the answer the run gave the skeleton before anybody looked at it:
+.Sy onto
+for
+.Fl -take-onto ,
+.Sy from
+for
+.Fl -take-from
+and
+.Sy \&-
+for neither
 .It Sy zfs_rebase:manifest
 the absolute path the manifest was written to
 .It Sy zfs_rebase:readonly
@@ -410,6 +509,14 @@ was before the run took the dataset over (dataset form only)
 .It Sy zfs_rebase:state
 the last gate the run passed
 .El
+.Pp
+.Fl -restart
+reads
+.Sy zfs_rebase:take
+back when it writes the resolution's skeleton again, so what comes back is
+the document the run wrote and not a different one; a record made before
+the property existed carries none, which reads as
+.Sy \&- .
 .Pp
 There is no state property at birth, and every verb keys on the record and
 nothing else.
@@ -468,12 +575,40 @@ Lines are never added by hand and never removed; answering a conflict
 changes its choice, and the document is complete when no
 .Sy \&-
 is left.
-The move to
+.Pp
+The gate keys on that completeness and on a command that says to go on,
+and on nothing else \(em not on the file being there, which it always is,
+since the tool wrote it.
+Only the person who answered the conflicts can say they are answered, and
+the command is how they say it: a
+.Fl -continue
+over a complete document passes the gate, and one over a document with a
+.Sy \&-
+left in it prints how many names are unanswered and stops.
+A fresh run is such a command too.
+Where its own skeleton comes out complete \(em which is what
+.Fl -take-onto
+and
+.Fl -take-from
+make it, and what a
+.Fl -restart
+under one of them makes it again \(em the run hands the result back, tears
+itself down and goes on through
 .Sy applying2
-is made on a complete resolution and a
-.Fl -continue ,
-and on nothing else: only the person who answered the conflicts can say
-they are answered.
+to
+.Sy done
+in the same process, by the one code path a
+.Fl -continue
+uses.
+.Fl -no-merge
+holds it at the gate instead, complete or not, and leaves the gate where
+it is for the next
+.Fl -continue ;
+past the gate the flag is refused, since there is nothing left for it to
+stop.
+.Fl -no-gui
+asks for what the gate does anyway while there is no picker to launch, and
+changes nothing today.
 .Sy applying2
 carries the choices out.
 .Sy done
@@ -510,7 +645,9 @@ apply the manifest again and go on
 go on when the resolution is complete, else say how many of its names are
 still unanswered and exit 1; with
 .Fl -verify ,
-write the drift found into the resolution first
+write the drift found into the resolution first; with
+.Fl -no-merge ,
+stop there whatever it says
 .It Sy applying2
 carry the choices out again and go on
 .It Sy done
@@ -519,6 +656,9 @@ skipped; with
 .Fl -verify ,
 report
 .El
+.Pp
+.Fl -no-merge
+is refused at the last two: they are past the merge.
 .Sh FILES
 Each run keeps its own directory, 0700 throughout, named for the dataset
 carrying the record with its slashes kept as directories:
@@ -600,6 +740,26 @@ Or take the whole thing away again:
 .Bd -literal -offset indent
 zfs_rebase --abort --result tank/rebased
 .Ed
+.Pp
+A rebase with no human in it: every conflict answered onto in advance, so
+that the run passes its own
+.Sy conflicts
+gate and reaches
+.Sy done
+in one process, and the same command written in letters:
+.Bd -literal -offset indent
+zfs_rebase --take-onto --verify --from tank/topic@work \e
+    --onto tank/main@current --result tank/rebased
+zfs_rebase -O -V -f tank/topic@work -t tank/main@current \e
+    -r tank/rebased
+.Ed
+.Pp
+With
+.Fl -no-merge
+the same run stops at the gate with the document already answered, for a
+script that means to edit it before the merge; the
+.Fl -continue
+after it passes the gate.
 .Sh SEE ALSO
 .Xr zfs 8 ,
 .Xr zfs-hold 8 ,
@@ -617,6 +777,16 @@ skeleton of unanswered choices and stops at the
 .Sy conflicts
 gate; reading the conflicts back and presenting them for answering belong to
 a separate conflict manager.
+What this tool offers in its place is a blanket answer:
+.Fl -take-onto
+and
+.Fl -take-from
+write the skeleton answered one way for every conflict, which is a complete
+document, so such a run goes to
+.Sy done
+without stopping.
+That is a policy, not a merge, and it is meant for a script that knows what
+it wants; the flags are not a substitute for looking at the conflicts.
 .Pp
 A verify after done is best effort.
 Each input is looked for by name and then by guid across the pool, which is

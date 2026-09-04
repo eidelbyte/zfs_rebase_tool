@@ -319,7 +319,7 @@ zr_zfs_release(struct zr_zfs *z, const char *snapshot, const char *tag,
  * every other value points into the caller's record. readonly is
  * left out when the record has none, which is every clone-form run.
  */
-#define	ZZ_RECORD_MAX	14
+#define	ZZ_RECORD_MAX	15
 
 struct zz_record {
 	struct {
@@ -366,6 +366,8 @@ zz_record_fill(struct zz_record *rp, const struct zr_rebase_record *rec)
 	rp->zr_p[i++].zp_val = rec->tag;
 	rp->zr_p[i].zp_name = ZR_PROP_VERIFY;
 	rp->zr_p[i++].zp_val = rec->verify;
+	rp->zr_p[i].zp_name = ZR_PROP_TAKE;
+	rp->zr_p[i++].zp_val = rec->take;
 	rp->zr_p[i].zp_name = ZR_PROP_MANIFEST;
 	rp->zr_p[i++].zp_val = rec->manifest;
 	rp->zr_p[i].zp_name = ZR_PROP_RESOLUTION;
@@ -384,7 +386,8 @@ zz_record_ok(const struct zr_rebase_record *rec)
 	return (rec != NULL && rec->base != NULL && rec->from != NULL &&
 	    rec->onto != NULL && rec->made != NULL && rec->mode != NULL &&
 	    rec->form != NULL && rec->tag != NULL && rec->verify != NULL &&
-	    rec->manifest != NULL && rec->resolution != NULL);
+	    rec->take != NULL && rec->manifest != NULL &&
+	    rec->resolution != NULL);
 }
 
 int

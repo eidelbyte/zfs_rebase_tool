@@ -372,7 +372,7 @@ cmnt=$(zfs get -H -o value mountpoint "$POOL/result")
 
 # Every property of the record is the result's own, not the pool's.
 for prop in base base_guid from from_guid onto onto_guid made mode \
-    form tag verify manifest resolution; do
+    form tag verify take manifest resolution; do
 	src=$(recsrc "zfs_rebase:$prop" "$POOL/result")
 	[ "$src" = local ] || \
 	    fail "zfs_rebase:$prop has source $src, want local"
@@ -385,6 +385,10 @@ done
     fail "zfs_rebase:made is not empty; the tool took no snapshots"
 [ "$(recval zfs_rebase:verify "$POOL/result")" = no ] || \
     fail "zfs_rebase:verify is not no"
+# No --take flag was given, so the skeleton was written unanswered
+# and the record says so; --restart reads this back.
+[ "$(recval zfs_rebase:take "$POOL/result")" = "-" ] || \
+    fail "zfs_rebase:take is not \"-\""
 want=strict
 [ -n "$flag" ] && want=permissive
 [ "$(recval zfs_rebase:mode "$POOL/result")" = "$want" ] || \
@@ -753,7 +757,7 @@ dataset_pass() {
 	dtag=$(recval zfs_rebase:tag "$POOL/onto")
 	dfrom=$(recval zfs_rebase:from "$POOL/onto")
 	for prop in base base_guid from from_guid onto onto_guid made mode \
-	    form tag verify manifest resolution readonly; do
+	    form tag verify take manifest resolution readonly; do
 		src=$(recsrc "zfs_rebase:$prop" "$POOL/onto")
 		[ "$src" = local ] || \
 		    dfail "zfs_rebase:$prop has source $src, want local"
@@ -764,6 +768,8 @@ dataset_pass() {
 	    dfail "zfs_rebase:made is not from"
 	[ "$(recval zfs_rebase:readonly "$POOL/onto")" = off ] || \
 	    dfail "zfs_rebase:readonly did not record what it was"
+	[ "$(recval zfs_rebase:take "$POOL/onto")" = "-" ] || \
+	    dfail "zfs_rebase:take is not \"-\""
 	[ "$(recval zfs_rebase:onto "$POOL/onto")" = "$POOL/onto@$dname" ] || \
 	    dfail "zfs_rebase:onto is not $POOL/onto@$dname"
 	[ "$(recval zfs_rebase:base "$POOL/onto")" = "$POOL/base@base" ] || \

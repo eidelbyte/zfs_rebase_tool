@@ -192,6 +192,28 @@
 #define	ZR_NO_BASE		"-"
 
 /*
+ * What --take-onto and --take-from write into the record, and what a
+ * run given neither writes: the word says which choice the skeleton
+ * was written with, so that --restart can write the same document
+ * again rather than an unanswered one. A record made before the
+ * property existed has none, which reads as ZR_TAKE_NONE.
+ */
+#define	ZR_TAKE_NONE		"-"
+#define	ZR_TAKE_ONTO		"onto"
+#define	ZR_TAKE_FROM		"from"
+
+/* The word of the record, as the choice a skeleton is written with. */
+static enum zr_choice
+take_choice(const char *take)
+{
+	if (strcmp(take, ZR_TAKE_ONTO) == 0)
+		return (ZR_CH_ONTO);
+	if (strcmp(take, ZR_TAKE_FROM) == 0)
+		return (ZR_CH_FROM);
+	return (ZR_CH_NONE);
+}
+
+/*
  * The snapshot the tool takes of a side given as a dataset:
  * <dataset>@zfs_rebase-<the run's hold tag>, and the same with -2,
  * -3 and so on when that name is taken. The tag is unique to the run
@@ -266,6 +288,17 @@ static int
 in_dataset_form(const struct run *r)
 {
 	return (r->form != NULL && strcmp(r->form, ZR_FORM_DATASET) == 0);
+}
+
+/* The word this run's --take flags write into the record. */
+static const char *
+run_take(const struct run *r)
+{
+	if (r->o.takeonto)
+		return (ZR_TAKE_ONTO);
+	if (r->o.takefrom)
+		return (ZR_TAKE_FROM);
+	return (ZR_TAKE_NONE);
 }
 
 /*
@@ -1145,8 +1178,9 @@ resolution_beside(char *buf, size_t len, const char *manifest)
 static const char *zr_record_props[] = {
 	ZR_PROP_BASE, ZR_PROP_BASE_GUID, ZR_PROP_FROM, ZR_PROP_FROM_GUID,
 	ZR_PROP_ONTO, ZR_PROP_ONTO_GUID, ZR_PROP_MADE, ZR_PROP_MODE,
-	ZR_PROP_FORM, ZR_PROP_TAG, ZR_PROP_VERIFY, ZR_PROP_MANIFEST,
-	ZR_PROP_RESOLUTION, ZR_PROP_READONLY, ZR_PROP_STATE
+	ZR_PROP_FORM, ZR_PROP_TAG, ZR_PROP_VERIFY, ZR_PROP_TAKE,
+	ZR_PROP_MANIFEST, ZR_PROP_RESOLUTION, ZR_PROP_READONLY,
+	ZR_PROP_STATE
 };
 
 #define	ZR_NRECORD	(sizeof (zr_record_props) / sizeof (zr_record_props[0]))
@@ -1470,6 +1504,12 @@ fill_record(struct run *r, struct zr_rebase_record *rec)
 	rec->form = r->form;
 	rec->tag = r->tag;
 	rec->verify = r->o.verify ? "yes" : "no";
+	/*
+	 * Which way the skeleton was answered when it was written,
+	 * which is the run's own flag and nobody else's: --restart
+	 * reads it back and writes the document the run wrote.
+	 */
+	rec->take = run_take(r);
 	rec->manifest = r->manpath;
 	rec->resolution = r->respath;
 	/*
@@ -1518,6 +1558,11 @@ record_path(struct run *r, const char *prop, char *path, size_t pathlen)
  * rebase are always both there and --abort and --restart have one
  * rule each rather than two.
  *
+ * --take-onto and --take-from write the same lines with the choice
+ * already made, which is a document complete from its first byte:
+ * the run reads it back as answered and goes on through the gate
+ * without stopping, unless --no-merge holds it there.
+ *
  * The parse is not a formality. What is written here describes what
  * the file on disk says, exactly as apply_manifest applies what the
  * file says and not a second copy of it.
@@ -1545,7 +1590,8 @@ write_skeleton(struct run *r)
 	}
 	if (zr_manifest_parse(in, &parsed, r->err, sizeof (r->err)) != 0)
 		goto done;
-	if (zr_resolution_skeleton(&parsed, ZR_CH_NONE, &res) != 0) {
+	if (zr_resolution_skeleton(&parsed, take_choice(run_take(r)),
+	    &res) != 0) {
 		(void) snprintf(r->err, sizeof (r->err), "out of memory");
 		goto done;
 	}
@@ -1971,10 +2017,12 @@ zr_run(const struct zr_run_opts *o)
 	struct zr_manifest_hdr hdr;
 	struct zr_rebase_record rec;
 	FILE *out = stdout;
-	int rc = EXIT_INTERNAL, keep = 0;
+	char cont[ZR_NAME_MAX];
+	int rc = EXIT_INTERNAL, keep = 0, gocont = 0;
 
 	memset(&r, 0, sizeof (r));
 	memset(&rec, 0, sizeof (rec));
+	cont[0] = '\0';
 	r.o = *o;
 	zr_pause_open();
 	if (geteuid() != 0) {
@@ -2237,8 +2285,19 @@ zr_run(const struct zr_run_opts *o)
 		 * The hand-off. The clean part of the rebase is in the
 		 * result and the conflicts are the manifest's; the
 		 * skeleton written above is where they are answered,
-		 * and a --continue over a complete one takes the
-		 * rebase on from here.
+		 * and the gate is passed by a complete document and a
+		 * command that says to go on.
+		 *
+		 * A skeleton written under --take-onto or --take-from
+		 * is complete from the start, and so is one whose
+		 * conflicts a run of the same rebase answered before
+		 * a restart put the tree back. Where it is complete
+		 * and --no-merge was not given, this run is the
+		 * command that says to go on: it hands the result
+		 * back, tears itself down and then takes the rebase
+		 * through applying2 to done by the one code path a
+		 * person's --continue uses. Where it is not, or where
+		 * --no-merge was given, the rebase waits here.
 		 */
 		set_state(&r, ZR_STATE_CONFLICTS);
 		zr_pause(ZR_STATE_CONFLICTS);
@@ -2246,11 +2305,23 @@ zr_run(const struct zr_run_opts *o)
 		    "actions are applied and %s waits at conflicts\n",
 		    r.d.zd_nconflicts, r.d.zd_nconflicts == 1 ? "" : "s",
 		    r.rds);
-		(void) fprintf(stderr, "zfs_rebase: %u name%s unanswered in "
-		    "the resolution %s\n", r.unanswered,
-		    r.unanswered == 1 ? "" : "s", r.respath);
+		if (r.unanswered != 0) {
+			(void) fprintf(stderr, "zfs_rebase: %u name%s "
+			    "unanswered in the resolution %s\n", r.unanswered,
+			    r.unanswered == 1 ? "" : "s", r.respath);
+		} else if (o->nomerge) {
+			(void) fprintf(stderr, "zfs_rebase: the resolution %s "
+			    "is answered in full, and --no-merge leaves the "
+			    "merge to you\n", r.respath);
+		} else {
+			(void) fprintf(stderr, "zfs_rebase: the resolution %s "
+			    "is answered in full; going on\n", r.respath);
+			(void) snprintf(cont, sizeof (cont), "%s", r.rds);
+			gocont = 1;
+		}
 		manifest_note(&r);
-		kept_hint(&r);
+		if (!gocont)
+			kept_hint(&r);
 		rc = EXIT_CONFLICTS;
 		goto done;
 	}
@@ -2295,6 +2366,18 @@ zr_run(const struct zr_run_opts *o)
 done:
 	teardown(&r, keep);
 	signals_restore(saved);
+	/*
+	 * The gate was passed by this run itself, and the rest of the
+	 * rebase is a --continue: made after the teardown, so that
+	 * the dataset form has handed the dataset back and given it
+	 * up before the verb takes it over again, and made through
+	 * zr_continue and not through some second path of the fresh
+	 * run's own, so that what a person's --continue does and what
+	 * this does are one thing. --no-merge cannot be set here: it
+	 * is what would have stopped the run at the gate.
+	 */
+	if (gocont)
+		rc = zr_continue(cont, o->verify, 0, o->verbose);
 	return (rc);
 }
 
@@ -2336,6 +2419,7 @@ struct record {
 	char			form[16];
 	char			tag[ZR_TAG_MAX];
 	char			verify[8];
+	char			take[8];	/* "onto", "from" or "-" */
 	char			manifest[ZR_NAME_MAX];
 	char			resolution[ZR_NAME_MAX];
 	char			readonly[8];	/* the dataset form's own */
@@ -2347,6 +2431,7 @@ struct resume {
 	struct zr_zfs		*zfs;
 	char			result[ZR_NAME_MAX];
 	int			verify;		/* --verify on the command */
+	int			nomerge;	/* --no-merge on it */
 	int			report;		/* the verb is --verify */
 	int			verbose;
 	int			dataset;	/* the dataset form */
@@ -2499,6 +2584,7 @@ read_record(struct resume *s)
 	    rec_str(s, ZR_PROP_MODE, rb->mode, sizeof (rb->mode)) < 0 ||
 	    rec_str(s, ZR_PROP_FORM, rb->form, sizeof (rb->form)) < 0 ||
 	    rec_str(s, ZR_PROP_VERIFY, rb->verify, sizeof (rb->verify)) < 0 ||
+	    rec_str(s, ZR_PROP_TAKE, rb->take, sizeof (rb->take)) < 0 ||
 	    rec_str(s, ZR_PROP_RESOLUTION, rb->resolution,
 	    sizeof (rb->resolution)) < 0 ||
 	    rec_str(s, ZR_PROP_READONLY, rb->readonly,
@@ -2516,6 +2602,17 @@ read_record(struct resume *s)
 	rb->rec.form = rb->form;
 	rb->rec.tag = rb->tag;
 	rb->rec.verify = rb->verify;
+	/*
+	 * A record written before the property existed carries no
+	 * word, and a skeleton nobody answered in advance is what
+	 * such a run wrote: the two say the same thing, so the empty
+	 * value is read as ZR_TAKE_NONE and written back as that
+	 * where a verb writes the record again.
+	 */
+	if (rb->take[0] == '\0')
+		(void) snprintf(rb->take, sizeof (rb->take), "%s",
+		    ZR_TAKE_NONE);
+	rb->rec.take = rb->take;
 	rb->rec.manifest = rb->manifest;
 	rb->rec.resolution = rb->resolution;
 	rb->rec.readonly = rb->readonly;
@@ -3671,6 +3768,19 @@ stage_conflicts(struct resume *s)
 		unanswered_note(s, left, total);
 		return (EXIT_CONFLICTS);
 	}
+	/*
+	 * The document is complete, which is half of the signal; the
+	 * other half is the command, and --no-merge is the command
+	 * saying not yet. The gate is left where it is, so the next
+	 * --continue without the flag passes it.
+	 */
+	if (s->nomerge) {
+		(void) fprintf(stderr, "zfs_rebase: %s: the resolution is "
+		    "answered in full, and --no-merge leaves the merge to "
+		    "you\n", s->result);
+		unanswered_note(s, left, total);
+		return (EXIT_CONFLICTS);
+	}
 	return (stage2(s));
 }
 
@@ -3725,6 +3835,18 @@ stage1(struct resume *s)
 	    s->man.zp_conflicts_declared,
 	    s->man.zp_conflicts_declared == 1 ? "" : "s", s->result);
 	conflicts_note(s);
+	/*
+	 * A complete document and no --no-merge is the signal, whoever
+	 * arrives with it: a --continue that reaches this gate from
+	 * applying1 with the document already answered -- a --restart
+	 * under a --take flag writes one, and so does somebody who
+	 * answered the conflicts before the rebase was resumed -- goes
+	 * on the way the fresh run does, through the one gate function.
+	 * Under --no-merge, or with a name still unanswered, it stops,
+	 * and that function says which.
+	 */
+	if (s->hasres > 0 && zr_resolution_unanswered(&s->res) == 0)
+		return (stage_conflicts(s));
 	return (EXIT_CONFLICTS);
 }
 
@@ -3767,6 +3889,20 @@ continue_from(struct resume *s)
 {
 	const char *state = s->rb.state;
 
+	/*
+	 * --no-merge stops at the conflicts gate, so it says
+	 * something only up to it. A rebase already at applying2 or
+	 * at done is past the merge: there is no gate left for the
+	 * flag to hold, and carrying on regardless would be doing the
+	 * one thing it was given to prevent.
+	 */
+	if (s->nomerge != 0 && (strcmp(state, ZR_STATE_APPLYING2) == 0 ||
+	    strcmp(state, ZR_STATE_DONE) == 0)) {
+		(void) snprintf(s->err, sizeof (s->err), "%s is at \"%s\", "
+		    "past the merge; --no-merge has no gate left to stop at",
+		    s->result, state);
+		return (vfail(s, EXIT_PRECOND, NULL));
+	}
 	if (state[0] == '\0' || strcmp(state, ZR_STATE_APPLYING1) == 0)
 		return (stage1(s));
 	if (strcmp(state, ZR_STATE_CONFLICTS) == 0)
@@ -3893,7 +4029,7 @@ resume_close(struct resume *s)
 }
 
 int
-zr_continue(const char *result, int verify, int verbose)
+zr_continue(const char *result, int verify, int nomerge, int verbose)
 {
 	struct sigaction saved[ZR_NSIG];
 	struct resume s;
@@ -3901,6 +4037,7 @@ zr_continue(const char *result, int verify, int verbose)
 
 	memset(&s, 0, sizeof (s));
 	s.verify = verify;
+	s.nomerge = nomerge;
 	s.verbose = verbose;
 	zr_pause_open();
 	signals_install(saved);
@@ -3918,7 +4055,11 @@ zr_continue(const char *result, int verify, int verbose)
  * --restart's half of the resolution: the edits go with the tree they
  * were edits on. The skeleton is built again from the recorded
  * manifest, which is still the decision, so what comes back is the
- * document the run wrote in the first place, every line unanswered.
+ * document the run wrote in the first place -- every line unanswered,
+ * or every line answered onto or from where the run was given a
+ * --take flag, which the record keeps for exactly this. What is
+ * discarded is the answering somebody did afterwards, and not the
+ * instruction the rebase was started with.
  * A failure here is a failure of the restart: a rebase whose result
  * went back to onto and whose resolution still holds yesterday's
  * answers is worse than one that stopped.
@@ -3930,7 +4071,8 @@ reset_resolution(struct resume *s)
 	FILE *out;
 	int rc = -1;
 
-	if (zr_resolution_skeleton(&s->man, ZR_CH_NONE, &res) != 0) {
+	if (zr_resolution_skeleton(&s->man, take_choice(s->rb.take),
+	    &res) != 0) {
 		(void) snprintf(s->err, sizeof (s->err), "out of memory");
 		zr_resolution_fini(&res);
 		return (-1);
@@ -3949,8 +4091,9 @@ reset_resolution(struct resume *s)
 		rc = 0;
 	if (rc == 0 && s->verbose)
 		(void) fprintf(stderr, "zfs_rebase: %s is a skeleton again, "
-		    "%u name%s to answer\n", s->respath, res.zs_nlines,
-		    res.zs_nlines == 1 ? "" : "s");
+		    "%u name%s, %u to answer\n", s->respath, res.zs_nlines,
+		    res.zs_nlines == 1 ? "" : "s",
+		    zr_resolution_unanswered(&res));
 	zr_resolution_fini(&res);
 	/*
 	 * And the copy this verb goes on with, read back off the file

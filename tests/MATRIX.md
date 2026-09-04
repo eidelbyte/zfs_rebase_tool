@@ -518,8 +518,14 @@ name, short and full}; the dataset form's own {the unmount, the
 private mount, the readonly flips, the hand-back, the rollback};
 guards {securelevel, private mountpoint, readonly flip, the
 self-check after an apply};
-driver {flags, preconditions, exit status}. Every row here is box
-only.
+driver {flags, preconditions, exit status}. Every row up to ZX95 is
+box only; the command line's own dimensions -- spelling {long,
+short, alias}, value form {separate, joined by =}, command {fresh
+run, the four verbs, the three harness aids}, and refusal {both
+--take flags, a gate flag on a verb, --base without
+--allow-unrelated, an unknown word, a missing value, a missing
+operand} -- are ZX100 onward and are read off struct zr_args on any
+machine, since the parse opens nothing.
 
 | cell | scenario | disposition |
 |------|----------|-------------|
@@ -613,6 +619,42 @@ only.
 | ZX93 | zfs destroy of a held input, while the run is stopped, fails and leaves the snapshot standing; where nothing is cloned from it the hold is the only reason and the message says busy | planned: box, box/run-kills.sh |
 | ZX94 | a stray write into the live from or onto while the run is reading changes nothing: the tool reads snapshots, so the manifest is the expect block to the byte and the verify is clean | planned: box, box/run-strays.sh |
 | ZX95 | in the dataset form onto's own mount point is an empty directory while the run has the dataset, and a write there lands in the pool's root dataset and is hidden the moment the dataset comes home | planned: box, box/run-strays.sh |
+| ZX100 | --from, --onto and --result parse as -f, -t and -r | covered: check_args.c |
+| ZX101 | --off-of is --from and --to is --onto; neither has a letter | covered: check_args.c |
+| ZX102 | -p, -v and -o parse as --permissive-merge, --verbose and --manifest | covered: check_args.c |
+| ZX103 | -V, -w, -u and -b parse as --verify, --overwrite, --allow-unrelated and --base | covered: check_args.c |
+| ZX104 | -n parses as --dry-run, and a dry run needs no --result | covered: check_args.c |
+| ZX105 | -O and -F parse as --take-onto and --take-from | covered: check_args.c |
+| ZX106 | -G and -M parse as --no-gui and --no-merge | covered: check_args.c |
+| ZX107 | -c parses as --continue, with the gate flags and -v on it | covered: check_args.c |
+| ZX108 | -R parses as --restart | covered: check_args.c |
+| ZX109 | -a parses as --abort | covered: check_args.c |
+| ZX110 | --verify alone on a result is the verb; with the two sides it is the flag | covered: check_args.c |
+| ZX111 | --name VALUE and --name=VALUE are one flag; a flag that takes none refuses one | covered: check_args.c |
+| ZX112 | --posix, --build-fixture and --edit-fixture: long only, their operands, their counts, and --posix taking -p and -o alone | covered: check_args.c |
+| ZX113 | --take-onto with --take-from is refused, either spelling | covered: check_args.c |
+| ZX114 | a --take flag with --continue, --restart, --abort or the --verify verb is refused | covered: check_args.c |
+| ZX115 | --no-gui with --restart, --abort or the --verify verb is refused; accepted on a fresh run and on --continue | covered: check_args.c |
+| ZX116 | --no-merge with --restart, --abort or the --verify verb is refused; accepted on a fresh run and on --continue | covered: check_args.c |
+| ZX117 | --base without --allow-unrelated is refused; with it, it parses | covered: check_args.c |
+| ZX118 | an unknown word, a bundled -nv, a bare - and --, an attached -fVALUE, a flag with no value, and no command at all | covered: check_args.c |
+| ZX119 | --take-onto reads onto, --take-from reads from, neither reads as "-" | covered: check_args.c |
+| ZX120 | a verb takes --result, the gate flags and -v; --from, --manifest, --overwrite, -p, -n, --verify on --restart or --abort, and two verbs at once are refused | covered: check_args.c |
+| ZX121 | a fresh run needs --from and --onto, and --result unless -n | covered: check_args.c |
+| ZX122 | a fresh run with --take-onto over a conflicted fixture writes a complete skeleton and reaches done in one process | planned: box, box-resolution |
+| ZX123 | --no-merge stops at the conflicts gate with a complete resolution, and the next --continue without it passes the gate | planned: box, box-resolution |
+| ZX124 | --restart under a record whose zfs_rebase:take is onto or from rebuilds an answered skeleton, not an unanswered one, and the same run goes on through the gate to done, as the fresh run did | planned: box, box-resolution |
+| ZX125 | zfs_rebase:take is on the record, local, and reads onto, from or "-" | planned: box, box-resolution |
+| ZX126 | --no-merge on a --continue whose record is at applying2 or done is refused, exit 2, the gate unmoved | planned: box, box-resolution |
+
+ZX96 to ZX99 are no cells: the numbering skips to a round one so
+that the command line's own rows read as the block they are. ZX100
+onward are the only rows of this family that are not box rows,
+because src/args.c decides nothing and opens nothing: it fills
+struct zr_args, and tests/check_args.c reads it. ZX122 to ZX126 are
+what the parse cannot show -- the record's new zfs_rebase:take
+property, a run passing its own conflicts gate, and the two ways
+--no-merge holds it -- and belong to box-resolution.
 
 ZX1 to ZX5 replace the diff parser's cells, which went out with the
 text: ZX1 to ZX12 used to be the "zfs diff -F -H" lines, their
