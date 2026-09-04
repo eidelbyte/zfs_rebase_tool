@@ -1734,8 +1734,9 @@ securelevel_guard(struct run *r)
 }
 
 /*
- * Parse the manifest this run wrote and apply that, so that what is
- * applied is what the text on disk says and not a second copy of it.
+ * Parse the manifest this run wrote, apply that -- so that what is
+ * applied is what the text on disk says and not a second copy of it
+ * -- and make the applying1 self-check over the same document.
  * The file is <rundir>/manifest, or the -o path, whichever the run
  * recorded; --abort and --verify read that same file later, and a
  * --continue applies it again through read_manifest below. The round
@@ -1746,7 +1747,7 @@ static int
 apply_manifest(struct run *r)
 {
 	struct zr_parsed parsed;
-	struct zr_apply_stats st;
+	struct zr_apply_stats st, rst;
 	FILE *fp;
 	int rc = -1;
 
@@ -1791,6 +1792,26 @@ apply_manifest(struct run *r)
 		    (unsigned long long)st.zs_cp, (unsigned long long)st.zs_dup,
 		    (unsigned long long)st.zs_write,
 		    (unsigned long long)st.zs_bytes);
+	/*
+	 * And the self-check, which is the same one a --continue
+	 * makes at this gate: the result walked again beside from and
+	 * onto, the document held against it, the names no action
+	 * spoke for put back as onto had them -- the result is this
+	 * run's own until the conflicts gate, so anything else there
+	 * is a stray -- and then every action must be done or
+	 * blocked. It is made before readonly goes back on, because
+	 * the putting back writes.
+	 */
+	if (rc == 0) {
+		rc = zr_apply_check(&parsed, r->workmnt, r->names, &r->wo,
+		    &r->wf, 0, 1, &rst, r->err, sizeof (r->err));
+		if (rc == 0 && r->o.verbose)
+			(void) fprintf(stderr, "zfs_rebase: put back %llu "
+			    "restored, %llu removed, %llu relinked\n",
+			    (unsigned long long)rst.zs_restored,
+			    (unsigned long long)rst.zs_removed,
+			    (unsigned long long)rst.zs_relinked);
+	}
 	if (zr_zfs_set_readonly(r->zfs, r->rds, 1, r->err,
 	    sizeof (r->err)) != 0)
 		rc = -1;
@@ -1802,7 +1823,7 @@ done:
 
 /*
  * Let the three trees and the name table go, which the run does as
- * soon as the re-walk has passed. Nothing after that reads them, and
+ * soon as the self-check has passed. Nothing after that reads them, and
  * what they hold open is inside the result -- in the dataset form
  * inside a mount the run is about to hand back, and on a from
  * snapshot that a rebase reaching done destroys. Anything that has
@@ -1826,65 +1847,6 @@ release_trees(struct run *r)
 		zr_names_destroy(r->names);
 		r->names = NULL;
 	}
-}
-
-/*
- * After apply: walk the clone and check every result pool against the
- * decision by names, pooling and (through the oracle's handles) bytes.
- * Any difference is an internal error; the clone is left for
- * inspection.
- *
- * A conflicted decision comes through here too, now that applying1
- * runs whether there are conflicts or not. Two kinds of name are not
- * looked for, and must not be: a name of a conflicted group, which
- * the apply left exactly as onto had it, and a name the decision
- * removes, which has no result pool for this loop to reach at all --
- * among the latter the directory whose removal a conflicted child
- * blocked, still standing on purpose.
- */
-static int
-verify_clone(struct run *r)
-{
-	struct zr_walk w;
-	uint32_t i, j;
-	int rc = -1;
-
-	if (zr_walk(r->workmnt, r->names, &w, r->err, sizeof (r->err)) != 0)
-		return (-1);
-	for (i = 0; i < r->d.zd_npools; i++) {
-		const struct zr_result_pool *rp = &r->d.zd_pools[i];
-		zr_pool_t q;
-
-		if (r->d.zd_groups[rp->zr_group].zg_flags != 0)
-			continue;	/* conflicted: left as onto had it */
-		q = zr_tree_pool(&w.zw_tree, rp->zr_names[0]);
-		if (q == ZR_POOL_NONE ||
-		    w.zw_tree.zt_pools[q].zp_nnames != rp->zr_nnames) {
-			size_t len;
-
-			(void) snprintf(r->err, sizeof (r->err),
-			    "after apply, %s has %u names, decided %u",
-			    zr_names_str(r->names, rp->zr_names[0], &len),
-			    q == ZR_POOL_NONE ? 0 :
-			    w.zw_tree.zt_pools[q].zp_nnames, rp->zr_nnames);
-			goto done;
-		}
-		for (j = 0; j < rp->zr_nnames; j++) {
-			if (zr_tree_pool(&w.zw_tree, rp->zr_names[j]) != q) {
-				size_t len;
-
-				(void) snprintf(r->err, sizeof (r->err),
-				    "after apply, %s is not with its pool",
-				    zr_names_str(r->names, rp->zr_names[j],
-				    &len));
-				goto done;
-			}
-		}
-	}
-	rc = 0;
-done:
-	zr_walk_fini(&w);
-	return (rc);
 }
 
 static void
@@ -2233,7 +2195,7 @@ zr_run(const struct zr_run_opts *o)
 		goto done;
 	}
 
-	/* 7. applying1: the clean actions, 8. the re-walk */
+	/* 7. applying1: the clean actions and the self-check after them */
 	zr_pause("decided");
 	if (stopped(&r) != 0) {
 		rc = fail(&r, EXIT_INTERNAL, "apply");
@@ -2258,17 +2220,10 @@ zr_run(const struct zr_run_opts *o)
 		kept_hint(&r);
 		goto done;
 	}
-	if (verify_clone(&r) != 0) {
-		keep = 1;
-		rc = fail(&r, EXIT_INTERNAL, "verify");
-		manifest_note(&r);
-		kept_hint(&r);
-		goto done;
-	}
 	keep = 1;
 	release_trees(&r);
 	/*
-	 * A signal that came in while the apply or the re-walk ran
+	 * A signal that came in while the apply or the self-check ran
 	 * leaves the gate it came in under, and writes no new one.
 	 */
 	if (stopped(&r) != 0) {
@@ -3139,19 +3094,19 @@ classify(struct resume *s, const struct zr_parsed *m,
 
 /*
  * The report: one line per outcome with its count and the first
- * action that had it, and one for the names the manifest never spoke
- * for that changed anyway. The counts are over the actions the
- * header declared, which is every line but the conflict marks: a
- * mark is nothing to do and is counted nowhere. what names the
- * document, since a rebase can have two of them.
+ * action that had it, then one line per kind of the names the
+ * manifest never spoke for, with the first of each, and under -v the
+ * whole list. The action counts are over the actions the header
+ * declared, which is every line but the conflict marks: a mark is
+ * nothing to do and is counted nowhere. what names the document,
+ * since a rebase can have two of them.
  */
 static void
 print_report(const struct resume *s, const struct zr_parsed *m,
     const struct zr_verify_report *rep, const char *what)
 {
 	const char *nm;
-	uint32_t first;
-	size_t len;
+	uint32_t first, j;
 	int i;
 
 	(void) fprintf(stderr, "zfs_rebase: %s: %s, %u action%s\n", s->result,
@@ -3169,15 +3124,27 @@ print_report(const struct resume *s, const struct zr_parsed *m,
 		    zr_outcome_str((enum zr_outcome)i), rep->zv_count[i],
 		    (const char *)m->zp_actions[first].za_path);
 	}
-	if (rep->zv_ninfo == 0) {
-		(void) fprintf(stderr, "zfs_rebase:   0 names outside the "
-		    "manifest changed\n");
-		return;
+	for (i = 0; i < ZR_DF_COUNT; i++) {
+		nm = rep->zv_dfirst[i] == ZR_NAME_NONE ? NULL :
+		    zr_names_str(s->names, rep->zv_dfirst[i], NULL);
+		if (nm == NULL) {
+			(void) fprintf(stderr, "zfs_rebase:   outside the "
+			    "manifest: %s %u\n",
+			    zr_diff_str((enum zr_diff)i), rep->zv_dcount[i]);
+			continue;
+		}
+		(void) fprintf(stderr, "zfs_rebase:   outside the manifest: "
+		    "%s %u, first %s\n", zr_diff_str((enum zr_diff)i),
+		    rep->zv_dcount[i], nm);
 	}
-	nm = zr_names_str(s->names, rep->zv_first_info, &len);
-	(void) fprintf(stderr, "zfs_rebase:   %u name%s outside the manifest "
-	    "changed, first %s\n", rep->zv_ninfo,
-	    rep->zv_ninfo == 1 ? "" : "s", nm != NULL ? nm : "?");
+	if (s->verbose == 0)
+		return;
+	for (j = 0; j < rep->zv_ndiffs; j++) {
+		nm = zr_names_str(s->names, rep->zv_diffs[j].zn_name, NULL);
+		(void) fprintf(stderr, "zfs_rebase:     %s %s\n",
+		    zr_diff_str(rep->zv_diffs[j].zn_kind),
+		    nm != NULL ? nm : "?");
+	}
 }
 
 /*
@@ -3190,19 +3157,28 @@ print_report(const struct resume *s, const struct zr_parsed *m,
  * The classification is made whether anybody asked to see it: the
  * apply reads it to know what is already true and may be left alone,
  * and --verify only decides whether it is printed as well. After the
- * apply the result is walked again and the same document classified
- * against it, and every action must then be done or blocked; a
- * pending or a drifted one means the apply did not do what it said,
- * which is an internal failure and not drift.
+ * apply comes zr_apply_check, the self-check both this and a fresh
+ * run make: the result walked again, the same document classified
+ * against it, and every action then done or blocked, since a pending
+ * or a drifted one means the apply did not do what it said, which is
+ * an internal failure and not drift.
+ *
+ * At applying1 the check also puts back the names no action spoke
+ * for. That is the one fix in the tool and it is no flag: up to the
+ * conflicts gate the result is the run's own, so a name that is not
+ * what the expected tree says is a stray. From that gate on the
+ * person is editing the tree, verify cannot tell their work from a
+ * stray, and the names are left alone.
  */
 static int
 stage_apply(struct resume *s, const struct zr_parsed *m, const char *state,
     const char *what)
 {
 	struct zr_verify_report rep;
-	struct zr_apply_stats st;
-	int rc = -1;
+	struct zr_apply_stats st, rst;
+	int fix, rc = -1;
 
+	fix = state != NULL && strcmp(state, ZR_STATE_APPLYING1) == 0;
 	memset(&rep, 0, sizeof (rep));
 	if (state != NULL)
 		put_state(s->zfs, s->result, state);
@@ -3232,20 +3208,23 @@ stage_apply(struct resume *s, const struct zr_parsed *m, const char *state,
 		    (unsigned long long)st.zs_skipped,
 		    (unsigned long long)st.zs_bytes);
 	zr_verify_report_fini(&rep);
-	memset(&rep, 0, sizeof (rep));
-	if (rescan_result(s) != 0 || classify(s, m, &rep) != 0)
+	if (zr_apply_check(m, s->workmnt, s->names, &s->w[ZS_ONTO],
+	    &s->w[ZS_FROM], s->miss, fix, &rst, s->err,
+	    sizeof (s->err)) != 0)
 		goto out;
-	if (rep.zv_count[ZR_OC_PENDING] != 0 ||
-	    rep.zv_count[ZR_OC_DRIFTED] != 0) {
-		uint32_t i = rep.zv_count[ZR_OC_PENDING] != 0 ?
-		    rep.zv_first[ZR_OC_PENDING] : rep.zv_first[ZR_OC_DRIFTED];
-
-		(void) snprintf(s->err, sizeof (s->err), "after the apply, %u "
-		    "pending and %u drifted, first %s", rep.zv_count[
-		    ZR_OC_PENDING], rep.zv_count[ZR_OC_DRIFTED],
-		    (const char *)m->zp_actions[i].za_path);
+	if (fix != 0 && s->verbose)
+		(void) fprintf(stderr, "zfs_rebase: put back %llu restored, "
+		    "%llu removed, %llu relinked\n",
+		    (unsigned long long)rst.zs_restored,
+		    (unsigned long long)rst.zs_removed,
+		    (unsigned long long)rst.zs_relinked);
+	/*
+	 * And the trees this verb goes on with, which the check left
+	 * behind it: the stage after this one classifies against the
+	 * result as it stands now.
+	 */
+	if (rescan_result(s) != 0)
 		goto out;
-	}
 	rc = 0;
 out:
 	zr_verify_report_fini(&rep);
@@ -3255,33 +3234,24 @@ out:
 }
 
 /*
- * The last look the record asked for, made before anything is
- * released: every action of one document held against the result one
- * more time. Nothing here writes, and blocked and unchecked are not
- * faults; a pending or a drifted action is, and it leaves the rebase
- * at its gate for a --continue --verify to repair.
+ * One document held against the result and reported, which is what
+ * the gates from conflicts on do with a verify: nothing here writes
+ * and nothing here fails. A pending or a drifted action at one of
+ * those gates is information and not a fault -- an edit made while
+ * the conflicts were being answered is the person's work, and a gate
+ * that failed on it would block done for good -- so the only failure
+ * is a classification that could not be made at all.
  */
 static int
 final_check(struct resume *s, const struct zr_parsed *m, const char *what)
 {
 	struct zr_verify_report rep;
-	int rc = -1;
+	int rc;
 
 	memset(&rep, 0, sizeof (rep));
-	if (classify(s, m, &rep) != 0)
-		goto out;
-	if (s->verify)
+	rc = classify(s, m, &rep);
+	if (rc == 0 && s->verify)
 		print_report(s, m, &rep, what);
-	if (rep.zv_count[ZR_OC_PENDING] != 0 ||
-	    rep.zv_count[ZR_OC_DRIFTED] != 0) {
-		(void) snprintf(s->err, sizeof (s->err), "%s: %u pending and "
-		    "%u drifted; zfs_rebase --continue --verify --result %s "
-		    "puts them back", what, rep.zv_count[ZR_OC_PENDING],
-		    rep.zv_count[ZR_OC_DRIFTED], s->result);
-		goto out;
-	}
-	rc = 0;
-out:
 	zr_verify_report_fini(&rep);
 	return (rc);
 }
@@ -3386,13 +3356,12 @@ stage2(struct resume *s)
  * move is made on human input, and nothing but the person who
  * answered the conflicts can say they are answered.
  *
- * A repair asked for here is the applying1 stage made true again:
- * the clean actions are what this gate has passed, and drift on any
- * of them is put back, while the conflicted names are not touched --
- * no action of the manifest names one. The gate itself does not move
- * for a repair: what has been passed has been passed, and a repair
- * killed part way leaves the result no worse than the drift it was
- * mending.
+ * A verify asked for here reports and does nothing else. The tree is
+ * the person's from this gate on -- they are answering conflicts in
+ * it, by hand or through a picker -- and nothing here can tell an
+ * edit of theirs from a stray, so nothing here writes. The one fix
+ * in the tool is applying1's own self-check, which ran before this
+ * gate was ever written.
  */
 static int
 stage_conflicts(struct resume *s)
@@ -3401,8 +3370,8 @@ stage_conflicts(struct resume *s)
 	uint32_t left, total;
 	int rc;
 
-	if (s->verify && stage_apply(s, &s->man, NULL, "the manifest") != 0)
-		return (vfail(s, EXIT_INTERNAL, "repair"));
+	if (s->verify && final_check(s, &s->man, "the manifest") != 0)
+		return (vfail(s, EXIT_INTERNAL, "verify"));
 	rc = read_resolution(s, &res);
 	if (rc < 0) {
 		zr_resolution_fini(&res);
@@ -3447,37 +3416,18 @@ stage1(struct resume *s)
 /*
  * A rebase that is already finished. Without --verify there is
  * nothing left but the cleanup a kill between the done gate and the
- * release would have skipped. With it, --continue is the repair:
- * every clean action is made true again, drift included, and the
- * conflicted names are not touched, because no action of the manifest
- * names one and the resolution holds no actions at all.
- *
- * The gate does not move while that happens. done is a fact about a
- * rebase that reached its end, and a repair that is killed part way
- * leaves the result no worse than the drift it was mending; the next
- * --continue --verify mends it again.
+ * release would have skipped. With it, the manifest is reported over
+ * one more time and nothing is written: after done the result is the
+ * user's, new work in it is indistinguishable from drift, and a tool
+ * that put onto's bytes back over it would be destroying work the
+ * rebase never asked about.
  */
 static int
 stage_done(struct resume *s)
 {
 	if (s->verify) {
-		/*
-		 * A repair writes, and what it writes it reads out of
-		 * from and onto. A rebase that reached done has
-		 * destroyed a snapshot it took itself, so where that
-		 * is the missing tree there is nothing to read: this
-		 * says so rather than half-repairing, and --verify
-		 * alone still reports over what is there.
-		 */
-		if (s->miss != 0) {
-			(void) snprintf(s->err, sizeof (s->err), "%s is done "
-			    "and a tree it would have to read is gone; "
-			    "zfs_rebase --verify --result %s reports what can "
-			    "still be checked", s->result, s->result);
-			return (vfail(s, EXIT_PRECOND, NULL));
-		}
-		if (stage_apply(s, &s->man, NULL, "the manifest") != 0)
-			return (vfail(s, EXIT_INTERNAL, "repair"));
+		if (final_check(s, &s->man, "the manifest") != 0)
+			return (vfail(s, EXIT_INTERNAL, "verify"));
 	}
 	release_record(s);
 	s->dropfrom = made_says(&s->rb, "from");

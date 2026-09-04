@@ -2,9 +2,15 @@
  * verify: the classifier of verify.h. One pass over the manifest,
  * naming for each action the object it produces and the object onto
  * had at that name, and asking the content oracle which of the two
- * the result holds; then one pass over the names nobody spoke for,
- * which should still be onto's and are an information line when they
- * are not.
+ * the result holds; then one pass over the whole name table, holding
+ * every name nobody spoke for against the object onto had there --
+ * which is absence where onto never had it, and absence again where
+ * an rm took the directory above it away.
+ *
+ * The second pass is over the names of all three trees and not over
+ * the result's alone: a name onto had that the result no longer holds
+ * is exactly what a stray delete leaves, and a pass that only walked
+ * what the result holds could never see it.
  *
  * The trees are the oracle's three positions: onto, from, result.
  * Nothing here opens a file itself -- every read is the oracle's, and
@@ -31,6 +37,10 @@
 /* What the manifest said about one name, kept by name id. */
 #define	ZV_ACTED	0x1	/* an action line names it */
 #define	ZV_CONFLICT	0x2	/* and that line is a conflict mark */
+#define	ZV_RMDIR	0x4	/* and that line removes a directory */
+
+/* How many entries the name list starts at and grows by. */
+#define	ZV_DIFF_MIN	16
 
 struct zv_ctx {
 	const struct zr_parsed	*zc_m;
@@ -41,6 +51,7 @@ struct zv_ctx {
 	uint32_t		zc_nnames;
 	unsigned char		*zc_pmark;	/* by result pool index */
 	uint32_t		zc_npools;
+	uint32_t		zc_dcap;	/* the name list's capacity */
 	unsigned		zc_miss;	/* trees not there */
 	char			*zc_err;
 	size_t			zc_errlen;
@@ -127,9 +138,15 @@ zr_verify_blocked(const struct zr_parsed *m, const unsigned char *dir,
 	return (0);
 }
 
-/* Is this name inside a directory the manifest marked conflict? */
+/*
+ * Is this name inside a directory the manifest marked one of these
+ * ways? ZV_CONFLICT says a conflict covers everything under it, so
+ * that nothing there is classified at all; ZV_RMDIR says the
+ * manifest takes the directory away, so that what the expected tree
+ * holds under it is nothing.
+ */
 static int
-zv_conflicted(const struct zv_ctx *c, zr_name_t nm)
+zv_under(const struct zv_ctx *c, zr_name_t nm, unsigned char what)
 {
 	zr_name_t up;
 
@@ -137,7 +154,7 @@ zv_conflicted(const struct zv_ctx *c, zr_name_t nm)
 	    up = zr_names_parent(c->zc_names, up)) {
 		if (up >= c->zc_nnames)
 			break;
-		if ((c->zc_mark[up] & ZV_CONFLICT) != 0)
+		if ((c->zc_mark[up] & what) != 0)
 			return (1);
 	}
 	return (0);
@@ -325,9 +342,9 @@ zv_write(struct zv_ctx *c, const struct zr_action *a, zr_pool_t po,
 /*
  * Every name of the manifest, and every pool of the result one of
  * them reaches, marked before anything is classified. The pool mark
- * is what keeps the information lines honest: the second name of a
- * written file did change, and the action on the first name is why,
- * so it is not a stray edit and nobody is told about it twice.
+ * is what keeps the name list honest: the second name of a written
+ * file did change, and the action on the first name is why, so it is
+ * not a stray edit and nobody is told about it twice.
  */
 static void
 zv_marks(struct zv_ctx *c)
@@ -345,18 +362,116 @@ zv_marks(struct zv_ctx *c)
 		c->zc_mark[nm] |= ZV_ACTED;
 		if (a->za_kind == ZR_ACT_CONFLICT)
 			c->zc_mark[nm] |= ZV_CONFLICT;
+		if (a->za_kind == ZR_ACT_RM && a->za_isdir != 0)
+			c->zc_mark[nm] |= ZV_RMDIR;
 		pr = zv_pool(c, ZV_RESULT, nm);
 		if (pr != ZR_POOL_NONE && pr < c->zc_npools)
 			c->zc_pmark[pr] = 1;
 	}
 }
 
-/* The names nobody spoke for, which should be onto's still. */
+/*
+ * Is this name one the second pass may speak about at all? A name
+ * some action names has its own outcome; a name a conflict covers is
+ * nobody's to judge; and a name that shares a result pool with a name
+ * an action made is that action's doing.
+ */
 static int
-zv_info(struct zv_ctx *c, struct zr_verify_report *out)
+zv_untouched(const struct zv_ctx *c, zr_name_t nm)
 {
 	zr_pool_t pr;
-	zr_name_t nm;
+
+	if ((c->zc_mark[nm] & ZV_ACTED) != 0)
+		return (0);
+	if (zv_under(c, nm, ZV_CONFLICT) != 0)
+		return (0);
+	pr = zv_pool(c, ZV_RESULT, nm);
+	if (pr != ZR_POOL_NONE && pr < c->zc_npools && c->zc_pmark[pr] != 0)
+		return (0);
+	return (1);
+}
+
+/*
+ * The name of onto's pool po that the result still holds as onto had
+ * it, lowest id first, or ZR_NAME_NONE where there is none. It is the
+ * name a repair links to rather than copying, so that putting one
+ * name of a pool back does not sever it from the others. Returns 0
+ * with *out set, or -1 with err set.
+ */
+static int
+zv_anchor(struct zv_ctx *c, zr_pool_t po, zr_name_t *out)
+{
+	const struct zr_pool *p;
+	zr_pool_t pr;
+	zr_name_t n;
+	uint32_t i;
+	int eq;
+
+	*out = ZR_NAME_NONE;
+	if (po == ZR_POOL_NONE)
+		return (0);
+	p = &c->zc_w[ZV_ONTO]->zw_tree.zt_pools[po];
+	for (i = 0; i < p->zp_nnames; i++) {
+		n = p->zp_names[i];
+		if (n >= c->zc_nnames || zv_untouched(c, n) == 0)
+			continue;
+		if (zv_under(c, n, ZV_RMDIR) != 0)
+			continue;
+		pr = zv_pool(c, ZV_RESULT, n);
+		if (pr == ZR_POOL_NONE)
+			continue;
+		eq = zv_same(c, ZV_ONTO, po, ZV_RESULT, pr);
+		if (eq < 0)
+			return (-1);
+		if (eq != 0) {
+			*out = n;
+			return (0);
+		}
+	}
+	return (0);
+}
+
+/* One name onto the list, with the count and the first of its kind. */
+static int
+zv_add(struct zv_ctx *c, struct zr_verify_report *out, zr_name_t nm,
+    enum zr_diff kind, zr_name_t anchor)
+{
+	struct zr_namediff *d;
+	uint32_t cap;
+
+	if (out->zv_ndiffs == c->zc_dcap) {
+		cap = c->zc_dcap != 0 ? c->zc_dcap * 2 : ZV_DIFF_MIN;
+		d = realloc(out->zv_diffs, (size_t)cap * sizeof (*d));
+		if (d == NULL) {
+			zv_failx(c->zc_err, c->zc_errlen,
+			    "verify: out of memory");
+			return (-1);
+		}
+		out->zv_diffs = d;
+		c->zc_dcap = cap;
+	}
+	d = &out->zv_diffs[out->zv_ndiffs++];
+	d->zn_name = nm;
+	d->zn_anchor = anchor;
+	d->zn_kind = kind;
+	if (out->zv_dcount[kind] == 0)
+		out->zv_dfirst[kind] = nm;
+	out->zv_dcount[kind]++;
+	return (0);
+}
+
+/*
+ * The names nobody spoke for, over the whole shared table: the
+ * expected object of each is onto's own, and nothing where onto never
+ * had it or where an rm took the directory above it away. Four ways
+ * to differ, and the name axis is asked before the content axis
+ * because a name that is not there has no content to ask about.
+ */
+static int
+zv_names(struct zv_ctx *c, struct zr_verify_report *out)
+{
+	zr_name_t nm, root, anchor;
+	zr_pool_t po, pr;
 	int eq;
 
 	/*
@@ -366,23 +481,58 @@ zv_info(struct zv_ctx *c, struct zr_verify_report *out)
 	 */
 	if (zv_gone(c, ZV_ONTO) != 0)
 		return (0);
+	/*
+	 * The root is not one of the names. It is the tree itself,
+	 * the manifest has no line that could speak of it -- the root
+	 * line of the tree section carries no action -- and what it
+	 * holds in the result is the dataset's own root, put there by
+	 * the clone and not by anything a rebase did.
+	 */
+	root = zr_names_lookup(c->zc_names, "/", 1);
 	for (nm = 0; nm < c->zc_nnames; nm++) {
+		if (nm == root)
+			continue;
+		po = zv_pool(c, ZV_ONTO, nm);
 		pr = zv_pool(c, ZV_RESULT, nm);
-		if (pr == ZR_POOL_NONE || (c->zc_mark[nm] & ZV_ACTED) != 0)
+		if (po == ZR_POOL_NONE && pr == ZR_POOL_NONE)
 			continue;
-		if (pr < c->zc_npools && c->zc_pmark[pr] != 0)
+		if (zv_untouched(c, nm) == 0)
 			continue;
-		if (zv_conflicted(c, nm) != 0)
+		if (po == ZR_POOL_NONE || zv_under(c, nm, ZV_RMDIR) != 0) {
+			/* nothing was expected here */
+			if (pr != ZR_POOL_NONE &&
+			    zv_add(c, out, nm, ZR_DF_EXTRA,
+			    ZR_NAME_NONE) != 0)
+				return (-1);
 			continue;
-		eq = zv_same(c, ZV_ONTO, zv_pool(c, ZV_ONTO, nm), ZV_RESULT,
-		    pr);
+		}
+		if (pr == ZR_POOL_NONE) {
+			if (zv_anchor(c, po, &anchor) != 0 ||
+			    zv_add(c, out, nm, ZR_DF_GONE, anchor) != 0)
+				return (-1);
+			continue;
+		}
+		eq = zv_same(c, ZV_ONTO, po, ZV_RESULT, pr);
 		if (eq < 0)
 			return (-1);
-		if (eq != 0)
+		if (zv_anchor(c, po, &anchor) != 0)
+			return (-1);
+		if (eq == 0) {
+			if (zv_add(c, out, nm, ZR_DF_CHANGED, anchor) != 0)
+				return (-1);
 			continue;
-		if (out->zv_ninfo == 0)
-			out->zv_first_info = nm;
-		out->zv_ninfo++;
+		}
+		/*
+		 * There and equal: the one thing left to ask is
+		 * whether it is still one object with the names it
+		 * shared onto's with. The anchor is the first of them
+		 * the result holds, so a pool torn in two is one entry
+		 * and not two.
+		 */
+		if (anchor != ZR_NAME_NONE && anchor != nm &&
+		    zv_pool(c, ZV_RESULT, anchor) != pr &&
+		    zv_add(c, out, nm, ZR_DF_UNPOOLED, anchor) != 0)
+			return (-1);
 	}
 	return (0);
 }
@@ -404,9 +554,10 @@ zr_verify(const struct zr_parsed *m, struct zr_oracle *o,
 	if (out == NULL)
 		return (-1);
 	memset(out, 0, sizeof (struct zr_verify_report));
-	out->zv_first_info = ZR_NAME_NONE;
 	for (i = 0; i < ZR_OC_COUNT; i++)
 		out->zv_first[i] = ZR_ACTION_NONE;
+	for (i = 0; i < ZR_DF_COUNT; i++)
+		out->zv_dfirst[i] = ZR_NAME_NONE;
 	if (err != NULL && errlen > 0)
 		err[0] = '\0';
 	if (m == NULL || o == NULL || onto == NULL || from == NULL ||
@@ -490,7 +641,7 @@ zr_verify(const struct zr_parsed *m, struct zr_oracle *o,
 			out->zv_first[oc] = i;
 		out->zv_count[oc]++;
 	}
-	rc = zv_info(&c, out);
+	rc = zv_names(&c, out);
 done:
 	free(c.zc_pmark);
 	free(c.zc_mark);
@@ -500,11 +651,33 @@ done:
 void
 zr_verify_report_fini(struct zr_verify_report *r)
 {
+	int i;
+
 	if (r == NULL)
 		return;
 	free(r->zv_outcome);
+	free(r->zv_diffs);
 	memset(r, 0, sizeof (struct zr_verify_report));
-	r->zv_first_info = ZR_NAME_NONE;
+	for (i = 0; i < ZR_OC_COUNT; i++)
+		r->zv_first[i] = ZR_ACTION_NONE;
+	for (i = 0; i < ZR_DF_COUNT; i++)
+		r->zv_dfirst[i] = ZR_NAME_NONE;
+}
+
+const char *
+zr_diff_str(enum zr_diff df)
+{
+	switch (df) {
+	case ZR_DF_GONE:
+		return ("gone");
+	case ZR_DF_EXTRA:
+		return ("extra");
+	case ZR_DF_CHANGED:
+		return ("changed");
+	case ZR_DF_UNPOOLED:
+		return ("unpooled");
+	}
+	return ("unknown");
 }
 
 const char *

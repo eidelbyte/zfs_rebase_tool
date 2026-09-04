@@ -10,52 +10,48 @@
 # (tests/box/README.md).
 #
 # The claim under test is that the apply pass is the only writer, and
-# that everything else is either reported or repaired, exactly as the
-# verb asked for. Four cases per fixture and form:
+# that a difference is repaired where the result is the run's own and
+# reported everywhere else. The one fix in the tool is the self-check
+# the applying1 stage makes on itself: the document held against the
+# result, every action redone that did not land, and every name no
+# action spoke for put back as onto had it. It is no flag's, and
+# nothing after that gate writes at all. Four cases per fixture and
+# form:
 #
 # 1. Strays into the result while the tool has it open, at action:1,
-#    where the result is writable and no action has been performed
-#    yet. Three of them survive the run's own re-walk, which checks
-#    the names and the pooling of every result pool the decision
-#    made and not their bytes:
+#    where the result is writable, no action has been performed yet,
+#    and the result is still nobody's but the run's. Three of them,
+#    and the self-check ends all three:
 #
-#      an edit to a file the manifest keeps untouched, which the
-#      re-walk does not look at and --verify reports as an
-#      information line, since it is neither the manifest's outcome
-#      nor onto's own;
-#      a name no tree had, likewise an information line;
+#      an edit to a file the manifest keeps untouched, which is
+#      changed on the name list and is put back out of onto;
+#      a name no tree had, which is extra and is taken away;
 #      an edit to a file the manifest will write or copy, which the
 #      action overwrites when it runs, so it ends up done: the apply
 #      came after the edit and the apply is what the name holds.
 #
-#    --verify then names two information lines and no drift and no
-#    pending action, and --continue --verify leaves both of them
-#    exactly where they are. That is deliberate and not a gap: an
-#    untouched name is not the manifest's to repair -- no action of
-#    the manifest names it -- and a repair that put onto's bytes back
-#    over an operator's edit would be destroying work the rebase
-#    never asked about. What the verb owes is the report, and it
-#    gives it.
+#    --verify afterwards reports no drift, no pending action and
+#    nothing outside the manifest, and a --continue --verify changes
+#    nothing, because there is nothing left to change.
 #
-# 2. A stray delete, which is the one the re-walk does catch: the
-#    decision says that name survives with that pool, and it is not
-#    there. The run fails with exit 3 at the re-walk, keeps the
-#    result at applying1 with its record and its holds, and
-#    --continue takes it on to its branch's gate. Afterwards the
-#    deletion is invisible: --verify's information lines are over
-#    the names the result holds, so a name it does not hold has
-#    nothing to be held against, and no action names it either. It
-#    is reported by the run that saw it happen and by nothing after
-#    that.
+# 2. A stray delete, which the same self-check catches: the name list
+#    is over the shared name table and not over what the result
+#    holds, so a name onto had that the result has lost is gone and
+#    is restored out of onto with its bytes. The run does not stop
+#    for it -- it goes on to its branch's gate as if the delete had
+#    never happened -- and --verify afterwards has nothing to say.
 #
-# 3. Drift after the stage, which is what --verify is for: an edit to
-#    a file a clean action made, with readonly off and back on
-#    behind the tool's back, is drifted 1 naming that file, --verify
-#    fixes nothing, --continue --verify puts it back, and --verify is
-#    clean afterwards. Then the same edit to a conflicted name, which
-#    is never classified and never touched: exit 0, no drift, and the
-#    edit still there after a repair, because answering a conflict is
-#    the conflict manager's and not a rebase's.
+# 3. Drift after the stage, which is what --verify is for and what
+#    nothing repairs: an edit to a file a clean action made, with
+#    readonly off and back on behind the tool's back, is drifted 1
+#    naming that file. --verify fixes nothing and neither does
+#    --continue --verify: from the conflicts gate on the tree is
+#    being edited by hand, an edit cannot be told from a stray, and
+#    the gate reports and passes rather than blocking done for good.
+#    Then the same edit to a conflicted name, which is never
+#    classified at all: exit 0, no drift, nothing outside the
+#    manifest, and the edit still there, because answering a conflict
+#    is the conflict manager's and not a rebase's.
 #
 # 4. A stray write into the live from or onto dataset while the run
 #    is reading, at the read gate: the tool reads snapshots, so the
@@ -70,9 +66,9 @@
 #
 # The dataset form is given from as a snapshot here rather than as a
 # dataset, so that the from tree is still there after done: a rebase
-# that reached done has destroyed a snapshot it took itself, and the
-# repair in case 3 has to read from. run-fixture.sh and run-kills.sh
-# take the dataset spelling.
+# that reached done has destroyed a snapshot it took itself, and a
+# verify that cannot read from can only say unchecked.
+# run-fixture.sh and run-kills.sh take the dataset spelling.
 set -u
 cd "$(dirname "$0")/../.." || exit 2
 bin=./zfs_rebase
@@ -128,6 +124,14 @@ holdcount() {
 	printf '%s' "$n"
 }
 mounted_at() { mount | grep -q " on $1 "; }
+# Every kind of the name list at zero in one report: gone, extra,
+# changed and unpooled, each on its own line with its count.
+no_outside() {
+	for k in gone extra changed unpooled; do
+		grep -q "outside the manifest: $k 0" "$1" || return 1
+	done
+	return 0
+}
 procstat() { ps -o stat= -p "$1" 2>/dev/null | tr -d ' \t' | cut -c1; }
 wait_stop() {
 	i=0
@@ -302,9 +306,10 @@ case_strays() {
 	printf 'stray\n' >> "$wmnt$wtgt" || fail "cannot edit $wtgt"
 	finish
 
-	# The two names outside the manifest are information lines and
-	# the name the manifest wrote is done: the action ran after the
-	# edit, so what is there is the rebase's and not the stray's.
+	# The self-check ended all three: the edit to the untouched name
+	# is onto's bytes again, the name no tree had is gone, and the
+	# name the manifest wrote is done, since the action ran after
+	# the edit and the apply is what the name holds.
 	"$bin" --verify --result "$rds" > "$tmp/verify" 2>&1
 	st=$?
 	[ $st -eq 0 ] || { cat "$tmp/verify"; fail "--verify exited $st, want 0"; }
@@ -312,71 +317,61 @@ case_strays() {
 	    { cat "$tmp/verify"; fail "--verify found drift"; }
 	grep -q 'pending 0' "$tmp/verify" || \
 	    { cat "$tmp/verify"; fail "--verify found pending actions"; }
-	grep -q "2 names outside the manifest changed, first $kept" \
-	    "$tmp/verify" || { cat "$tmp/verify"; fail "--verify did not name the two strays"; }
+	no_outside "$tmp/verify" || \
+	    { cat "$tmp/verify"; fail "--verify still names the strays"; }
 	[ -f "$hmnt$wtgt" ] || fail "$wtgt is not there after the apply"
 	grep -q stray "$hmnt$wtgt" && \
 	    fail "the apply did not overwrite the stray edit to $wtgt"
-	grep -q stray "$hmnt$kept" || \
-	    fail "the edit to the untouched $kept is gone"
+	grep -q stray "$hmnt$kept" && \
+	    fail "the self-check did not put the untouched $kept back"
+	[ -e "$hmnt/zr-new" ] && fail "the self-check left the extra /zr-new"
 
-	# A repair does not touch them: no action of the manifest
-	# names an untouched file, so there is nothing there to make
-	# true again, and the report is what the operator gets.
+	# And there is nothing left for a --continue to do: it reports
+	# the same clean report and writes nothing.
 	"$bin" --continue --verify --result "$rds" > "$tmp/cont" 2>&1
 	st=$?
 	[ $st -eq $wrun ] || \
 	    { cat "$tmp/cont"; fail "--continue --verify exited $st, want $wrun"; }
 	"$bin" --verify --result "$rds" > "$tmp/verify2" 2>&1
 	st=$?
-	[ $st -eq 0 ] || { cat "$tmp/verify2"; fail "--verify after the repair exited $st"; }
-	grep -q "2 names outside the manifest changed, first $kept" \
-	    "$tmp/verify2" || { cat "$tmp/verify2"; fail "the repair changed the information lines"; }
-	grep -q stray "$hmnt$kept" || fail "the repair overwrote the untouched $kept"
-	[ -f "$hmnt/zr-new" ] || fail "the repair removed the new name"
-	echo "ok   $case_id: $wtgt done, $kept and /zr-new reported and left"
+	[ $st -eq 0 ] || { cat "$tmp/verify2"; fail "--verify after it exited $st"; }
+	no_outside "$tmp/verify2" || \
+	    { cat "$tmp/verify2"; fail "--continue --verify made a difference"; }
+	grep -q stray "$hmnt$kept" && fail "$kept is the stray's again"
+	echo "ok   $case_id: $wtgt done, $kept put back, /zr-new taken away"
 	end_case
 }
 
-# --- 2. a stray delete, which the re-walk catches ---
+# --- 2. a stray delete, which the self-check puts back ---
 case_delete() {
 	case_id="$fixture $form a stray delete at action:1"
 	run_bg action:1
 	kept=$(kept_name "$man" "$wmnt")
 	[ -n "$kept" ] || fail "the fixture has no untouched file to delete"
+	cp "$wmnt$kept" "$tmp/kept.before" || fail "cannot read $kept"
 	rm "$wmnt$kept" || fail "cannot delete $kept"
-	kill -CONT "$pid" || fail "cannot continue the stopped tool"
-	wait "$pid"
-	st=$?
-	pid=
-	# The re-walk holds every result pool the decision made against
-	# the tree: a name that is gone is one name short.
-	[ $st -eq 3 ] || { cat "$log"; fail "the run exited $st, want 3"; }
-	grep -q 'after apply' "$log" || \
-	    { cat "$log"; fail "the run did not fail in the re-walk"; }
-	[ "$(statenow "$rds")" = applying1 ] || \
-	    fail "the state is $(statenow "$rds"), want applying1"
-	[ "$(holdcount)" = 3 ] || fail "the kept run does not hold its inputs"
+	# The name list is over the shared name table, so a name onto
+	# had that the result has lost is gone, and gone is restored:
+	# the run reaches its branch's gate as if nothing had happened.
+	finish
+	[ "$(statenow "$rds")" = "$wend" ] || \
+	    fail "the state is $(statenow "$rds"), want $wend"
+	[ -e "$hmnt$kept" ] || fail "the self-check did not put $kept back"
+	cmp -s "$tmp/kept.before" "$hmnt$kept" || \
+	    fail "$kept came back with other bytes than onto's"
 
-	"$bin" --continue --result "$rds" > "$tmp/cont" 2>&1
-	st=$?
-	[ $st -eq $wrun ] || \
-	    { cat "$tmp/cont"; fail "--continue exited $st, want $wrun"; }
-	# And now nobody can see it: an information line is over the
-	# names the result holds, and this one it does not hold.
 	"$bin" --verify --result "$rds" > "$tmp/verify" 2>&1
 	st=$?
 	[ $st -eq 0 ] || { cat "$tmp/verify"; fail "--verify exited $st, want 0"; }
 	grep -q 'drifted 0' "$tmp/verify" || \
 	    { cat "$tmp/verify"; fail "--verify found drift"; }
-	grep -q '0 names outside the manifest changed' "$tmp/verify" || \
-	    { cat "$tmp/verify"; fail "--verify made an information line of the deletion"; }
-	[ -e "$hmnt$kept" ] && fail "$kept came back; nothing puts it back"
-	echo "ok   $case_id: the re-walk caught it (exit 3), --continue went on, no verb sees it after"
+	no_outside "$tmp/verify" || \
+	    { cat "$tmp/verify"; fail "--verify still sees the deletion"; }
+	echo "ok   $case_id: restored by the self-check, the run went on to $wend"
 	end_case
 }
 
-# --- 3. drift after the stage, and a conflicted name ---
+# --- 3. drift after the stage, reported and never repaired ---
 case_drift() {
 	case_id="$fixture $form drift after the stage"
 	run_fg
@@ -396,23 +391,30 @@ case_drift() {
 	    { cat "$tmp/verify"; fail "--verify did not name the drifted $tgt"; }
 	grep -q drift "$hmnt$tgt" || fail "--verify wrote to the result"
 	[ "$(statenow "$rds")" = "$state" ] || fail "--verify moved the state"
+	# And neither does a --continue --verify: past applying1 an
+	# edit cannot be told from a stray, so the gate reports it and
+	# passes rather than mending it or blocking on it.
 	"$bin" --continue --verify --result "$rds" > "$tmp/cont" 2>&1
 	st=$?
 	[ $st -eq $wrun ] || \
 	    { cat "$tmp/cont"; fail "--continue --verify exited $st, want $wrun"; }
-	grep -q drift "$hmnt$tgt" && fail "the repair left the drift in $tgt"
+	grep -q "drifted 1, first $tgt" "$tmp/cont" || \
+	    { cat "$tmp/cont"; fail "--continue --verify did not report the drift"; }
+	grep -q drift "$hmnt$tgt" || fail "--continue --verify wrote to the result"
+	[ "$(statenow "$rds")" = "$wend" ] || \
+	    fail "the state is $(statenow "$rds"), want $wend"
 	"$bin" --verify --result "$rds" > "$tmp/verify2" 2>&1
 	st=$?
-	[ $st -eq 0 ] || { cat "$tmp/verify2"; fail "--verify after the repair exited $st"; }
-	grep -q 'drifted 0' "$tmp/verify2" || \
-	    { cat "$tmp/verify2"; fail "the repair left drift behind"; }
+	[ $st -eq 3 ] || \
+	    { cat "$tmp/verify2"; fail "--verify after it exited $st, want 3"; }
+	grep -q "drifted 1, first $tgt" "$tmp/verify2" || \
+	    { cat "$tmp/verify2"; fail "the drift is not reported any more"; }
 	[ "$(recval readonly "$rds")" = "$ro0" ] || \
-	    fail "the repair left readonly $(recval readonly "$rds"), want $ro0"
-	echo "ok   $case_id: $tgt drifted 1, repaired, clean again"
+	    fail "the verb left readonly $(recval readonly "$rds"), want $ro0"
+	echo "ok   $case_id: $tgt drifted 1, reported at every gate, never mended"
 
-	# A conflicted name is not the rebase's to classify or to
-	# mend: no action names it, and the operator's answer to it
-	# stands.
+	# A conflicted name is not the rebase's to classify at all: no
+	# action names it, and the operator's answer to it stands.
 	if [ $clean -eq 0 ]; then
 		case_id="$fixture $form an edit to a conflicted name"
 		cname=$(conflict_name "$man")
@@ -424,16 +426,14 @@ case_drift() {
 		st=$?
 		[ $st -eq 0 ] || \
 		    { cat "$tmp/verify3"; fail "--verify over a conflicted name exited $st, want 0"; }
-		grep -q 'drifted 0' "$tmp/verify3" || \
-		    { cat "$tmp/verify3"; fail "a conflicted name was classified as drift"; }
-		grep -q '0 names outside the manifest changed' "$tmp/verify3" || \
-		    { cat "$tmp/verify3"; fail "a conflicted name became an information line"; }
+		no_outside "$tmp/verify3" || \
+		    { cat "$tmp/verify3"; fail "a conflicted name reached the name list"; }
 		"$bin" --continue --verify --result "$rds" > "$tmp/cont2" 2>&1
 		st=$?
 		[ $st -eq $wrun ] || \
 		    { cat "$tmp/cont2"; fail "--continue --verify exited $st, want $wrun"; }
 		grep -q mine "$hmnt$cname" || \
-		    fail "the repair overwrote the conflicted $cname"
+		    fail "a verb overwrote the conflicted $cname"
 		echo "ok   $case_id: $cname neither classified nor touched"
 	fi
 	end_case
@@ -467,7 +467,7 @@ case_live() {
 	[ $st -eq 0 ] || { cat "$tmp/verify"; fail "--verify exited $st, want 0"; }
 	grep -q 'drifted 0' "$tmp/verify" || \
 	    { cat "$tmp/verify"; fail "--verify found drift"; }
-	grep -q '0 names outside the manifest changed' "$tmp/verify" || \
+	no_outside "$tmp/verify" || \
 	    { cat "$tmp/verify"; fail "a live write reached the result"; }
 	if [ "$form" = dataset ]; then
 		[ -e "$MNT/onto/zr-live" ] && \
@@ -536,9 +536,11 @@ one_fixture() {
 	if [ "$want_conf" = 0 ]; then
 		clean=1
 		wrun=0			# the exit of a run that reaches done
+		wend=done		# and the gate it ends at
 	else
 		clean=0
 		wrun=1			# and of one that stops at conflicts
+		wend=conflicts
 	fi
 	make_pool
 	stray_pass clone

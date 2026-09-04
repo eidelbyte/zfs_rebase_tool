@@ -303,29 +303,31 @@ in --abort with the pool proved to be the fixture again.
 Paused at action:1, with the result writable and no action
 performed, the harness edits a file the manifest keeps untouched,
 creates a name no tree had, and edits a file the manifest is about
-to write. The run finishes at its branch's gate: the name the
-manifest wrote is the manifest's, because the action ran after the
-edit, and the other two are information lines in --verify -- neither
-the rebase's outcome nor onto's own. --continue --verify leaves both
-exactly where they are, and that is the answer and not a gap: no
-action of the manifest names an untouched file, so there is nothing
-there to make true again, and a repair that put onto's bytes back
-over an operator's edit would be destroying work the rebase never
-asked about.
+to write. The run finishes at its branch's gate with all three
+undone: the name the manifest wrote is the manifest's, because the
+action ran after the edit, and the other two are put back by the
+self-check the applying1 stage makes on itself -- the edited name
+out of onto, the name no tree had taken away. Up to the conflicts
+gate the result is the run's own, so anything that is not what the
+expected tree says is a stray. --verify afterwards reports nothing
+outside the manifest, and a --continue --verify has nothing left to
+do.
 
-A stray delete is the one the run's own re-walk catches: the
-decision says that name survives with that pool and it is not
-there, so the run exits 3 with the result kept at applying1 and its
-holds, and --continue takes it on. Afterwards nothing can see it:
-an information line is over the names the result holds, and a name
-it does not hold has nothing to be held against.
+A stray delete is caught by that same self-check: the name list is
+over the shared name table and not over what the result holds, so a
+name onto had that the result has lost is gone, and gone is
+restored out of onto. The run does not stop for it and reaches its
+branch's gate as if it had not happened.
 
-Then drift after the stage, which is what --verify is for -- an
-edit to a file a clean action made is drifted 1 naming it, --verify
-fixes nothing, --continue --verify puts it back -- and, on the
-conflicted fixture, an edit to a conflicted name, which is never
-classified and never touched, because answering a conflict is the
-conflict manager's work.
+Then drift after the stage, which is what --verify is for and what
+nothing repairs -- an edit to a file a clean action made is drifted
+1 naming it, --verify fixes nothing, and --continue --verify
+reports it and fixes nothing either, because past applying1 an edit
+made while the conflicts are being answered cannot be told from a
+stray and a gate that failed on it would block done for good --
+and, on the conflicted fixture, an edit to a conflicted name, which
+is never classified and never touched, because answering a conflict
+is the conflict manager's work.
 
 Last, a stray write into the live from and onto datasets while the
 run is reading, at the read gate: the tool reads snapshots, so the
@@ -335,8 +337,9 @@ empty directory of the pool's root dataset, and a write there is
 hidden the moment the dataset comes home.
 
 The dataset form is given from as a snapshot here rather than as a
-dataset, because the repair after done has to read from and a
-rebase that reaches done destroys a snapshot it took itself.
+dataset, because a verify that cannot read from can only say
+unchecked and a rebase that reaches done destroys a snapshot it
+took itself.
 
 ## The order on a box trip
 

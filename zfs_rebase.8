@@ -250,9 +250,13 @@ verified and before anything is released, and the request is written into
 the record so a kill and a
 .Fl -continue
 still honour it.
-With
-.Fl -continue
-the check is also a repair.
+It never repairs, whatever it finds.
+The one fix in this tool is the self-check the
+.Sy applying1
+stage makes on itself, which is always on and belongs to no flag; from the
+.Sy conflicts
+gate on the tree is being edited by hand and nothing can tell that work
+from a stray, so a verify there reports and stops.
 Alone on a result it is a verb; see below.
 .El
 .Pp
@@ -276,9 +280,14 @@ already true is left alone and what is not is made, which is why a fresh
 run, a resumed one and a repair are one code path.
 With
 .Fl -verify
-it prints, before each stage, how every action of the document stands, and
-repairs the drift it finds on the clean actions; conflicted names are never
-touched, because no action names one.
+it prints, before each stage and at the gate after it, how every action of
+the document stands and what the result holds outside it.
+It writes nothing of its own.
+What mends a result is the
+.Sy applying1
+stage's own self-check, which redoes any clean action that did not land and
+puts back the names no action speaks for, with or without the flag;
+conflicted names are never touched, because no action names one.
 .It Fl -restart
 Put the result back as onto was \(em the clone destroyed and made again from
 the recorded onto snapshot with the same record, or the dataset rolled back
@@ -308,8 +317,21 @@ Every action of the manifest is classified as
 (it matches neither the manifest's outcome nor onto's original) or
 .Sy unchecked
 (a tree it would have to be read against could not be found), and the
-report gives each outcome's count and first name, plus a count of the names
-outside the manifest that changed anyway.
+report gives each outcome's count and first name.
+After them come the names no action spoke for, whose expected object is the
+one onto had there, one line per kind with its count and first name:
+.Sy gone
+(onto had it and the result does not),
+.Sy extra
+(the result has it and nothing expected it),
+.Sy changed
+(there, but not the object onto had) and
+.Sy unpooled
+(there and equal, but no longer one object with the names it shared onto's
+with).
+With
+.Fl v
+the whole list follows.
 .El
 .Pp
 Three test aids exist for the project's own harness and are not part of
@@ -412,7 +434,9 @@ goes down immediately before the result stops being read-only, and the
 clean actions of the manifest are applied under it whether the decision had
 conflicts or not.
 .Sy conflicts
-is written after that apply verified, and is the hand-off.
+is written after that apply verified itself -- every action done or blocked
+and every name outside the manifest as onto had it, the stage putting back
+what was not -- and is the hand-off.
 The run wrote the resolution beside the manifest when it wrote the manifest:
 one line per conflicted name, in the manifest's own tree grammar, each
 carrying the conflict's group number and a choice of
@@ -472,7 +496,7 @@ carry the choices out again and go on
 do the cleanup a kill between the done gate and the release would have
 skipped; with
 .Fl -verify ,
-repair
+report
 .El
 .Sh FILES
 Each run keeps its own directory, 0700 throughout, named for the dataset
@@ -580,9 +604,9 @@ as unchecked rather than guessed at.
 Where a side was given as a dataset, the snapshot the tool took of it is
 gone at done, so the actions that would have to read it cannot be checked
 or redone afterwards.
-After done, drift on a live dataset is indistinguishable from new work, so
-a plain
+After done, drift on a live dataset is indistinguishable from new work,
+which is why nothing past the
+.Sy applying1
+stage puts anything back:
 .Fl -verify
-before a
-.Fl -continue Fl -verify
-is the habit.
+says what it sees and the answer to it is yours.

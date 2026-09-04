@@ -513,7 +513,7 @@ echo "ok   --result $POOL/result@nosuch is the same rebase"
 
 case "$fixture" in
 */probe.zrt|probe.zrt)
-	say "3b. a stray edit, reported and repaired (probe.zrt)"
+	say "3b. a stray edit, reported and never repaired (probe.zrt)"
 	# /n is a cp of the manifest, so an edit to it matches neither
 	# what the rebase made nor what onto had: that is drift, and
 	# --verify says so and fixes nothing.
@@ -530,28 +530,33 @@ case "$fixture" in
 	grep -q 'drifted 1, first /n' "$tmp/verify2" || \
 	    { cat "$tmp/verify2"; fail "--verify did not name the drifted /n"; }
 	echo "ok   --verify: exit 3, drifted 1 first /n, nothing written"
-	# --continue --verify is the repair: the clean action is made
-	# true again, up to the gate the rebase is at.
+	# And --continue --verify does not mend it either: the rebase
+	# is at the conflicts gate, where the tree is being edited by
+	# hand and an edit cannot be told from a stray. It reports and
+	# passes; --restart below is what puts the result back.
 	"$bin" --continue --verify --result "$POOL/result" > "$tmp/cont2" 2>&1
 	st=$?
 	want=1
 	[ $clean -eq 1 ] && want=0
 	[ $st -eq $want ] || \
 	    { cat "$tmp/cont2"; fail "--continue --verify exited $st, want $want"; }
+	grep -q 'drifted 1, first /n' "$tmp/cont2" || \
+	    { cat "$tmp/cont2"; fail "--continue --verify did not report the drift"; }
 	"$bin" --verify --result "$POOL/result" > "$tmp/verify3" 2>&1
 	st=$?
-	[ $st -eq 0 ] || \
-	    { cat "$tmp/verify3"; fail "--verify after the repair exited $st"; }
-	grep -q 'drifted 0' "$tmp/verify3" || \
-	    { cat "$tmp/verify3"; fail "the repair left drift behind"; }
+	[ $st -eq 3 ] || \
+	    { cat "$tmp/verify3"; fail "--verify after it exited $st, want 3"; }
+	grep -q 'drifted 1, first /n' "$tmp/verify3" || \
+	    { cat "$tmp/verify3"; fail "the drift is not reported any more"; }
 	[ "$(zfs get -H -o value readonly "$POOL/result")" = on ] || \
-	    fail "the repair left the result writable"
-	echo "ok   --continue --verify repaired it; --verify is clean again"
+	    fail "a verb left the result writable"
+	echo "ok   --continue --verify reported it and wrote nothing"
 
 	say "3c. restart (probe.zrt)"
 	# The clone goes and is made again from the recorded onto
 	# snapshot with the same record; the holds are on the
-	# snapshots and are not touched by any of it.
+	# snapshots and are not touched by any of it. The stray edit
+	# of 3b goes with the clone, which is what --restart is for.
 	"$bin" --restart --result "$POOL/result" > "$tmp/rest" 2>&1
 	st=$?
 	want=1

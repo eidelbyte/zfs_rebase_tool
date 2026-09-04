@@ -490,7 +490,8 @@ the stop {SIGINT, SIGTERM, SIGKILL}; the input forms {from a snapshot or a datas
 snapshot or a dataset, --result as a clone name or as a snapshot
 name, short and full}; the dataset form's own {the unmount, the
 private mount, the readonly flips, the hand-back, the rollback};
-guards {securelevel, private mountpoint, readonly flip, re-walk};
+guards {securelevel, private mountpoint, readonly flip, the
+self-check after an apply};
 driver {flags, preconditions, exit status}. Every row here is box
 only.
 
@@ -520,8 +521,8 @@ only.
 | ZX22 | refusal when not run as root | planned: box, box/run-fixture.sh |
 | ZX23 | securelevel refusal | deferred: a reboot; see the note |
 | ZX24 | a foreign mountpoint is refused | planned: box, box/run-fixture.sh |
-| ZX25 | the re-walk equals the decision | planned: box, box/run-fixture.sh |
-| ZX26 | a stray write caught by re-walk | planned: box, box/run-strays.sh, which is where the pause hook can put one there mid-apply |
+| ZX25 | the self-check after applying1 finds every action done or blocked and no name outside the manifest | planned: box, box/run-fixture.sh |
+| ZX26 | a stray write at applying1 caught and put back by the self-check | planned: box, box/run-strays.sh, which is where the pause hook can put one there mid-apply |
 | ZX27 | exit 0: clean and applied | planned: box, box/run-fixture.sh |
 | ZX28 | exit 1: conflicts, clone left | planned: box, box/run-fixture.sh |
 | ZX29 | exit 2: precondition failure | planned: box, box/run-fixture.sh |
@@ -539,7 +540,7 @@ only.
 | ZX41 | applying1 applies the clean actions before the conflicts gate | planned: box, box/run-fixture.sh |
 | ZX42 | a conflicted run: state conflicts, the holds kept, the clean actions in the tree | planned: box, box/run-fixture.sh |
 | ZX43 | stage 1 idempotence: a second rebase declares 0 actions and the same conflicts | planned: box, box/run-fixture.sh |
-| ZX44 | a directory rm blocked by a conflicted child survives applying1, and the re-walk passes over it | planned: box, box/run-fixture.sh |
+| ZX44 | a directory rm blocked by a conflicted child survives applying1, and the self-check passes over it | planned: box, box/run-fixture.sh |
 | ZX45 | the hand-off names <rundir>/resolution at the conflicts gate | planned: box, box/run-fixture.sh |
 | ZX46 | the run directory is /var/db/zfs_rebase/<result>, mount point and manifest under it | planned: box, box/run-fixture.sh |
 | ZX47 | a manifest at that path survives a reboot, which /var/run would not | deferred: a reboot of the box; run by hand with a conflicted fixture |
@@ -749,10 +750,16 @@ the result holds {the action's own outcome, onto's original,
 neither, nothing}; pooling in the result {one pool with the anchor,
 its own, torn from its pool}; outcome {done, pending, blocked,
 drifted, unchecked}; the trees available {all three, from gone, onto
-gone}; the information line {edited, added, covered by a conflict,
-still onto's, another name of an object an action made}; the apply's
-input {no report, a report}; repetition {a first run, a second run
+gone}; the name no action spoke for {edited, added, deleted, covered
+by a conflict, under a removed directory, torn out of its pool, still
+onto's, another name of an object an action made}; the apply's input
+{no report, a report}; the self-check {with the fix, which is
+applying1, and without it}; repetition {a first run, a second run
 over what the first left}.
+
+Rows ZY60 and up were plotted 2026-09-04, before their tests, for
+the one-verify issue: the second pass became a per-name list over
+the whole name table, and applying1 gained the repair over it.
 
 The whole grid runs on the Mac: three directories, a manifest as
 text or one the pipeline emitted, and a result doctored by hand,
@@ -783,11 +790,11 @@ snapshot, a clone and a kill need the box.
 | ZY18 | write: bytes nobody asked for | covered: check_verify.c |
 | ZY19 | write: from's bytes but the pool torn | covered: check_verify.c |
 | ZY20 | a conflict mark: classified as nothing, counted nowhere | covered: check_verify.c |
-| ZY21 | a name under a conflicted directory: never an info line | covered: check_verify.c |
-| ZY22 | info: an untouched name edited | covered: check_verify.c |
-| ZY23 | info: a name onto never had | covered: check_verify.c |
-| ZY24 | no info: an untouched name that still matches | covered: check_verify.c |
-| ZY25 | no info: another name of an object an action made | covered: check_verify.c |
+| ZY21 | a name under a conflicted directory: never an entry of the list | covered: check_verify.c |
+| ZY22 | an untouched name edited: an entry, of the changed kind | covered: check_verify.c |
+| ZY23 | a name onto never had: an entry, of the extra kind | covered: check_verify.c |
+| ZY24 | no entry: an untouched name that still matches | covered: check_verify.c |
+| ZY25 | no entry: another name of an object an action made | covered: check_verify.c |
 | ZY26 | the counts and the firsts, in manifest order | covered: check_verify.c |
 | ZY27 | applied twice over a pristine tree: one place | covered: check_verify.c |
 | ZY28 | idempotence: rm of a name already gone | covered: check_verify.c |
@@ -807,12 +814,22 @@ snapshot, a clone and a kill need the box.
 | ZY42 | rm with onto gone: unchecked while the name is there, done once it is not | covered: check_verify.c |
 | ZY43 | dup with onto gone: unchecked | covered: check_verify.c |
 | ZY44 | ln standing on its anchor, and a cp the result already holds: done with onto gone | covered: check_verify.c |
-| ZY45 | no information lines at all with onto gone | covered: check_verify.c |
-| ZY46 | information lines over real trees: an untouched file edited and a name no tree had, both reported, and --continue --verify leaves both, since no action of the manifest names either | planned: box, box/run-strays.sh |
+| ZY45 | no name list at all with onto gone | covered: check_verify.c |
+| ZY46 | the name list over real trees: an untouched file edited and a name no tree had, both put back by applying1's self-check while the result is still the run's own, and --verify afterwards reports neither | planned: box, box/run-strays.sh |
 | ZY47 | a stray edit to a name an action will make: the action runs after it and overwrites it, and the name classifies done | planned: box, box/run-strays.sh |
-| ZY48 | a stray delete of an untouched name: no information line, because a line is over the names the result holds and this one it does not hold, and no action names it either; the run's re-walk is what catches it (ZX26) | planned: box, box/run-strays.sh |
+| ZY48 | a stray delete of an untouched name at applying1: reported gone -- the pass is over the name table and not over what the result holds -- restored from onto by the self-check, and the run goes on to its normal end | planned: box, box/run-strays.sh |
 | ZY49 | an edit to a conflicted name in a real result: never classified and never repaired | planned: box, box/run-strays.sh |
-| ZY50 | drift after the stage, in both forms and on both branches: --verify exits 3 naming it and writes nothing, --continue --verify puts it back, --verify is clean after | planned: box, box/run-strays.sh |
+| ZY50 | drift after the stage, in both forms and on both branches: --verify exits 3 naming it and writes nothing, --continue --verify reports it and writes nothing either, and the done gate reports and passes rather than failing | planned: box, box/run-strays.sh |
+| ZY60 | gone: a name onto had that the result does not, which the second pass sees because it is over the name table and not over what the result holds | covered: check_verify.c |
+| ZY61 | extra: a name the result holds that nothing expected | covered: check_verify.c |
+| ZY62 | changed: a name there, but not the object onto had | covered: check_verify.c |
+| ZY63 | unpooled: a pool of untouched names torn in two, one entry on the second name with the first as its anchor | covered: check_verify.c |
+| ZY64 | the applying1 repair over one of each kind: restored, removed and relinked, the result onto again and the list empty after it | covered: check_verify.c |
+| ZY65 | a conflicted name edited or deleted: no entry on either axis | covered: check_verify.c |
+| ZY66 | a name under a directory the manifest removes: expected to be nothing, so not gone | covered: check_verify.c |
+| ZY67 | the check without the fix, which is applying2 and done: the names are not looked at and nothing is written | covered: check_verify.c |
+| ZY68 | onto gone: the list is empty, as the info count was | covered: check_verify.c |
+| ZY69 | one doctored tree down both applying1 paths, a fresh run's and a --continue's: one function, one repair, one tree | covered: check_verify.c |
 
 ZY40 to ZY45 are the post-done verify's: a tree that is not there
 any more is walked as the empty tree and named in the missing mask,
@@ -821,10 +838,17 @@ box rows for a really destroyed snapshot are ZX56 and ZX57.
 
 ZY19's drift is reported and not repaired: a re-write mends the
 bytes of the name it is on and cannot rejoin a pool somebody tore,
-so --continue --verify will make the write true again and verify
-will still say drifted. That is the honest answer and the reason
-the information lines and this cell exist at all -- to be read, not
-to be cleared.
+so an apply will make the write true again and verify will still
+say drifted. The repair of ZY64 does not reach it either -- it puts
+back the names no action spoke for, and the torn name here is the
+write's own pool -- so a stray that tears a written file's pool at
+applying1 stops the run as an internal failure, which is what it
+did before this list existed.
+
+ZY60 to ZY69 are the one verify of the plan's 2026-09-04 revision:
+one algorithm at every gate, a per-name list beside the per-action
+outcomes, and a fix only at applying1, where the result is the
+run's own and anything off the expected tree is a stray.
 
 ## Positive-proof cells
 
@@ -839,6 +863,7 @@ V family learned:
   ZD35  the battery has verdicts of every class, both modes
   ZM32  a manifest matches the note byte for byte
   ZA9   a write is seen through a second name, so it was in place
-  ZX25  the re-walk equals the decision, so apply was complete
+  ZX25  the self-check after the apply has nothing to say, so
+        the apply was complete
   ZY14  a dup with the right bytes is still pending, so the
         classifier reads the pooling and not the bytes alone

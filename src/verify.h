@@ -1,9 +1,18 @@
 /*
  * verify: hold a parsed manifest against the tree in front of us and
  * say, of every action, whether it is done, still pending, blocked by
- * a conflict or drifted. Nothing here writes. It is what --verify
- * reports and what an idempotent apply reads to know what it may
- * leave alone.
+ * a conflict or drifted, and of every name no action spoke for
+ * whether the result holds it as onto did. Nothing here writes. It is
+ * what --verify reports, what an idempotent apply reads to know what
+ * it may leave alone, and what the repair of applying1 works from.
+ *
+ * One verify, at every gate. The expected tree is onto's names with
+ * the manifest's actions applied abstractly: from's object where an
+ * action put it, onto's where none spoke for it, nothing under an rm.
+ * The result is held against that on two axes -- name participation
+ * (the set of names, and which of them are one object) and content
+ * (the oracle's word: type, attributes, bytes) -- and the difference
+ * is what this reports. Conflicted names are skipped on both axes.
  */
 
 #ifndef	ZR_VERIFY_H
@@ -62,6 +71,46 @@ enum zr_outcome {
 #define	ZR_ACTION_NONE	((uint32_t)-1)
 
 /*
+ * What one name no action spoke for says about the tree. The
+ * expected object of such a name is onto's own, or nothing where onto
+ * never had it or where an rm removed the directory above it, and
+ * these are the four ways the result can differ from that:
+ *
+ *	gone		onto had it and the result does not
+ *	extra		the result has it and nothing expected it
+ *	changed		there, but not the object onto had
+ *	unpooled	there and equal, but no longer one object
+ *			with the untouched names it shared onto's with
+ *
+ * The first two are the name axis and the last two the content and
+ * the pooling; between them they are the "missing, extra, wrong
+ * pool, wrong bytes" of the plan.
+ */
+enum zr_diff {
+	ZR_DF_GONE,
+	ZR_DF_EXTRA,
+	ZR_DF_CHANGED,
+	ZR_DF_UNPOOLED
+};
+
+#define	ZR_DF_COUNT	4
+
+/*
+ * One such name. zn_anchor is the name the repair mends this one
+ * from where the mending is a link rather than a copy: for gone and
+ * changed, another name of the same onto pool that the result still
+ * holds as onto had it, so that a pool of two names is not severed by
+ * putting one of them back; for unpooled, the name this one has left,
+ * which is that same anchor. It is ZR_NAME_NONE when there is no such
+ * name, which is every extra and every single-name pool.
+ */
+struct zr_namediff {
+	zr_name_t	zn_name;
+	zr_name_t	zn_anchor;
+	enum zr_diff	zn_kind;
+};
+
+/*
  * One classification of one manifest. zv_outcome has an entry for
  * every line of m->zp_actions, conflict marks included, so that an
  * index into it is an index into the manifest; a conflict mark is
@@ -69,19 +118,24 @@ enum zr_outcome {
  * counted nowhere. The counts and the firsts are over the other
  * actions, in manifest order, ZR_ACTION_NONE where there were none.
  *
- * The info line is the stray-edit detector: a name the result holds
- * that no action names, that no conflict covers, that is not another
- * name of an object some action made, and that the result does not
- * hold as onto did -- an edit, or a name onto never had at all. It
- * is reported and never repaired.
+ * zv_diffs is the rest of the tree: one entry per name no action
+ * spoke for that the result does not hold as the expected tree says,
+ * in name order, owned here and freed by zr_verify_report_fini. A
+ * name a conflict covers is in no entry, and neither is a name that
+ * shares a result pool with a name some action made -- the second
+ * name of a written file changed because the write said so, and
+ * nobody is told about it twice. zv_dcount and zv_dfirst are derived
+ * from the list, ZR_NAME_NONE where a kind has no entry.
  */
 struct zr_verify_report {
 	enum zr_outcome	*zv_outcome;	/* one per action; owned here */
 	uint32_t	zv_nactions;	/* how many, for the apply's check */
 	uint32_t	zv_count[ZR_OC_COUNT];
 	uint32_t	zv_first[ZR_OC_COUNT];
-	uint32_t	zv_ninfo;
-	zr_name_t	zv_first_info;	/* ZR_NAME_NONE when zv_ninfo is 0 */
+	struct zr_namediff *zv_diffs;	/* one per name; owned here */
+	uint32_t	zv_ndiffs;
+	uint32_t	zv_dcount[ZR_DF_COUNT];
+	zr_name_t	zv_dfirst[ZR_DF_COUNT];
 };
 
 /*
@@ -103,8 +157,8 @@ struct zr_verify_report {
  * missing is 0 when all three trees are really there, and otherwise
  * the ZR_MISS_ bits of the ones that are not: every action that
  * would have to read one of those is ZR_OC_UNCHECKED, and with onto
- * missing there are no information lines either, since the names
- * nobody spoke for have nothing to be held against.
+ * missing the name list is empty, since the names nobody spoke for
+ * have nothing to be held against.
  *
  * Returns 0 with *out filled, or -1 with a message in err when
  * errlen is not 0. Either way *out is safe to hand to
@@ -119,6 +173,9 @@ void zr_verify_report_fini(struct zr_verify_report *r);
 
 /* "done", "pending", "blocked", "drifted", "unchecked". */
 const char *zr_outcome_str(enum zr_outcome oc);
+
+/* "gone", "extra", "changed", "unpooled". */
+const char *zr_diff_str(enum zr_diff df);
 
 /*
  * Does the manifest mark a name under this directory conflict? That

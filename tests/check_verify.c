@@ -5,9 +5,9 @@
  * state under test -- a manifest written as text, and the
  * classification held against what the state says. Every action kind
  * is taken through done, pending and drifted, the directory removal
- * over a conflicted name through blocked, and the information line
- * through an edit, an addition, a name a conflict covers and a name
- * that is simply still onto's.
+ * over a conflicted name through blocked, and the name list through
+ * an edit, an addition, a deletion, a name a conflict covers and a
+ * name that is simply still onto's.
  *
  * Then the whole thing over one scenario: three trees walked,
  * decided, emitted and parsed, applied to a copy of onto, classified,
@@ -18,16 +18,23 @@
  * idempotence itself: the manifest applied twice over a pristine copy
  * lands in one place, name for name, pool for pool and byte for byte.
  *
+ * Then the names no action spoke for: the four kinds of the report's
+ * list -- gone, extra, changed, unpooled -- over doctored results,
+ * and the repair applying1 makes over that list, after which the
+ * result is onto again and the list is empty. The last of them takes
+ * one doctored tree down both applying1 paths, a fresh run's and a
+ * --continue's, which are one function.
+ *
  * Last, the trees that are not there: a verify made long after the
  * rebase, with one of its two sources gone, which is unchecked and
  * not drift.
  *
  * The family is ZY of tests/MATRIX.md, and ZC25 of the oracle's is
  * here too, since the pair entry point this classifier asks
- * everything through is new with it. Covered: ZY1 through ZY36 and
- * ZY40 through ZY45. ZY37, ZY38 and ZY39 are the box's -- a real ACL
- * and both extended attribute namespaces in a comparison, a kill at
- * a gate, and the dataset form.
+ * everything through is new with it. Covered: ZY1 through ZY36, ZY40
+ * through ZY45 and ZY60 through ZY69. ZY37, ZY38 and ZY39 are the
+ * box's -- a real ACL and both extended attribute namespaces in a
+ * comparison, a kill at a gate, and the dataset form.
  */
 
 #define	_XOPEN_SOURCE	700
@@ -359,7 +366,7 @@ vshape_run(struct vshape *v, const char *body, int nactions, int nconf,
 	zr_walk_fini(&wo);
 }
 
-/* One action, one expected outcome, and no information line. */
+/* One action, one expected outcome, and an empty name list. */
 static void
 vshape_one(struct vshape *v, const char *body, const char *path,
     enum zr_outcome want)
@@ -377,8 +384,7 @@ vshape_one(struct vshape *v, const char *body, const char *path,
 	CHECK(rep.zv_outcome[i] == want);
 	CHECK(rep.zv_count[want] == 1);
 	CHECK(rep.zv_first[want] == i);
-	CHECK(rep.zv_ninfo == 0);
-	CHECK(rep.zv_first_info == ZR_NAME_NONE);
+	CHECK(rep.zv_ndiffs == 0);
 	zr_verify_report_fini(&rep);
 	zr_parsed_fini(&p);
 }
@@ -440,7 +446,7 @@ check_rm_blocked(void)
 	CHECK(rep.zv_first[ZR_OC_DONE] == ZR_ACTION_NONE);
 	CHECK(rep.zv_count[ZR_OC_PENDING] == 0);
 	CHECK(rep.zv_count[ZR_OC_DRIFTED] == 0);
-	CHECK(rep.zv_ninfo == 0);
+	CHECK(rep.zv_ndiffs == 0);
 	zr_verify_report_fini(&rep);
 	zr_parsed_fini(&p);
 	vshape_fini(&v);
@@ -579,16 +585,18 @@ check_write_pool(void)
 	CHECK(rep.zv_outcome[idx_of(&p, "/w")] == ZR_OC_DONE);
 	CHECK(rep.zv_outcome[idx_of(&p, "/w2")] == ZR_OC_DONE);
 	CHECK(rep.zv_count[ZR_OC_DONE] == 2);
-	CHECK(rep.zv_ninfo == 0);
+	CHECK(rep.zv_ndiffs == 0);
 	zr_verify_report_fini(&rep);
 	zr_parsed_fini(&p);
 	vshape_fini(&v);
 }
 
 /*
- * ZY22, ZY23, ZY24: the information line. A name nobody spoke for
- * that the result no longer holds as onto did is one, whether it was
- * edited or added; a name that still matches is not.
+ * ZY22, ZY23, ZY24, ZY60, ZY61, ZY62: the name list. A name nobody
+ * spoke for that the result no longer holds as onto did is an entry
+ * of it -- changed where it was edited, extra where onto never had
+ * it, gone where the result does not hold it at all -- and a name
+ * that still matches is no entry.
  */
 static void
 check_info_lines(void)
@@ -603,22 +611,43 @@ check_info_lines(void)
 	mkdirp(v.vs_res, "/d", 0755);
 	mkfile(v.vs_res, "/d/x", "untouched\n", 0644);
 	vshape_run(&v, "", 0, 0, "", &p, &rep);
-	CHECK(rep.zv_ninfo == 0);
-	CHECK(rep.zv_first_info == ZR_NAME_NONE);
+	CHECK(rep.zv_ndiffs == 0);
+	CHECK(rep.zv_dfirst[ZR_DF_CHANGED] == ZR_NAME_NONE);
 	zr_verify_report_fini(&rep);
 	zr_parsed_fini(&p);
 	/* an edit to a name the manifest never mentions */
 	mkfile(v.vs_res, "/d/x", "an edit!!\n", 0644);
 	vshape_run(&v, "", 0, 0, "", &p, &rep);
-	CHECK(rep.zv_ninfo == 1);
-	CHECK(rep.zv_first_info == zr_names_lookup(v.vs_ns, "/d/x", 4));
+	CHECK(rep.zv_ndiffs == 1);
+	CHECK(rep.zv_dcount[ZR_DF_CHANGED] == 1);
+	CHECK(rep.zv_diffs[0].zn_kind == ZR_DF_CHANGED);
+	CHECK(rep.zv_diffs[0].zn_anchor == ZR_NAME_NONE);
+	CHECK(rep.zv_dfirst[ZR_DF_CHANGED] ==
+	    zr_names_lookup(v.vs_ns, "/d/x", 4));
 	zr_verify_report_fini(&rep);
 	zr_parsed_fini(&p);
 	/* and a name onto never had at all */
 	mkfile(v.vs_res, "/extra", "brand new\n", 0644);
 	vshape_run(&v, "", 0, 0, "", &p, &rep);
-	CHECK(rep.zv_ninfo == 2);
-	CHECK(rep.zv_first_info == zr_names_lookup(v.vs_ns, "/d/x", 4));
+	CHECK(rep.zv_ndiffs == 2);
+	CHECK(rep.zv_dcount[ZR_DF_CHANGED] == 1);
+	CHECK(rep.zv_dcount[ZR_DF_EXTRA] == 1);
+	CHECK(rep.zv_dfirst[ZR_DF_CHANGED] ==
+	    zr_names_lookup(v.vs_ns, "/d/x", 4));
+	CHECK(rep.zv_dfirst[ZR_DF_EXTRA] ==
+	    zr_names_lookup(v.vs_ns, "/extra", 6));
+	zr_verify_report_fini(&rep);
+	zr_parsed_fini(&p);
+	/* and one the result does not hold at all: gone, not silence */
+	rmname(v.vs_res, "/d/x");
+	rmname(v.vs_res, "/extra");
+	vshape_run(&v, "", 0, 0, "", &p, &rep);
+	CHECK(rep.zv_ndiffs == 1);
+	CHECK(rep.zv_dcount[ZR_DF_GONE] == 1);
+	CHECK(rep.zv_diffs[0].zn_kind == ZR_DF_GONE);
+	CHECK(rep.zv_diffs[0].zn_anchor == ZR_NAME_NONE);
+	CHECK(rep.zv_dfirst[ZR_DF_GONE] ==
+	    zr_names_lookup(v.vs_ns, "/d/x", 4));
 	zr_verify_report_fini(&rep);
 	zr_parsed_fini(&p);
 	vshape_fini(&v);
@@ -627,7 +656,7 @@ check_info_lines(void)
 /*
  * ZY21: a conflicted name is left alone entirely, and so is
  * everything under a conflicted directory. The same doctored tree
- * gives an information line when nothing marks the directory.
+ * gives an entry of the name list when nothing marks the directory.
  */
 static void
 check_info_conflicted(void)
@@ -655,13 +684,29 @@ check_info_conflicted(void)
 	CHECK(p.zp_nactions == 1);
 	CHECK(rep.zv_outcome[0] == ZR_OC_DONE);
 	CHECK(rep.zv_count[ZR_OC_DONE] == 0);
-	CHECK(rep.zv_ninfo == 0);
+	CHECK(rep.zv_ndiffs == 0);
 	zr_verify_report_fini(&rep);
 	zr_parsed_fini(&p);
 	/* the same result, with nothing conflicted over it */
 	vshape_run(&v, "", 0, 0, "", &p, &rep);
-	CHECK(rep.zv_ninfo == 1);
-	CHECK(rep.zv_first_info == zr_names_lookup(v.vs_ns, "/d/x", 4));
+	CHECK(rep.zv_ndiffs == 1);
+	CHECK(rep.zv_dfirst[ZR_DF_CHANGED] ==
+	    zr_names_lookup(v.vs_ns, "/d/x", 4));
+	zr_verify_report_fini(&rep);
+	zr_parsed_fini(&p);
+	/*
+	 * ZY65: and a deletion under the same conflicted directory,
+	 * which is skipped on the name axis as the edit was on the
+	 * content axis.
+	 */
+	rmname(v.vs_res, "/d/x");
+	vshape_run(&v, body, 0, 1, records, &p, &rep);
+	CHECK(rep.zv_ndiffs == 0);
+	zr_verify_report_fini(&rep);
+	zr_parsed_fini(&p);
+	vshape_run(&v, "", 0, 0, "", &p, &rep);
+	CHECK(rep.zv_ndiffs == 1);
+	CHECK(rep.zv_dcount[ZR_DF_GONE] == 1);
 	zr_verify_report_fini(&rep);
 	zr_parsed_fini(&p);
 	vshape_fini(&v);
@@ -968,7 +1013,7 @@ check_scenario(void)
 	CHECK(rep.zv_first[ZR_OC_PENDING] == ZR_ACTION_NONE);
 	CHECK(rep.zv_first[ZR_OC_DRIFTED] == ZR_ACTION_NONE);
 	CHECK(rep.zv_outcome[id] == ZR_OC_BLOCKED);
-	CHECK(rep.zv_ninfo == 0);
+	CHECK(rep.zv_ndiffs == 0);
 	zr_verify_report_fini(&rep);
 
 	/* now the doctoring: one of each state, in manifest order */
@@ -992,8 +1037,10 @@ check_scenario(void)
 	CHECK(rep.zv_first[ZR_OC_PENDING] == in);
 	CHECK(rep.zv_first[ZR_OC_BLOCKED] == id);
 	CHECK(rep.zv_first[ZR_OC_DRIFTED] == iq);
-	CHECK(rep.zv_ninfo == 1);
-	CHECK(rep.zv_first_info == zr_names_lookup(s.sc_ns, "/keep", 5));
+	CHECK(rep.zv_ndiffs == 1);
+	CHECK(rep.zv_dcount[ZR_DF_CHANGED] == 1);
+	CHECK(rep.zv_dfirst[ZR_DF_CHANGED] ==
+	    zr_names_lookup(s.sc_ns, "/keep", 5));
 
 	/*
 	 * The repair. The two removals and the blocked directory are
@@ -1014,9 +1061,10 @@ check_scenario(void)
 	CHECK(rep.zv_count[ZR_OC_BLOCKED] == 1);
 	CHECK(rep.zv_count[ZR_OC_PENDING] == 0);
 	CHECK(rep.zv_count[ZR_OC_DRIFTED] == 0);
-	/* the information line is nobody's to repair, and stays */
-	CHECK(rep.zv_ninfo == 1);
-	CHECK(rep.zv_first_info == zr_names_lookup(s.sc_ns, "/keep", 5));
+	/* the apply mends no name outside the manifest: the repair does */
+	CHECK(rep.zv_ndiffs == 1);
+	CHECK(rep.zv_dfirst[ZR_DF_CHANGED] ==
+	    zr_names_lookup(s.sc_ns, "/keep", 5));
 	zr_verify_report_fini(&rep);
 	scene_fini(&s);
 }
@@ -1092,6 +1140,68 @@ check_twice(void)
 	scene_fini(&s);
 }
 
+/* The self-check both applying1 paths make, over one work tree. */
+static void
+scene_check(struct scene *s, const char *work, int fix,
+    struct zr_apply_stats *st)
+{
+	char err[512];
+
+	err[0] = '\0';
+	if (zr_apply_check(&s->sc_p, work, s->sc_ns, &s->sc_wo, &s->sc_wf, 0,
+	    fix, st, err, sizeof (err)) != 0)
+		printf("  check: %s\n", err);
+	CHECK(err[0] == '\0');
+}
+
+/* One stray delete and one stray creation, the same in both trees. */
+static void
+doctor_untouched(const char *work)
+{
+	rmname(work, "/keep");
+	mkfile(work, "/stray", "s0\n", 0644);
+}
+
+/*
+ * ZY69: the fresh run and a --continue reach one function over one
+ * doctored tree. The fresh run applies and checks; a --continue
+ * classifies, applies what the classification says is left and
+ * checks the same way. Both put the untouched names back, both put
+ * them back the same, and the two trees are one tree afterwards.
+ */
+static void
+check_two_paths(void)
+{
+	struct zr_apply_stats st, sa, sb;
+	char fresh[PATHMAX], cont[PATHMAX];
+	struct zr_verify_report rep;
+	struct scene s;
+
+	scene_init(&s);
+	scene_work(&s, "/fresh", fresh, sizeof (fresh));
+	scene_work(&s, "/cont", cont, sizeof (cont));
+	scene_apply(&s, fresh, NULL, &st);
+	scene_apply(&s, cont, NULL, &st);
+	doctor_untouched(fresh);
+	doctor_untouched(cont);
+	scene_check(&s, fresh, 1, &sa);
+	scene_classify(&s, cont, &rep);
+	CHECK(rep.zv_ndiffs == 2);
+	CHECK(rep.zv_dcount[ZR_DF_GONE] == 1);
+	CHECK(rep.zv_dcount[ZR_DF_EXTRA] == 1);
+	scene_apply(&s, cont, &rep, &st);
+	zr_verify_report_fini(&rep);
+	scene_check(&s, cont, 1, &sb);
+	CHECK(sa.zs_restored == 1 && sa.zs_removed == 1);
+	CHECK(sb.zs_restored == sa.zs_restored);
+	CHECK(sb.zs_removed == sa.zs_removed);
+	CHECK(sb.zs_relinked == sa.zs_relinked);
+	CHECK(absent(fresh, "/stray") && absent(cont, "/stray"));
+	CHECK(!absent(fresh, "/keep") && !absent(cont, "/keep"));
+	same_trees(&s, fresh, cont);
+	scene_fini(&s);
+}
+
 /*
  * ZY35: a directory the manifest removes that is not empty and has
  * no conflicted name under it is still the loud failure it was. The
@@ -1120,6 +1230,288 @@ check_rm_still_loud(void)
 	CHECK(strstr(err, "rmdir") != NULL);
 	CHECK(!absent(v.vs_res, "/d/c"));
 	zr_walk_fini(&wf);
+	zr_parsed_fini(&p);
+	vshape_fini(&v);
+}
+
+/*
+ * ---------------------------------------------------------------
+ * The names no action spoke for, and the repair over them. The
+ * report is a list; applying1 is the one place anything is done
+ * about it.
+ * ---------------------------------------------------------------
+ */
+
+/*
+ * The two directories hold the same names, pooled the same way and
+ * holding the same objects. The from tree is the third the oracle
+ * wants and is not looked at.
+ */
+static void
+same_dirs(struct vshape *v, const char *a, const char *b)
+{
+	struct zr_walk wa, wb, wf;
+	struct zr_oracle *o;
+	zr_pool_t qa, qb;
+	uint32_t n, i;
+	char err[512];
+
+	err[0] = '\0';
+	CHECK(zr_walk(a, v->vs_ns, &wa, err, sizeof (err)) == 0);
+	CHECK(zr_walk(b, v->vs_ns, &wb, err, sizeof (err)) == 0);
+	CHECK(zr_walk(v->vs_from, v->vs_ns, &wf, err, sizeof (err)) == 0);
+	CHECK(zr_oracle_init(&o, &wa, &wb, &wf) == 0);
+	n = zr_names_count(v->vs_ns);
+	for (i = 0; i < n; i++) {
+		qa = zr_tree_pool(&wa.zw_tree, i);
+		qb = zr_tree_pool(&wb.zw_tree, i);
+		if ((qa == ZR_POOL_NONE) != (qb == ZR_POOL_NONE))
+			printf("  %s: only one tree has it\n",
+			    zr_names_str(v->vs_ns, i, NULL));
+		CHECK((qa == ZR_POOL_NONE) == (qb == ZR_POOL_NONE));
+		if (qa == ZR_POOL_NONE)
+			continue;
+		CHECK(wa.zw_tree.zt_pools[qa].zp_nnames ==
+		    wb.zw_tree.zt_pools[qb].zp_nnames);
+		CHECK(zr_oracle_equal(o, 0, qa, 1, qb, err,
+		    sizeof (err)) == 1);
+	}
+	zr_oracle_fini(o);
+	zr_walk_fini(&wf);
+	zr_walk_fini(&wb);
+	zr_walk_fini(&wa);
+}
+
+/* onto as this section builds it, and the result before it is doctored. */
+static void
+build_untouched(const char *root)
+{
+	mkfile(root, "/keep", "k0\n", 0644);
+	mkfile(root, "/gone", "g0\n", 0644);
+	mkfile(root, "/a", "shared\n", 0644);
+	mklink(root, "/b", "/a");
+	mkdirp(root, "/d", 0755);
+	mkfile(root, "/d/x", "dx0\n", 0644);
+}
+
+/*
+ * ZY63: a pool of two untouched names torn in two. Both halves hold
+ * onto's object still, so neither is changed; what is wrong is that
+ * they are two objects, and the entry is on the second name with the
+ * first as its anchor.
+ */
+static void
+check_unpooled(void)
+{
+	struct zr_verify_report rep;
+	struct zr_parsed p;
+	struct vshape v;
+
+	vshape_init(&v);
+	mkfile(v.vs_onto, "/a", "shared\n", 0644);
+	mklink(v.vs_onto, "/b", "/a");
+	mkfile(v.vs_res, "/a", "shared\n", 0644);
+	mklink(v.vs_res, "/b", "/a");
+	vshape_run(&v, "", 0, 0, "", &p, &rep);
+	CHECK(rep.zv_ndiffs == 0);
+	zr_verify_report_fini(&rep);
+	zr_parsed_fini(&p);
+	/* the same bytes at both names, and no longer one file */
+	rmname(v.vs_res, "/b");
+	mkfile(v.vs_res, "/b", "shared\n", 0644);
+	vshape_run(&v, "", 0, 0, "", &p, &rep);
+	CHECK(rep.zv_ndiffs == 1);
+	CHECK(rep.zv_dcount[ZR_DF_UNPOOLED] == 1);
+	CHECK(rep.zv_dcount[ZR_DF_CHANGED] == 0);
+	CHECK(rep.zv_diffs[0].zn_name == zr_names_lookup(v.vs_ns, "/b", 2));
+	CHECK(rep.zv_diffs[0].zn_anchor == zr_names_lookup(v.vs_ns, "/a", 2));
+	zr_verify_report_fini(&rep);
+	zr_parsed_fini(&p);
+	vshape_fini(&v);
+}
+
+/*
+ * ZY66: a name under a directory the manifest removes is expected to
+ * be nothing, so the result not holding it is right and no entry is
+ * made. Without the rm the same two names are gone.
+ */
+static void
+check_under_rm(void)
+{
+	struct zr_verify_report rep;
+	struct zr_parsed p;
+	struct vshape v;
+
+	vshape_init(&v);
+	mkdirp(v.vs_onto, "/d", 0755);
+	mkfile(v.vs_onto, "/d/x", "dx0\n", 0644);
+	mkfile(v.vs_res, "/other", "o0\n", 0644);
+	mkfile(v.vs_onto, "/other", "o0\n", 0644);
+	vshape_run(&v, "    d/ rm\n    ..\n", 1, 0, "", &p, &rep);
+	CHECK(rep.zv_outcome[idx_of(&p, "/d")] == ZR_OC_DONE);
+	CHECK(rep.zv_ndiffs == 0);
+	zr_verify_report_fini(&rep);
+	zr_parsed_fini(&p);
+	/* the same tree with nothing removing the directory */
+	vshape_run(&v, "", 0, 0, "", &p, &rep);
+	CHECK(rep.zv_ndiffs == 2);
+	CHECK(rep.zv_dcount[ZR_DF_GONE] == 2);
+	CHECK(rep.zv_dfirst[ZR_DF_GONE] == zr_names_lookup(v.vs_ns, "/d", 2));
+	zr_verify_report_fini(&rep);
+	zr_parsed_fini(&p);
+	vshape_fini(&v);
+}
+
+/*
+ * ZY60, ZY61, ZY62, ZY63, ZY64: one of each kind in one result, and
+ * the repair over the list. Afterwards the result is onto again,
+ * name for name, pool for pool and byte for byte, and a second
+ * classification has nothing left to say.
+ *
+ * The gone name that shares its object with a name still standing is
+ * linked back and not copied: a repair that copied it would leave
+ * the two names two files, which is the tearing this same list
+ * reports.
+ */
+static void
+check_repair(void)
+{
+	struct zr_verify_report rep;
+	struct zr_apply_stats st;
+	struct zr_walk wo, wf;
+	struct zr_parsed p;
+	struct vshape v;
+	char err[512];
+
+	vshape_init(&v);
+	build_untouched(v.vs_onto);
+	build_untouched(v.vs_res);
+	/* one of each: changed, gone, gone under a directory, extra */
+	mkfile(v.vs_res, "/keep", "an edit!!\n", 0644);
+	rmname(v.vs_res, "/gone");
+	rmname(v.vs_res, "/d/x");
+	mkfile(v.vs_res, "/extra", "brand new\n", 0644);
+	/* and the pool torn, which is the fifth */
+	rmname(v.vs_res, "/b");
+	mkfile(v.vs_res, "/b", "shared\n", 0644);
+	vshape_run(&v, "", 0, 0, "", &p, &rep);
+	CHECK(rep.zv_ndiffs == 5);
+	CHECK(rep.zv_dcount[ZR_DF_CHANGED] == 1);
+	CHECK(rep.zv_dcount[ZR_DF_GONE] == 2);
+	CHECK(rep.zv_dcount[ZR_DF_EXTRA] == 1);
+	CHECK(rep.zv_dcount[ZR_DF_UNPOOLED] == 1);
+	zr_verify_report_fini(&rep);
+	zr_parsed_fini(&p);
+
+	/* the repair, through the same check both applying1 paths make */
+	parse_doc(&p, "", 0, 0, "");
+	err[0] = '\0';
+	CHECK(zr_walk(v.vs_onto, v.vs_ns, &wo, err, sizeof (err)) == 0);
+	CHECK(zr_walk(v.vs_from, v.vs_ns, &wf, err, sizeof (err)) == 0);
+	err[0] = '\0';
+	if (zr_apply_check(&p, v.vs_res, v.vs_ns, &wo, &wf, 0, 1, &st, err,
+	    sizeof (err)) != 0)
+		printf("  check: %s\n", err);
+	CHECK(err[0] == '\0');
+	CHECK(st.zs_restored == 3);
+	CHECK(st.zs_removed == 1);
+	CHECK(st.zs_relinked == 1);
+	CHECK(absent(v.vs_res, "/extra"));
+	same_dirs(&v, v.vs_onto, v.vs_res);
+	zr_walk_fini(&wf);
+	zr_walk_fini(&wo);
+	zr_parsed_fini(&p);
+
+	/* and nothing left to say the second time */
+	vshape_run(&v, "", 0, 0, "", &p, &rep);
+	CHECK(rep.zv_ndiffs == 0);
+	zr_verify_report_fini(&rep);
+	zr_parsed_fini(&p);
+	vshape_fini(&v);
+}
+
+/*
+ * ZY64: a pool both of whose names were edited has nothing left to
+ * be linked to, so the first is copied out of onto and the second is
+ * linked to that -- the pool is one file again and not two.
+ */
+static void
+check_repair_pool(void)
+{
+	struct zr_verify_report rep;
+	struct zr_apply_stats st;
+	struct zr_walk wo, wf;
+	struct zr_parsed p;
+	struct vshape v;
+	char err[512];
+
+	vshape_init(&v);
+	mkfile(v.vs_onto, "/a", "shared\n", 0644);
+	mklink(v.vs_onto, "/b", "/a");
+	mkfile(v.vs_res, "/a", "an edit!!\n", 0644);
+	mklink(v.vs_res, "/b", "/a");
+	vshape_run(&v, "", 0, 0, "", &p, &rep);
+	CHECK(rep.zv_ndiffs == 2);
+	CHECK(rep.zv_dcount[ZR_DF_CHANGED] == 2);
+	CHECK(rep.zv_diffs[0].zn_anchor == ZR_NAME_NONE);
+	CHECK(rep.zv_diffs[1].zn_anchor == ZR_NAME_NONE);
+	zr_verify_report_fini(&rep);
+	zr_parsed_fini(&p);
+	parse_doc(&p, "", 0, 0, "");
+	err[0] = '\0';
+	CHECK(zr_walk(v.vs_onto, v.vs_ns, &wo, err, sizeof (err)) == 0);
+	CHECK(zr_walk(v.vs_from, v.vs_ns, &wf, err, sizeof (err)) == 0);
+	err[0] = '\0';
+	if (zr_apply_check(&p, v.vs_res, v.vs_ns, &wo, &wf, 0, 1, &st, err,
+	    sizeof (err)) != 0)
+		printf("  check: %s\n", err);
+	CHECK(err[0] == '\0');
+	CHECK(st.zs_restored == 1);
+	CHECK(st.zs_relinked == 1);
+	same_dirs(&v, v.vs_onto, v.vs_res);
+	zr_walk_fini(&wf);
+	zr_walk_fini(&wo);
+	zr_parsed_fini(&p);
+	vshape_fini(&v);
+}
+
+/*
+ * ZY67: the check without the fix is the one the applying2 and done
+ * gates make. The names are not looked at there -- from the conflicts
+ * gate on they are the person's work -- and the actions still are.
+ */
+static void
+check_check_nofix(void)
+{
+	struct zr_apply_stats st;
+	struct zr_walk wo, wf;
+	struct zr_parsed p;
+	struct vshape v;
+	char err[512];
+
+	vshape_init(&v);
+	build_untouched(v.vs_onto);
+	build_untouched(v.vs_res);
+	mkfile(v.vs_res, "/keep", "an edit!!\n", 0644);
+	rmname(v.vs_res, "/gone");
+	parse_doc(&p, "", 0, 0, "");
+	err[0] = '\0';
+	CHECK(zr_walk(v.vs_onto, v.vs_ns, &wo, err, sizeof (err)) == 0);
+	CHECK(zr_walk(v.vs_from, v.vs_ns, &wf, err, sizeof (err)) == 0);
+	err[0] = '\0';
+	CHECK(zr_apply_check(&p, v.vs_res, v.vs_ns, &wo, &wf, 0, 0, &st, err,
+	    sizeof (err)) == 0);
+	CHECK(st.zs_restored == 0 && st.zs_removed == 0);
+	CHECK(absent(v.vs_res, "/gone"));
+	/* and with the fix it is applying1 again, and it mends them */
+	err[0] = '\0';
+	CHECK(zr_apply_check(&p, v.vs_res, v.vs_ns, &wo, &wf, 0, 1, &st, err,
+	    sizeof (err)) == 0);
+	CHECK(st.zs_restored == 2);
+	CHECK(!absent(v.vs_res, "/gone"));
+	same_dirs(&v, v.vs_onto, v.vs_res);
+	zr_walk_fini(&wf);
+	zr_walk_fini(&wo);
 	zr_parsed_fini(&p);
 	vshape_fini(&v);
 }
@@ -1249,8 +1641,8 @@ check_miss_onto(void)
  * ZY44, ZY45: what an outcome does not need, it does not miss. A
  * link standing on its anchor is done by the result walk alone, and
  * a cp whose bytes the result already holds is done by from alone.
- * With onto gone there are no information lines either: every
- * untouched name would be one, and saying that of a whole tree says
+ * With onto gone the name list is empty too: every untouched name
+ * would be an entry of it, and saying that of a whole tree says
  * nothing.
  */
 static void
@@ -1273,14 +1665,15 @@ check_miss_still_answered(void)
 	mkfile(v.vs_res, "/n", "from bytes\n", 0644);
 	mkfile(v.vs_res, "/u", "edited since\n", 0644);
 	vshape_one_miss(&v, "    n cp /n\n", "/n", ZR_MISS_ONTO, ZR_OC_DONE);
-	/* the edited name is an information line only while onto is there */
+	/* ZY68: the edited name is an entry only while onto is there */
 	vshape_run(&v, "    n cp /n\n", 1, 0, "", &p, &rep);
-	CHECK(rep.zv_ninfo == 1);
+	CHECK(rep.zv_ndiffs == 1);
 	zr_verify_report_fini(&rep);
 	zr_parsed_fini(&p);
 	vshape_run_miss(&v, "    n cp /n\n", 1, 0, ZR_MISS_ONTO, &p, &rep);
-	CHECK(rep.zv_ninfo == 0);
-	CHECK(rep.zv_first_info == ZR_NAME_NONE);
+	CHECK(rep.zv_ndiffs == 0);
+	CHECK(rep.zv_dfirst[ZR_DF_CHANGED] == ZR_NAME_NONE);
+	CHECK(rep.zv_dfirst[ZR_DF_GONE] == ZR_NAME_NONE);
 	zr_verify_report_fini(&rep);
 	zr_parsed_fini(&p);
 	vshape_fini(&v);
@@ -1300,8 +1693,14 @@ main(void)
 	check_info_lines();
 	check_info_conflicted();
 	check_oracle_pairs();
+	check_unpooled();
+	check_under_rm();
+	check_repair();
+	check_repair_pool();
+	check_check_nofix();
 	check_scenario();
 	check_twice();
+	check_two_paths();
 	check_rm_still_loud();
 	check_miss_from();
 	check_miss_onto();

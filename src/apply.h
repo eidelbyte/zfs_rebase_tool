@@ -49,6 +49,10 @@ struct zr_apply_stats {
 	uint64_t	zs_dup;
 	uint64_t	zs_bytes;	/* file bytes copied out of from */
 	uint64_t	zs_skipped;	/* actions left alone, see below */
+	/* and what the repair below did, which is the other three */
+	uint64_t	zs_restored;	/* names put back out of onto */
+	uint64_t	zs_removed;	/* names nothing expected, taken away */
+	uint64_t	zs_relinked;	/* names linked back into their pool */
 };
 
 /*
@@ -77,5 +81,53 @@ int zr_apply_with(const struct zr_parsed *m, const char *onto_root,
     const struct zr_walk *from, const struct zr_walk *onto,
     const struct zr_verify_report *skip, struct zr_apply_stats *st,
     char *err, size_t errlen);
+
+/*
+ * The other half of an apply: the names no action spoke for, put
+ * back as onto had them. rep is a report of zr_verify over the tree
+ * at onto_root, names the table its walks share, and onto the walked
+ * tree every restored object is copied out of.
+ *
+ *	gone and changed	onto's object again, linked from the
+ *				entry's anchor where there is one and
+ *				copied where there is not
+ *	extra			unlinked, directories after what is
+ *				inside them
+ *	unpooled		linked back onto its anchor
+ *
+ * It is idempotent like the rest of the apply, and it can touch no
+ * conflicted name, because zr_verify puts none in the list. Only the
+ * applying1 stage calls it: from the conflicts gate on, the tree is
+ * the person's to edit and a difference is theirs, not a stray.
+ *
+ * Returns 0 with the three repair fields of *st filled, or -1 with a
+ * message in err when errlen is not 0.
+ */
+int zr_apply_repair(const struct zr_verify_report *rep, const char *onto_root,
+    const struct zr_names *names, const struct zr_walk *onto,
+    struct zr_apply_stats *st, char *err, size_t errlen);
+
+/*
+ * The self-check of an applying stage, made on the document it has
+ * just applied: the tree at onto_root walked beside onto and from,
+ * m classified against the three, and -- with fix, which is the
+ * applying1 stage and nothing else -- the names of that
+ * classification repaired, the tree walked again and classified
+ * again. missing is the ZR_MISS_ mask of zr_verify.
+ *
+ * The verdict is that every action must be done or blocked: a
+ * pending or a drifted one means the apply did not do what it said,
+ * which is a failure of this program and not drift. With fix the
+ * name list must also be empty, since the repair has just been
+ * through it. Without fix the names are not looked at: from the
+ * conflicts gate on they are the person's work.
+ *
+ * Returns 0 with the repair's counts in *st, or -1 with a message in
+ * err when errlen is not 0.
+ */
+int zr_apply_check(const struct zr_parsed *m, const char *onto_root,
+    struct zr_names *names, struct zr_walk *onto, struct zr_walk *from,
+    unsigned missing, int fix, struct zr_apply_stats *st, char *err,
+    size_t errlen);
 
 #endif	/* ZR_APPLY_H */

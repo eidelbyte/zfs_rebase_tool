@@ -49,6 +49,7 @@
 #include "name.h"
 #include "verify.h"
 #include "walk.h"
+#include "yellow.h"
 
 #define	ZA_BUFSZ	(64u * 1024u)
 #define	ZA_PEND_MIN	16
@@ -537,6 +538,7 @@ za_setflags(const char *full, uint32_t flags)
  */
 struct za_ctx {
 	int			zc_rootfd;
+	int			zc_repair;	/* not the manifest's actions */
 	const struct zr_parsed	*zc_m;		/* for the conflict marks */
 	const struct zr_walk	*zc_from;
 	const struct zr_walk	*zc_onto;	/* dup source, or NULL */
@@ -1079,7 +1081,9 @@ za_do_cp(struct za_ctx *c, const struct zr_action *a,
 	if (za_attrs(c, a, &src, &fst) != 0 ||
 	    za_verify(c, a, &src, what, size) != 0)
 		return (-1);
-	if (w == c->zc_from)
+	if (c->zc_repair != 0)
+		c->zc_st->zs_restored++;
+	else if (w == c->zc_from)
 		c->zc_st->zs_cp++;
 	else
 		c->zc_st->zs_dup++;
@@ -1197,6 +1201,16 @@ za_linked(struct za_ctx *c, const struct zr_action *a)
 	return (st.st_ino == ast.st_ino && st.st_dev == ast.st_dev);
 }
 
+/* One link made or found standing, counted for whoever asked for it. */
+static void
+za_linked_up(struct za_ctx *c)
+{
+	if (c->zc_repair != 0)
+		c->zc_st->zs_relinked++;
+	else
+		c->zc_st->zs_ln++;
+}
+
 /*
  * ln: the path becomes another name of the object the anchor names,
  * both of them in the result tree. The anchor is looked at before
@@ -1226,7 +1240,7 @@ za_do_ln(struct za_ctx *c, const struct zr_action *a)
 	}
 	if (fstatat(c->zc_rootfd, rel, &st, AT_SYMLINK_NOFOLLOW) == 0) {
 		if (st.st_ino == ast.st_ino && st.st_dev == ast.st_dev) {
-			c->zc_st->zs_ln++;
+			za_linked_up(c);
 			return (0);
 		}
 		if (S_ISDIR(st.st_mode))
@@ -1248,7 +1262,7 @@ za_do_ln(struct za_ctx *c, const struct zr_action *a)
 	if (st.st_ino != ast.st_ino)
 		return (za_failpx(c, a->za_path, "after ln the result is not "
 		    "the anchor's object"));
-	c->zc_st->zs_ln++;
+	za_linked_up(c);
 	return (0);
 }
 
@@ -1505,5 +1519,403 @@ zr_apply_with(const struct zr_parsed *m, const char *onto_root,
 	rc = 0;
 out:
 	za_ctx_fini(&c);
+	return (rc);
+}
+
+/*
+ * ---------------------------------------------------------------
+ * The repair, and the self-check that runs it. Everything above is
+ * the manifest's; this is the rest of the tree -- the names no
+ * action spoke for -- which at applying1 must be onto's still.
+ * ---------------------------------------------------------------
+ */
+
+/* One entry of the report's name list, with the path it stands for. */
+struct za_item {
+	const char	*zi_path;
+	size_t		zi_len;
+	zr_name_t	zi_name;
+	zr_name_t	zi_anchor;
+	enum zr_diff	zi_kind;
+};
+
+/*
+ * By path, which puts a parent before everything under it: a
+ * directory's path is a prefix of its children's and a prefix sorts
+ * first. The restores then run forwards and the removals backwards,
+ * so that a directory is made before what goes inside it and emptied
+ * before it is taken away.
+ */
+static int
+za_bypath(const void *va, const void *vb)
+{
+	const struct za_item *a = va;
+	const struct za_item *b = vb;
+	size_t n = a->zi_len < b->zi_len ? a->zi_len : b->zi_len;
+	int c = memcmp(a->zi_path, b->zi_path, n);
+
+	if (c != 0)
+		return (c);
+	if (a->zi_len == b->zi_len)
+		return (0);
+	return (a->zi_len < b->zi_len ? -1 : 1);
+}
+
+/*
+ * A path of the name table copied where an action can hold it: the
+ * paths of a zr_action are not const, and the table's bytes are not
+ * the repair's to hand out that way.
+ */
+struct za_pathbuf {
+	unsigned char	*zb_buf;
+	size_t		zb_cap;
+};
+
+static int
+za_stash(struct za_pathbuf *b, const char *p, size_t len)
+{
+	unsigned char *n;
+
+	if (len + 1 > b->zb_cap) {
+		n = realloc(b->zb_buf, len + 1);
+		if (n == NULL)
+			return (-1);
+		b->zb_buf = n;
+		b->zb_cap = len + 1;
+	}
+	memcpy(b->zb_buf, p, len);
+	b->zb_buf[len] = '\0';
+	return (0);
+}
+
+/* The action the repair hands to the same cp, ln and rm as the rest. */
+static void
+za_made(struct zr_action *a, enum zr_act_kind kind, struct za_pathbuf *path,
+    size_t len, struct za_pathbuf *arg, size_t arglen)
+{
+	memset(a, 0, sizeof (struct zr_action));
+	a->za_kind = kind;
+	a->za_path = path->zb_buf;
+	a->za_pathlen = len;
+	a->za_arg = arg != NULL ? arg->zb_buf : NULL;
+	a->za_arglen = arg != NULL ? arglen : 0;
+}
+
+/* One name nothing expected, whatever kind of thing it turned out to be. */
+static int
+za_rm_one(struct za_ctx *c, const struct zr_action *a)
+{
+	const char *rel = za_rel(a->za_path);
+	struct stat st;
+	int isdir;
+
+	if (fstatat(c->zc_rootfd, rel, &st, AT_SYMLINK_NOFOLLOW) != 0) {
+		if (errno == ENOENT)
+			return (0);
+		return (za_fail(c, a, "stat"));
+	}
+	isdir = S_ISDIR(st.st_mode);
+	if (unlinkat(c->zc_rootfd, rel, isdir ? AT_REMOVEDIR : 0) != 0 &&
+	    errno != ENOENT)
+		return (za_fail(c, a, isdir ? "rmdir" : "unlink"));
+	c->zc_st->zs_removed++;
+	return (0);
+}
+
+/* The stop flag, between two names of the repair. */
+static int
+za_stopped(struct za_ctx *c)
+{
+	if (zr_apply_stop == 0)
+		return (0);
+	if (c->zc_err != NULL && c->zc_errlen > 0)
+		(void) snprintf(c->zc_err, c->zc_errlen, "interrupted");
+	return (-1);
+}
+
+int
+zr_apply_repair(const struct zr_verify_report *rep, const char *onto_root,
+    const struct zr_names *names, const struct zr_walk *onto,
+    struct zr_apply_stats *st, char *err, size_t errlen)
+{
+	static const unsigned char self[] = "(the repair)";
+	struct zr_apply_stats spare;
+	struct za_pathbuf pb, ab;
+	struct za_item *items = NULL;
+	const struct za_item *it;
+	struct zr_action a;
+	struct za_ctx c;
+	zr_name_t *made = NULL;
+	zr_name_t anchor;
+	zr_pool_t po;
+	const char *ap;
+	size_t alen;
+	uint32_t i, n;
+	int rc = -1;
+
+	memset(&c, 0, sizeof (struct za_ctx));
+	memset(&pb, 0, sizeof (struct za_pathbuf));
+	memset(&ab, 0, sizeof (struct za_pathbuf));
+	c.zc_rootfd = -1;
+	c.zc_repair = 1;
+	c.zc_onto = onto;
+	c.zc_err = err;
+	c.zc_errlen = errlen;
+	c.zc_st = st != NULL ? st : &spare;
+	memset(c.zc_st, 0, sizeof (struct zr_apply_stats));
+	if (err != NULL && errlen > 0)
+		err[0] = '\0';
+	if (rep == NULL || onto_root == NULL || names == NULL ||
+	    onto == NULL) {
+		errno = EINVAL;
+		return (za_failp(&c, self, "arguments"));
+	}
+	n = rep->zv_ndiffs;
+	if (n == 0)
+		return (0);
+	if (onto->zw_rootfd < 0) {
+		errno = EINVAL;
+		return (za_failpx(&c, self, "there is no onto tree to put "
+		    "anything back from"));
+	}
+	items = malloc((size_t)n * sizeof (struct za_item));
+	if (items == NULL) {
+		errno = ENOMEM;
+		return (za_failp(&c, self, "memory"));
+	}
+	for (i = 0; i < n; i++) {
+		items[i].zi_name = rep->zv_diffs[i].zn_name;
+		items[i].zi_anchor = rep->zv_diffs[i].zn_anchor;
+		items[i].zi_kind = rep->zv_diffs[i].zn_kind;
+		items[i].zi_len = 0;
+		items[i].zi_path = zr_names_str(names, items[i].zi_name,
+		    &items[i].zi_len);
+		if (items[i].zi_path == NULL) {
+			errno = EINVAL;
+			(void) za_failpx(&c, self, "a name the table does not "
+			    "hold");
+			goto out;
+		}
+	}
+	qsort(items, (size_t)n, sizeof (struct za_item), za_bypath);
+	if (onto->zw_tree.zt_npools != 0) {
+		made = malloc((size_t)onto->zw_tree.zt_npools *
+		    sizeof (zr_name_t));
+		if (made == NULL) {
+			errno = ENOMEM;
+			(void) za_failp(&c, self, "memory");
+			goto out;
+		}
+		for (i = 0; i < onto->zw_tree.zt_npools; i++)
+			made[i] = ZR_NAME_NONE;
+	}
+	if (za_root_copy(&c, onto_root) != 0) {
+		errno = ENOMEM;
+		(void) za_failp(&c, (const unsigned char *)onto_root,
+		    "memory");
+		goto out;
+	}
+	c.zc_buf = malloc(ZA_BUFSZ);
+	if (c.zc_buf == NULL) {
+		errno = ENOMEM;
+		(void) za_failp(&c, (const unsigned char *)onto_root,
+		    "memory");
+		goto out;
+	}
+	c.zc_rootfd = open(onto_root, O_RDONLY | O_DIRECTORY | O_NOFOLLOW |
+	    O_CLOEXEC);
+	if (c.zc_rootfd < 0) {
+		(void) za_failp(&c, (const unsigned char *)onto_root, "open");
+		goto out;
+	}
+	/*
+	 * First what nothing expected, children before parents, so
+	 * that a directory somebody left behind is empty by the time
+	 * its own turn comes and a name in the way of a restore is
+	 * gone before the restore.
+	 */
+	for (i = n; i > 0; i--) {
+		it = &items[i - 1];
+		if (it->zi_kind != ZR_DF_EXTRA)
+			continue;
+		if (za_stopped(&c) != 0 ||
+		    za_stash(&pb, it->zi_path, it->zi_len) != 0)
+			goto out;
+		za_made(&a, ZR_ACT_RM, &pb, it->zi_len, NULL, 0);
+		if (za_path_ok(&c, &a, a.za_path, a.za_pathlen) != 0 ||
+		    za_rm_one(&c, &a) != 0)
+			goto out;
+	}
+	/*
+	 * Then what onto had, parents before children. A name whose
+	 * pool has another name the result still holds is linked to
+	 * it rather than copied, so that putting one name back does
+	 * not sever the pool; where the whole pool has to be made
+	 * again, the first name of it is copied and the rest are
+	 * linked to that one.
+	 */
+	for (i = 0; i < n; i++) {
+		it = &items[i];
+		if (it->zi_kind != ZR_DF_GONE &&
+		    it->zi_kind != ZR_DF_CHANGED)
+			continue;
+		if (za_stopped(&c) != 0 ||
+		    za_stash(&pb, it->zi_path, it->zi_len) != 0)
+			goto out;
+		anchor = it->zi_anchor;
+		po = zr_tree_pool(&onto->zw_tree, it->zi_name);
+		if (anchor == ZR_NAME_NONE && made != NULL &&
+		    po != ZR_POOL_NONE)
+			anchor = made[po];
+		if (anchor != ZR_NAME_NONE) {
+			ap = zr_names_str(names, anchor, &alen);
+			if (ap == NULL || za_stash(&ab, ap, alen) != 0) {
+				errno = ap == NULL ? EINVAL : ENOMEM;
+				(void) za_failp(&c, self, "the anchor");
+				goto out;
+			}
+			za_made(&a, ZR_ACT_LN, &pb, it->zi_len, &ab, alen);
+			if (za_path_ok(&c, &a, a.za_path, a.za_pathlen) != 0 ||
+			    za_do_ln(&c, &a) != 0)
+				goto out;
+			continue;
+		}
+		za_made(&a, ZR_ACT_DUP, &pb, it->zi_len, &pb, it->zi_len);
+		if (za_path_ok(&c, &a, a.za_path, a.za_pathlen) != 0 ||
+		    za_do_cp(&c, &a, onto, "restore") != 0)
+			goto out;
+		if (made != NULL && po != ZR_POOL_NONE)
+			made[po] = it->zi_name;
+	}
+	/* And last the pools somebody tore, which are two names apiece. */
+	for (i = 0; i < n; i++) {
+		it = &items[i];
+		if (it->zi_kind != ZR_DF_UNPOOLED ||
+		    it->zi_anchor == ZR_NAME_NONE)
+			continue;
+		ap = zr_names_str(names, it->zi_anchor, &alen);
+		if (za_stopped(&c) != 0 || ap == NULL ||
+		    za_stash(&pb, it->zi_path, it->zi_len) != 0 ||
+		    za_stash(&ab, ap, alen) != 0) {
+			if (c.zc_err != NULL && c.zc_err[0] == '\0') {
+				errno = ap == NULL ? EINVAL : ENOMEM;
+				(void) za_failp(&c, self, "the anchor");
+			}
+			goto out;
+		}
+		za_made(&a, ZR_ACT_LN, &pb, it->zi_len, &ab, alen);
+		if (za_path_ok(&c, &a, a.za_path, a.za_pathlen) != 0 ||
+		    za_do_ln(&c, &a) != 0)
+			goto out;
+	}
+	rc = 0;
+out:
+	free(items);
+	free(made);
+	free(pb.zb_buf);
+	free(ab.zb_buf);
+	za_ctx_fini(&c);
+	return (rc);
+}
+
+/* The message a failed self-check leaves, which names the first of them. */
+static void
+za_verdict(char *err, size_t errlen, const struct zr_parsed *m,
+    const struct zr_verify_report *rep, const struct zr_names *names)
+{
+	const char *what;
+	uint32_t i;
+	int k;
+
+	if (err == NULL || errlen == 0)
+		return;
+	if (rep->zv_count[ZR_OC_PENDING] != 0 ||
+	    rep->zv_count[ZR_OC_DRIFTED] != 0) {
+		i = rep->zv_count[ZR_OC_PENDING] != 0 ?
+		    rep->zv_first[ZR_OC_PENDING] : rep->zv_first[ZR_OC_DRIFTED];
+		(void) snprintf(err, errlen, "after the apply, %u pending and "
+		    "%u drifted, first %s", rep->zv_count[ZR_OC_PENDING],
+		    rep->zv_count[ZR_OC_DRIFTED],
+		    (const char *)m->zp_actions[i].za_path);
+		return;
+	}
+	for (k = 0; k < ZR_DF_COUNT; k++) {
+		if (rep->zv_dcount[k] == 0)
+			continue;
+		what = zr_names_str(names, rep->zv_dfirst[k], NULL);
+		(void) snprintf(err, errlen, "after the apply, %u name%s "
+		    "outside the manifest the repair did not mend, first %s "
+		    "%s", rep->zv_ndiffs, rep->zv_ndiffs == 1 ? "" : "s",
+		    zr_diff_str((enum zr_diff)k), what != NULL ? what : "?");
+		return;
+	}
+}
+
+int
+zr_apply_check(const struct zr_parsed *m, const char *onto_root,
+    struct zr_names *names, struct zr_walk *onto, struct zr_walk *from,
+    unsigned missing, int fix, struct zr_apply_stats *st, char *err,
+    size_t errlen)
+{
+	struct zr_apply_stats spare;
+	struct zr_verify_report rep;
+	struct zr_oracle *o = NULL;
+	struct zr_walk wr;
+	int pass, walked = 0, rc = -1;
+
+	if (st == NULL)
+		st = &spare;
+	memset(st, 0, sizeof (struct zr_apply_stats));
+	memset(&rep, 0, sizeof (struct zr_verify_report));
+	if (err != NULL && errlen > 0)
+		err[0] = '\0';
+	if (m == NULL || onto_root == NULL || names == NULL || onto == NULL ||
+	    from == NULL) {
+		if (err != NULL && errlen > 0)
+			(void) snprintf(err, errlen, "the check: arguments");
+		return (-1);
+	}
+	/*
+	 * Twice at most: once as the apply left the tree, and once
+	 * more after a repair, which is the only thing between the
+	 * two that writes.
+	 */
+	for (pass = 0; pass < 2; pass++) {
+		if (zr_walk(onto_root, names, &wr, err, errlen) != 0)
+			goto out;
+		walked = 1;
+		if (zr_oracle_init(&o, onto, from, &wr) != 0) {
+			if (err != NULL && errlen > 0)
+				(void) snprintf(err, errlen, "the check: out "
+				    "of memory");
+			goto out;
+		}
+		if (zr_verify(m, o, onto, from, &wr, missing, &rep, err,
+		    errlen) != 0)
+			goto out;
+		if (pass != 0 || fix == 0 || rep.zv_ndiffs == 0)
+			break;
+		if (zr_apply_repair(&rep, onto_root, names, onto, st, err,
+		    errlen) != 0)
+			goto out;
+		zr_verify_report_fini(&rep);
+		zr_oracle_fini(o);
+		o = NULL;
+		zr_walk_fini(&wr);
+		walked = 0;
+	}
+	if (rep.zv_count[ZR_OC_PENDING] != 0 ||
+	    rep.zv_count[ZR_OC_DRIFTED] != 0 ||
+	    (fix != 0 && rep.zv_ndiffs != 0)) {
+		za_verdict(err, errlen, m, &rep, names);
+		goto out;
+	}
+	rc = 0;
+out:
+	zr_verify_report_fini(&rep);
+	if (o != NULL)
+		zr_oracle_fini(o);
+	if (walked != 0)
+		zr_walk_fini(&wr);
 	return (rc);
 }
