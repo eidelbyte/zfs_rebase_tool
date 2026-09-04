@@ -463,7 +463,7 @@ only.
 | ZX2 | an edited object is not in that count, and the manifest still matches | planned: box, box/run-replay.sh |
 | ZX3 | a side rebuilt from nothing prunes not one pool | planned: box, box/run-fixture.sh |
 | ZX4 | pruning is not attempted at all in --posix | covered: run.c reaches read_trees only in the real mode |
-| ZX5 | pruning off with an unrelated base | deferred: the flag exists; box, allow-unrelated |
+| ZX5 | pruning off with an unrelated base | planned: box, box/run-fixture.sh step 0a |
 | ZX6 | (retired with zfs diff) | -- |
 | ZX7 | (retired with zfs diff) | -- |
 | ZX8 | (retired with zfs diff) | -- |
@@ -537,6 +537,17 @@ only.
 | ZX76 | --overwrite: a done record replaced; without it exit 2; an open record exits 2 either way | planned: box, box/run-fixture.sh |
 | ZX77 | a base that is a snapshot of onto is read through the private mount | deferred: needs a from cloned out of onto, which the fixtures do not build; by hand on the box |
 | ZX78 | a snapshot newer than the pre-apply one: --restart and --abort refuse rather than destroy it | deferred: needs a snapshot taken during a rebase; by hand on the box |
+| ZX79 | --allow-unrelated takes a pair that shares no origin, and the derivation is not run | planned: box, box/run-fixture.sh step 0a |
+| ZX80 | no --base: the base is the empty tree, and the record and the manifest header carry "-" and the guid 0 | planned: box, box/run-fixture.sh step 0a |
+| ZX81 | --base given: the snapshot is walked like the other two, and its dataset is checked like theirs | planned: box, box/run-fixture.sh step 0a |
+| ZX82 | --base newer than a side by createtxg: exit 2; and --base without the flag is a usage error | planned: box, box/run-fixture.sh step 0a |
+| ZX83 | every verb over a record with no base: the base is not looked for and not held, and the report says there was none | deferred: needs a real result of an unrelated run, which step 0a only dry-runs; box, by hand |
+
+ZX79 to ZX83 are --allow-unrelated's own. The empty base cannot be
+reached on the Mac: the only other way into a decision here is
+--posix, which takes three directories and walks all three, so a
+tree with no root at all is not something a portable test can make
+without a driver of its own. The box closes them, and ZX5 with them.
 
 ZX1 to ZX5 replace the diff parser's cells, which went out with the
 text: ZX1 to ZX12 used to be the "zfs diff -F -H" lines, their

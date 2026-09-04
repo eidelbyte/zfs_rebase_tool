@@ -172,6 +172,19 @@
 #define	ZR_FORM_DATASET		"dataset"
 
 /*
+ * What the record and the manifest header carry for the base of a
+ * run that had none -- --allow-unrelated without --base, which reads
+ * the two sides against the empty tree. "-" is how zfs(8) itself
+ * spells a property with no value, and it is no snapshot name, since
+ * every one of those has a pool and an '@' in it. An empty value
+ * would say the same thing and cannot be written: the manifest's
+ * header lines are trimmed of trailing blanks before they are read,
+ * so a "#base " with nothing after it comes back as no header line
+ * at all (manifest.c, zp_header).
+ */
+#define	ZR_NO_BASE		"-"
+
+/*
  * The snapshot the tool takes of a side given as a dataset:
  * <dataset>@zfs_rebase-<the run's hold tag>, and the same with -2,
  * -3 and so on when that name is taken. The tag is unique to the run
@@ -199,7 +212,8 @@ struct run {
 	struct zr_zfs		*zfs;
 	const char		*form;		/* ZR_FORM_ */
 	char			tag[ZR_TAG_MAX];	/* the hold tag */
-	char			base[ZR_NAME_MAX];	/* the branch point */
+	/* The branch point, and "" for a run that has no base. */
+	char			base[ZR_NAME_MAX];
 	char			fromsnap[ZR_SNAP_MAX];	/* given or made */
 	char			ontosnap[ZR_SNAP_MAX];	/* given or made */
 	char			rds[ZR_NAME_MAX];	/* carries the record */
@@ -217,7 +231,10 @@ struct run {
 	 * Whether the unchanged set may be read off the walks. It may
 	 * when base was derived from the two sides, which is what
 	 * puts all three in one object-number space -- both forms do
-	 * that -- and --allow-unrelated will clear it.
+	 * that. --allow-unrelated leaves it clear: across two
+	 * lineages an object number means nothing, and a base given
+	 * by hand is no proof of a shared one
+	 * (sprints/sprint-5/string-audit.md, section 2).
 	 */
 	int			prune;
 	int			recorded;	/* the record is written */
@@ -463,6 +480,95 @@ derive_base(struct run *r)
 	return (0);
 }
 
+/* Below with the two sides, whose syntax --base shares. */
+static int is_snapshot(const char *arg);
+
+/*
+ * --allow-unrelated: the two sides share no origin, so there is no
+ * branch point to work out and the base is whatever the user says it
+ * is -- or nothing at all.
+ *
+ * --base names a snapshot that exists and that neither side is older
+ * than. A rebase replays what each side did after the base, so a
+ * base taken after a side describes a state that side never passed
+ * through and there is nothing sensible to replay against it.
+ * createtxg orders them: it is the transaction the snapshot was
+ * taken in, the kernel's own count, exact where a creation time
+ * would only be close. Equal is allowed -- a base taken in the same
+ * transaction as a side is that side's own state. That the base is
+ * in one pool with the two sides, that its dataset is mounted, and
+ * that it names as they do is checked with theirs below, since its
+ * tree is read exactly the way theirs is.
+ *
+ * Without --base there is no base snapshot at all: the base is the
+ * empty tree, every name of either side is an add on that side, and
+ * the decision is the union of the two with a conflict wherever they
+ * disagree.
+ */
+static int
+unrelated_base(struct run *r)
+{
+	static const char *const word[2] = { "from", "onto" };
+	const char *side[2];
+	uint64_t tb, ts;
+	int i, rc;
+
+	side[0] = r->fromsnap;
+	side[1] = r->ontosnap;
+	/*
+	 * The one thing the derivation refuses that still holds here:
+	 * one snapshot given twice is not two sides.
+	 */
+	if (strcmp(side[0], side[1]) == 0) {
+		(void) snprintf(r->err, sizeof (r->err),
+		    "from and onto are one snapshot; nothing to rebase");
+		return (-1);
+	}
+	if (r->o.base == NULL) {
+		r->base[0] = '\0';
+		if (r->o.verbose)
+			(void) fprintf(stderr, "zfs_rebase: there is no "
+			    "base: the two sides are read against the empty "
+			    "tree\n");
+		return (0);
+	}
+	if (!is_snapshot(r->o.base)) {
+		(void) snprintf(r->err, sizeof (r->err),
+		    "%s is a dataset, and --base wants a snapshot",
+		    r->o.base);
+		return (-1);
+	}
+	rc = zr_zfs_exists(r->zfs, r->o.base, r->err, sizeof (r->err));
+	if (rc < 0)
+		return (-1);
+	if (rc == 0) {
+		(void) snprintf(r->err, sizeof (r->err), "%s does not exist",
+		    r->o.base);
+		return (-1);
+	}
+	if (zr_zfs_get_int(r->zfs, r->o.base, "createtxg", &tb, r->err,
+	    sizeof (r->err)) != 0)
+		return (-1);
+	for (i = 0; i < 2; i++) {
+		if (zr_zfs_get_int(r->zfs, side[i], "createtxg", &ts, r->err,
+		    sizeof (r->err)) != 0)
+			return (-1);
+		if (tb > ts) {
+			(void) snprintf(r->err, sizeof (r->err), "base is "
+			    "newer than %s: %s was taken in txg %llu and %s "
+			    "in %llu", word[i], r->o.base,
+			    (unsigned long long)tb, side[i],
+			    (unsigned long long)ts);
+			return (-1);
+		}
+	}
+	(void) snprintf(r->base, sizeof (r->base), "%s", r->o.base);
+	if (r->o.verbose)
+		(void) fprintf(stderr, "zfs_rebase: the base is %s, as "
+		    "given\n", r->base);
+	return (0);
+}
+
 /*
  * The result must be in onto's pool, because a clone cannot cross
  * one; it must not exist yet; and its parent dataset must, because
@@ -515,7 +621,9 @@ result_ok(struct run *r, const char *ontods)
 /*
  * The base is worked out first, since the rest of the checks are
  * about its dataset as much as the two sides'. Then every dataset
- * must be mounted, and the three must agree on names.
+ * must be mounted, and they must agree on names. Under
+ * --allow-unrelated there may be no base dataset to check at all,
+ * and then it is the two sides alone that are looked at.
  *
  * All three of those are read as the numbers they are: mounted is a
  * boolean and the other two are index properties, so the words zfs(8)
@@ -534,22 +642,36 @@ preconditions(struct run *r)
 	static const char *const wantword[] = { "sensitive", "none" };
 	char ds[3][ZR_NAME_MAX];
 	uint64_t v;
-	int i, p;
+	int i, p, first;
 
-	if (derive_base(r) != 0)
-		return (-1);
+	if (r->o.unrelated) {
+		if (unrelated_base(r) != 0)
+			return (-1);
+	} else {
+		if (derive_base(r) != 0)
+			return (-1);
+		/*
+		 * The base is the branch point of the two sides, so
+		 * the three snapshots share one object-number space
+		 * and the walks can say what is unchanged. That
+		 * derivation is the only thing that licenses it:
+		 * --posix has no base at all and never comes here,
+		 * and --allow-unrelated leaves this clear, base or no
+		 * base, because a name that two lineages happen to
+		 * hold under one object number is not one object.
+		 */
+		r->prune = 1;
+	}
 	/*
-	 * The base is the branch point of the two sides, so the three
-	 * snapshots share one object-number space and the walks can
-	 * say what is unchanged. That is the only thing that licenses
-	 * it: --posix has no base at all and never comes here, and
-	 * --allow-unrelated will clear this again.
+	 * The three datasets, or the two of them a run with no base
+	 * has: first is where the checks start, and the base is what
+	 * it leaves out.
 	 */
-	r->prune = 1;
 	dataset_of(r->base, ds[0], sizeof (ds[0]));
 	dataset_of(r->fromsnap, ds[1], sizeof (ds[1]));
 	dataset_of(r->ontosnap, ds[2], sizeof (ds[2]));
-	for (i = 0; i < 3; i++) {
+	first = r->base[0] != '\0' ? 0 : 1;
+	for (i = first; i < 3; i++) {
 		if (zr_zfs_get_int(r->zfs, ds[i], "mounted", &v, r->err,
 		    sizeof (r->err)) != 0)
 			return (-1);
@@ -572,12 +694,13 @@ preconditions(struct run *r)
 		}
 	}
 	/* one pool: the name before the first slash must agree */
-	for (i = 1; i < 3; i++) {
-		size_t a = strcspn(ds[0], "/"), b = strcspn(ds[i], "/");
+	for (i = first + 1; i < 3; i++) {
+		size_t a = strcspn(ds[first], "/"), b = strcspn(ds[i], "/");
 
-		if (a != b || strncmp(ds[0], ds[i], a) != 0) {
+		if (a != b || strncmp(ds[first], ds[i], a) != 0) {
 			(void) snprintf(r->err, sizeof (r->err),
-			    "%s and %s are not in one pool", ds[0], ds[i]);
+			    "%s and %s are not in one pool", ds[first],
+			    ds[i]);
 			return (-1);
 		}
 	}
@@ -588,9 +711,11 @@ preconditions(struct run *r)
 	 */
 	if (!r->o.dryrun && !in_dataset_form(r) && result_ok(r, ds[2]) != 0)
 		return (-1);
-	if (zr_zfs_get(r->zfs, ds[0], "mountpoint", r->basemnt,
-	    sizeof (r->basemnt), r->err, sizeof (r->err)) != 0 ||
-	    zr_zfs_get(r->zfs, ds[1], "mountpoint", r->frommnt,
+	if (r->base[0] != '\0' &&
+	    zr_zfs_get(r->zfs, ds[0], "mountpoint", r->basemnt,
+	    sizeof (r->basemnt), r->err, sizeof (r->err)) != 0)
+		return (-1);
+	if (zr_zfs_get(r->zfs, ds[1], "mountpoint", r->frommnt,
 	    sizeof (r->frommnt), r->err, sizeof (r->err)) != 0 ||
 	    zr_zfs_get(r->zfs, ds[2], "mountpoint", r->ontomnt,
 	    sizeof (r->ontomnt), r->err, sizeof (r->err)) != 0)
@@ -1142,7 +1267,12 @@ set_state(struct run *r, const char *state)
 	put_state(r->zfs, r->rds, state);
 }
 
-/* The inputs in the order they are held: base, from, onto. */
+/*
+ * The inputs in the order they are held: base, from, onto. The base
+ * is "" for a run that has none, which is nothing to hold and
+ * nothing to release, and the two sides keep their places either
+ * way.
+ */
 static const char *
 held_snap(const struct run *r, int i)
 {
@@ -1164,6 +1294,8 @@ release_holds(struct run *r)
 	while (r->nheld > 0) {
 		const char *snap = held_snap(r, --r->nheld);
 
+		if (snap[0] == '\0')
+			continue;
 		if (zr_zfs_release(r->zfs, snap, r->tag, e, sizeof (e)) != 0)
 			(void) fprintf(stderr, "zfs_rebase: release %s: %s\n",
 			    snap, e);
@@ -1185,15 +1317,17 @@ hold_inputs(struct run *r)
 	int i;
 
 	for (i = 0; i < 3; i++) {
-		if (zr_zfs_hold(r->zfs, held_snap(r, i), r->tag, r->err,
-		    sizeof (r->err)) != 0) {
+		const char *snap = held_snap(r, i);
+
+		if (snap[0] != '\0' && zr_zfs_hold(r->zfs, snap, r->tag,
+		    r->err, sizeof (r->err)) != 0) {
 			release_holds(r);
 			return (-1);
 		}
 		r->nheld = i + 1;
 	}
 	if (r->o.verbose)
-		(void) fprintf(stderr, "zfs_rebase: the three inputs are held "
+		(void) fprintf(stderr, "zfs_rebase: the inputs are held "
 		    "under %s\n", r->tag);
 	return (0);
 }
@@ -1209,14 +1343,22 @@ hold_inputs(struct run *r)
 static int
 fill_record(struct run *r, struct zr_rebase_record *rec)
 {
-	if (zr_zfs_get_int(r->zfs, r->base, "guid", &rec->base_guid, r->err,
-	    sizeof (r->err)) != 0 ||
-	    zr_zfs_get_int(r->zfs, r->fromsnap, "guid", &rec->from_guid,
+	/*
+	 * A run with no base has no snapshot to read a guid off, and
+	 * records ZR_NO_BASE and the guid 0 in their place: the pair
+	 * every verb reads as "there was no base", which is not the
+	 * same thing as a base that has gone missing.
+	 */
+	if (r->base[0] != '\0' &&
+	    zr_zfs_get_int(r->zfs, r->base, "guid", &rec->base_guid, r->err,
+	    sizeof (r->err)) != 0)
+		return (-1);
+	if (zr_zfs_get_int(r->zfs, r->fromsnap, "guid", &rec->from_guid,
 	    r->err, sizeof (r->err)) != 0 ||
 	    zr_zfs_get_int(r->zfs, r->ontosnap, "guid", &rec->onto_guid,
 	    r->err, sizeof (r->err)) != 0)
 		return (-1);
-	rec->base = r->base;
+	rec->base = r->base[0] != '\0' ? r->base : ZR_NO_BASE;
 	rec->from = r->fromsnap;
 	rec->onto = r->ontosnap;
 	/*
@@ -1287,6 +1429,24 @@ snapdir(char *buf, size_t len, const char *mountpoint, const char *snap)
 	    at != NULL ? at + 1 : snap);
 }
 
+/*
+ * A tree that was never there, as the empty tree: no names, no
+ * pools, sealed, and no root descriptor to open a name against. It
+ * is the base of a run made with --allow-unrelated and no --base,
+ * and it is what a verb puts in the place of a side it cannot read
+ * (empty_walk, below). Returns 0, or -1 out of memory.
+ */
+static int
+empty_tree(struct zr_walk *w, struct zr_names *names)
+{
+	memset(w, 0, sizeof (*w));
+	w->zw_rootfd = -1;
+	if (zr_tree_init(&w->zw_tree, names) != 0 ||
+	    zr_tree_seal(&w->zw_tree) != 0)
+		return (-1);
+	return (0);
+}
+
 static int
 read_trees(struct run *r)
 {
@@ -1296,9 +1456,21 @@ read_trees(struct run *r)
 	r->names = zr_names_create();
 	if (r->names == NULL)
 		return (-1);
-	snapdir(path, sizeof (path), r->basemnt, r->base);
-	if (zr_walk(path, r->names, &r->wb, r->err, sizeof (r->err)) != 0)
+	/*
+	 * The base, through its own .zfs/snapshot -- or the empty
+	 * tree in its place, when --allow-unrelated was given no
+	 * base: no third snapshot is read, every name of either side
+	 * is an add on that side, and the decision is their union.
+	 */
+	if (r->base[0] != '\0') {
+		snapdir(path, sizeof (path), r->basemnt, r->base);
+		if (zr_walk(path, r->names, &r->wb, r->err,
+		    sizeof (r->err)) != 0)
+			return (-1);
+	} else if (empty_tree(&r->wb, r->names) != 0) {
+		(void) snprintf(r->err, sizeof (r->err), "out of memory");
 		return (-1);
+	}
 	r->walked = 1;
 	if (stopped(r) != 0)
 		return (-1);
@@ -1323,7 +1495,9 @@ read_trees(struct run *r)
 	 * The unchanged set, off the three walks and nothing else: a
 	 * pool of either side that base holds under the same object
 	 * number, generation, ctime, link count, type and names is
-	 * what base holds, and is never read (yellow.c).
+	 * what base holds, and is never read (yellow.c). Only a
+	 * derived base licenses that, so --allow-unrelated leaves
+	 * r->prune clear and every pool is compared.
 	 */
 	marked = 0;
 	if (r->prune) {
@@ -1841,7 +2015,7 @@ zr_run(const struct zr_run_opts *o)
 	}
 
 	/* 6. the manifest */
-	hdr.base = r.base;
+	hdr.base = r.base[0] != '\0' ? r.base : ZR_NO_BASE;
 	hdr.from = r.fromsnap;
 	hdr.onto = r.ontosnap;
 	hdr.mode = o->mode;
@@ -2233,6 +2407,20 @@ resume_paths(struct resume *s)
 }
 
 /*
+ * Whether the record's base is the base of a run that had none:
+ * --allow-unrelated without --base read the two sides against the
+ * empty tree and wrote ZR_NO_BASE with the guid 0 in the record's
+ * place for it. Nothing is there to find, to hold or to release, and
+ * no verb walks the base in any case. The empty string is taken the
+ * same way, for a record written by hand or by an older tool.
+ */
+static int
+no_base(const char *snap)
+{
+	return (snap[0] == '\0' || strcmp(snap, ZR_NO_BASE) == 0);
+}
+
+/*
  * Every input the record names, found again. By name first, and the
  * guid must be the one the record kept: a snapshot destroyed and
  * taken again under the same name is another snapshot, and the
@@ -2258,6 +2446,16 @@ find_inputs(struct resume *s, int byguid)
 	for (i = 0; i < 3; i++) {
 		const char *want = rec_snap(&s->rb, i);
 
+		/*
+		 * A rebase made against the empty tree. Its base is
+		 * not missing: there was none, and a verb asks
+		 * nothing of it.
+		 */
+		if (i == ZI_BASE && no_base(want)) {
+			s->gone[i] = 1;
+			s->found[i][0] = '\0';
+			continue;
+		}
 		if (want[0] == '\0') {
 			(void) snprintf(s->err, sizeof (s->err),
 			    "the record names no %s snapshot", input_word(i));
@@ -2370,7 +2568,7 @@ release_record(struct resume *s)
 	for (i = 0; i < 3; i++) {
 		const char *snap = rec_snap(&s->rb, i);
 
-		if (snap[0] == '\0')
+		if (snap[0] == '\0' || (i == ZI_BASE && no_base(snap)))
 			continue;
 		ex = zr_zfs_exists(s->zfs, snap, e, sizeof (e));
 		if (ex <= 0)
@@ -2426,10 +2624,7 @@ ro_on(struct resume *s)
 static int
 empty_walk(struct resume *s, int slot)
 {
-	memset(&s->w[slot], 0, sizeof (s->w[slot]));
-	s->w[slot].zw_rootfd = -1;
-	if (zr_tree_init(&s->w[slot].zw_tree, s->names) != 0 ||
-	    zr_tree_seal(&s->w[slot].zw_tree) != 0) {
+	if (empty_tree(&s->w[slot], s->names) != 0) {
 		(void) snprintf(s->err, sizeof (s->err), "out of memory");
 		return (-1);
 	}
@@ -3302,6 +3497,12 @@ explain_gone(const struct resume *s)
 	for (i = 0; i < 3; i++) {
 		if (s->gone[i] == 0)
 			continue;
+		if (i == ZI_BASE && no_base(rec_snap(&s->rb, i))) {
+			(void) fprintf(stderr, "zfs_rebase: this rebase had "
+			    "no base: the two sides were read against the "
+			    "empty tree\n");
+			continue;
+		}
 		if (made_says(&s->rb, input_word(i)))
 			(void) fprintf(stderr, "zfs_rebase: %s was given as a "
 			    "dataset; its snapshot was destroyed at done\n",

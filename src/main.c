@@ -32,6 +32,7 @@
 
 static const char usage[] =
 	"usage: zfs_rebase [-n] [-p] [-v] [-o FILE] [--verify] [--overwrite]\n"
+	"                  [--allow-unrelated [--base SNAP]]\n"
 	"                  --from SNAP|DATASET --onto SNAP|DATASET "
 	"--result NAME\n"
 	"       zfs_rebase --continue [--verify] [-v] --result DATASET\n"
@@ -59,6 +60,11 @@ static const char usage[] =
 	"              dataset\n"
 	"  --overwrite in the dataset form, replace a record whose rebase\n"
 	"              reached done; an open rebase is never overwritten\n"
+	"  --allow-unrelated  rebase two sides that share no origin: no\n"
+	"              derivation and no pruning\n"
+	"  --base      with --allow-unrelated only, the base to rebase\n"
+	"              from: a snapshot no newer than either side, and\n"
+	"              without it the empty tree\n"
 	"  --continue  take the rebase on from the gate it stopped at\n"
 	"  --restart   put the result back as onto was -- the clone made\n"
 	"              again, or the dataset rolled back to the pre-apply\n"
@@ -322,10 +328,10 @@ int
 main(int argc, char **argv)
 {
 	const char *from = NULL, *onto = NULL, *result = NULL;
-	const char *outpath = NULL, *v;
+	const char *outpath = NULL, *base = NULL, *v;
 	zr_mode_t mode = ZR_MODE_STRICT;
 	int dryrun = 0, verbose = 0, abrt = 0, verify = 0, cont = 0, rest = 0;
-	int overwrite = 0;
+	int overwrite = 0, unrelated = 0;
 	struct zr_run_opts ro;
 	int i, t;
 
@@ -358,6 +364,8 @@ main(int argc, char **argv)
 			verify = 1;
 		} else if (strcmp(argv[i], "--overwrite") == 0) {
 			overwrite = 1;
+		} else if (strcmp(argv[i], "--allow-unrelated") == 0) {
+			unrelated = 1;
 		} else if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
 			outpath = argv[++i];
 		} else if ((t = longopt(argc, argv, &i, "--from", &v)) != 0 ||
@@ -374,6 +382,10 @@ main(int argc, char **argv)
 			if (t < 0)
 				return (die_usage());
 			result = v;
+		} else if ((t = longopt(argc, argv, &i, "--base", &v)) != 0) {
+			if (t < 0)
+				return (die_usage());
+			base = v;
 		} else {
 			return (die_usage());
 		}
@@ -396,6 +408,7 @@ main(int argc, char **argv)
 		 */
 		if (result == NULL || from != NULL || onto != NULL ||
 		    outpath != NULL || dryrun != 0 || overwrite != 0 ||
+		    unrelated != 0 || base != NULL ||
 		    mode != ZR_MODE_STRICT)
 			return (die_usage());
 		if (abrt != 0 || rest != 0) {
@@ -417,13 +430,23 @@ main(int argc, char **argv)
 	 */
 	if (from == NULL || onto == NULL || (result == NULL && !dryrun))
 		return (die_usage());
+	/*
+	 * A base is given only where there is none to work out: with
+	 * a shared origin the branch point is what it is, and a
+	 * second opinion about it is not something the tool could act
+	 * on.
+	 */
+	if (base != NULL && unrelated == 0)
+		return (die_usage());
 	ro.from = from;
 	ro.onto = onto;
 	ro.result = dryrun ? NULL : result;
 	ro.outpath = outpath;
+	ro.base = base;
 	ro.mode = mode;
 	ro.dryrun = dryrun;
 	ro.overwrite = overwrite;
+	ro.unrelated = unrelated;
 	ro.verify = verify;
 	ro.verbose = verbose;
 	return (zr_run(&ro));

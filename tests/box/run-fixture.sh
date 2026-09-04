@@ -29,7 +29,14 @@
 # What is checked, in order:
 #   0. the derivation refuses what it should: a linear pair, where
 #      one side is an ancestor of the other, and a pair that shares
-#      no origin at all -- both exit 2;
+#      no origin at all -- both exit 2 -- and --base without
+#      --allow-unrelated is a usage error, since a derived base is
+#      not open to a second opinion;
+#  0a. for probe.zrt, --allow-unrelated: that same unrelated pair
+#      goes through with no base at all, its manifest saying
+#      "#base -"; it goes through with --base given, whose snapshot
+#      is walked like the other two; and a --base newer than a side
+#      is refused with exit 2;
 #   1. -n: the manifest equals the fixture's expect block from the
 #      #mode line on (the header names datasets here), and its #base
 #      line is the snapshot the two sides were cloned from; and for
@@ -237,6 +244,54 @@ zfs snapshot "$POOL/other@x" || exit 2
 st=$?
 [ $st -eq 2 ] || fail "an unrelated pair exited $st, want 2"
 echo "ok   linear and unrelated pairs both refused (exit 2)"
+# --base is a base given by hand, and there is no place for one where
+# the branch point is derived.
+"$bin" -n --base "$POOL/base@base" --from "$POOL/from@work" \
+    --onto "$POOL/onto@work" > /dev/null 2>&1
+st=$?
+[ $st -eq 2 ] || fail "--base without --allow-unrelated exited $st, want 2"
+echo "ok   --base without --allow-unrelated refused (exit 2)"
+
+case "$fixture" in
+*/probe.zrt|probe.zrt)
+	say "0a. --allow-unrelated"
+	# The same unrelated pair the derivation just refused, taken
+	# with the flag: no derivation, no pruning, and no base at
+	# all, so the manifest's header says so with a "-" -- every
+	# name of either side is an add and the decision is their
+	# union. $POOL/other is an empty dataset, so onto's whole
+	# tree is added on onto's side alone: 0 or 1, never 2.
+	"$bin" --allow-unrelated -n -o "$tmp/got-u" \
+	    --from "$POOL/other@x" --onto "$POOL/onto@work"
+	st=$?
+	[ $st -eq 0 ] || [ $st -eq 1 ] || \
+	    fail "--allow-unrelated with no base exited $st, want 0 or 1"
+	grep -q '^#base -$' "$tmp/got-u" || \
+	    { head -5 "$tmp/got-u"; fail "the empty base is not '#base -'"; }
+	echo "ok   --allow-unrelated with no base (exit $st), #base -"
+	# A base given by hand: older than both sides, in one pool
+	# with them, and its dataset mounted, so its tree is walked
+	# like the other two.
+	"$bin" --allow-unrelated --base "$POOL/base@base" -n \
+	    -o "$tmp/got-ub" --from "$POOL/other@x" --onto "$POOL/onto@work"
+	st=$?
+	[ $st -eq 0 ] || [ $st -eq 1 ] || \
+	    fail "--allow-unrelated --base exited $st, want 0 or 1"
+	grep -q "^#base $POOL/base@base\$" "$tmp/got-ub" || \
+	    { head -5 "$tmp/got-ub"; fail "--base is not in the header"; }
+	echo "ok   --allow-unrelated --base $POOL/base@base (exit $st)"
+	# A base newer than a side. $POOL/other@x was taken above,
+	# after from@work and onto@work, so its createtxg is higher
+	# than from@work's for certain: as a base it is newer than
+	# from and the run is refused before anything is read.
+	"$bin" --allow-unrelated --base "$POOL/other@x" -n \
+	    --from "$POOL/from@work" --onto "$POOL/onto@work" \
+	    > /dev/null 2>&1
+	st=$?
+	[ $st -eq 2 ] || fail "a base newer than from exited $st, want 2"
+	echo "ok   a base newer than from refused (exit 2)"
+	;;
+esac
 
 say "1. dry run"
 "$bin" -n $flag -o "$tmp/got-n" --from "$POOL/from@work" \

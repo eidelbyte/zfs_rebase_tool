@@ -6,6 +6,7 @@ changes of one (from) onto the other (onto), or tells you exactly
 which files it could not decide and why.
 
     zfs_rebase [-n] [-p] [-v] [-o FILE] [--verify] [--overwrite] \
+        [--allow-unrelated [--base SNAP]] \
         --from SNAP|DATASET --onto SNAP|DATASET --result NAME
     zfs_rebase --continue [--verify] --result DATASET
     zfs_rebase --restart --result DATASET
@@ -76,6 +77,23 @@ snapshot is the point they last had in common. Two sides that share
 no origin are refused, and so is a pair where the base turns out to
 be one of the arguments -- one side already contains the other, and
 what is wanted there is not a rebase.
+
+**Unrelated sides**, --allow-unrelated. Two trees that never shared a
+lineage have no branch point to work out, and this is the flag that
+says so and takes them anyway. There is no derivation, and there is
+no pruning either: the unchanged set is read off object numbers, and
+an object number in one lineage means nothing in another. --base
+names the base to rebase from, a snapshot no newer than either side
+by createtxg -- a base taken after a side describes a state that side
+never passed through -- and its dataset is read through
+.zfs/snapshot like the other two. Without --base there is no base
+snapshot at all: the base is the empty tree, every name of either
+side is an add on that side, and the decision is the union of the
+two with a conflict wherever they disagree. The record and the
+manifest header then carry "-" for the base and the guid 0, which
+every verb reads as "there was no base". --base without
+--allow-unrelated is a usage error: where the branch point is
+derived, a base given by hand could only agree with it or be wrong.
 
 It is not a zfs(8) verb. It destroys no snapshot of yours and takes
 one only where you gave it a dataset instead. It reads the three

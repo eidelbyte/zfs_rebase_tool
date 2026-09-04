@@ -28,15 +28,27 @@
  * it. overwrite replaces a record whose rebase reached done, and is
  * the dataset form's alone: a clone-form result is a fresh dataset
  * with a fresh record and there is nothing there to overwrite.
+ *
+ * unrelated is the one exception to all of that. Two sides that
+ * share no origin have no branch point to work out, so the
+ * derivation is skipped, the pruning is off -- an object number
+ * means nothing across two lineages -- and the base is base when the
+ * user gave one, a snapshot neither side is older than, or the empty
+ * tree when they did not, which makes every name an add on its side
+ * and the decision the union of the two with a conflict wherever
+ * they disagree. base is NULL without unrelated, which the driver
+ * refuses as a usage error.
  */
 struct zr_run_opts {
 	const char	*from;		/* pool/fs@snap or pool/fs */
 	const char	*onto;		/* pool/fs@snap or pool/fs */
 	const char	*result;	/* the clone, or the snapshot name */
 	const char	*outpath;	/* manifest file, or NULL */
+	const char	*base;		/* --base SNAP, or NULL */
 	zr_mode_t	mode;
 	int		dryrun;		/* manifest only, nothing created */
 	int		overwrite;	/* replace a record that is done */
+	int		unrelated;	/* --allow-unrelated: no derivation */
 	int		verify;		/* the demand for a final check */
 	int		verbose;
 };
