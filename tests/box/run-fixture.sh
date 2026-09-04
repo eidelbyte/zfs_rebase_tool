@@ -4,11 +4,22 @@
 # make freebsd. Usage: run-fixture.sh FIXTURE.zrt   (KEEP=1 to leave
 # the pool behind for inspection).
 #
-# The tool takes no snapshots, so the harness takes them: base@base
-# when base is populated, and from@work and onto@work when the two
-# sides are. Only the last two are given to the run, which derives
-# base@base for itself as the point the two sides branched from; the
-# result clone is named too, as $POOL/result.
+# Every fixture is run twice over, once in each form of the tool.
+#
+# The clone form first (steps 0 to 5): the harness takes the
+# snapshots -- base@base when base is populated, from@work and
+# onto@work when the two sides are -- and gives the run the last two
+# and the name of the clone, $POOL/result. The run derives base@base
+# for itself as the point the two sides branched from.
+#
+# Then the dataset form (steps D0 to D2), after the clone form has
+# been aborted and the pool is back to base, from and onto with their
+# snapshots: from is given as the DATASET, so the tool takes its own
+# snapshot of it and destroys it again when the rebase ends, and onto
+# is given as the dataset too, so the rebase is made in it and
+# --result names the pre-apply snapshot. That pass is run twice, once
+# with --result spelled short and once in full, since both must name
+# one snapshot of one dataset.
 #
 # A bogus zfs_rebase:tag and zfs_rebase:manifest are set on the pool
 # root before the run, because user properties inherit down the naming
@@ -81,6 +92,39 @@
 #      printed, the state is done and the holds are released before
 #      the abort), which is where --verify is due;
 #
+# and then, in the dataset form:
+#  D0. for probe.zrt, exclusivity: a file held open under onto makes
+#      the unmount fail, the run exits 2 saying onto is in use, and
+#      it takes back everything it had made -- its record, the
+#      pre-apply snapshot, the snapshot it took of from, and its run
+#      directory -- leaving onto mounted where it was;
+#  D1. the run itself: the manifest is the clone form's manifest
+#      exactly and derives the same base; the record is on
+#      $POOL/onto with form dataset, made from, readonly recording
+#      what it was, the pre-apply snapshot as :onto and the tool's
+#      own snapshot of from as :from, every property local against
+#      the bogus ones on the pool root; the dataset is mounted at its
+#      own mountpoint again with readonly as it was and the
+#      mountpoint property untouched; the pre-apply snapshot is
+#      there; and then per branch -- a clean fixture at done with
+#      every hold released and the tool's own snapshot destroyed and
+#      the live tree the rebased tree, a conflicted one at conflicts
+#      with the clean actions applied, the three holds under the
+#      record's tag and the same conflicts declared by a second
+#      rebase. --verify and --continue then behave as they do in the
+#      clone form and hand the dataset back each time, an open
+#      rebase is refused with and without --overwrite, and --abort
+#      rolls onto back to what it was, destroys both snapshots, takes
+#      every zfs_rebase: property off it and leaves it mounted at
+#      home holding the tree the fixture built;
+#  D2. for a clean fixture, --overwrite: a record that reached done
+#      is refused without the flag and replaced with it, and the
+#      before-image of the done rebase is still there afterwards,
+#      because a rebase that finished keeps it;
+#  D3. the whole pass again with --result spelled as
+#      $POOL/onto@pre, which must be the same rebase of the same
+#      snapshot;
+#
 # The from and onto datasets are made by clearing a clone of base and
 # extracting the fixture's tree with tar, so every object is new and
 # none of them prunes; the unchanged-pool pruning is exercised only
@@ -107,14 +151,19 @@ cleanup() {
 		echo "KEEP=1: pool $POOL, $IMG and $tmp left in place"
 		return
 	fi
-	# A failed step can leave the result clone, its persistent
-	# holds and its directory under /var/db; --abort is what
-	# gives back all three, and zpool destroy -f would not touch
-	# the directory.
+	# A failed step can leave the result clone or the onto dataset
+	# taken over, either one's persistent holds, and a directory
+	# under /var/db; --abort is what gives all of that back, and
+	# zpool destroy -f would not touch the directory. The dataset
+	# form's --result is the dataset itself.
 	"$bin" --abort --result "$POOL/result" >/dev/null 2>&1
+	"$bin" --abort --result "$POOL/onto" >/dev/null 2>&1
 	zpool destroy -f "$POOL" 2>/dev/null
 	[ -n "$MD" ] && mdconfig -d -u "$MD" 2>/dev/null
 	rm -f "$IMG"
+	# a fixture can leave uchg or schg behind (flags-conflict.zrt),
+	# and rm would refuse it; tests/run-fixtures.sh does the same.
+	chflags -R nouchg,nouappnd,noschg,nosappnd "$tmp" 2>/dev/null
 	rm -rf "$tmp"
 	rmdir "$MNT" 2>/dev/null
 }
@@ -518,5 +567,333 @@ if [ $do5 -eq 1 ]; then
 	done
 	echo "ok   --verify recorded as yes, under its own tag $vtag"
 fi
+
+# ---------------------------------------------------------------
+# The dataset form. Everything above ran onto as a snapshot and put
+# the rebase in a clone; the same fixture is now rebased in place,
+# with from given as the dataset too so that the tool takes its own
+# snapshot of it. The pool is back to base, from and onto with their
+# snapshots, which is what this form starts from.
+# ---------------------------------------------------------------
+DRUN=/var/db/zfs_rebase/$POOL/onto
+dsay() { printf '\n== the dataset form (--result %s): %s\n' "$dspec" "$*"; }
+dfail() { fail "the dataset form (--result $dspec): $*"; }
+# Every zfs_rebase: property that is the dataset's own. The pool root
+# carries a bogus tag and manifest, so an inherited one must never be
+# counted: after --abort this list has to be empty.
+localprops() {
+	zfs get -H -o property,source all "$1" 2>/dev/null | \
+	    awk '$1 ~ /^zfs_rebase:/ && $2 == "local" { print $1 }'
+}
+# Is that snapshot there at all?
+hassnap() { zfs list -H -o name -t snapshot "$1" > /dev/null 2>&1; }
+# The tree onto holds now, held against the fixture: a --posix rebase
+# over the fixture's own base and from and the live onto has to
+# declare exactly what the expect block declares, which it can only
+# do if onto is back to the tree the fixture built.
+onto_is_the_fixture() {
+	"$bin" --posix $flag -o "$1" "$tmp/base" "$tmp/from" "$MNT/onto"
+	st=$?
+	[ $st -eq 0 ] || [ $st -eq 1 ] || dfail "the --posix re-run exited $st"
+	sed -n '/^#mode/,$p' "$1" > "$1.body"
+	cmp -s "$tmp/expect.body" "$1.body" || \
+	    { diff "$tmp/expect.body" "$1.body" | head -20; \
+	      dfail "onto is not the tree the fixture built"; }
+}
+
+# One whole pass in the dataset form. $1 is how --result is spelled
+# and $2 is the short name it must come to, so that both spellings
+# are shown to name one snapshot. The pass ends with --abort, which
+# puts the dataset back as it was and leaves the pool ready for the
+# next one.
+dataset_pass() {
+	dspec=$1
+	dname=$2
+	cmnt=$MNT/onto
+
+	dsay "the run"
+	"$bin" $flag -v -o "$tmp/got-d" --from "$POOL/from" \
+	    --onto "$POOL/onto" --result "$dspec" > "$tmp/d.log" 2>&1
+	dst=$?
+	cat "$tmp/d.log"
+	if [ $clean -eq 1 ]; then
+		[ $dst -eq 0 ] || dfail "exited $dst, want 0"
+	else
+		[ $dst -eq 1 ] || dfail "exited $dst, want 1"
+	fi
+	sed -n '/^#mode/,$p' "$tmp/got-d" > "$tmp/got-d.body"
+	cmp -s "$tmp/expect.body" "$tmp/got-d.body" || \
+	    { diff "$tmp/expect.body" "$tmp/got-d.body" | head -20; \
+	      dfail "the manifest differs from the clone form's"; }
+	grep -q "^#base $POOL/base@base\$" "$tmp/got-d" || \
+	    { head -5 "$tmp/got-d"; dfail "did not derive $POOL/base@base"; }
+
+	dsay "the record on $POOL/onto"
+	dtag=$(recval zfs_rebase:tag "$POOL/onto")
+	dfrom=$(recval zfs_rebase:from "$POOL/onto")
+	for prop in base base_guid from from_guid onto onto_guid made mode \
+	    form tag verify manifest readonly; do
+		src=$(recsrc "zfs_rebase:$prop" "$POOL/onto")
+		[ "$src" = local ] || \
+		    dfail "zfs_rebase:$prop has source $src, want local"
+	done
+	[ "$(recval zfs_rebase:form "$POOL/onto")" = dataset ] || \
+	    dfail "zfs_rebase:form is not dataset"
+	[ "$(recval zfs_rebase:made "$POOL/onto")" = from ] || \
+	    dfail "zfs_rebase:made is not from"
+	[ "$(recval zfs_rebase:readonly "$POOL/onto")" = off ] || \
+	    dfail "zfs_rebase:readonly did not record what it was"
+	[ "$(recval zfs_rebase:onto "$POOL/onto")" = "$POOL/onto@$dname" ] || \
+	    dfail "zfs_rebase:onto is not $POOL/onto@$dname"
+	[ "$(recval zfs_rebase:base "$POOL/onto")" = "$POOL/base@base" ] || \
+	    dfail "zfs_rebase:base is not $POOL/base@base"
+	case "$dtag" in
+	zr-*) ;;
+	*) dfail "the tag is '$dtag', want zr-<12 hex>" ;;
+	esac
+	# from was a dataset, so the tool took its snapshot and named
+	# it after its own tag.
+	case "$dfrom" in
+	"$POOL/from@zfs_rebase-$dtag"*) ;;
+	*) dfail "zfs_rebase:from is $dfrom, want $POOL/from@zfs_rebase-$dtag" ;;
+	esac
+	hassnap "$POOL/onto@$dname" || \
+	    dfail "the pre-apply snapshot $POOL/onto@$dname is not there"
+	echo "ok   record: form dataset, made from, readonly off, the"
+	echo "     pre-apply snapshot $dname, every property local"
+
+	dsay "the dataset is back in service"
+	[ "$(zfs get -H -o value mountpoint "$POOL/onto")" = "$MNT/onto" ] || \
+	    dfail "the mountpoint property was changed"
+	[ "$(zfs get -H -o value mounted "$POOL/onto")" = yes ] || \
+	    dfail "onto is not mounted after the run"
+	mount | grep -q " on $MNT/onto " || \
+	    dfail "onto is not mounted at $MNT/onto"
+	[ "$(zfs get -H -o value readonly "$POOL/onto")" = off ] || \
+	    dfail "readonly was not put back to off"
+	[ -d "$DRUN/mnt" ] || dfail "no run directory at $DRUN"
+	echo "ok   handed back: at $MNT/onto, readonly off, mountpoint kept"
+
+	dstate=$(recval zfs_rebase:state "$POOL/onto")
+	if [ $clean -eq 1 ]; then
+		[ "$dstate" = done ] || dfail "the state is $dstate, want done"
+		for s in "$POOL/base@base" "$POOL/onto@$dname"; do
+			held=$(zfs holds -H "$s") || dfail "zfs holds $s"
+			[ -z "$held" ] || dfail "$s is still held: $held"
+		done
+		hassnap "$dfrom" && \
+		    dfail "$dfrom survived done; the tool made it"
+		again "$tmp/d-again"
+		idempotent "$tmp/d-again" 0
+		echo "ok   done: holds released, $dfrom destroyed, and the"
+		echo "     live tree is the rebased tree"
+	else
+		[ "$dstate" = conflicts ] || \
+		    dfail "the state is $dstate, want conflicts"
+		for s in "$POOL/base@base" "$dfrom" "$POOL/onto@$dname"; do
+			held=$(holdtags "$s") || dfail "zfs holds $s"
+			[ "$held" = "$dtag" ] || \
+			    dfail "$s is held under '$held', want '$dtag'"
+		done
+		again "$tmp/d-again"
+		idempotent "$tmp/d-again" "$want_conf"
+		echo "ok   conflicts: the clean actions are in the live tree,"
+		echo "     each input held once under $dtag, $dfrom kept"
+	fi
+
+	dsay "the verbs"
+	"$bin" --verify --result "$POOL/onto" > "$tmp/d-verify" 2>&1
+	dst=$?
+	[ $dst -eq 0 ] || { cat "$tmp/d-verify"; dfail "--verify exited $dst"; }
+	grep -q 'drifted 0' "$tmp/d-verify" || \
+	    { cat "$tmp/d-verify"; dfail "--verify found drift"; }
+	grep -q 'pending 0' "$tmp/d-verify" || \
+	    { cat "$tmp/d-verify"; dfail "--verify found pending actions"; }
+	mount | grep -q " on $MNT/onto " || \
+	    dfail "--verify did not hand the dataset back"
+	[ "$(recval zfs_rebase:state "$POOL/onto")" = "$dstate" ] || \
+	    dfail "--verify moved the state"
+	"$bin" --continue --result "$POOL/onto" > "$tmp/d-cont" 2>&1
+	dst=$?
+	if [ $clean -eq 1 ]; then
+		[ $dst -eq 0 ] || \
+		    { cat "$tmp/d-cont"; dfail "--continue on done exited $dst"; }
+	else
+		[ $dst -eq 1 ] || \
+		    { cat "$tmp/d-cont"; dfail "--continue exited $dst, want 1"; }
+		grep -q "$DRUN/resolution" "$tmp/d-cont" || \
+		    { cat "$tmp/d-cont"; dfail "--continue named no resolution"; }
+	fi
+	[ "$(recval zfs_rebase:state "$POOL/onto")" = "$dstate" ] || \
+	    dfail "--continue moved the state"
+	mount | grep -q " on $MNT/onto " || \
+	    dfail "--continue did not hand the dataset back"
+	echo "ok   --verify and --continue: exit 0 and $dst, the state"
+	echo "     unmoved, the dataset handed back each time"
+
+	# An open rebase is not rebased over, flag or no flag. Only a
+	# conflicted fixture is open here; a clean one reached done,
+	# which is the other half and is checked in the --overwrite
+	# pass below.
+	if [ $clean -eq 0 ]; then
+		for extra in "" --overwrite; do
+			"$bin" $extra --from "$POOL/from" --onto "$POOL/onto" \
+			    --result second > /dev/null 2>&1
+			dst=$?
+			[ $dst -eq 2 ] || dfail \
+			    "a run over an open rebase with '$extra' exited $dst, want 2"
+		done
+		hassnap "$POOL/onto@second" && \
+		    dfail "the refused run took $POOL/onto@second"
+		[ "$(recval zfs_rebase:state "$POOL/onto")" = "$dstate" ] || \
+		    dfail "a refused run moved the state"
+		echo "ok   an open rebase is refused with and without"
+		echo "     --overwrite (exit 2), and nothing was touched"
+	fi
+
+	dsay "abort"
+	"$bin" --abort --result "$POOL/onto" > "$tmp/d-abort" 2>&1
+	dst=$?
+	[ $dst -eq 0 ] || { cat "$tmp/d-abort"; dfail "--abort exited $dst"; }
+	left=$(localprops "$POOL/onto")
+	[ -z "$left" ] || dfail "still local on $POOL/onto: $left"
+	hassnap "$POOL/onto@$dname" && \
+	    dfail "the pre-apply snapshot survived the abort"
+	hassnap "$dfrom" && dfail "$dfrom survived the abort"
+	[ -e "$DRUN" ] && dfail "$DRUN survived the abort"
+	mount | grep -q " on $MNT/onto " || \
+	    dfail "onto is not at $MNT/onto after the abort"
+	[ "$(zfs get -H -o value readonly "$POOL/onto")" = off ] || \
+	    dfail "the abort left readonly on"
+	onto_is_the_fixture "$tmp/d-after"
+	for s in "$POOL/base@base" "$POOL/from@work" "$POOL/onto@work"; do
+		held=$(zfs holds -H "$s") || dfail "zfs holds $s"
+		[ -z "$held" ] || dfail "$s is still held: $held"
+	done
+	echo "ok   abort: rolled back to what onto was, the snapshots and"
+	echo "     the record gone, mounted at home, no hold left"
+}
+
+# What the dataset form refuses, on probe.zrt alone: none of these
+# answers can depend on the fixture, and what they prove is that a
+# run which is refused gives back everything it had made. The last
+# of them is the exclusivity itself -- a file held open under onto
+# means the unmount fails, and the unmount is the whole of it.
+case "$fixture" in
+*/probe.zrt|probe.zrt)
+	say "D0. the dataset form's refusals (probe.zrt)"
+	# A dry run over two datasets must read something, so it takes
+	# a snapshot of each side, and must leave nothing at all: no
+	# snapshot, no record, no run directory. --result is ignored.
+	"$bin" -n $flag -o "$tmp/dry-d" --from "$POOL/from" \
+	    --onto "$POOL/onto" > /dev/null 2>&1
+	st=$?
+	[ $st -eq 0 ] || [ $st -eq 1 ] || fail "-n over two datasets exited $st"
+	sed -n '/^#mode/,$p' "$tmp/dry-d" > "$tmp/dry-d.body"
+	cmp -s "$tmp/expect.body" "$tmp/dry-d.body" || \
+	    { diff "$tmp/expect.body" "$tmp/dry-d.body" | head -20; \
+	      fail "the dry run over two datasets decided something else"; }
+	grep -q "^#base $POOL/base@base\$" "$tmp/dry-d" || \
+	    fail "the dry run over two datasets did not derive the base"
+	for d in from onto; do
+		n=$(zfs list -H -o name -t snapshot -r "$POOL/$d" | \
+		    wc -l | tr -d ' ')
+		[ "$n" -eq 1 ] || fail "-n left a snapshot on $POOL/$d"
+	done
+	left=$(localprops "$POOL/onto")
+	[ -z "$left" ] || fail "-n left $left on $POOL/onto"
+	[ -e "$DRUN" ] && fail "-n left a run directory"
+	echo "ok   -n over two datasets: the same manifest, and its own"
+	echo "     snapshots taken and destroyed again"
+
+	# --result in the dataset form names a snapshot of onto and of
+	# nothing else.
+	"$bin" $flag --from "$POOL/from" --onto "$POOL/onto" \
+	    --result "$POOL/other@pre" > "$tmp/badresult" 2>&1
+	st=$?
+	[ $st -eq 2 ] || { cat "$tmp/badresult"; fail "--result naming another dataset's snapshot exited $st, want 2"; }
+	hassnap "$POOL/other@pre" && fail "that run took $POOL/other@pre"
+	echo "ok   --result $POOL/other@pre refused (exit 2)"
+
+	busy=$(find "$MNT/onto" -type f | head -1)
+	[ -n "$busy" ] || busy=$MNT/onto
+	sleep 30 < "$busy" &
+	sleeper=$!
+	"$bin" $flag --from "$POOL/from" --onto "$POOL/onto" \
+	    --result pre > "$tmp/busy" 2>&1
+	st=$?
+	kill "$sleeper" 2>/dev/null
+	wait "$sleeper" 2>/dev/null
+	[ $st -eq 2 ] || { cat "$tmp/busy"; fail "a busy onto exited $st, want 2"; }
+	grep -q 'in use' "$tmp/busy" || \
+	    { cat "$tmp/busy"; fail "the refusal did not say onto is in use"; }
+	left=$(localprops "$POOL/onto")
+	[ -z "$left" ] || fail "the refused run left $left on $POOL/onto"
+	hassnap "$POOL/onto@pre" && fail "the refused run left $POOL/onto@pre"
+	n=$(zfs list -H -o name -t snapshot -r "$POOL/from" | wc -l | tr -d ' ')
+	[ "$n" -eq 1 ] || fail "the refused run left a snapshot on $POOL/from"
+	[ -e "$DRUN" ] && fail "the refused run left a run directory"
+	mount | grep -q " on $MNT/onto " || \
+	    fail "the refused run left onto unmounted"
+	echo "ok   a file open under onto: exit 2, and the run took"
+	echo "     back its snapshot, its record and its directory"
+	;;
+esac
+
+say "D1. the dataset form, the short spelling"
+dataset_pass pre pre
+
+# --overwrite replaces a record whose rebase reached done, and only
+# that. A clean fixture is the one that gets there, so this is where
+# the other half of the rule is shown; the open-record half is in the
+# pass above, on every conflicted fixture.
+if [ $clean -eq 1 ]; then
+	dspec="pre, then --overwrite"
+	say "D2. --overwrite over a record that reached done"
+	"$bin" $flag -o "$tmp/got-o1" --from "$POOL/from" \
+	    --onto "$POOL/onto" --result pre > "$tmp/o1" 2>&1
+	st=$?
+	[ $st -eq 0 ] || \
+	    { cat "$tmp/o1"; fail "the run before the --overwrite run exited $st"; }
+	[ "$(recval zfs_rebase:state "$POOL/onto")" = done ] || \
+	    fail "that run did not reach done"
+	"$bin" $flag -o "$tmp/got-o2" --from "$POOL/from" \
+	    --onto "$POOL/onto" --result second > "$tmp/o2" 2>&1
+	st=$?
+	[ $st -eq 2 ] || { cat "$tmp/o2"; fail "a done record without --overwrite exited $st, want 2"; }
+	grep -q -- '--overwrite' "$tmp/o2" || \
+	    { cat "$tmp/o2"; fail "the refusal did not name --overwrite"; }
+	[ "$(recval zfs_rebase:onto "$POOL/onto")" = "$POOL/onto@pre" ] || \
+	    fail "the refused run changed the record"
+	"$bin" $flag --overwrite -o "$tmp/got-o3" --from "$POOL/from" \
+	    --onto "$POOL/onto" --result second > "$tmp/o3" 2>&1
+	st=$?
+	[ $st -eq 0 ] || { cat "$tmp/o3"; fail "the --overwrite run exited $st"; }
+	[ "$(recval zfs_rebase:onto "$POOL/onto")" = "$POOL/onto@second" ] || \
+	    fail "the --overwrite run did not replace the record"
+	[ "$(recval zfs_rebase:state "$POOL/onto")" = done ] || \
+	    fail "the --overwrite run did not reach done"
+	"$bin" --abort --result "$POOL/onto" > "$tmp/o-abort" 2>&1
+	st=$?
+	[ $st -eq 0 ] || \
+	    { cat "$tmp/o-abort"; fail "the abort after --overwrite exited $st"; }
+	# That abort rolled onto back to @second, which was taken
+	# after the first run had already rebased it; @pre is the
+	# fixture's own tree and is still here, unowned, because a
+	# rebase that reaches done keeps its before-image.
+	hassnap "$POOL/onto@pre" || \
+	    fail "@pre did not survive a rebase that reached done"
+	zfs rollback "$POOL/onto@pre" || fail "cannot roll back to @pre"
+	zfs destroy "$POOL/onto@pre" || fail "cannot destroy @pre"
+	dspec=pre
+	onto_is_the_fixture "$tmp/o-after"
+	echo "ok   --overwrite: refused without it, taken with it, and"
+	echo "     the done rebase's before-image kept until asked for"
+fi
+
+# The same pass again with --result spelled in full, which must name
+# the same snapshot of the same dataset.
+say "D3. the dataset form again, the full spelling"
+dataset_pass "$POOL/onto@pre" pre
 rc=0
 exit 0

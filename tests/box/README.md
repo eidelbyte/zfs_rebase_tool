@@ -13,6 +13,15 @@ real mode of the driver.
     make gate                          # needs perl
     sudo sh tests/box/run-fixture.sh tests/fixtures/probe.zrt
     sudo sh tests/box/run-suite.sh
+    sudo sh tests/box/run-precond.sh   # the cells no fixture states
+
+run-fixture.sh builds its trees under mktemp -d /tmp/zr-box.XXXXXX,
+and the fixtures in tests/fixtures/freebsd/ carry NFSv4 ACLs and
+system-namespace extended attributes, which a tmpfs /tmp cannot hold
+at all: setting one there fails with EOPNOTSUPP and the fixture fails
+before the pool is even made. The box wants /tmp on ZFS (or UFS), or
+TMPDIR pointed at a directory on one. Those fixtures are root's for
+the same reason: the system attribute namespace is root's.
 
 make freebsd builds against the OpenZFS headers in the FreeBSD source
 tree, the way FreeBSD's own zfs(8) is built, because the installed
@@ -36,15 +45,62 @@ headers, with the same two flag sets the Makefile uses; it catches
 declaration and type errors in the FreeBSD sections without a box.
 
 run-fixture.sh builds one fixture as real datasets on a throwaway
-pool on a memory disk and runs the tool for real. The tool takes no
-snapshots, so the harness takes them -- base@base, from@work and
-onto@work -- but hands the run only the two sides and names the
-result clone:
+pool on a memory disk and runs the tool for real -- twice over, once
+in each form.
+
+The clone form first. The harness takes the snapshots -- base@base,
+from@work and onto@work -- and hands the run only the two sides and
+the name of the clone:
 
     zfs_rebase -n -o FILE --from POOL/from@work --onto POOL/onto@work
     zfs_rebase -v -o FILE --off-of POOL/from@work \
         --onto POOL/onto@work --result POOL/result
     zfs_rebase --abort --result POOL/result
+
+Then the dataset form, after that pass has been aborted and the pool
+is back to base, from and onto with their snapshots. Both sides are
+given as datasets, so the tool takes its own snapshot of from and
+--result names the pre-apply snapshot of onto:
+
+    zfs_rebase -v -o FILE --from POOL/from --onto POOL/onto --result pre
+    zfs_rebase --verify --result POOL/onto
+    zfs_rebase --continue --result POOL/onto
+    zfs_rebase --abort --result POOL/onto
+
+and then the whole pass again with --result POOL/onto@pre, since the
+short name and the full one must name the same snapshot of the same
+dataset.
+
+What that pass shows. The manifest is the clone form's manifest
+exactly, from the #mode line on, and derives the same base: one
+decision, two ways of carrying it out. The record is on POOL/onto
+itself with zfs_rebase:form dataset, :made from, :readonly recording
+what readonly was, :onto the pre-apply snapshot and :from the
+snapshot the tool took of the from dataset, named after the run's own
+tag; every one of them is local, against the bogus tag and manifest
+on the pool root. The dataset is mounted at its own mountpoint again
+when the run stops, readonly as it was, with the mountpoint property
+untouched -- that is the hand-back, and it happens at conflicts, at
+done, at a failure and after every verb, because a rebase waiting for
+a conflict to be answered must not hold a filesystem out of service
+while it waits. A clean fixture is at done with every hold released,
+the tool's own snapshot of from destroyed, and the live tree the
+rebased tree; a conflicted one is at conflicts with the clean actions
+applied, the three holds under the record's tag, and the tool's own
+snapshot still there. --abort rolls onto back to the pre-apply
+snapshot, destroys that and the tool's own, leaves no zfs_rebase:
+property local, and hands the dataset back holding exactly the tree
+the fixture built -- which the harness proves by rebasing over it in
+--posix form and getting the expect block back.
+
+Two more things belong to this form. The exclusivity is the unmount,
+so probe.zrt holds a file open under POOL/onto and runs the tool: it
+exits 2 saying onto is in use, and takes back its record, both
+snapshots and its run directory, leaving the dataset mounted where it
+was. And --overwrite, on a clean fixture, whose dataset-form run
+reaches done: a second run is refused without the flag and replaces
+the record with it, and the finished rebase's before-image is still
+there afterwards, since a rebase that reached done keeps it.
 
 Both runs must derive POOL/base@base for themselves, and the harness
 checks the #base line of each manifest for it; the real run spells
@@ -113,5 +169,10 @@ and its tag is a new one, and on a clean fixture the final check runs
 at the done gate, so its report is printed, the state is done and the
 holds are released before the abort. For probe.zrt there is also the
 dry run given --verify, which must still create nothing, hold nothing
-and leave no run directory. KEEP=1 leaves the pool for inspection.
-Its header says what it does not exercise yet.
+and leave no run directory. The dataset form's pass runs after all of
+that. KEEP=1 leaves the pool for inspection. Its header says what it
+does not exercise yet.
+
+run-suite.sh walks tests/fixtures/ and tests/fixtures/freebsd/ and
+runs every one of them through both forms; a failure prints the log's
+last "==" heading, which names the form and the step it stopped at.
