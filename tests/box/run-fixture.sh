@@ -48,13 +48,38 @@
 #      fixture expects, zero for a clean one and the expect block's
 #      own count for a conflicted one, since a conflict is answered
 #      by the conflict manager and not by a second rebase;
+#  3a. the verbs on that result: --verify exits 0 and prints the
+#      counts, having written nothing and moved no state, on either
+#      branch -- a conflicted run applied its clean actions too, so
+#      every action is done and only the conflicts are outstanding;
+#      --continue exits 0 on a done result and 1 on one at
+#      conflicts, naming the resolution it waits for, and leaves the
+#      state and the tree exactly as they were; every verb refuses
+#      the plain dataset that only inherits the record properties,
+#      with exit 2 and no harm to it; and --result spelled as a
+#      snapshot of the result, one that does not even exist, finds
+#      the same rebase, since the name is taken as its dataset;
+#  3b. for probe.zrt, drift and its repair: /n, which the manifest
+#      copied, is edited behind the tool's back with readonly off
+#      and on again, --verify then exits 3 naming "drifted 1, first
+#      /n" and fixes nothing, --continue --verify puts it back and
+#      exits per the branch, and --verify is clean again with the
+#      result read-only;
+#  3c. for probe.zrt, --restart: the clone is destroyed and made
+#      again from the recorded onto snapshot with the same record,
+#      the manifest is applied from the first gate, and the run
+#      lands at the same state under the same tag with the same
+#      three holds and the same tree;
 #   4. --abort: exit 0, every hold released, the dataset gone, the
 #      recorded manifest unlinked, the run directory gone down to
 #      /var/db/zfs_rebase, and a second --abort exit 2 because there
 #      is no such run;
-#   5. for probe.zrt, a real run given --verify: zfs_rebase:verify is
-#      "yes" in its record and its tag is a new one, and --abort
-#      takes it away again.
+#   5. a second real run given --verify -- every clean fixture, and
+#      probe.zrt as the conflicted one: zfs_rebase:verify is "yes"
+#      in its record and its tag is a new one, and on a clean
+#      fixture the final check runs at the done gate (its report is
+#      printed, the state is done and the holds are released before
+#      the abort), which is where --verify is due;
 #
 # The from and onto datasets are made by clearing a clone of base and
 # extracting the fixture's tree with tar, so every object looks
@@ -302,6 +327,132 @@ else
 	echo "     rebase declares 0 actions and $want_conf conflicts again"
 fi
 
+say "3a. the verbs on the result"
+# --verify reports and writes nothing. Every action of the manifest
+# must be done by now on either branch, because a conflicted run
+# applies its clean actions too and the conflicts themselves are not
+# actions; blocked is possible and is not a failure.
+"$bin" --verify --result "$POOL/result" > "$tmp/verify1" 2>&1
+st=$?
+[ $st -eq 0 ] || { cat "$tmp/verify1"; fail "--verify exited $st, want 0"; }
+grep -q 'done [0-9]' "$tmp/verify1" || \
+    { cat "$tmp/verify1"; fail "--verify printed no counts"; }
+grep -q 'drifted 0' "$tmp/verify1" || \
+    { cat "$tmp/verify1"; fail "--verify found drift"; }
+grep -q 'pending 0' "$tmp/verify1" || \
+    { cat "$tmp/verify1"; fail "--verify found pending actions"; }
+[ "$(recval zfs_rebase:state "$POOL/result")" = "$state" ] || \
+    fail "--verify moved the state"
+echo "ok   --verify: exit 0, counts printed, still at $state"
+
+# --continue on a rebase that is where it should be changes nothing:
+# a done one is done, and a conflicted one waits for a resolution
+# that nothing in this sprint writes.
+"$bin" --continue --result "$POOL/result" > "$tmp/cont1" 2>&1
+st=$?
+if [ $clean -eq 1 ]; then
+	[ $st -eq 0 ] || \
+	    { cat "$tmp/cont1"; fail "--continue on done exited $st, want 0"; }
+else
+	[ $st -eq 1 ] || \
+	    { cat "$tmp/cont1"; fail "--continue at conflicts exited $st, want 1"; }
+	grep -q "$RUNDIR/resolution" "$tmp/cont1" || \
+	    { cat "$tmp/cont1"; fail "--continue did not name the resolution"; }
+fi
+[ "$(recval zfs_rebase:state "$POOL/result")" = "$state" ] || \
+    fail "--continue moved the state"
+# and the tree it leaves is still the tree stage 1 made
+again "$tmp/again2"
+idempotent "$tmp/again2" "$want_conf"
+echo "ok   --continue: exit $st, the state and the tree unchanged"
+
+# A dataset that only inherits the record's properties is no result
+# of ours, whatever the verb is, and none of them may touch it.
+for verb in --verify --continue --restart; do
+	"$bin" $verb --result "$POOL/plain" > /dev/null 2>&1
+	st=$?
+	[ $st -eq 2 ] || \
+	    fail "$verb on an inheriting dataset exited $st, want 2"
+done
+[ "$(zfs list -H -o name "$POOL/plain" 2>/dev/null)" = "$POOL/plain" ] || \
+    fail "a verb destroyed $POOL/plain, which is no result of ours"
+echo "ok   every verb refuses a dataset with no record (exit 2)"
+
+# --result names the dataset carrying the record, and a snapshot
+# name is taken as its dataset: this one does not even exist, and
+# the verb still finds the rebase.
+"$bin" --verify --result "$POOL/result@nosuch" > /dev/null 2>&1
+st=$?
+[ $st -eq 0 ] || fail "--verify on a snapshot spelling exited $st, want 0"
+echo "ok   --result $POOL/result@nosuch is the same rebase"
+
+case "$fixture" in
+*/probe.zrt|probe.zrt)
+	say "3b. a stray edit, reported and repaired (probe.zrt)"
+	# /n is a cp of the manifest, so an edit to it matches neither
+	# what the rebase made nor what onto had: that is drift, and
+	# --verify says so and fixes nothing.
+	# It is there at all only because applying1 ran before the run
+	# stopped at conflicts, which is the whole point of the stage.
+	[ -f "$cmnt/n" ] || fail "the clean action n cp /n was not applied"
+	zfs set readonly=off "$POOL/result" || fail "readonly=off"
+	printf 'stray\n' >> "$cmnt/n" || fail "cannot edit $cmnt/n"
+	zfs set readonly=on "$POOL/result" || fail "readonly=on"
+	"$bin" --verify --result "$POOL/result" > "$tmp/verify2" 2>&1
+	st=$?
+	[ $st -eq 3 ] || \
+	    { cat "$tmp/verify2"; fail "--verify over drift exited $st, want 3"; }
+	grep -q 'drifted 1, first /n' "$tmp/verify2" || \
+	    { cat "$tmp/verify2"; fail "--verify did not name the drifted /n"; }
+	echo "ok   --verify: exit 3, drifted 1 first /n, nothing written"
+	# --continue --verify is the repair: the clean action is made
+	# true again, up to the gate the rebase is at.
+	"$bin" --continue --verify --result "$POOL/result" > "$tmp/cont2" 2>&1
+	st=$?
+	want=1
+	[ $clean -eq 1 ] && want=0
+	[ $st -eq $want ] || \
+	    { cat "$tmp/cont2"; fail "--continue --verify exited $st, want $want"; }
+	"$bin" --verify --result "$POOL/result" > "$tmp/verify3" 2>&1
+	st=$?
+	[ $st -eq 0 ] || \
+	    { cat "$tmp/verify3"; fail "--verify after the repair exited $st"; }
+	grep -q 'drifted 0' "$tmp/verify3" || \
+	    { cat "$tmp/verify3"; fail "the repair left drift behind"; }
+	[ "$(zfs get -H -o value readonly "$POOL/result")" = on ] || \
+	    fail "the repair left the result writable"
+	echo "ok   --continue --verify repaired it; --verify is clean again"
+
+	say "3c. restart (probe.zrt)"
+	# The clone goes and is made again from the recorded onto
+	# snapshot with the same record; the holds are on the
+	# snapshots and are not touched by any of it.
+	"$bin" --restart --result "$POOL/result" > "$tmp/rest" 2>&1
+	st=$?
+	want=1
+	[ $clean -eq 1 ] && want=0
+	[ $st -eq $want ] || \
+	    { cat "$tmp/rest"; fail "--restart exited $st, want $want"; }
+	[ "$(recval zfs_rebase:state "$POOL/result")" = "$state" ] || \
+	    fail "--restart did not land at $state"
+	[ "$(recval zfs_rebase:tag "$POOL/result")" = "$tag" ] || \
+	    fail "--restart changed the tag"
+	[ "$(zfs get -H -o value readonly "$POOL/result")" = on ] || \
+	    fail "--restart left the result writable"
+	if [ $clean -eq 0 ]; then
+		for s in "$POOL/base@base" "$POOL/from@work" \
+		    "$POOL/onto@work"; do
+			held=$(holdtags "$s") || fail "zfs holds $s"
+			[ "$held" = "$tag" ] || \
+			    fail "$s is held under '$held' after the restart"
+		done
+	fi
+	again "$tmp/again3"
+	idempotent "$tmp/again3" "$want_conf"
+	echo "ok   --restart: rebuilt, at $state, held under $tag, tree equal"
+	;;
+esac
+
 say "4. abort"
 "$bin" --abort --result "$POOL/result" || fail "abort exited $?"
 for s in "$POOL/base@base" "$POOL/from@work" "$POOL/onto@work"; do
@@ -323,12 +474,21 @@ st=$?
 echo "ok   abort: the holds, the result, its manifest and its"
 echo "     directory are all gone"
 
-case "$fixture" in
-*/probe.zrt|probe.zrt)
-	say "5. --verify is recorded"
+# A second run, given --verify: recorded in the record, and on a
+# clean fixture carried out at the done gate, which is where the
+# final check belongs -- after the last apply verified and before
+# anything is released. Every clean fixture takes this, and probe.zrt
+# takes it as the conflicted one, where the run stops at conflicts
+# before the check is due.
+do5=$clean
+case "$fixture" in */probe.zrt|probe.zrt) do5=1 ;; esac
+if [ $do5 -eq 1 ]; then
+	say "5. a run given --verify"
 	"$bin" --verify $flag -o "$tmp/got-v" --from "$POOL/from@work" \
-	    --onto "$POOL/onto@work" --result "$POOL/result"
+	    --onto "$POOL/onto@work" --result "$POOL/result" \
+	    2> "$tmp/verify5"
 	st=$?
+	cat "$tmp/verify5"
 	[ $st -eq 0 ] || [ $st -eq 1 ] || fail "the --verify run exited $st"
 	[ "$(recval zfs_rebase:verify "$POOL/result")" = yes ] || \
 	    fail "zfs_rebase:verify is not yes"
@@ -338,13 +498,25 @@ case "$fixture" in
 	*) fail "the second run's tag is '$vtag', want zr-<12 hex>" ;;
 	esac
 	[ "$vtag" != "$tag" ] || fail "the second run reused the tag $tag"
+	if [ $clean -eq 1 ]; then
+		[ $st -eq 0 ] || fail "the clean --verify run exited $st"
+		[ "$(recval zfs_rebase:state "$POOL/result")" = done ] || \
+		    fail "the --verify run did not reach done"
+		grep -q 'drifted 0' "$tmp/verify5" || \
+		    fail "the --verify run printed no final check"
+		for s in "$POOL/base@base" "$POOL/from@work" \
+		    "$POOL/onto@work"; do
+			held=$(zfs holds -H "$s") || fail "zfs holds $s"
+			[ -z "$held" ] || \
+			    fail "$s is held after a --verify run reached done"
+		done
+	fi
 	"$bin" --abort --result "$POOL/result" || fail "abort exited $?"
 	for s in "$POOL/base@base" "$POOL/from@work" "$POOL/onto@work"; do
 		held=$(zfs holds -H "$s") || fail "zfs holds $s"
 		[ -z "$held" ] || fail "$s is still held: $held"
 	done
 	echo "ok   --verify recorded as yes, under its own tag $vtag"
-	;;
-esac
+fi
 rc=0
 exit 0

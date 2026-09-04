@@ -28,15 +28,35 @@
  * that is neither about: a directory the manifest removes that still
  * holds a conflicted name, which cannot go until the conflict is
  * answered. That is a state, not a fault, and never drift.
+ *
+ * Unchecked is not about the result at all: it is an action whose
+ * question cannot be put, because a tree it would have to be read
+ * against is not there any more. A verify run long after the rebase
+ * finished meets that -- a snapshot destroyed, or one the tool made
+ * itself and destroyed at done -- and the honest answer to "is this
+ * done?" is then that nobody can say. Like blocked, it is never a
+ * fault.
  */
 enum zr_outcome {
 	ZR_OC_DONE,
 	ZR_OC_PENDING,
 	ZR_OC_BLOCKED,
-	ZR_OC_DRIFTED
+	ZR_OC_DRIFTED,
+	ZR_OC_UNCHECKED
 };
 
-#define	ZR_OC_COUNT	4
+#define	ZR_OC_COUNT	5
+
+/*
+ * The trees the caller could not walk, if any, for the missing
+ * argument of zr_verify. Only these two can be missing: the result
+ * is the tree being verified, and a verify of a result that is not
+ * there is not a question. A missing tree is still passed as a walk
+ * -- an empty one will do -- because the oracle wants three of them;
+ * the mask is what stops it ever being asked.
+ */
+#define	ZR_MISS_ONTO	0x1
+#define	ZR_MISS_FROM	0x2
 
 /* No action had that outcome: what zv_first carries then. */
 #define	ZR_ACTION_NONE	((uint32_t)-1)
@@ -80,18 +100,24 @@ struct zr_verify_report {
  * answered inside the result walk, where a pool is exactly that,
  * since inode numbers do not carry from one tree to another.
  *
+ * missing is 0 when all three trees are really there, and otherwise
+ * the ZR_MISS_ bits of the ones that are not: every action that
+ * would have to read one of those is ZR_OC_UNCHECKED, and with onto
+ * missing there are no information lines either, since the names
+ * nobody spoke for have nothing to be held against.
+ *
  * Returns 0 with *out filled, or -1 with a message in err when
  * errlen is not 0. Either way *out is safe to hand to
  * zr_verify_report_fini.
  */
 int zr_verify(const struct zr_parsed *m, struct zr_oracle *o,
     const struct zr_walk *onto, const struct zr_walk *from,
-    const struct zr_walk *result, struct zr_verify_report *out, char *err,
-    size_t errlen);
+    const struct zr_walk *result, unsigned missing,
+    struct zr_verify_report *out, char *err, size_t errlen);
 
 void zr_verify_report_fini(struct zr_verify_report *r);
 
-/* "done", "pending", "blocked", "drifted". */
+/* "done", "pending", "blocked", "drifted", "unchecked". */
 const char *zr_outcome_str(enum zr_outcome oc);
 
 /*

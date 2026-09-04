@@ -41,6 +41,7 @@ struct zv_ctx {
 	uint32_t		zc_nnames;
 	unsigned char		*zc_pmark;	/* by result pool index */
 	uint32_t		zc_npools;
+	unsigned		zc_miss;	/* trees not there */
 	char			*zc_err;
 	size_t			zc_errlen;
 };
@@ -73,6 +74,23 @@ static zr_pool_t
 zv_pool(const struct zv_ctx *c, int t, zr_name_t nm)
 {
 	return (zr_tree_pool(&c->zc_w[t]->zw_tree, nm));
+}
+
+/*
+ * Is this one of the trees the caller could not walk? Only onto and
+ * from can be. An action that would have to read one of them is
+ * unchecked: not done, not pending and above all not drifted, since
+ * drift is a statement about the result and this is a statement
+ * about what there is left to compare it with.
+ */
+static int
+zv_gone(const struct zv_ctx *c, int t)
+{
+	if (t == ZV_ONTO)
+		return ((c->zc_miss & ZR_MISS_ONTO) != 0);
+	if (t == ZV_FROM)
+		return ((c->zc_miss & ZR_MISS_FROM) != 0);
+	return (0);
 }
 
 /*
@@ -145,6 +163,10 @@ zv_rm(struct zv_ctx *c, const struct zr_action *a, zr_pool_t po, zr_pool_t pr,
 		*out = ZR_OC_BLOCKED;
 		return (0);
 	}
+	if (zv_gone(c, ZV_ONTO) != 0) {
+		*out = ZR_OC_UNCHECKED;
+		return (0);
+	}
 	eq = zv_same(c, ZV_ONTO, po, ZV_RESULT, pr);
 	if (eq < 0)
 		return (-1);
@@ -174,6 +196,10 @@ zv_ln(struct zv_ctx *c, const struct zr_action *a, zr_pool_t po, zr_pool_t pr,
 		*out = ZR_OC_PENDING;
 		return (0);
 	}
+	if (zv_gone(c, ZV_ONTO) != 0) {
+		*out = ZR_OC_UNCHECKED;
+		return (0);
+	}
 	eq = zv_same(c, ZV_ONTO, po, ZV_RESULT, pr);
 	if (eq < 0)
 		return (-1);
@@ -197,6 +223,10 @@ zv_make(struct zv_ctx *c, const struct zr_action *a, zr_pool_t po,
 	int src, eq;
 
 	src = a->za_kind == ZR_ACT_CP ? ZV_FROM : ZV_ONTO;
+	if (zv_gone(c, src) != 0) {
+		*out = ZR_OC_UNCHECKED;
+		return (0);
+	}
 	an = zv_name(c, a->za_arg, a->za_arglen);
 	ps = zv_pool(c, src, an);
 	if (ps == ZR_POOL_NONE) {
@@ -214,6 +244,10 @@ zv_make(struct zv_ctx *c, const struct zr_action *a, zr_pool_t po,
 	}
 	if (eq != 0) {
 		*out = ZR_OC_DONE;
+		return (0);
+	}
+	if (zv_gone(c, ZV_ONTO) != 0) {
+		*out = ZR_OC_UNCHECKED;
 		return (0);
 	}
 	eq = zv_same(c, ZV_ONTO, po, ZV_RESULT, pr);
@@ -260,6 +294,10 @@ zv_write(struct zv_ctx *c, const struct zr_action *a, zr_pool_t po,
 	zr_pool_t ps;
 	int eq;
 
+	if (zv_gone(c, ZV_FROM) != 0) {
+		*out = ZR_OC_UNCHECKED;
+		return (0);
+	}
 	ps = zv_pool(c, ZV_FROM, zv_name(c, a->za_arg, a->za_arglen));
 	if (ps == ZR_POOL_NONE) {
 		zv_failp(c, a->za_arg, "the tree the manifest writes from "
@@ -271,6 +309,10 @@ zv_write(struct zv_ctx *c, const struct zr_action *a, zr_pool_t po,
 		return (-1);
 	if (eq != 0 && zv_kept_pool(c, po, pr) != 0) {
 		*out = ZR_OC_DONE;
+		return (0);
+	}
+	if (zv_gone(c, ZV_ONTO) != 0) {
+		*out = ZR_OC_UNCHECKED;
 		return (0);
 	}
 	eq = zv_same(c, ZV_ONTO, po, ZV_RESULT, pr);
@@ -317,6 +359,13 @@ zv_info(struct zv_ctx *c, struct zr_verify_report *out)
 	zr_name_t nm;
 	int eq;
 
+	/*
+	 * With onto gone there is nothing to hold the untouched names
+	 * against: every one of them would have to be reported, and
+	 * saying that of a whole tree says nothing at all.
+	 */
+	if (zv_gone(c, ZV_ONTO) != 0)
+		return (0);
 	for (nm = 0; nm < c->zc_nnames; nm++) {
 		pr = zv_pool(c, ZV_RESULT, nm);
 		if (pr == ZR_POOL_NONE || (c->zc_mark[nm] & ZV_ACTED) != 0)
@@ -341,8 +390,8 @@ zv_info(struct zv_ctx *c, struct zr_verify_report *out)
 int
 zr_verify(const struct zr_parsed *m, struct zr_oracle *o,
     const struct zr_walk *onto, const struct zr_walk *from,
-    const struct zr_walk *result, struct zr_verify_report *out, char *err,
-    size_t errlen)
+    const struct zr_walk *result, unsigned missing,
+    struct zr_verify_report *out, char *err, size_t errlen)
 {
 	const struct zr_action *a;
 	enum zr_outcome oc = ZR_OC_DONE;
@@ -371,6 +420,7 @@ zr_verify(const struct zr_parsed *m, struct zr_oracle *o,
 	c.zc_w[ZV_ONTO] = onto;
 	c.zc_w[ZV_FROM] = from;
 	c.zc_w[ZV_RESULT] = result;
+	c.zc_miss = missing;
 	c.zc_err = err;
 	c.zc_errlen = errlen;
 	c.zc_names = onto->zw_tree.zt_names;
@@ -469,6 +519,8 @@ zr_outcome_str(enum zr_outcome oc)
 		return ("blocked");
 	case ZR_OC_DRIFTED:
 		return ("drifted");
+	case ZR_OC_UNCHECKED:
+		return ("unchecked");
 	}
 	return ("unknown");
 }

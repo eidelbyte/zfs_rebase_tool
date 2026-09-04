@@ -7,12 +7,21 @@ it -- it replays the changes of one (from) onto a clone of the other
 
     zfs_rebase [-n] [-p] [-v] [-o FILE] [--verify] \
         --from SNAP --onto SNAP --result DATASET
+    zfs_rebase --continue [--verify] --result DATASET
+    zfs_rebase --restart --result DATASET
     zfs_rebase --abort --result DATASET
+    zfs_rebase --verify --result DATASET
 
 --from may also be spelled --off-of. --result names the dataset the
-rebased clone is created as; -n is a dry run, which writes the
-manifest, creates nothing and holds nothing. --verify is recorded for
-the final check a later version runs.
+rebased clone is created as, and for every verb the dataset carrying
+the rebase's record -- a snapshot name is taken as its dataset, so
+both spellings find the same rebase. -n is a dry run, which writes
+the manifest, creates nothing and holds nothing. --verify at the
+start is recorded and honoured at the last gate.
+
+The exit status is 0 when the rebase is done, 1 when it stopped at
+conflicts, 2 when it was refused before anything was touched, and 3
+when something failed part way.
 
 You name the two sides and not the base. The base is the branch
 point, and the tool works it out: it walks each side's origin chain
@@ -88,14 +97,52 @@ boot, and a rebase stopped at conflicts can outlast one.
 The result is yours to promote, rename or inherit as you see fit:
 the tool never promotes.
 
+Four verbs work on a rebase that already exists, and every one of
+them keys on the record and on nothing else: a dataset that carries
+none is refused untouched, and an inherited value is no record, since
+user properties inherit down the naming tree and only a local one is
+ours. Each also checks that every snapshot the record names is still
+the snapshot it named, by guid, since a snapshot destroyed and taken
+again under the same name is another snapshot and these answers do
+not describe it.
+
+    zfs_rebase --continue [--verify] --result DATASET
+
+takes the rebase on from the gate its record names, through the
+gates that are left, in one process. Applying is idempotent -- every
+action means "make this true" -- so what is already true is left
+alone and what is not is made, which is why a fresh run, a resumed
+one and a repair are one code path. With --verify it prints, before
+each stage, how every action of the document stands -- done,
+pending, blocked, drifted or unchecked, with a count and the first
+name of each -- and repairs the drift it finds on the clean actions;
+conflicted names are never touched by it, because no action names
+one.
+
+    zfs_rebase --restart --result DATASET
+
+destroys the result and clones it again from the recorded onto
+snapshot with the same record, then applies the recorded manifest
+from the first gate. Nothing is decided again: the manifest is the
+decision, and a resolution's edits are discarded by definition.
+
+    zfs_rebase --verify --result DATASET
+
+reports and writes nothing at all, so a deliberate edit to a rebased
+file is shown and never overwritten. It exits 0 when nothing is
+pending or drifted and 3 when something is; blocked and unchecked
+are states and not faults. After done it is best effort: each input
+is looked for by name and then by guid across the pool, which is
+what survives a rename or a promote, each one it finds is held for
+the length of the report and not a moment longer, and what it cannot
+find it names -- with every action that would have had to be read
+against that tree reported unchecked rather than guessed at.
+
     zfs_rebase --abort --result DATASET
 
-releases those holds, destroys the result, unlinks the manifest the
+releases the holds, destroys the result, unlinks the manifest the
 record names and removes the run directory: as if the run never
-happened. It keys on the record and on nothing else, so a dataset
-that carries none is refused untouched -- and an inherited value is
-no record, since user properties inherit down the naming tree and
-only a local one is ours.
+happened.
 
 Two build modes:
 

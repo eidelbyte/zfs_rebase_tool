@@ -99,7 +99,8 @@ build/zfsops.o: src/zfsops.c src/zfsops.h src/diff.h
 	$(CC) $(CFLAGS) $(ZFSOPS_CFLAGS) -c -o $@ src/zfsops.c
 
 build/run.o: src/run.c src/run.h src/apply.h src/decide.h src/diff.h \
-	src/manifest.h src/name.h src/walk.h src/yellow.h src/zfsops.h
+	src/manifest.h src/name.h src/verify.h src/walk.h src/yellow.h \
+	src/zfsops.h
 	$(CC) $(CFLAGS) -c -o $@ src/run.c
 
 check: unit battery fixtures

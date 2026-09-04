@@ -117,6 +117,44 @@ int zr_zfs_clone(struct zr_zfs *z, const char *snapshot, const char *clone,
     const char *mountpoint, const struct zr_rebase_record *rec, char *err,
     size_t errlen);
 
+/*
+ * Hold snapshot under tag against a cleanup descriptor of this
+ * process's own, so that the kernel gives the hold back when the
+ * process ends, however it ends. That is what --verify wants and a
+ * rebase does not: a report holds its inputs still for as long as it
+ * reads them and leaves nothing behind, while a rebase's holds are
+ * the rebase and outlive every process it takes. The descriptor is
+ * opened on the first such hold and belongs to the handle.
+ */
+int zr_zfs_hold_tmp(struct zr_zfs *z, const char *snapshot, const char *tag,
+    char *err, size_t errlen);
+
+/*
+ * The snapshot of this pool whose guid is guid, if there is one: 1
+ * with its full name in buf, 0 when the pool holds no such snapshot,
+ * -1 with err set. Every filesystem of the pool is walked, depth
+ * first from the pool's own root dataset, and the first snapshot
+ * that matches wins.
+ *
+ * A guid is what a snapshot is, where its name is only what it is
+ * called: a rename or a promote moves the name and keeps the guid,
+ * and a snapshot destroyed and taken again under the old name keeps
+ * the name and gets a new guid. This is how a post-done verify finds
+ * an input the record named, and how it tells that apart from a
+ * different snapshot wearing the same name.
+ */
+int zr_zfs_find_guid(struct zr_zfs *z, const char *pool, uint64_t guid,
+    char *buf, size_t buflen, char *err, size_t errlen);
+
+/*
+ * Mount dataset where its own mountpoint property says. For the
+ * result clone after a reboot, or after anything else that unmounted
+ * it; the caller looks at the mounted property first and calls this
+ * only when the answer is no.
+ */
+int zr_zfs_mount(struct zr_zfs *z, const char *dataset, char *err,
+    size_t errlen);
+
 /* Set readonly on or off. */
 int zr_zfs_set_readonly(struct zr_zfs *z, const char *dataset, int on,
     char *err, size_t errlen);

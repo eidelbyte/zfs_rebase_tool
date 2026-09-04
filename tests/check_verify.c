@@ -18,12 +18,16 @@
  * idempotence itself: the manifest applied twice over a pristine copy
  * lands in one place, name for name, pool for pool and byte for byte.
  *
+ * Last, the trees that are not there: a verify made long after the
+ * rebase, with one of its two sources gone, which is unchecked and
+ * not drift.
+ *
  * The family is ZY of tests/MATRIX.md, and ZC25 of the oracle's is
  * here too, since the pair entry point this classifier asks
- * everything through is new with it. Covered: ZY1 through ZY36.
- * ZY37, ZY38 and ZY39 are the box's -- a real ACL and both extended
- * attribute namespaces in a comparison, a kill at a gate, and the
- * dataset form.
+ * everything through is new with it. Covered: ZY1 through ZY36 and
+ * ZY40 through ZY45. ZY37, ZY38 and ZY39 are the box's -- a real ACL
+ * and both extended attribute namespaces in a comparison, a kill at
+ * a gate, and the dataset form.
  */
 
 #define	_XOPEN_SOURCE	700
@@ -346,7 +350,7 @@ vshape_run(struct vshape *v, const char *body, int nactions, int nconf,
 	CHECK(zr_walk(v->vs_res, v->vs_ns, &wr, err, sizeof (err)) == 0);
 	CHECK(zr_oracle_init(&o, &wo, &wf, &wr) == 0);
 	err[0] = '\0';
-	if (zr_verify(p, o, &wo, &wf, &wr, rep, err, sizeof (err)) != 0)
+	if (zr_verify(p, o, &wo, &wf, &wr, 0, rep, err, sizeof (err)) != 0)
 		printf("  verify: %s\n", err);
 	CHECK(err[0] == '\0');
 	zr_oracle_fini(o);
@@ -909,7 +913,7 @@ scene_classify(struct scene *s, const char *work, struct zr_verify_report *rep)
 	CHECK(err[0] == '\0');
 	CHECK(zr_oracle_init(&o, &s->sc_wo, &s->sc_wf, &wr) == 0);
 	err[0] = '\0';
-	if (zr_verify(&s->sc_p, o, &s->sc_wo, &s->sc_wf, &wr, rep, err,
+	if (zr_verify(&s->sc_p, o, &s->sc_wo, &s->sc_wf, &wr, 0, rep, err,
 	    sizeof (err)) != 0)
 		printf("  verify: %s\n", err);
 	CHECK(err[0] == '\0');
@@ -1120,6 +1124,168 @@ check_rm_still_loud(void)
 	vshape_fini(&v);
 }
 
+/*
+ * ---------------------------------------------------------------
+ * A tree that is not there. A verify long after the rebase can find
+ * one of its sources gone -- destroyed, or one the tool made itself
+ * and destroyed at done -- and the actions that would have had to be
+ * read against it are unchecked: not done, not pending and above all
+ * not drifted. An empty directory walked in the missing tree's place
+ * stands for it, which is what the driver does with the empty tree,
+ * and the mask is what stops the classifier asking it anything.
+ * ---------------------------------------------------------------
+ */
+
+static void
+vshape_run_miss(struct vshape *v, const char *body, int nactions, int nconf,
+    unsigned miss, struct zr_parsed *p, struct zr_verify_report *rep)
+{
+	struct zr_walk wo, wf, wr, we;
+	struct zr_walk *po, *pf;
+	struct zr_oracle *o;
+	char none[PATHMAX], err[512];
+
+	parse_doc(p, body, nactions, nconf, "");
+	join(none, sizeof (none), v->vs_root, "/none");
+	CHECK(mkdir(none, 0755) == 0 || errno == EEXIST);
+	err[0] = '\0';
+	CHECK(zr_walk(none, v->vs_ns, &we, err, sizeof (err)) == 0);
+	CHECK(zr_walk(v->vs_onto, v->vs_ns, &wo, err, sizeof (err)) == 0);
+	CHECK(zr_walk(v->vs_from, v->vs_ns, &wf, err, sizeof (err)) == 0);
+	CHECK(zr_walk(v->vs_res, v->vs_ns, &wr, err, sizeof (err)) == 0);
+	po = (miss & ZR_MISS_ONTO) != 0 ? &we : &wo;
+	pf = (miss & ZR_MISS_FROM) != 0 ? &we : &wf;
+	CHECK(zr_oracle_init(&o, po, pf, &wr) == 0);
+	err[0] = '\0';
+	if (zr_verify(p, o, po, pf, &wr, miss, rep, err, sizeof (err)) != 0)
+		printf("  verify: %s\n", err);
+	CHECK(err[0] == '\0');
+	zr_oracle_fini(o);
+	zr_walk_fini(&wr);
+	zr_walk_fini(&wf);
+	zr_walk_fini(&wo);
+	zr_walk_fini(&we);
+}
+
+/* One action, one expected outcome, with one tree missing. */
+static void
+vshape_one_miss(struct vshape *v, const char *body, const char *path,
+    unsigned miss, enum zr_outcome want)
+{
+	struct zr_verify_report rep;
+	struct zr_parsed p;
+	uint32_t i;
+
+	vshape_run_miss(v, body, 1, 0, miss, &p, &rep);
+	i = idx_of(&p, path);
+	if (rep.zv_outcome[i] != want) {
+		printf("  %s: %s, wanted %s\n", path,
+		    zr_outcome_str(rep.zv_outcome[i]), zr_outcome_str(want));
+	}
+	CHECK(rep.zv_outcome[i] == want);
+	CHECK(rep.zv_count[want] == 1);
+	CHECK(rep.zv_first[want] == i);
+	zr_verify_report_fini(&rep);
+	zr_parsed_fini(&p);
+}
+
+/*
+ * ZY40, ZY41: from is gone, so the bytes a cp or a write would have
+ * to be compared with cannot be read. Neither can be called done or
+ * pending, whatever the result holds.
+ */
+static void
+check_miss_from(void)
+{
+	struct vshape v;
+
+	vshape_init(&v);
+	mkfile(v.vs_from, "/n", "from bytes\n", 0644);
+	mkfile(v.vs_res, "/n", "from bytes\n", 0644);
+	vshape_one(&v, "    n cp /n\n", "/n", ZR_OC_DONE);
+	vshape_one_miss(&v, "    n cp /n\n", "/n", ZR_MISS_FROM,
+	    ZR_OC_UNCHECKED);
+	vshape_fini(&v);
+
+	vshape_init(&v);
+	mkfile(v.vs_onto, "/w", "the old bytes\n", 0644);
+	mkfile(v.vs_from, "/w", "the new bytes\n", 0644);
+	mkfile(v.vs_res, "/w", "the new bytes\n", 0644);
+	vshape_one(&v, "    w write /w\n", "/w", ZR_OC_DONE);
+	vshape_one_miss(&v, "    w write /w\n", "/w", ZR_MISS_FROM,
+	    ZR_OC_UNCHECKED);
+	vshape_fini(&v);
+}
+
+/*
+ * ZY42, ZY43: onto is gone. What onto held is what tells pending
+ * from drifted, so both become unchecked -- but an answer that never
+ * needed onto still stands: a removed name is gone, and that is
+ * done.
+ */
+static void
+check_miss_onto(void)
+{
+	struct vshape v;
+
+	vshape_init(&v);
+	mkfile(v.vs_onto, "/x", "onto bytes\n", 0644);
+	mkfile(v.vs_onto, "/a", "shared\n", 0644);
+	mklink(v.vs_onto, "/b", "/a");
+	mkfile(v.vs_res, "/x", "onto bytes\n", 0644);
+	mkfile(v.vs_res, "/a", "shared\n", 0644);
+	mklink(v.vs_res, "/b", "/a");
+	vshape_one(&v, "    x rm\n", "/x", ZR_OC_PENDING);
+	vshape_one_miss(&v, "    x rm\n", "/x", ZR_MISS_ONTO,
+	    ZR_OC_UNCHECKED);
+	vshape_one_miss(&v, "    b dup /a\n", "/b", ZR_MISS_ONTO,
+	    ZR_OC_UNCHECKED);
+	rmname(v.vs_res, "/x");
+	vshape_one_miss(&v, "    x rm\n", "/x", ZR_MISS_ONTO, ZR_OC_DONE);
+	vshape_fini(&v);
+}
+
+/*
+ * ZY44, ZY45: what an outcome does not need, it does not miss. A
+ * link standing on its anchor is done by the result walk alone, and
+ * a cp whose bytes the result already holds is done by from alone.
+ * With onto gone there are no information lines either: every
+ * untouched name would be one, and saying that of a whole tree says
+ * nothing.
+ */
+static void
+check_miss_still_answered(void)
+{
+	struct zr_verify_report rep;
+	struct zr_parsed p;
+	struct vshape v;
+
+	vshape_init(&v);
+	mkfile(v.vs_onto, "/a", "anchor\n", 0644);
+	mkfile(v.vs_res, "/a", "anchor\n", 0644);
+	mklink(v.vs_res, "/x", "/a");
+	vshape_one_miss(&v, "    x ln /a\n", "/x", ZR_MISS_ONTO, ZR_OC_DONE);
+	vshape_fini(&v);
+
+	vshape_init(&v);
+	mkfile(v.vs_onto, "/u", "untouched\n", 0644);
+	mkfile(v.vs_from, "/n", "from bytes\n", 0644);
+	mkfile(v.vs_res, "/n", "from bytes\n", 0644);
+	mkfile(v.vs_res, "/u", "edited since\n", 0644);
+	vshape_one_miss(&v, "    n cp /n\n", "/n", ZR_MISS_ONTO, ZR_OC_DONE);
+	/* the edited name is an information line only while onto is there */
+	vshape_run(&v, "    n cp /n\n", 1, 0, "", &p, &rep);
+	CHECK(rep.zv_ninfo == 1);
+	zr_verify_report_fini(&rep);
+	zr_parsed_fini(&p);
+	vshape_run_miss(&v, "    n cp /n\n", 1, 0, ZR_MISS_ONTO, &p, &rep);
+	CHECK(rep.zv_ninfo == 0);
+	CHECK(rep.zv_first_info == ZR_NAME_NONE);
+	zr_verify_report_fini(&rep);
+	zr_parsed_fini(&p);
+	vshape_fini(&v);
+}
+
 int
 main(void)
 {
@@ -1137,6 +1303,9 @@ main(void)
 	check_scenario();
 	check_twice();
 	check_rm_still_loud();
+	check_miss_from();
+	check_miss_onto();
+	check_miss_still_answered();
 
 	printf("check_verify: %d checks passed\n", checks);
 	return (0);

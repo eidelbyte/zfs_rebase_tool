@@ -33,23 +33,36 @@
 static const char usage[] =
 	"usage: zfs_rebase [-n] [-p] [-v] [-o FILE] [--verify] "
 	"--from SNAP --onto SNAP --result DATASET\n"
-	"       zfs_rebase --abort --result DATASET\n"
+	"       zfs_rebase --continue [--verify] [-v] --result DATASET\n"
+	"       zfs_rebase --restart [-v] --result DATASET\n"
+	"       zfs_rebase --abort [-v] --result DATASET\n"
+	"       zfs_rebase --verify [-v] --result DATASET\n"
 	"       zfs_rebase --posix [-p] [-o FILE] BASEDIR FROMDIR ONTODIR\n"
 	"       zfs_rebase --build-fixture FIXTURE DIR\n"
 	"       zfs_rebase --edit-fixture FIXTURE TREE DIR\n"
-	"  --from    the snapshot whose changes are replayed (--off-of)\n"
-	"  --onto    the snapshot they are replayed onto; the base is the\n"
-	"            branch point of the two, which the tool works out\n"
-	"  --result  the dataset the rebased clone is created as\n"
-	"  --abort   release the holds that result records, destroy it,\n"
-	"            remove the manifest it recorded and its run\n"
-	"            directory, and nothing else\n"
-	"  --verify  recorded for the final check (a later issue acts on\n"
-	"            it)\n"
+	"  --from      the snapshot whose changes are replayed (--off-of)\n"
+	"  --onto      the snapshot they are replayed onto; the base is\n"
+	"              the branch point of the two, which the tool works\n"
+	"              out\n"
+	"  --result    the dataset the rebased clone is created as, and\n"
+	"              for every verb the dataset carrying the record; a\n"
+	"              snapshot name is taken as its dataset\n"
+	"  --continue  take the rebase on from the gate it stopped at\n"
+	"  --restart   destroy the result, clone it again from the\n"
+	"              recorded onto snapshot and apply the recorded\n"
+	"              manifest from the first gate\n"
+	"  --abort     release the holds that result records, destroy it,\n"
+	"              remove the manifest it recorded and its run\n"
+	"              directory, and nothing else\n"
+	"  --verify    alone on a result, report what is done, pending,\n"
+	"              blocked, drifted or unchecked and write nothing;\n"
+	"              with a rebase or a --continue, ask for the final\n"
+	"              check, which --continue also makes a repair\n"
 	"  -n   dry run: write the manifest, create nothing, hold nothing\n"
 	"  -p   permissive-merge mode\n"
 	"  -v   report counts on stderr\n"
-	"  -o   write the manifest to FILE\n";
+	"  -o   write the manifest to FILE\n"
+	"exit: 0 done, 1 stopped at conflicts, 2 refused, 3 failed\n";
 
 static int
 die_usage(void)
@@ -295,8 +308,9 @@ main(int argc, char **argv)
 	const char *from = NULL, *onto = NULL, *result = NULL;
 	const char *outpath = NULL, *v;
 	zr_mode_t mode = ZR_MODE_STRICT;
-	int dryrun = 0, verbose = 0, abrt = 0, verify = 0, i, t;
+	int dryrun = 0, verbose = 0, abrt = 0, verify = 0, cont = 0, rest = 0;
 	struct zr_run_opts ro;
+	int i, t;
 
 	if (argc >= 2 && strcmp(argv[1], "--build-fixture") == 0) {
 		if (argc != 4)
@@ -319,6 +333,10 @@ main(int argc, char **argv)
 			verbose = 1;
 		} else if (strcmp(argv[i], "--abort") == 0) {
 			abrt = 1;
+		} else if (strcmp(argv[i], "--continue") == 0) {
+			cont = 1;
+		} else if (strcmp(argv[i], "--restart") == 0) {
+			rest = 1;
 		} else if (strcmp(argv[i], "--verify") == 0) {
 			verify = 1;
 		} else if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
@@ -341,13 +359,29 @@ main(int argc, char **argv)
 			return (die_usage());
 		}
 	}
-	/* --abort goes alone: the result to be rid of, and -v. */
-	if (abrt) {
+	/*
+	 * The verbs on a result. Each goes alone -- one --result, -v,
+	 * and nothing else -- and no two of them go together.
+	 * --verify is the odd one: with a rebase or a --continue it is
+	 * a flag, asking for the final check, and on its own with a
+	 * --result it is the verb that reports and writes nothing.
+	 */
+	if (abrt + cont + rest > 1)
+		return (die_usage());
+	if (abrt != 0 || cont != 0 || rest != 0 ||
+	    (verify != 0 && from == NULL && onto == NULL)) {
 		if (result == NULL || from != NULL || onto != NULL ||
-		    outpath != NULL || dryrun != 0 || verify != 0 ||
-		    mode != ZR_MODE_STRICT)
+		    outpath != NULL || dryrun != 0 || mode != ZR_MODE_STRICT)
 			return (die_usage());
-		return (zr_abort(result, verbose));
+		if (abrt != 0 || rest != 0) {
+			if (verify != 0)
+				return (die_usage());
+			return (abrt != 0 ? zr_abort(result, verbose) :
+			    zr_restart(result, verbose));
+		}
+		if (cont != 0)
+			return (zr_continue(result, verify, verbose));
+		return (zr_report(result, verbose));
 	}
 	if (from == NULL || onto == NULL || (result == NULL && !dryrun))
 		return (die_usage());

@@ -85,11 +85,33 @@ so the manifest that comes back must declare zero actions. A clean
 fixture wants zero conflicts with it; a conflicted one wants exactly
 the count its expect block names, because the run applies its clean
 actions before it stops at conflicts, and answering a conflict is
-the conflict manager's work rather than a second rebase's. Step 4
-aborts the run and checks that the holds, the dataset, the manifest
-file the run recorded and the directory under /var/db are all gone,
-and that a second --abort exits 2. For probe.zrt there are two more: -n --verify creates
-nothing, holds nothing and leaves no run directory, and a real run
-given --verify records zfs_rebase:verify yes under a tag of its own.
-KEEP=1 leaves the pool for inspection. Its header says what it does
-not exercise yet.
+the conflict manager's work rather than a second rebase's.
+
+Then the verbs. --verify on the result exits 0 on either branch --
+every action of the manifest is done by now, since a conflicted run
+applies its clean actions before it stops -- prints one line per
+outcome with its count and first name, and writes nothing at all:
+the state after it is the state before it. --continue exits 0 on a
+done result and 1 on one at conflicts, where it names the resolution
+file it is waiting for, and leaves the tree as stage 1 made it, which
+the --posix re-run is asked again to confirm. For probe.zrt there
+are two more: a byte appended to /n, which the manifest copied,
+behind the tool's back with readonly off and on again, must make
+--verify exit 3 naming "drifted 1, first /n" and change nothing,
+and --continue --verify must put it back and leave --verify clean
+and the result read-only; and --restart must destroy the clone,
+make it again from the recorded onto snapshot with the same record,
+apply the manifest from the first gate and land at the same state,
+under the same tag, with the same three holds and the same tree.
+
+Step 4 aborts the run and checks that the holds, the dataset, the
+manifest file the run recorded and the directory under /var/db are
+all gone, and that a second --abort exits 2. Then a second real run
+given --verify -- every clean fixture takes this, and probe.zrt takes
+it as the conflicted one: zfs_rebase:verify is "yes" in its record
+and its tag is a new one, and on a clean fixture the final check runs
+at the done gate, so its report is printed, the state is done and the
+holds are released before the abort. For probe.zrt there is also the
+dry run given --verify, which must still create nothing, hold nothing
+and leave no run directory. KEEP=1 leaves the pool for inspection.
+Its header says what it does not exercise yet.

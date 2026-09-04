@@ -446,6 +446,21 @@ is box only.
 | ZX45 | the hand-off names <rundir>/resolution at the conflicts gate | planned: box, box/run-fixture.sh |
 | ZX46 | the run directory is /var/db/zfs_rebase/<result>, mount point and manifest under it | planned: box, box/run-fixture.sh |
 | ZX47 | a manifest at that path survives a reboot, which /var/run would not | deferred: a reboot of the box; run by hand with a conflicted fixture |
+| ZX48 | --continue at applying1: the manifest applied again, then done or conflicts | planned: box, box/run-fixture.sh |
+| ZX49 | --continue at conflicts with no resolution: exit 1, the state unmoved, the path named | planned: box, box/run-fixture.sh |
+| ZX50 | --continue at conflicts with a resolution: applying2 and then done | deferred: nothing writes a resolution until the conflict manager; by hand with a written-out file |
+| ZX51 | --continue at done: the holds released, and with --verify the repair | planned: box, box/run-fixture.sh |
+| ZX52 | --verify alone: exit 0 over a clean result and over a conflicted one | planned: box, box/run-fixture.sh |
+| ZX53 | --verify over a stray edit: exit 3, the drifted action named, nothing written | planned: box, box/run-fixture.sh |
+| ZX54 | --continue --verify repairs that edit; --verify is clean after it | planned: box, box/run-fixture.sh |
+| ZX55 | --restart: destroyed, cloned again, same record and tag, same gate, same tree | planned: box, box/run-fixture.sh |
+| ZX56 | a recorded snapshot that exists with another guid: every verb exits 2 | deferred: needs a destroy and a re-snapshot under the name; box, kill-tests |
+| ZX57 | a recorded snapshot gone: exit 2 for --continue and --restart, found by guid for --verify | deferred: needs a destroyed input, which the holds prevent until done; box, stray-tests |
+| ZX58 | the report's temporary hold is there while it runs and gone after, under its own tag | deferred: needs the pause hook to look during the run; box, pause-hook |
+| ZX59 | --result given as pool/fs@snap finds the same rebase as pool/fs | planned: box, box/run-fixture.sh |
+| ZX60 | a result left unmounted (a reboot) is mounted again by a verb | deferred: a reboot, or zfs unmount by hand; box |
+| ZX61 | a dataset carrying no record: every verb exits 2 and touches nothing | planned: box, box/run-fixture.sh |
+| ZX62 | --verify on a fresh run: the final check at the done gate, before the release | planned: box, box/run-fixture.sh |
 
 Note on ZX23: securelevel cannot be raised without a reboot of the
 box, so the refusal path stays deferred. Unblocking work is a
@@ -555,10 +570,11 @@ conflict}; what onto held at the name {an object, absence}; what
 the result holds {the action's own outcome, onto's original,
 neither, nothing}; pooling in the result {one pool with the anchor,
 its own, torn from its pool}; outcome {done, pending, blocked,
-drifted}; the information line {edited, added, covered by a
-conflict, still onto's, another name of an object an action made};
-the apply's input {no report, a report}; repetition {a first run, a
-second run over what the first left}.
+drifted, unchecked}; the trees available {all three, from gone, onto
+gone}; the information line {edited, added, covered by a conflict,
+still onto's, another name of an object an action made}; the apply's
+input {no report, a report}; repetition {a first run, a second run
+over what the first left}.
 
 The whole grid runs on the Mac: three directories, a manifest as
 text or one the pipeline emitted, and a result doctored by hand,
@@ -608,6 +624,17 @@ snapshot, a clone and a kill need the box.
 | ZY37 | an NFSv4 ACL or a system xattr told apart in a classification | deferred: needs ZFS and root; box, attr-cells |
 | ZY38 | a kill at a gate, then --verify and --continue --verify | deferred: needs the stages and the pause hook; box, stages and kill-tests |
 | ZY39 | a stray edit and a stray delete in a real result, both forms | deferred: needs snapshots and a clone; box, stray-tests and box-forms |
+| ZY40 | cp with the from tree gone: unchecked | covered: check_verify.c |
+| ZY41 | write with the from tree gone: unchecked | covered: check_verify.c |
+| ZY42 | rm with onto gone: unchecked while the name is there, done once it is not | covered: check_verify.c |
+| ZY43 | dup with onto gone: unchecked | covered: check_verify.c |
+| ZY44 | ln standing on its anchor, and a cp the result already holds: done with onto gone | covered: check_verify.c |
+| ZY45 | no information lines at all with onto gone | covered: check_verify.c |
+
+ZY40 to ZY45 are the post-done verify's: a tree that is not there
+any more is walked as the empty tree and named in the missing mask,
+and every action that would have had to read it is unchecked. The
+box rows for a really destroyed snapshot are ZX56 and ZX57.
 
 ZY19's drift is reported and not repaired: a re-write mends the
 bytes of the name it is on and cannot rejoin a pool somebody tore,

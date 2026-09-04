@@ -40,6 +40,7 @@
 #ifdef ZR_FREEBSD
 
 #include <errno.h>
+#include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -53,8 +54,16 @@
 /* A dataset name, a snapshot name and a hold tag all fit in this. */
 #define	ZZ_NAME_MAX	ZFS_MAX_DATASET_NAME_LEN
 
+/*
+ * The libzfs handle, and one descriptor on /dev/zfs kept only for
+ * the temporary holds a --verify takes: the kernel gives such a hold
+ * back when that descriptor closes, and closing it is the one thing
+ * a dying process always does. It is opened on the first temporary
+ * hold and never otherwise.
+ */
 struct zr_zfs {
 	libzfs_handle_t	*zz_hdl;
+	int		zz_cleanupfd;
 };
 
 /* A failure libzfs did not record: libc's, or one of our own. */
@@ -105,6 +114,7 @@ zr_zfs_open(struct zr_zfs **out, char *err, size_t errlen)
 	if (z == NULL)
 		return (zz_err(err, errlen, "zfs open", ENOMEM));
 	(void) memset(z, 0, sizeof (struct zr_zfs));
+	z->zz_cleanupfd = -1;
 	/*
 	 * libzfs_init (lib/libzfs/libzfs_util.c) loads the module,
 	 * opens its own descriptor on /dev/zfs and calls
@@ -126,14 +136,30 @@ zr_zfs_close(struct zr_zfs *z)
 {
 	if (z == NULL)
 		return;
+	/*
+	 * The cleanup descriptor goes with the handle, and with it
+	 * every temporary hold filed against it. The persistent holds
+	 * a rebase takes are filed against nothing and stay.
+	 */
+	if (z->zz_cleanupfd >= 0)
+		(void) close(z->zz_cleanupfd);
 	if (z->zz_hdl != NULL)
 		libzfs_fini(z->zz_hdl);
 	free(z);
 }
 
-int
-zr_zfs_hold(struct zr_zfs *z, const char *snapshot, const char *tag, char *err,
-    size_t errlen)
+/*
+ * One hold, filed against cleanupfd. lzc_hold (lib/libzfs_core/
+ * libzfs_core.c): the keys are snapshot names and each value is the
+ * tag, a string. A cleanup descriptor of -1 is left out of the
+ * ioctl's arguments altogether, and the kernel then files an
+ * ordinary user hold that nothing but a release takes away; a real
+ * descriptor makes the hold the kernel's to give back when that
+ * descriptor closes.
+ */
+static int
+zz_hold(struct zr_zfs *z, const char *snapshot, const char *tag, int cleanupfd,
+    char *err, size_t errlen)
 {
 	nvlist_t *errlist, *holds;
 	int rc;
@@ -144,15 +170,6 @@ zr_zfs_hold(struct zr_zfs *z, const char *snapshot, const char *tag, char *err,
 		return (zz_err(err, errlen, "hold", EINVAL));
 	holds = NULL;
 	errlist = NULL;
-	/*
-	 * lzc_hold (lib/libzfs_core/libzfs_core.c): the keys are
-	 * snapshot names and each value is the tag, a string. The
-	 * cleanup descriptor is -1, which is how the hold is made to
-	 * outlive us: lzc_hold puts "cleanup_fd" in the ioctl's
-	 * arguments only when it is not -1, and without it the kernel
-	 * files an ordinary user hold that nothing but a release
-	 * takes away.
-	 */
 	rc = nvlist_alloc(&holds, NV_UNIQUE_NAME, 0);
 	if (rc == 0)
 		rc = nvlist_add_string(holds, snapshot, tag);
@@ -160,12 +177,46 @@ zr_zfs_hold(struct zr_zfs *z, const char *snapshot, const char *tag, char *err,
 		nvlist_free(holds);
 		return (zz_err(err, errlen, "hold", rc));
 	}
-	rc = lzc_hold(holds, -1, &errlist);
+	rc = lzc_hold(holds, cleanupfd, &errlist);
 	nvlist_free(holds);
 	nvlist_free(errlist);
 	if (rc != 0)
 		return (zz_err(err, errlen, snapshot, rc));
 	return (0);
+}
+
+int
+zr_zfs_hold(struct zr_zfs *z, const char *snapshot, const char *tag, char *err,
+    size_t errlen)
+{
+	return (zz_hold(z, snapshot, tag, -1, err, errlen));
+}
+
+int
+zr_zfs_hold_tmp(struct zr_zfs *z, const char *snapshot, const char *tag,
+    char *err, size_t errlen)
+{
+	if (err != NULL && errlen > 0)
+		err[0] = '\0';
+	if (z == NULL)
+		return (zz_err(err, errlen, "hold", EINVAL));
+	if (z->zz_cleanupfd < 0) {
+		/*
+		 * An open of /dev/zfs of our own. zfs_ioc_hold takes
+		 * the descriptor with zfs_onexit_fd_hold (module/zfs/
+		 * zfs_ioctl.c), finds the onexit state of that minor
+		 * and files the hold against it, so the kernel drops
+		 * the hold when the descriptor closes -- which the
+		 * death of the process does, whatever kills it.
+		 * libzfs opens it exactly this way for zfs send's own
+		 * temporary holds (lib/libzfs/libzfs_sendrecv.c) and
+		 * for the diff (lib/libzfs/libzfs_diff.c).
+		 */
+		z->zz_cleanupfd = open(ZFS_DEV, O_RDWR | O_CLOEXEC);
+		if (z->zz_cleanupfd < 0)
+			return (zz_err(err, errlen, ZFS_DEV, errno));
+	}
+	return (zz_hold(z, snapshot, tag, z->zz_cleanupfd, err, errlen));
 }
 
 int
@@ -329,6 +380,122 @@ zr_zfs_clone(struct zr_zfs *z, const char *snapshot, const char *clone,
 	}
 	zfs_close(zhp);
 	return (0);
+}
+
+int
+zr_zfs_mount(struct zr_zfs *z, const char *dataset, char *err, size_t errlen)
+{
+	zfs_handle_t *zhp;
+	int rc;
+
+	if (err != NULL && errlen > 0)
+		err[0] = '\0';
+	if (z == NULL || dataset == NULL)
+		return (zz_err(err, errlen, "mount", EINVAL));
+	zhp = zfs_open(z->zz_hdl, dataset, ZFS_TYPE_FILESYSTEM);
+	if (zhp == NULL)
+		return (zz_hdl_err(z, err, errlen, dataset));
+	/*
+	 * zfs_mount (lib/libzfs/libzfs_mount.c) reads the dataset's
+	 * own mountpoint property and mounts it there; a mountpoint of
+	 * none or legacy, or canmount=off, is nothing to do and not a
+	 * failure. The caller asks only for a dataset whose mounted
+	 * property said no.
+	 */
+	rc = zfs_mount(zhp, NULL, 0);
+	zfs_close(zhp);
+	if (rc != 0)
+		return (zz_hdl_err(z, err, errlen, dataset));
+	return (0);
+}
+
+/* What the guid walk is looking for, and where the answer goes. */
+struct zz_guid {
+	uint64_t	zg_want;
+	char		*zg_buf;
+	size_t		zg_buflen;
+	int		zg_toolong;
+};
+
+/*
+ * One snapshot. The guid is a number in the handle's own stats
+ * (dsl_dataset_fast_stat fills dds_guid, and zfs_prop_get_int's
+ * ZFS_PROP_GUID arm reads it), so a simple handle is enough and no
+ * property list is asked for. Returning non-zero stops the walk,
+ * which is what "the first match wins" means.
+ */
+static int
+zz_guid_snap(zfs_handle_t *zhp, void *arg)
+{
+	struct zz_guid *g = arg;
+	const char *name;
+	int found = 0;
+
+	if (zfs_prop_get_int(zhp, ZFS_PROP_GUID) == g->zg_want) {
+		name = zfs_get_name(zhp);
+		if (strlen(name) >= g->zg_buflen)
+			g->zg_toolong = 1;
+		else
+			(void) snprintf(g->zg_buf, g->zg_buflen, "%s", name);
+		found = 1;
+	}
+	zfs_close(zhp);
+	return (found);
+}
+
+/*
+ * One filesystem: its own snapshots first, then the filesystems
+ * under it. The iterator hands the callback a handle the callback
+ * owns, so each one is closed here, including on the way out of a
+ * walk that found what it wanted.
+ */
+static int
+zz_guid_fs(zfs_handle_t *zhp, void *arg)
+{
+	int rc;
+
+	rc = zfs_iter_snapshots(zhp, B_TRUE, zz_guid_snap, arg, 0, 0);
+	if (rc == 0)
+		rc = zfs_iter_filesystems(zhp, zz_guid_fs, arg);
+	zfs_close(zhp);
+	return (rc);
+}
+
+int
+zr_zfs_find_guid(struct zr_zfs *z, const char *pool, uint64_t guid, char *buf,
+    size_t buflen, char *err, size_t errlen)
+{
+	struct zz_guid g;
+	zfs_handle_t *zhp;
+	int rc;
+
+	if (err != NULL && errlen > 0)
+		err[0] = '\0';
+	if (z == NULL || pool == NULL || buf == NULL || buflen == 0)
+		return (zz_err(err, errlen, "guid", EINVAL));
+	buf[0] = '\0';
+	(void) memset(&g, 0, sizeof (g));
+	g.zg_want = guid;
+	g.zg_buf = buf;
+	g.zg_buflen = buflen;
+	zhp = zfs_open(z->zz_hdl, pool, ZFS_TYPE_FILESYSTEM);
+	if (zhp == NULL)
+		return (zz_hdl_err(z, err, errlen, pool));
+	rc = zfs_iter_snapshots(zhp, B_TRUE, zz_guid_snap, &g, 0, 0);
+	if (rc == 0)
+		rc = zfs_iter_filesystems(zhp, zz_guid_fs, &g);
+	zfs_close(zhp);
+	/*
+	 * The iterators return what the callback returned, and their
+	 * own failures as a negative number (lib/libzfs/libzfs_iter.c).
+	 */
+	if (rc < 0)
+		return (zz_hdl_err(z, err, errlen, pool));
+	if (rc == 0)
+		return (0);
+	if (g.zg_toolong != 0)
+		return (zz_err(err, errlen, "guid", ENAMETOOLONG));
+	return (1);
 }
 
 int
@@ -670,6 +837,36 @@ zr_zfs_hold(struct zr_zfs *z, const char *snapshot, const char *tag, char *err,
 	(void) z;
 	(void) snapshot;
 	(void) tag;
+	return (zz_unbuilt(err, errlen));
+}
+
+int
+zr_zfs_hold_tmp(struct zr_zfs *z, const char *snapshot, const char *tag,
+    char *err, size_t errlen)
+{
+	(void) z;
+	(void) snapshot;
+	(void) tag;
+	return (zz_unbuilt(err, errlen));
+}
+
+int
+zr_zfs_find_guid(struct zr_zfs *z, const char *pool, uint64_t guid, char *buf,
+    size_t buflen, char *err, size_t errlen)
+{
+	(void) z;
+	(void) pool;
+	(void) guid;
+	if (buf != NULL && buflen > 0)
+		buf[0] = '\0';
+	return (zz_unbuilt(err, errlen));
+}
+
+int
+zr_zfs_mount(struct zr_zfs *z, const char *dataset, char *err, size_t errlen)
+{
+	(void) z;
+	(void) dataset;
 	return (zz_unbuilt(err, errlen));
 }
 
