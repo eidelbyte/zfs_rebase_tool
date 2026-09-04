@@ -69,6 +69,11 @@
 #   the exception: there is nothing to continue from and --continue
 #   exits 2 naming the file it wanted.
 #
+#   A --continue given --verify from before or inside applying1
+#   records zfs_rebase:verify on the result as a fresh run with the
+#   flag would have, since that is all the flag means at that gate;
+#   the done gate of the same rebase makes the check.
+#
 #   Before that, --verify says what the kill left without touching
 #   it: an action is pending until the stage that makes it has run,
 #   so a rebase stopped before or inside applying1 exits 3 with
@@ -536,6 +541,19 @@ kill_case() {
 	    { cat "$tmp/cont"; fail "--continue $vflag exited $st, want $wcont"; }
 	[ "$(statenow "$rds")" = "$wend" ] || \
 	    fail "--continue landed at '$(statenow "$rds")', want $wend"
+	# --verify on a --continue that starts at applying1 has no
+	# other meaning at that gate: the fix there is the stage's own
+	# self-check and is no flag's, so what the flag does is ask
+	# for the final check, which it does by writing the record's
+	# own property. The done gate of this same rebase then makes
+	# the check, whoever runs the --continue that reaches it.
+	case "$wstate" in
+	""|applying1)
+		if [ -n "$vflag" ]; then
+			[ "$(recval zfs_rebase:verify "$rds")" = yes ] || \
+			    fail "--continue --verify did not record zfs_rebase:verify"
+		fi ;;
+	esac
 	[ "$(holdcount)" = $whold ] || \
 	    fail "$(holdcount) holds after --continue, want $whold"
 	if [ "$form" = clone ]; then

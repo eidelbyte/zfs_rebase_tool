@@ -168,7 +168,7 @@ the resolution put back to its skeleton; and then that skeleton
 answered -- every "-" to keep, and #unanswered to 0 with them -- must
 take --continue to done and release the holds, leaving the tree as it
 was, since keep is the one choice that changes nothing. A choice of
-onto or from does change something, and that is box-resolution's.
+onto or from does change something, and that is run-resolution.sh's.
 
 Step 4 aborts the run and checks that the holds, the dataset, the
 two documents the run recorded and the directory under /var/db are
@@ -208,6 +208,10 @@ next thing has not started:
                 at its private mount, before any walk
     read        the walks and the pruning are done, before anything
                 is decided
+    manifest    the manifest is written and recorded, before the
+                skeleton of the resolution is written beside it:
+                the one window in which a rebase has one of its two
+                documents and not the other
     decided     the manifest and the resolution are written and
                 recorded, before applying1 is written
     applying1   that state is written and readonly is off, before
@@ -223,6 +227,12 @@ next thing has not started:
     action:<n>  inside the apply, before the n'th action it performs,
                 counting the ones it performs and not the ones a
                 report let it leave alone
+    choice:<n>  inside applying2, before the n'th line of the
+                resolution the stage carries out, counting the makes,
+                the links and the removals and neither the keeps nor
+                a make it found already true. It is counted per call,
+                so the stage's own second pass over the document
+                reaches no line at all
 
 So ZFS_REBASE_PAUSE=applying1 stops a run with the result writable
 and nothing applied yet, action:2 stops it with the first action made
@@ -230,6 +240,15 @@ and the second not, and done stops it with the state written and the
 holds still there. The verbs read the variable too, so a --continue
 can be stopped at applying1, conflicts, applying2 or done; --verify
 alone and --abort pass no gate and never stop.
+
+manifest and choice:<n> are run-resolution.sh's. The first is the
+only moment at which a rebase has a manifest and no resolution, and
+what a kill there leaves is a rebase whose exits are --restart, which
+writes the skeleton again from the recorded manifest, and --abort.
+The second wants something to carry out, so the run that is stopped
+at it is given --take-from: a conflicted name holds onto's object
+when applying2 begins, so a document answered onto is already true
+everywhere and the stage reaches no line.
 
 The shape of every use of it is the same:
 
@@ -300,7 +319,7 @@ The gate keys on that completeness and on the command, and never on
 the file being there. Every run in this harness is given no --take
 flag, so every skeleton it writes is unanswered and every run stops
 at the gate as it always did. Three things change that, and all
-three belong to box-resolution: --take-onto and --take-from write
+three are run-resolution.sh's: --take-onto and --take-from write
 the skeleton answered, which makes it complete from the start, so
 the fresh run hands the result back and goes on to done in the same
 process (its record then reads zfs_rebase:take onto or from, and
@@ -311,6 +330,11 @@ without it; and --no-merge on a --continue whose record is already
 at applying2 or done is refused with "past the merge", exit 2, the
 gate unmoved. --no-gui is accepted on a fresh run and on --continue
 and changes nothing while there is no picker.
+
+One thing this harness does say about --verify: a --continue given
+it from before or inside applying1 records zfs_rebase:verify on the
+result, which is all the flag means at that gate, and the done gate
+of the same rebase makes the check.
 
 ## run-strays.sh
 
@@ -374,6 +398,106 @@ dataset, because a verify that cannot read from can only say
 unchecked and a rebase that reaches done destroys a snapshot it
 took itself.
 
+## run-resolution.sh
+
+    sudo sh tests/box/run-resolution.sh [FIXTURE.zrt ...]
+
+is where a choice of onto or from is carried out for the first time.
+Its default set is tests/fixtures/probe.zrt,
+tests/fixtures/h-s2-two-conflicts.zrt and
+tests/fixtures/freebsd/acl-conflict.zrt, each in both forms, and
+every fixture it is given must declare a conflict: a rebase with none
+never reaches the gate this script is about, and it says so rather
+than passing vacuously. One pool per fixture, --abort as the reset
+between cases, and the pool proved to be the fixture again before the
+next one starts.
+
+What it needs beyond what the other harnesses need: /tmp on ZFS or
+UFS, because its default set carries an NFSv4 ACL fixture and the
+note at the top of this file applies to it; the pause hook, for the
+two gates named above; and getfacl, lsextattr and getextattr, which
+is how a name in the result is held against the side's own object.
+Both sides are given as snapshots in both forms, so that from's tree
+is still there to compare against after done, and onto's own tree is
+read out of the pre-apply snapshot in the dataset form and out of
+onto@work in the clone form -- through .zfs/snapshot, which is where
+the tool reads them too.
+
+The cases, in the order they run, per fixture and form:
+
+- headless to done under --take-onto --no-gui and then under
+  --take-from --no-gui. Each writes its skeleton answered, which
+  makes it complete from the start, so the run passes its own
+  conflicts gate and reaches done in one process: exit 0 and not 1.
+  The record then reads zfs_rebase:take onto or from, as its own
+  local value against a bogus one on the pool root; every line of the
+  document reads that side and none is left to answer; every
+  conflicted name in the result is that side's object -- type, mode,
+  ownership, bytes or link target, ACL and both namespaces of
+  extended attributes -- or is gone where that side has no such name;
+  the names of one group that side pools together are one object here
+  too; a second --posix rebase declares no action, since the clean
+  names are as stage 1 left them; and --verify reports every line of
+  the resolution done.
+- --no-merge, which stops the same run at the gate with the document
+  complete, stops a --continue there again, and is refused outright
+  once the record is past the merge -- exit 2, "past the merge", the
+  state and readonly unmoved. In between, a --continue --no-gui
+  passes the gate and reaches done.
+- an incomplete skeleton, which stops the fresh run with a count of
+  what is unanswered and stops a --continue with the same count of
+  the same total; answering one line of it and no more stops the next
+  --continue with what is left.
+- a hand-edited choice of each kind, on a fixture with more than one
+  conflicted name. keep, over a conflicted file merged by hand in the
+  result while the rebase waits: at done the merge stands and
+  --verify reports the name under the resolution as keep and never as
+  drift. onto and from: the name is that side's object at done,
+  pooled as that side pools it.
+- --restart under a --take record: the answers somebody wrote
+  afterwards are discarded and the document the run was started with
+  comes back, answered onto, and the restart then goes on through the
+  gate to done by itself.
+- drift lines. A clean file is edited while the rebase waits;
+  --continue --verify writes it into the document as a drift line
+  with the choice keep and then stops, because the conflicts are
+  still unanswered and a document written to is not a document
+  answered. Answering them reaches done with the edit intact and the
+  name the resolution's. The same again with that line's choice
+  flipped to onto puts the name back as onto had it. run-strays.sh
+  case 5 is the neighbouring case: there the conflicts are answered
+  before the --continue --verify, so the gate writes the line and
+  passes in one command.
+- two kills. At the manifest gate, where the rebase has one document
+  and not the other: --abort takes it away and --restart writes the
+  skeleton again and goes on. At choice:1, inside applying2: the
+  state stays applying2 with readonly off, --no-merge is refused from
+  there, and --continue redoes the whole document -- which is
+  idempotent -- and reaches done with nothing left for a second pass
+  to do.
+- the ACL strip under a choice. A non-trivial NFSv4 ACL is put on a
+  clean directory of the result while the rebase waits; the gate
+  writes it into the document as a drift line; the line is flipped to
+  onto, and the choice must put the directory back as onto had it,
+  which means stripping the ACL, since a directory that is already
+  there is the one thing a choice rewrites in place. The stage's own
+  second pass says whether it happened: a strip that did not would
+  change the directory again there and fail the run at applying2.
+
+A case that wants more of a fixture than it has says so and is passed
+over: the hand-edited choices want a second conflicted name, the
+drift lines want a name the manifest says nothing about, and the ACL
+strip wants a directory of the same kind. A fixture whose every name
+is conflicted has none of the last two.
+
+One thing to watch on the trip. --restart after a kill at the
+manifest gate writes the skeleton and records no path for it, because
+the record has carried no zfs_rebase:resolution since the kill; a
+later --abort then cannot unlink the file and the run directory stays
+with it. The script takes the file away itself and prints a "note"
+line saying so. That is a finding for the author, not a failure of
+the harness.
+
 ## The order on a box trip
 
     sh tests/box/prereqs.sh
@@ -384,12 +508,21 @@ took itself.
     sudo sh tests/box/run-kills.sh          # every gate, three signals
     sudo sh tests/box/run-strays.sh         # edits the tool did not make
     sudo sh tests/box/run-precond.sh        # the cells no fixture states
+    sudo sh tests/box/run-resolution.sh     # the choices carried out
 
 run-fixture.sh on probe.zrt first, because it is the shortest way to
 find out that the box, the build and the pool are working at all;
 then the suite, which is the long one; then the three that need the
 pause hook or a doctored pool, which assume everything before them
-passes; then the preconditions, which leave nothing behind. Each of
-them makes and destroys its own pool, so they can be run in any
-order and one at a time, but a failure in an earlier one usually
-explains every failure after it.
+passes; then the preconditions, which leave nothing behind; and last
+the resolution, which leans on every one of them -- the record, the
+gates, the pause hook, the drift lines and the apply -- and whose
+failures are only worth reading when they all passed. Each of them
+makes and destroys its own pool, so they can be run in any order and
+one at a time, but a failure in an earlier one usually explains every
+failure after it.
+
+run-suite.sh is not the place for run-resolution.sh: that target
+walks every fixture through run-fixture.sh, in both forms, and this
+harness is one of the standalone ones beside run-kills.sh and
+run-strays.sh, with its own pool discipline and its own fixture set.

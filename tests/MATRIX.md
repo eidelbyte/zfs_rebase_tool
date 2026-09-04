@@ -434,8 +434,8 @@ default, add_drift}; parse rejections; round trip.
 | ZM79 | parse refuses a name with no choice and no slash | covered: check_manifest.c |
 | ZM80 | parse refuses anything after the tree section | covered: check_manifest.c |
 | ZM81 | parse refuses a fifth field on a line | covered: check_manifest.c |
-| ZM82 | the skeleton beside the manifest, the record naming it, --restart putting it back | planned: box, tests/box/run-fixture.sh |
-| ZM83 | an unanswered skeleton stops at conflicts, an answered one goes on | planned: box, tests/box/run-fixture.sh and run-kills.sh |
+| ZM82 | the skeleton beside the manifest, the record naming it, --restart putting it back | planned: box, tests/box/run-fixture.sh for the unanswered skeleton, tests/box/run-resolution.sh case 5 for the answered one a --take record puts back |
+| ZM83 | an unanswered skeleton stops at conflicts, an answered one goes on | planned: box, tests/box/run-fixture.sh and run-kills.sh, and run-resolution.sh cases 1 and 3, which add the count the stop names and a document answered in part |
 
 ## ZA -- apply (check_apply.c)
 
@@ -502,30 +502,35 @@ removal {freed by the choices, held by one of them}; the pass
 | ZA53 | the blocked rm goes through once the choices empty it | covered: check_apply.c |
 | ZA54 | the blocked rm stays when a choice leaves a name under it | covered: check_apply.c |
 | ZA55 | a choice still "-": refused, and nothing is written | covered: check_apply.c |
-| ZA56 | applying2 end to end: the gate, readonly, the self-check | deferred: no ZFS here; box-resolution |
-| ZA57 | a choice over a name carrying an ACL | deferred: the two ACL models differ; box-probe |
+| ZA56 | applying2 end to end: the gate, readonly, the self-check | planned: box, box/run-resolution.sh, cases 1 and 7 (the kill at choice:1 leaves applying2 with readonly off, and the --continue after it redoes the whole document) |
+| ZA57 | a choice over a name carrying an ACL | planned: box, box/run-resolution.sh, case 1 over tests/fixtures/freebsd/acl-conflict.zrt, where the name's ACL is held against the chosen side's, and case 8, which is the strip |
 
 ## ZX -- the ZFS layer (zfs ops, driver, guards)
 
 Dimensions: the unchanged set {pruned, not pruned, not attempted};
 zfs ops {hold, clone, mount, prop flip, release, destroy}; the
 record {every property, guids, local against inherited, the states};
-the gates {held, cloned, read, decided, applying1, conflicts,
-applying2, done, an action of the apply, and what a stop leaves};
+the gates {held, cloned, read, manifest, decided, applying1,
+conflicts, applying2, done, an action of the apply, a line of the
+choices, and what a stop leaves};
 the stop {SIGINT, SIGTERM, SIGKILL}; the input forms {from a snapshot or a dataset, onto a
 snapshot or a dataset, --result as a clone name or as a snapshot
 name, short and full}; the dataset form's own {the unmount, the
 private mount, the readonly flips, the hand-back, the rollback};
 guards {securelevel, private mountpoint, readonly flip, the
 self-check after an apply};
-driver {flags, preconditions, exit status}. Every row up to ZX95 is
-box only; the command line's own dimensions -- spelling {long,
-short, alias}, value form {separate, joined by =}, command {fresh
-run, the four verbs, the three harness aids}, and refusal {both
---take flags, a gate flag on a verb, --base without
+driver {flags, preconditions, exit status}; and, from ZX122 on, the
+resolution as the driver carries it {the --take flag given or not,
+the gate flag given or not, the document complete or not, the choice
+answered by a flag or by hand, the verb that meets it}. Every row up
+to ZX95 is box only; the command line's own dimensions -- spelling
+{long, short, alias}, value form {separate, joined by =}, command
+{fresh run, the four verbs, the three harness aids}, and refusal
+{both --take flags, a gate flag on a verb, --base without
 --allow-unrelated, an unknown word, a missing value, a missing
-operand} -- are ZX100 onward and are read off struct zr_args on any
-machine, since the parse opens nothing.
+operand} -- are ZX100 to ZX121 and are read off struct zr_args on any
+machine, since the parse opens nothing. ZX122 onward are box rows
+again.
 
 | cell | scenario | disposition |
 |------|----------|-------------|
@@ -641,20 +646,32 @@ machine, since the parse opens nothing.
 | ZX119 | --take-onto reads onto, --take-from reads from, neither reads as "-" | covered: check_args.c |
 | ZX120 | a verb takes --result, the gate flags and -v; --from, --manifest, --overwrite, -p, -n, --verify on --restart or --abort, and two verbs at once are refused | covered: check_args.c |
 | ZX121 | a fresh run needs --from and --onto, and --result unless -n | covered: check_args.c |
-| ZX122 | a fresh run with --take-onto over a conflicted fixture writes a complete skeleton and reaches done in one process | planned: box, box-resolution |
-| ZX123 | --no-merge stops at the conflicts gate with a complete resolution, and the next --continue without it passes the gate | planned: box, box-resolution |
-| ZX124 | --restart under a record whose zfs_rebase:take is onto or from rebuilds an answered skeleton, not an unanswered one, and the same run goes on through the gate to done, as the fresh run did | planned: box, box-resolution |
-| ZX125 | zfs_rebase:take is on the record, local, and reads onto, from or "-" | planned: box, box-resolution |
-| ZX126 | --no-merge on a --continue whose record is at applying2 or done is refused, exit 2, the gate unmoved | planned: box, box-resolution |
+| ZX122 | a fresh run with --take-onto over a conflicted fixture writes a complete skeleton and reaches done in one process | planned: box, box/run-resolution.sh case 1, under both --take flags |
+| ZX123 | --no-merge stops at the conflicts gate with a complete resolution, and the next --continue without it passes the gate | planned: box, box/run-resolution.sh case 2 |
+| ZX124 | --restart under a record whose zfs_rebase:take is onto or from rebuilds an answered skeleton, not an unanswered one, and the same run goes on through the gate to done, as the fresh run did | planned: box, box/run-resolution.sh case 5, which answers it another way first so that what comes back is the instruction and not yesterday's answers |
+| ZX125 | zfs_rebase:take is on the record, local, and reads onto, from or "-" | planned: box, box/run-resolution.sh case 1 for onto and from, against a bogus value on the pool root; box/run-fixture.sh for the "-" of a run with no --take flag |
+| ZX126 | --no-merge on a --continue whose record is at applying2 or done is refused, exit 2, the gate unmoved | planned: box, box/run-resolution.sh case 2 at done and case 7 at applying2 |
+| ZX130 | a hand-edited choice of each kind carried out at applying2 and verified by its side: keep leaves a hand merge standing and is never compared, onto and from make the name that side's object and pool it as that side pools it | planned: box, box/run-resolution.sh case 4, on a fixture with more than one conflicted name |
+| ZX131 | an incomplete resolution stops, and says by how much: the fresh run's count, the same count of the same total from a --continue, and what is left after one line of it is answered | planned: box, box/run-resolution.sh case 3 |
+| ZX132 | --continue --verify at the conflicts gate with the conflicts still unanswered: the drift line is written into the document and the gate stops all the same, and the line survives the answering to be the name's word at done | planned: box, box/run-resolution.sh case 6 |
+| ZX133 | a drift line whose choice is flipped from keep to onto puts the name back as onto had it | planned: box, box/run-resolution.sh case 6 |
+| ZX134 | the manifest gate: a SIGKILL between the manifest and the skeleton leaves a manifest, no resolution, no state and three holds, and the rebase's exits are --abort and --restart | planned: box, box/run-resolution.sh case 7; the gate is run.c's zr_pause("manifest") |
+| ZX135 | the choice:<n> gate: a SIGKILL inside applying2's choices leaves applying2 with readonly off, and --continue redoes the whole document and reaches done with nothing for a second pass to do | planned: box, box/run-resolution.sh case 7; the gate is apply.c's zr_apply_choice_pause_at |
+| ZX136 | an ACL put on a clean directory at the conflicts gate and chosen onto: the choice strips it back, and the stage's own second pass finds the directory unchanged | planned: box, box/run-resolution.sh case 8, which is the box's answer to the macOS-only strip hole apply-choices recorded beside ZA52 |
 
 ZX96 to ZX99 are no cells: the numbering skips to a round one so
 that the command line's own rows read as the block they are. ZX100
-onward are the only rows of this family that are not box rows,
+to ZX121 are the only rows of this family that are not box rows,
 because src/args.c decides nothing and opens nothing: it fills
 struct zr_args, and tests/check_args.c reads it. ZX122 to ZX126 are
 what the parse cannot show -- the record's new zfs_rebase:take
 property, a run passing its own conflicts gate, and the two ways
---no-merge holds it -- and belong to box-resolution.
+--no-merge holds it. ZX127 to ZX129 are no cells either: the
+numbering skips again so that the resolution's own rows read as the
+block they are. ZX130 onward are what the resolution does to a real
+tree -- the choices by hand, the count a stop names, the drift lines,
+the two new pause gates and the ACL strip -- and every one of them,
+with ZX122 to ZX126, is box/run-resolution.sh's.
 
 ZX1 to ZX5 replace the diff parser's cells, which went out with the
 text: ZX1 to ZX12 used to be the "zfs diff -F -H" lines, their
@@ -924,7 +941,7 @@ snapshot, a clone and a kill need the box.
 | ZY92 | the drift round trip through the library: every entry of the name list becomes a drift keep line, written and parsed back, and the classification with that document says nothing about those names | covered: check_verify.c |
 | ZY93 | a name a resolution line covers, deleted or added: no entry on the name axis either | covered: check_verify.c |
 | ZY94 | a stray edit to a clean name at the conflicts gate: --continue --verify writes it into the resolution as a drift keep line, the rebase reaches done with the edit intact, and --verify afterwards reports the name under the resolution and not as drift | planned: box, box/run-strays.sh |
-| ZY95 | --verify on a --continue at applying1: the record gains zfs_rebase:verify and the final check is made at done as if the fresh run had asked for it | deferred: needs ZFS and root, and no box script kills at applying1 and continues with --verify in one pass; unblocked by box-resolution, which touches run-kills.sh, where the assertion is one recval on the record |
+| ZY95 | --verify on a --continue at applying1: the record gains zfs_rebase:verify and the final check is made at done as if the fresh run had asked for it | planned: box, box/run-kills.sh, which asserts the property after every SIGKILL case whose gate is before or inside applying1, since those are the ones that continue with --verify |
 
 ZY40 to ZY45 are the post-done verify's: a tree that is not there
 any more is walked as the empty tree and named in the missing mask,

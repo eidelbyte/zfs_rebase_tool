@@ -359,6 +359,11 @@ signals_restore(const struct sigaction *saved)
  *			run's own at its private mount, before any walk
  *	read		the walks and the pruning are done, before
  *			anything is decided
+ *	manifest	the manifest is written and recorded, before
+ *			the skeleton of the resolution is written
+ *			beside it: the one window in which a rebase
+ *			has one of its two documents and not the
+ *			other
  *	decided		the manifest and the resolution are written and
  *			recorded, before applying1 is written
  *	applying1	that gate is written and readonly is off,
@@ -369,27 +374,45 @@ signals_restore(const struct sigaction *saved)
  *	done		that gate is written, before the release
  *	action:<n>	inside the apply, before the n'th action it
  *			performs (apply.c, zr_apply_pause_at)
+ *	choice:<n>	inside applying2, before the n'th line of the
+ *			resolution it carries out (apply.c,
+ *			zr_apply_choice_pause_at)
  *
  * --posix reaches none of them and ignores the variable altogether.
  */
 #define	ZR_PAUSE_ENV	"ZFS_REBASE_PAUSE"
 #define	ZR_PAUSE_ACTION	"action:"
+#define	ZR_PAUSE_CHOICE	"choice:"
 
 static const char *zr_pause_gate;
 
-static void
-zr_pause_open(void)
+/* The number after "action:" or "choice:", or 0 for anything else. */
+static unsigned int
+zr_pause_num(const char *s)
 {
 	unsigned long n;
 	char *end;
 
+	n = strtoul(s, &end, 10);
+	if (*end != '\0' || n == 0 || n > UINT_MAX)
+		return (0);
+	return ((unsigned int)n);
+}
+
+static void
+zr_pause_open(void)
+{
 	zr_pause_gate = getenv(ZR_PAUSE_ENV);
-	if (zr_pause_gate == NULL || strncmp(zr_pause_gate, ZR_PAUSE_ACTION,
-	    sizeof (ZR_PAUSE_ACTION) - 1) != 0)
+	if (zr_pause_gate == NULL)
 		return;
-	n = strtoul(zr_pause_gate + sizeof (ZR_PAUSE_ACTION) - 1, &end, 10);
-	if (*end == '\0' && n > 0 && n <= UINT_MAX)
-		zr_apply_pause_at((unsigned int)n);
+	if (strncmp(zr_pause_gate, ZR_PAUSE_ACTION,
+	    sizeof (ZR_PAUSE_ACTION) - 1) == 0)
+		zr_apply_pause_at(zr_pause_num(zr_pause_gate +
+		    sizeof (ZR_PAUSE_ACTION) - 1));
+	else if (strncmp(zr_pause_gate, ZR_PAUSE_CHOICE,
+	    sizeof (ZR_PAUSE_CHOICE) - 1) == 0)
+		zr_apply_choice_pause_at(zr_pause_num(zr_pause_gate +
+		    sizeof (ZR_PAUSE_CHOICE) - 1));
 }
 
 /* At this gate, and at no other, stop and wait for the harness. */
@@ -2236,8 +2259,14 @@ zr_run(const struct zr_run_opts *o)
 	/*
 	 * And the resolution beside it, in this same process: a
 	 * conflicts gate the tool did not write the skeleton for
-	 * would be a gate nobody could pass.
+	 * would be a gate nobody could pass. The gate between the
+	 * two writes is the harness's: it is the only moment at
+	 * which a rebase has a manifest and no resolution, and what
+	 * a kill there leaves is a rebase whose exits are --restart,
+	 * which writes the skeleton again from the recorded manifest,
+	 * and --abort.
 	 */
+	zr_pause("manifest");
 	if (write_skeleton(&r) != 0) {
 		rc = fail(&r, EXIT_INTERNAL, "resolution");
 		goto done;

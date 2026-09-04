@@ -83,6 +83,19 @@ zr_apply_pause_at(unsigned int n)
 }
 
 /*
+ * And the same for the choices of a resolution; see apply.h. The
+ * count is a local of zr_apply_choices and not a static, so every
+ * call counts from one.
+ */
+static unsigned int za_cpause_at;
+
+void
+zr_apply_choice_pause_at(unsigned int n)
+{
+	za_cpause_at = n;
+}
+
+/*
  * ---------------------------------------------------------------
  * The platform section. Everything outside it is plain POSIX; here
  * are the extended attributes, the ACL and the file flags, and the
@@ -2173,6 +2186,7 @@ zr_apply_choices(const struct zr_resolution *res, const struct zr_parsed *m,
 	struct zr_walk wr;
 	uint64_t was;
 	uint32_t i;
+	unsigned int acted = 0;		/* the harness's gate counts these */
 	int walked = 0, eq, rc = -1;
 
 	memset(&c, 0, sizeof (struct za_ctx));
@@ -2275,6 +2289,8 @@ zr_apply_choices(const struct zr_resolution *res, const struct zr_parsed *m,
 				continue;
 			}
 			za_first_line(&c, i);
+			if (++acted == za_cpause_at)
+				(void) raise(SIGSTOP);
 			if (za_link_onto(&c, &pb, (const char *)l->zl_path,
 			    l->zl_pathlen, &ab, (const char *)al->zl_path,
 			    al->zl_pathlen) != 0)
@@ -2290,6 +2306,8 @@ zr_apply_choices(const struct zr_resolution *res, const struct zr_parsed *m,
 			continue;
 		}
 		za_first_line(&c, i);
+		if (++acted == za_cpause_at)
+			(void) raise(SIGSTOP);
 		if (za_put_back(&c, &pb, (const char *)l->zl_path,
 		    l->zl_pathlen, picks[i].zk_side,
 		    zr_choice_str(l->zl_choice)) != 0)
@@ -2314,6 +2332,8 @@ zr_apply_choices(const struct zr_resolution *res, const struct zr_parsed *m,
 		}
 		za_made(&a, ZR_ACT_RM, &pb, l->zl_pathlen, NULL, 0);
 		was = c.zc_st->zs_dropped;
+		if (++acted == za_cpause_at)
+			(void) raise(SIGSTOP);
 		if (za_rm_one(&c, &a) != 0)
 			goto out;
 		if (c.zc_st->zs_dropped == was)

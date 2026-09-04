@@ -40,6 +40,21 @@ extern volatile sig_atomic_t zr_apply_stop;
  */
 void zr_apply_pause_at(unsigned int n);
 
+/*
+ * The same way into the middle of the choices of a resolution: with
+ * n above zero zr_apply_choices stops itself with SIGSTOP
+ * immediately before it acts on its n'th line -- the lines whose
+ * choice it carries out, which are the makes, the links and the
+ * removals, and neither the keeps nor a make a comparison found
+ * already true. It is counted per call, so the second pass a caller
+ * makes over a document it has already applied counts from one
+ * again and, being idempotent, reaches no line at all. run.c sets it
+ * from the gate ZFS_REBASE_PAUSE names and nothing else does; zero,
+ * which is the default, is no gate at all. A test aid, documented in
+ * tests/box/README.md and in no usage text.
+ */
+void zr_apply_choice_pause_at(unsigned int n);
+
 /* What the apply did, for the report and for the tests. */
 struct zr_apply_stats {
 	uint64_t	zs_rm;
