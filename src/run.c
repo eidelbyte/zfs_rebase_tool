@@ -908,28 +908,35 @@ securelevel_guard(struct run *r)
 	return (0);
 }
 
-/* Emit to a temp file, parse it back, and apply that: one path. */
+/*
+ * Parse the manifest this run wrote and apply that, so that what is
+ * applied is what the text on disk says and not a second copy of it.
+ * The file is <rundir>/manifest, or the -o path, whichever the run
+ * recorded; --abort and --verify read that same file later, and a
+ * --continue applies it again through read_manifest below. The round
+ * trip a temporary copy used to make is made here against the real
+ * file, which is the stronger of the two.
+ */
 static int
-apply_manifest(struct run *r, const struct zr_manifest_hdr *hdr)
+apply_manifest(struct run *r)
 {
 	struct zr_parsed parsed;
 	struct zr_apply_stats st;
-	FILE *fp = tmpfile();
+	FILE *fp;
 	int rc = -1;
 
+	if (r->manpath[0] == '\0') {
+		(void) snprintf(r->err, sizeof (r->err),
+		    "the run wrote no manifest to apply");
+		return (-1);
+	}
+	fp = fopen(r->manpath, "r");
 	if (fp == NULL) {
-		(void) snprintf(r->err, sizeof (r->err), "tmpfile: %s",
+		(void) snprintf(r->err, sizeof (r->err), "%s: %s", r->manpath,
 		    strerror(errno));
 		return (-1);
 	}
 	memset(&parsed, 0, sizeof (parsed));
-	if (zr_manifest_emit(fp, hdr, &r->wb.zw_tree, &r->wf.zw_tree,
-	    &r->wo.zw_tree, &r->d) != 0) {
-		(void) snprintf(r->err, sizeof (r->err),
-		    "cannot write manifest");
-		goto done;
-	}
-	rewind(fp);
 	if (zr_manifest_parse(fp, &parsed, r->err, sizeof (r->err)) != 0)
 		goto done;
 	/*
@@ -1222,7 +1229,7 @@ zr_run(const struct zr_run_opts *o)
 	 * all, and the rest of the rebase is made whether they are
 	 * answered or not.
 	 */
-	if (apply_manifest(&r, &hdr) != 0) {
+	if (apply_manifest(&r) != 0) {
 		keep = 1;
 		rc = fail(&r, EXIT_INTERNAL, "apply");
 		manifest_note(&r);
