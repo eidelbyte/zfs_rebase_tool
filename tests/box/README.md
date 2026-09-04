@@ -280,3 +280,69 @@ writes one: the recorded manifest's header with no actions and no
 conflicts, which answers the conflicts by leaving those names as
 onto had them. That is enough to take the stage, which is what the
 case is about.
+
+## run-strays.sh
+
+    sudo sh tests/box/run-strays.sh [FIXTURE.zrt ...]
+
+puts edits where the tool is not looking and asks what happens to
+them. Same fixtures, both forms, four cases each, every one ending
+in --abort with the pool proved to be the fixture again.
+
+Paused at action:1, with the result writable and no action
+performed, the harness edits a file the manifest keeps untouched,
+creates a name no tree had, and edits a file the manifest is about
+to write. The run finishes at its branch's gate: the name the
+manifest wrote is the manifest's, because the action ran after the
+edit, and the other two are information lines in --verify -- neither
+the rebase's outcome nor onto's own. --continue --verify leaves both
+exactly where they are, and that is the answer and not a gap: no
+action of the manifest names an untouched file, so there is nothing
+there to make true again, and a repair that put onto's bytes back
+over an operator's edit would be destroying work the rebase never
+asked about.
+
+A stray delete is the one the run's own re-walk catches: the
+decision says that name survives with that pool and it is not
+there, so the run exits 3 with the result kept at applying1 and its
+holds, and --continue takes it on. Afterwards nothing can see it:
+an information line is over the names the result holds, and a name
+it does not hold has nothing to be held against.
+
+Then drift after the stage, which is what --verify is for -- an
+edit to a file a clean action made is drifted 1 naming it, --verify
+fixes nothing, --continue --verify puts it back -- and, on the
+conflicted fixture, an edit to a conflicted name, which is never
+classified and never touched, because answering a conflict is the
+conflict manager's work.
+
+Last, a stray write into the live from and onto datasets while the
+run is reading, at the read gate: the tool reads snapshots, so the
+manifest is the expect block to the byte. In the dataset form onto
+is not even where it lives just then, so its own mount point is an
+empty directory of the pool's root dataset, and a write there is
+hidden the moment the dataset comes home.
+
+The dataset form is given from as a snapshot here rather than as a
+dataset, because the repair after done has to read from and a
+rebase that reaches done destroys a snapshot it took itself.
+
+## The order on a box trip
+
+    sh tests/box/prereqs.sh
+    make clean && make freebsd && make check-freebsd && make gate
+    sudo sh tests/box/run-fixture.sh tests/fixtures/probe.zrt
+    sudo sh tests/box/run-suite.sh          # every fixture, both forms
+    sudo sh tests/box/run-replay.sh         # the pruning, in the positive
+    sudo sh tests/box/run-kills.sh          # every gate, three signals
+    sudo sh tests/box/run-strays.sh         # edits the tool did not make
+    sudo sh tests/box/run-precond.sh        # the cells no fixture states
+
+run-fixture.sh on probe.zrt first, because it is the shortest way to
+find out that the box, the build and the pool are working at all;
+then the suite, which is the long one; then the three that need the
+pause hook or a doctored pool, which assume everything before them
+passes; then the preconditions, which leave nothing behind. Each of
+them makes and destroys its own pool, so they can be run in any
+order and one at a time, but a failure in an earlier one usually
+explains every failure after it.

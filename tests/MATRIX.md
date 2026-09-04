@@ -485,7 +485,7 @@ only.
 | ZX23 | securelevel refusal | deferred: a reboot; see the note |
 | ZX24 | a foreign mountpoint is refused | planned: box, box/run-fixture.sh |
 | ZX25 | the re-walk equals the decision | planned: box, box/run-fixture.sh |
-| ZX26 | a stray write caught by re-walk | planned: box, box/run-fixture.sh |
+| ZX26 | a stray write caught by re-walk | planned: box, box/run-strays.sh, which is where the pause hook can put one there mid-apply |
 | ZX27 | exit 0: clean and applied | planned: box, box/run-fixture.sh |
 | ZX28 | exit 1: conflicts, clone left | planned: box, box/run-fixture.sh |
 | ZX29 | exit 2: precondition failure | planned: box, box/run-fixture.sh |
@@ -538,18 +538,6 @@ only.
 | ZX76 | --overwrite: a done record replaced; without it exit 2; an open record exits 2 either way | planned: box, box/run-fixture.sh |
 | ZX77 | a base that is a snapshot of onto is read through the private mount | deferred: needs a from cloned out of onto, which the fixtures do not build; by hand on the box |
 | ZX78 | a snapshot newer than the pre-apply one: --restart and --abort refuse rather than destroy it | deferred: needs a snapshot taken during a rebase; by hand on the box |
-| ZX79 | --allow-unrelated takes a pair that shares no origin, and the derivation is not run | planned: box, box/run-fixture.sh step 0a |
-| ZX80 | no --base: the base is the empty tree, and the record and the manifest header carry "-" and the guid 0 | planned: box, box/run-fixture.sh step 0a |
-| ZX81 | --base given: the snapshot is walked like the other two, and its dataset is checked like theirs | planned: box, box/run-fixture.sh step 0a |
-| ZX82 | --base newer than a side by createtxg: exit 2; and --base without the flag is a usage error | planned: box, box/run-fixture.sh step 0a |
-| ZX83 | every verb over a record with no base: the base is not looked for and not held, and the report says there was none | deferred: needs a real result of an unrelated run, which step 0a only dry-runs; box, by hand |
-
-ZX79 to ZX83 are --allow-unrelated's own. The empty base cannot be
-reached on the Mac: the only other way into a decision here is
---posix, which takes three directories and walks all three, so a
-tree with no root at all is not something a portable test can make
-without a driver of its own. The box closes them, and ZX5 with them.
-
 | ZX84 | the pause hook stops the tool at every gate and SIGCONT takes it on from exactly there | planned: box, box/run-kills.sh |
 | ZX85 | SIGINT and SIGTERM before applying1 (held, cloned, read, decided): nothing has been written, so the run takes itself away whole -- exit 3, no record, no hold, no run directory, the dataset home -- and there is nothing left to continue | planned: box, box/run-kills.sh |
 | ZX86 | SIGKILL at held, cloned or read: the record and the three holds stand with no state and no manifest, and --continue exits 2 naming the manifest it cannot do without | planned: box, box/run-kills.sh |
@@ -560,6 +548,8 @@ without a driver of its own. The box closes them, and ZX5 with them.
 | ZX91 | --verify over what a kill left: pending before and inside applying1, nothing pending past it, no drift, and the gate, the holds and the tree unmoved | planned: box, box/run-kills.sh |
 | ZX92 | --continue after every kill, with --verify and without, reaches the branch's gate: readonly as the form has it, the dataset home, the holds gone at done and there at conflicts, stage 1 idempotent over the result | planned: box, box/run-kills.sh |
 | ZX93 | zfs destroy of a held input, while the run is stopped, fails and leaves the snapshot standing; where nothing is cloned from it the hold is the only reason and the message says busy | planned: box, box/run-kills.sh |
+| ZX94 | a stray write into the live from or onto while the run is reading changes nothing: the tool reads snapshots, so the manifest is the expect block to the byte and the verify is clean | planned: box, box/run-strays.sh |
+| ZX95 | in the dataset form onto's own mount point is an empty directory while the run has the dataset, and a write there lands in the pool's root dataset and is hidden the moment the dataset comes home | planned: box, box/run-strays.sh |
 
 ZX1 to ZX5 replace the diff parser's cells, which went out with the
 text: ZX1 to ZX12 used to be the "zfs diff -F -H" lines, their
@@ -774,14 +764,19 @@ snapshot, a clone and a kill need the box.
 | ZY35 | the blocked removal left alone with no report at all | covered: check_verify.c |
 | ZY36 | a directory rm not empty and not conflicted: still loud | covered: check_verify.c |
 | ZY37 | an NFSv4 ACL or a system xattr told apart in a classification | deferred: needs ZFS and root; box, attr-cells |
-| ZY38 | a kill at a gate, then --verify and --continue --verify | deferred: needs the stages and the pause hook; box, stages and kill-tests |
-| ZY39 | a stray edit and a stray delete in a real result, both forms | deferred: needs snapshots and a clone; box, stray-tests and box-forms |
+| ZY38 | a kill at a gate, then --verify and --continue --verify | planned: box, box/run-kills.sh, which verifies after every kill and continues with --verify after every SIGKILL |
+| ZY39 | a stray edit and a stray delete in a real result, both forms | planned: box, box/run-strays.sh |
 | ZY40 | cp with the from tree gone: unchecked | covered: check_verify.c |
 | ZY41 | write with the from tree gone: unchecked | covered: check_verify.c |
 | ZY42 | rm with onto gone: unchecked while the name is there, done once it is not | covered: check_verify.c |
 | ZY43 | dup with onto gone: unchecked | covered: check_verify.c |
 | ZY44 | ln standing on its anchor, and a cp the result already holds: done with onto gone | covered: check_verify.c |
 | ZY45 | no information lines at all with onto gone | covered: check_verify.c |
+| ZY46 | information lines over real trees: an untouched file edited and a name no tree had, both reported, and --continue --verify leaves both, since no action of the manifest names either | planned: box, box/run-strays.sh |
+| ZY47 | a stray edit to a name an action will make: the action runs after it and overwrites it, and the name classifies done | planned: box, box/run-strays.sh |
+| ZY48 | a stray delete of an untouched name: no information line, because a line is over the names the result holds and this one it does not hold, and no action names it either; the run's re-walk is what catches it (ZX26) | planned: box, box/run-strays.sh |
+| ZY49 | an edit to a conflicted name in a real result: never classified and never repaired | planned: box, box/run-strays.sh |
+| ZY50 | drift after the stage, in both forms and on both branches: --verify exits 3 naming it and writes nothing, --continue --verify puts it back, --verify is clean after | planned: box, box/run-strays.sh |
 
 ZY40 to ZY45 are the post-done verify's: a tree that is not there
 any more is walked as the empty tree and named in the missing mask,
