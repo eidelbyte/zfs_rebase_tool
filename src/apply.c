@@ -1485,12 +1485,3 @@ out:
 	za_ctx_fini(&c);
 	return (rc);
 }
-
-int
-zr_apply(const struct zr_parsed *m, const char *onto_root,
-    const struct zr_walk *from, const struct zr_walk *onto,
-    struct zr_apply_stats *st, char *err, size_t errlen)
-{
-	return (zr_apply_with(m, onto_root, from, onto, NULL, st, err,
-	    errlen));
-}

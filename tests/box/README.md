@@ -69,17 +69,26 @@ guids against zfs get guid on the snapshots themselves,
 zfs_rebase:form clone, the mode the flag asked for, zfs_rebase:made
 empty (the tool snapshots nothing of its own), zfs_rebase:verify no,
 the tag, the manifest path, and zfs_rebase:state -- "done" for a
-clean fixture, "conflicts" for a conflicted one. Every one of them
+clean fixture, "conflicts" for a conflicted one, the gates being
+applying1, conflicts, applying2 and done. The run directory is
+/var/db/zfs_rebase/<result>, not /var/run: cleanvar empties /var/run
+at boot, and a rebase held at conflicts can outlast a reboot. Every one of them
 must have source local: before the run the harness sets a bogus
 zfs_rebase:tag and zfs_rebase:manifest on the pool root, because user
 properties inherit down the naming tree, and it also creates a plain
 dataset there, on which --abort must exit 2 and change nothing, since
 that dataset only inherits the properties and is no result of ours.
-For a clean fixture the harness also checks that rebasing from onto
-the result again is a no-op. Step 4 aborts the run and checks that
-the holds, the dataset, the manifest file the run recorded and the
-directory under /var/run are all gone, and that a second --abort
-exits 2. For probe.zrt there are two more: -n --verify creates
+For either fixture the harness then rebases from onto the result
+again, in --posix mode over the fixture's own base and from
+directories and the clone at its mountpoint: stage 1 is idempotent,
+so the manifest that comes back must declare zero actions. A clean
+fixture wants zero conflicts with it; a conflicted one wants exactly
+the count its expect block names, because the run applies its clean
+actions before it stops at conflicts, and answering a conflict is
+the conflict manager's work rather than a second rebase's. Step 4
+aborts the run and checks that the holds, the dataset, the manifest
+file the run recorded and the directory under /var/db are all gone,
+and that a second --abort exits 2. For probe.zrt there are two more: -n --verify creates
 nothing, holds nothing and leaves no run directory, and a real run
 given --verify records zfs_rebase:verify yes under a tag of its own.
 KEEP=1 leaves the pool for inspection. Its header says what it does

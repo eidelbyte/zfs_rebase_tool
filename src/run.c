@@ -38,12 +38,28 @@
  *
  * The state is written at the gates the run passes, and nowhere
  * else, so that what a kill leaves is the last gate reached:
- * "applying1" immediately before readonly comes off for the apply,
- * "conflicts" when the decision has conflicts (nothing is applied
- * then and the clone is onto's tree unchanged), "done" after the
- * re-walk verified and readonly is back on -- and before the holds
- * are released, so that a kill in between leaves a done record whose
- * holds --abort still finds. At birth there is no state at all.
+ *
+ *	applying1 -> conflicts -> applying2 -> done
+ *	applying1 -> done			(no conflicts)
+ *
+ * "applying1" goes down immediately before readonly comes off, and
+ * the clean actions of the manifest are applied under it whether the
+ * decision had conflicts or not. A conflict stops the names it
+ * covers and nothing else, and whoever has to answer one should be
+ * answering it over the tree the rest of the rebase has already
+ * made. "conflicts" goes down after that apply verified, and is the
+ * hand-off: the conflict manager -- a later sprint, another tool or
+ * mode -- leaves its answers at <rundir>/resolution, a manifest in
+ * the same format holding actions and no conflicts, and "applying2"
+ * applies that file exactly as applying1 applied this one. Nothing
+ * here writes that file; the tool only reads it. "done" is written
+ * after the re-walk verified and readonly is back on -- and before
+ * the holds are released, so that a kill in between leaves a done
+ * record whose holds --abort still finds.
+ *
+ * At birth there is no state at all, and a stop writes none: what a
+ * stop leaves is the gate it was working under, and --continue
+ * resumes from exactly that.
  *
  * A signal that would ordinarily end the process -- INT, TERM, HUP
  * -- is caught instead and only raises a flag. Before every phase,
@@ -88,7 +104,29 @@
 #define	EXIT_PRECOND	2
 #define	EXIT_INTERNAL	3
 
-#define	WORKDIR		"/var/run/zfs_rebase"
+/*
+ * Where a run keeps its private mount point and its manifest. Not
+ * /var/run: FreeBSD's cleanvar rc script (libexec/rc/rc.d/cleanvar)
+ * deletes every regular file under /var/run at boot, and a rebase
+ * that stops at conflicts can wait there for days and across a
+ * reboot -- its manifest has to still be on disk when it does.
+ * /var/db is the tree for exactly that, state a program owns and
+ * keeps. The layout is unchanged: WORKDIR/<result as a path>, 0700,
+ * with the clone mounted at mnt and the manifest beside it.
+ */
+#define	WORKDIR		"/var/db/zfs_rebase"
+
+/*
+ * The gates, and the one file the conflict manager and this tool
+ * agree on. The resolution is <rundir>/resolution, in the manifest
+ * format, holding only actions; applying2 is the stage that applies
+ * it. Nothing in this sprint writes it.
+ */
+#define	ZR_STATE_APPLYING1	"applying1"
+#define	ZR_STATE_CONFLICTS	"conflicts"
+#define	ZR_STATE_APPLYING2	"applying2"
+#define	ZR_STATE_DONE		"done"
+#define	ZR_RESOLUTION		"resolution"
 
 /*
  * A dataset or a snapshot name is at most ZFS_MAX_DATASET_NAME_LEN,
@@ -186,9 +224,9 @@ stopped(struct run *r)
 static void
 kept_hint(const struct run *r)
 {
-	(void) fprintf(stderr, "zfs_rebase: %s is kept; a later --continue "
-	    "resumes it; zfs_rebase --abort --result %s removes it\n",
-	    r->o.result, r->o.result);
+	(void) fprintf(stderr, "zfs_rebase: %s is kept; zfs_rebase --continue "
+	    "--result %s resumes it; zfs_rebase --abort --result %s removes "
+	    "it\n", r->o.result, r->o.result, r->o.result);
 }
 
 /*
@@ -542,10 +580,22 @@ rmdir_run(const char *result)
 }
 
 /*
+ * Where the conflict manager leaves its answers for this result, and
+ * where applying2 looks for them: one place, spelled once. The run
+ * directory is WORKDIR and the result's name, so the path follows
+ * from the result alone and needs no record to find.
+ */
+static void
+resolution_path(char *buf, size_t len, const char *result)
+{
+	(void) snprintf(buf, len, "%s/%s/%s", WORKDIR, result, ZR_RESOLUTION);
+}
+
+/*
  * The state is a gate the run has passed, not a step of it: a
  * failure to write one warns and the run goes on. The values are
- * "applying1", "conflicts" and "done", and no others; at birth there
- * is none.
+ * "applying1", "conflicts", "applying2" and "done", and no others;
+ * at birth there is none.
  */
 static void
 set_state(struct run *r, const char *state)
@@ -833,12 +883,18 @@ apply_manifest(struct run *r, const struct zr_manifest_hdr *hdr)
 	 * read-only, so that a kill from here on leaves a record that
 	 * says the tree was being written to.
 	 */
-	set_state(r, "applying1");
+	set_state(r, ZR_STATE_APPLYING1);
 	if (zr_zfs_set_readonly(r->zfs, r->o.result, 0, r->err,
 	    sizeof (r->err)) != 0)
 		goto done;
-	rc = zr_apply(&parsed, r->workmnt, &r->wf, &r->wo, &st, r->err,
-	    sizeof (r->err));
+	/*
+	 * No report: a fresh clone is onto's tree exactly, so every
+	 * action of the manifest is still to be made and a
+	 * classification could let none of them be left alone.
+	 * --continue is where a report earns its keep.
+	 */
+	rc = zr_apply_with(&parsed, r->workmnt, &r->wf, &r->wo, NULL, &st,
+	    r->err, sizeof (r->err));
 	if (rc == 0 && r->o.verbose)
 		(void) fprintf(stderr, "zfs_rebase: applied %llu rm %llu ln "
 		    "%llu cp %llu dup %llu write, %llu bytes\n",
@@ -860,6 +916,14 @@ done:
  * decision by names, pooling and (through the oracle's handles) bytes.
  * Any difference is an internal error; the clone is left for
  * inspection.
+ *
+ * A conflicted decision comes through here too, now that applying1
+ * runs whether there are conflicts or not. Two kinds of name are not
+ * looked for, and must not be: a name of a conflicted group, which
+ * the apply left exactly as onto had it, and a name the decision
+ * removes, which has no result pool for this loop to reach at all --
+ * among the latter the directory whose removal a conflicted child
+ * blocked, still standing on purpose.
  */
 static int
 verify_clone(struct run *r)
@@ -1064,25 +1128,23 @@ zr_run(const struct zr_run_opts *o)
 		goto done;
 	}
 	record_manifest(&r);
-	if (r.d.zd_nconflicts != 0) {
-		(void) fprintf(stderr, "zfs_rebase: %u conflict%s; nothing "
-		    "applied\n", r.d.zd_nconflicts,
-		    r.d.zd_nconflicts == 1 ? "" : "s");
-		if (!o->dryrun) {
-			set_state(&r, "conflicts");
-			manifest_note(&r);
-			kept_hint(&r);
-			keep = 1;
-		}
-		rc = EXIT_CONFLICTS;
-		goto done;
-	}
+	/*
+	 * A dry run stops here: it created nothing to apply to, and
+	 * its whole output is the manifest it just wrote.
+	 */
 	if (o->dryrun) {
-		rc = EXIT_CLEAN;
+		if (r.d.zd_nconflicts != 0) {
+			(void) fprintf(stderr, "zfs_rebase: %u conflict%s; "
+			    "nothing applied\n", r.d.zd_nconflicts,
+			    r.d.zd_nconflicts == 1 ? "" : "s");
+			rc = EXIT_CONFLICTS;
+		} else {
+			rc = EXIT_CLEAN;
+		}
 		goto done;
 	}
 
-	/* 5. apply, 6. verify */
+	/* 5. applying1: the clean actions, 6. the re-walk */
 	if (stopped(&r) != 0) {
 		rc = fail(&r, EXIT_INTERNAL, "apply");
 		goto done;	/* nothing written yet: the clone goes */
@@ -1093,6 +1155,11 @@ zr_run(const struct zr_run_opts *o)
 	 * record and its holds in place. There is no failed state and
 	 * no interrupted state: what a stop leaves is a gate, and a
 	 * later --continue picks the rebase up from it.
+	 *
+	 * The conflicts, if the decision had any, wait until after
+	 * this: what they cover is not in the manifest's actions at
+	 * all, and the rest of the rebase is made whether they are
+	 * answered or not.
 	 */
 	if (apply_manifest(&r, &hdr) != 0) {
 		keep = 1;
@@ -1108,17 +1175,49 @@ zr_run(const struct zr_run_opts *o)
 		kept_hint(&r);
 		goto done;
 	}
+	keep = 1;
+	/*
+	 * A signal that came in while the apply or the re-walk ran
+	 * leaves the gate it came in under, and writes no new one.
+	 */
+	if (stopped(&r) != 0) {
+		rc = fail(&r, EXIT_INTERNAL, "apply");
+		manifest_note(&r);
+		kept_hint(&r);
+		goto done;
+	}
+	if (r.d.zd_nconflicts != 0) {
+		char res[ZR_NAME_MAX];
+
+		/*
+		 * The hand-off. The clean part of the rebase is in the
+		 * result and the conflicts are the manifest's; the
+		 * conflict manager answers them at the path below and
+		 * --continue takes the rebase on from there.
+		 */
+		set_state(&r, ZR_STATE_CONFLICTS);
+		resolution_path(res, sizeof (res), o->result);
+		(void) fprintf(stderr, "zfs_rebase: %u conflict%s; the clean "
+		    "actions are applied and %s waits at conflicts\n",
+		    r.d.zd_nconflicts, r.d.zd_nconflicts == 1 ? "" : "s",
+		    o->result);
+		(void) fprintf(stderr, "zfs_rebase: the resolution is expected "
+		    "at %s\n", res);
+		manifest_note(&r);
+		kept_hint(&r);
+		rc = EXIT_CONFLICTS;
+		goto done;
+	}
 	/*
 	 * Done, and then the holds: written first so that a kill in
 	 * between leaves a record that says the rebase finished and
 	 * holds that --abort can still find and give back.
 	 */
-	set_state(&r, "done");
+	set_state(&r, ZR_STATE_DONE);
 	release_holds(&r);
 	(void) fprintf(stderr, "zfs_rebase: %s is the rebased tree, read-only "
 	    "at %s\n", o->result, r.workmnt);
 	manifest_note(&r);
-	keep = 1;
 	rc = EXIT_CLEAN;
 done:
 	teardown(&r, keep);

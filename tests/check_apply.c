@@ -412,7 +412,8 @@ shape_apply(struct shape *sh, const char *body, int nactions,
 	parse_body(&p, body, nactions);
 	/* the onto tree as it stands before apply, the dup source */
 	CHECK(zr_walk(sh->sh_onto, sh->sh_ns, &wo, werr, sizeof (werr)) == 0);
-	rc = zr_apply(&p, sh->sh_onto, &sh->sh_wf, &wo, st, err, errlen);
+	rc = zr_apply_with(&p, sh->sh_onto, &sh->sh_wf, &wo, NULL, st, err,
+	    errlen);
 	zr_walk_fini(&wo);
 	zr_parsed_fini(&p);
 	return (rc);
@@ -1108,7 +1109,7 @@ check_probe(const char *root)
 	world_build(&w, root);
 	world_decide(&w);
 	err[0] = '\0';
-	if (zr_apply(&w.w_p, w.w_onto, &w.w_wf, &w.w_wo, &st, err,
+	if (zr_apply_with(&w.w_p, w.w_onto, &w.w_wf, &w.w_wo, NULL, &st, err,
 	    sizeof (err)) != 0)
 		printf("  apply: %s\n", err);
 	CHECK(err[0] == '\0');

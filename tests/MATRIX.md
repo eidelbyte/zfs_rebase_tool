@@ -391,8 +391,9 @@ Dimensions: diff line {M, -, +, R}; link delta; zfs diff's own
 escaping; derived sets {unchanged, renamed dirs, modified dirs};
 zfs ops {hold, clone, mount, prop flip, release, destroy}; the
 record {every property, guids, local against inherited, the states};
-guards {securelevel, private mountpoint, readonly flip, re-walk};
-driver {flags, preconditions, exit status}. The parser
+the gates {applying1, conflicts, applying2, done, and what a stop
+leaves}; guards {securelevel, private mountpoint, readonly flip,
+re-walk}; driver {flags, preconditions, exit status}. The parser
 rows run on the Mac over a captured file; everything from ZX13 on
 is box only.
 
@@ -438,6 +439,13 @@ is box only.
 | ZX38 | the states: applying1, conflicts, done, and none at birth | planned: box, box/run-fixture.sh |
 | ZX39 | --abort releases the holds, and runs again after a half abort | planned: box, box/run-fixture.sh |
 | ZX40 | --verify recorded; -n --verify still creates nothing | planned: box, box/run-fixture.sh |
+| ZX41 | applying1 applies the clean actions before the conflicts gate | planned: box, box/run-fixture.sh |
+| ZX42 | a conflicted run: state conflicts, the holds kept, the clean actions in the tree | planned: box, box/run-fixture.sh |
+| ZX43 | stage 1 idempotence: a second rebase declares 0 actions and the same conflicts | planned: box, box/run-fixture.sh |
+| ZX44 | a directory rm blocked by a conflicted child survives applying1, and the re-walk passes over it | planned: box, box/run-fixture.sh |
+| ZX45 | the hand-off names <rundir>/resolution at the conflicts gate | planned: box, box/run-fixture.sh |
+| ZX46 | the run directory is /var/db/zfs_rebase/<result>, mount point and manifest under it | planned: box, box/run-fixture.sh |
+| ZX47 | a manifest at that path survives a reboot, which /var/run would not | deferred: a reboot of the box; run by hand with a conflicted fixture |
 
 Note on ZX23: securelevel cannot be raised without a reboot of the
 box, so the refusal path stays deferred. Unblocking work is a

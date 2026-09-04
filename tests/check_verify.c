@@ -1109,7 +1109,8 @@ check_rm_still_loud(void)
 	err[0] = '\0';
 	CHECK(zr_walk(v.vs_from, v.vs_ns, &wf, err, sizeof (err)) == 0);
 	err[0] = '\0';
-	CHECK(zr_apply(&p, v.vs_res, &wf, &wf, &st, err, sizeof (err)) == -1);
+	CHECK(zr_apply_with(&p, v.vs_res, &wf, &wf, NULL, &st, err,
+	    sizeof (err)) == -1);
 	if (strstr(err, "rmdir") == NULL)
 		printf("  message lacks \"rmdir\": %s\n", err);
 	CHECK(strstr(err, "rmdir") != NULL);

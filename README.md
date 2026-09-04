@@ -54,12 +54,39 @@ local values only:
 and one persistent hold per input snapshot under that tag, so that
 none of the three can be destroyed while the rebase is open: zfs
 holds shows the tag, and zfs destroy refuses with "dataset is busy".
-The state is written only at the gates -- applying1 before the result
-stops being read-only, conflicts when the decision has conflicts,
-done when the result verified and is read-only again -- so what a
-kill leaves is the last gate reached, and there is no state at all
-until the first one. A stranded rebase holds on purpose, because it
-is meant to be resumed.
+A stranded rebase holds on purpose, because it is meant to be
+resumed.
+
+Its progress is a sequence of gates:
+
+    applying1 -> conflicts -> applying2 -> done
+    applying1 -> done                          (no conflicts)
+
+applying1 is written immediately before the result stops being
+read-only, and under it the clean actions of the manifest are applied
+-- whether the decision had conflicts or not, since a conflict stops
+the names it covers and nothing else, and conflicts are answered over
+the tree the rest of the rebase has already made. conflicts is
+written after that apply verified, and is the hand-off: the conflict
+manager (a separate tool, a later sprint) leaves its answers in the
+run directory as "resolution", a manifest in the same format holding
+only actions, and applying2 applies that file the same way. done is
+written after the result verified and is read-only again, and before
+the holds are released. What a kill leaves is the last gate reached,
+there is no state at all until the first one, and a stop writes none:
+--continue resumes from the gate, --abort takes the rebase away.
+
+Each run keeps its own directory, 0700 throughout:
+
+    /var/db/zfs_rebase/<result as a path>/mnt          the clone
+    /var/db/zfs_rebase/<result as a path>/manifest     unless -o
+    /var/db/zfs_rebase/<result as a path>/resolution   the answers
+
+Not /var/run: FreeBSD's cleanvar deletes every regular file there at
+boot, and a rebase stopped at conflicts can outlast one.
+
+The result is yours to promote, rename or inherit as you see fit:
+the tool never promotes.
 
     zfs_rebase --abort --result DATASET
 

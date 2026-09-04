@@ -32,21 +32,25 @@
 #      the tag the record carries, since a stopped rebase holds on
 #      purpose;
 #   3. the result and its record: exactly $POOL/result, read-only,
-#      mounted at /var/run/zfs_rebase/$POOL/result/mnt; the three
+#      mounted at /var/db/zfs_rebase/$POOL/result/mnt; the three
 #      snapshot names, the three guids as zfs prints them, form
 #      clone, the mode the flag asked for, verify no, the tag, and
 #      every one of them a local value that beats the bogus one on
 #      the parent; zfs_rebase:state "done" for a clean fixture and
 #      "conflicts" for a conflicted one; --abort on a plain dataset
 #      under the same parent refused with exit 2, because its
-#      properties are inherited and not its own; and for a clean
+#      properties are inherited and not its own; and, for either
 #      fixture, that the manifest file is where -o put it and that
-#      rebasing from onto the result again in --posix mode yields a
-#      manifest with zero actions and zero conflicts (idempotence:
-#      the result already holds from's changes);
+#      rebasing from onto the result again in --posix mode declares
+#      zero actions -- stage 1 is idempotent, and a conflicted run
+#      applies its clean actions too, so the result already holds
+#      from's clean changes either way -- and the conflicts the
+#      fixture expects, zero for a clean one and the expect block's
+#      own count for a conflicted one, since a conflict is answered
+#      by the conflict manager and not by a second rebase;
 #   4. --abort: exit 0, every hold released, the dataset gone, the
 #      recorded manifest unlinked, the run directory gone down to
-#      /var/run/zfs_rebase, and a second --abort exit 2 because there
+#      /var/db/zfs_rebase, and a second --abort exit 2 because there
 #      is no such run;
 #   5. for probe.zrt, a real run given --verify: zfs_rebase:verify is
 #      "yes" in its record and its tag is a new one, and --abort
@@ -68,7 +72,7 @@ bin=./zfs_rebase
 POOL=zrtbox
 IMG=/tmp/${POOL}.img
 MNT=/tmp/${POOL}-mnt
-RUNDIR=/var/run/zfs_rebase/$POOL/result
+RUNDIR=/var/db/zfs_rebase/$POOL/result
 MD=
 tmp=$(mktemp -d /tmp/zr-box.XXXXXX) || exit 2
 rc=1
@@ -79,7 +83,7 @@ cleanup() {
 		return
 	fi
 	# A failed step can leave the result clone, its persistent
-	# holds and its directory under /var/run; --abort is what
+	# holds and its directory under /var/db; --abort is what
 	# gives back all three, and zpool destroy -f would not touch
 	# the directory.
 	"$bin" --abort --result "$POOL/result" >/dev/null 2>&1
@@ -97,6 +101,21 @@ recval() { zfs get -H -o value "$1" "$2"; }
 recsrc() { zfs get -H -o source "$1" "$2"; }
 # every hold on a snapshot, as "tag" lines
 holdtags() { zfs holds -H "$1" | cut -f2; }
+# Rebase from onto the result again, over three plain directories:
+# the fixture's own base and from, and the clone at its mountpoint.
+# Stage 1 is idempotent, so this must have nothing left to do.
+again() {
+	"$bin" --posix $flag -o "$1" "$tmp/base" "$tmp/from" "$cmnt"
+	st=$?
+	[ $st -eq 0 ] || [ $st -eq 1 ] || fail "the --posix re-run exited $st"
+}
+# That manifest declares no actions and the conflicts named in $2.
+idempotent() {
+	grep -q '^#actions 0$' "$1" || \
+	    { sed -n '1,30p' "$1"; fail "rebasing onto the result declares actions"; }
+	grep -q "^#conflicts $2\$" "$1" || \
+	    { grep '^#conflicts' "$1"; fail "rebasing onto the result wants $2 conflicts"; }
+}
 
 say "fixture $fixture"
 "$bin" --build-fixture "$fixture" "$tmp" || fail "build-fixture"
@@ -163,7 +182,7 @@ case "$fixture" in
 	if zfs list -H -o name "$POOL/vresult" > /dev/null 2>&1; then
 		fail "-n --verify created $POOL/vresult"
 	fi
-	[ -e "/var/run/zfs_rebase/$POOL/vresult" ] && \
+	[ -e "/var/db/zfs_rebase/$POOL/vresult" ] && \
 	    fail "-n --verify left a run directory"
 	for s in "$POOL/base@base" "$POOL/from@work" "$POOL/onto@work"; do
 		held=$(zfs holds -H "$s") || fail "zfs holds $s"
@@ -264,17 +283,23 @@ st=$?
 echo "ok   an inherited record is no record: abort refused (exit 2)"
 
 state=$(recval zfs_rebase:state "$POOL/result")
+[ -f "$tmp/got" ] || fail "no manifest at $tmp/got"
+want_conf=$(sed -n 's/^#conflicts //p' "$tmp/expect")
 if [ $clean -eq 1 ]; then
 	[ "$state" = done ] || fail "zfs_rebase:state is $state, want done"
-	[ -f "$tmp/got" ] || fail "no manifest at $tmp/got"
-	"$bin" --posix $flag -o "$tmp/again" "$tmp/base" "$tmp/from" "$cmnt"
-	st=$?
-	grep -q '^#actions 0$' "$tmp/again" && grep -q '^#conflicts 0$' "$tmp/again" \
-	    || { sed -n '1,30p' "$tmp/again"; fail "rebasing onto the result is not a no-op (exit $st)"; }
+	again "$tmp/again"
+	idempotent "$tmp/again" 0
 	echo "ok   result: done, and rebasing from onto it again is a no-op"
 else
 	[ "$state" = conflicts ] || fail "zfs_rebase:state is $state, want conflicts"
-	echo "ok   result: kept at state conflicts"
+	# The clean actions are applied under applying1 before the run
+	# stops here, so a second rebase has no action left to name --
+	# and the conflicts are still the conflicts, because answering
+	# one is the conflict manager's work and not a rebase's.
+	again "$tmp/again"
+	idempotent "$tmp/again" "$want_conf"
+	echo "ok   result: at conflicts, clean actions applied; a second"
+	echo "     rebase declares 0 actions and $want_conf conflicts again"
 fi
 
 say "4. abort"
@@ -289,8 +314,8 @@ fi
 if [ -e "$tmp/got" ]; then
 	fail "the recorded manifest $tmp/got survived the abort"
 fi
-if [ -e "/var/run/zfs_rebase/$POOL" ]; then
-	fail "/var/run/zfs_rebase/$POOL survived the abort"
+if [ -e "/var/db/zfs_rebase/$POOL" ]; then
+	fail "/var/db/zfs_rebase/$POOL survived the abort"
 fi
 "$bin" --abort --result "$POOL/result" 2>/dev/null
 st=$?
