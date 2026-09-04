@@ -250,7 +250,8 @@ name added, an object added, an entry added to a directory}.
 | ZC36 | the type alone | covered: check_yellow.c |
 | ZC37 | the name count alone, and a name in another base pool | covered: check_yellow.c |
 | ZC38 | pruning refused: --posix, and an unrelated base | planned: run.c has the flag; box, allow-unrelated |
-| ZC39 | the pruning over real snapshots, positively | planned: box, box/run-replay.sh (replay-harness) |
+| ZC39 | the pruning over real snapshots, positively | planned: box, box/run-replay.sh |
+| ZC40 | the count that harness asserts, held against the tool itself | covered: tools/replay-expect.py --check |
 
 ZC20 and ZC26 to ZC37 are the unchanged set, which sprint 5 took
 off zfs diff and put on the walk (sprints/sprint-5/string-audit.md
@@ -265,11 +266,16 @@ reached that way at all: no call moves a ctime without moving what
 caused it, and none moves an object number or a generation number
 without making another object. Those rows move the field in the
 walk the rule reads, which is where a wrong condition would show.
-ZC39 is the positive proof on real ZFS and waits for the replay
-harness, whose fixtures edit a clone of base in place so that real
-objects survive unmoved; until it runs, the box's own suite exercises
-the rule in its negative direction only, since it builds each side
-from nothing.
+ZC39 is the positive proof on real ZFS, and box/run-replay.sh is
+where it is made: each side is a clone of base edited in place with
+--edit-fixture, so that real objects survive unmoved, and the run's
+unchanged count must equal what the fixture leaves alone. ZC40 is that
+expectation itself, which tools/replay-expect.py computes from the
+fixture and --check holds against the tool on the Mac -- base built,
+edited into the side, every name lstat'd before and after, and the
+rule applied to what came through. run-fixture.sh builds each side
+from nothing and so exercises the rule in its negative direction
+only.
 
 The oracle asks zr_acl_equal for za_acl and za_dacl, so ZC9 is that
 function on two pools of a live filesystem: the comparison itself is
@@ -453,8 +459,8 @@ only.
 
 | cell | scenario | disposition |
 |------|----------|-------------|
-| ZX1 | the unchanged count over snapshots the fixture left alone | planned: box, box/run-replay.sh (replay-harness) |
-| ZX2 | an edited object is not in that count, and the manifest still matches | planned: box, box/run-replay.sh (replay-harness) |
+| ZX1 | the unchanged count over snapshots the fixture left alone | planned: box, box/run-replay.sh |
+| ZX2 | an edited object is not in that count, and the manifest still matches | planned: box, box/run-replay.sh |
 | ZX3 | a side rebuilt from nothing prunes not one pool | planned: box, box/run-fixture.sh |
 | ZX4 | pruning is not attempted at all in --posix | covered: run.c reaches read_trees only in the real mode |
 | ZX5 | pruning off with an unrelated base | deferred: the flag exists; box, allow-unrelated |
@@ -540,9 +546,12 @@ the file and zr_zfs_diff -- was removed in sprint 5 for the walk's
 own rule (ZC26 and the note under it). ZX6 to ZX12 are left standing
 empty so that ZX13 and everything after it still mean what they
 meant. ZX1 and ZX2 are the positive proof that the pruning does
-anything at all on real ZFS, and they wait on the replay harness;
-ZX3 is what the box can say today, which is only that a tree built
-from nothing prunes nothing.
+anything at all on real ZFS, and box/run-replay.sh makes it: sides
+edited in place so that objects come through unmoved, the unchanged
+count held against tests/box/replay-expect.txt, and the manifest still
+equal to the fixture's expect block. ZX3 is what run-fixture.sh says
+beside it, which is only that a tree built from nothing prunes
+nothing.
 
 Note on ZX23: securelevel cannot be raised without a reboot of the
 box, so the refusal path stays deferred. Unblocking work is a

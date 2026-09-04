@@ -100,7 +100,7 @@ build/run.o: src/run.c src/run.h src/apply.h src/decide.h \
 	src/zfsops.h
 	$(CC) $(CFLAGS) -c -o $@ src/run.c
 
-check: unit battery fixtures
+check: unit battery fixtures replay-expect-check
 
 unit: build $(LIB_OBJS)
 	@for t in $(TESTS); do \
@@ -121,10 +121,29 @@ battery: build $(LIB_OBJS)
 	    $(LDFLAGS)
 	./build/check_battery tests/battery/*.txt
 
+# tests/box/replay-expect.txt is what tests/box/run-replay.sh asserts
+# the tool's "N pools unchanged" line against, one line per fixture.
+# Regenerate it here; check fails when the committed file is stale. The
+# box may have no python3, so the check says so and passes.
+replay-expect:
+	python3 tools/replay-expect.py > tests/box/replay-expect.txt
+
+replay-expect-check: build
+	@if command -v python3 > /dev/null 2>&1; then \
+	    python3 tools/replay-expect.py > build/replay-expect.txt || exit 1; \
+	    if cmp -s build/replay-expect.txt tests/box/replay-expect.txt; then \
+		echo "ok   replay-expect.txt"; \
+	    else \
+		echo "FAIL tests/box/replay-expect.txt is stale: make replay-expect"; \
+		exit 1; \
+	    fi; \
+	else echo "skip replay-expect.txt: no python3"; fi
+
 gate:
 	sh tools/gate.sh
 
 clean:
 	rm -rf build zfs_rebase
 
-.PHONY: all freebsd check check-freebsd unit battery fixtures gate clean
+.PHONY: all freebsd check check-freebsd unit battery fixtures gate \
+	replay-expect replay-expect-check clean
