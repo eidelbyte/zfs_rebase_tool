@@ -229,3 +229,54 @@ The shape of every use of it is the same:
 
 A SIGKILL needs no CONT; every other signal is delivered when the
 process is continued, so the CONT comes after it.
+
+## run-kills.sh
+
+    sudo sh tests/box/run-kills.sh [FIXTURE.zrt ...]
+
+crosses every gate with SIGINT, SIGTERM and SIGKILL, in both forms,
+on a conflicted fixture (probe.zrt) and a clean one
+(h-yw-row19.zrt), and takes each of them on with --continue
+afterwards. One pool per fixture, --abort as the reset between
+cases, and the invariants the reset must leave checked before the
+next case starts. It prints one line per case and exits 0 only when
+every one of them passed.
+
+What a stop leaves is not one rule but three, and the script is
+built around them:
+
+- SIGINT and SIGTERM before applying1 -- at held, cloned, read and
+  decided -- take the whole run away. Nothing has been written to
+  the result yet, so a stop there is a failure before the apply and
+  is treated as one: exit 3, the clone destroyed or the dataset's
+  record taken off and the dataset put back, the holds released, the
+  manifest unlinked, the run directory gone. There is nothing to
+  continue and --continue says so. (This is where the plan's
+  "nothing is destroyed or released before done or --abort" and the
+  code part company; the code is deliberate and run.c says so.)
+- Every SIGKILL, and SIGINT and SIGTERM from applying1 on, leave the
+  rebase standing at the gate it had reached, with its record, its
+  three holds, its manifest from "decided" on, and its result.
+  readonly is back on wherever the tool was given the chance to put
+  it back, and off after a SIGKILL inside an applying stage; in the
+  dataset form a caught signal hands the dataset back home and a
+  SIGKILL leaves it at the private mount, where the next verb takes
+  it from.
+- SIGINT and SIGTERM at done are no stop at all: nothing looks at
+  the flag past that gate, so the run finishes and releases.
+
+Then --verify says what the kill left without touching it (pending
+before and inside applying1, nothing pending past it), --continue
+takes the rebase to its branch's gate -- with --verify after a
+SIGKILL and without after a caught signal -- and a --posix rebase of
+the fixture's from onto the result declares zero actions, which is
+stage 1 idempotence. While the tool is stopped at the held gate, zfs
+destroy of each held input must fail and leave the snapshot
+standing.
+
+The conflicted fixture reaches applying2 and done only through a
+resolution, which nothing in this sprint writes, so the harness
+writes one: the recorded manifest's header with no actions and no
+conflicts, which answers the conflicts by leaving those names as
+onto had them. That is enough to take the stage, which is what the
+case is about.

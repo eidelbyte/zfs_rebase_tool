@@ -448,8 +448,9 @@ check; the copy path {copy_file_range, read/write}.
 Dimensions: the unchanged set {pruned, not pruned, not attempted};
 zfs ops {hold, clone, mount, prop flip, release, destroy}; the
 record {every property, guids, local against inherited, the states};
-the gates {applying1, conflicts, applying2, done, and what a stop
-leaves}; the input forms {from a snapshot or a dataset, onto a
+the gates {held, cloned, read, decided, applying1, conflicts,
+applying2, done, an action of the apply, and what a stop leaves};
+the stop {SIGINT, SIGTERM, SIGKILL}; the input forms {from a snapshot or a dataset, onto a
 snapshot or a dataset, --result as a clone name or as a snapshot
 name, short and full}; the dataset form's own {the unmount, the
 private mount, the readonly flips, the hand-back, the rollback};
@@ -508,7 +509,7 @@ only.
 | ZX47 | a manifest at that path survives a reboot, which /var/run would not | deferred: a reboot of the box; run by hand with a conflicted fixture |
 | ZX48 | --continue at applying1: the manifest applied again, then done or conflicts | planned: box, box/run-fixture.sh |
 | ZX49 | --continue at conflicts with no resolution: exit 1, the state unmoved, the path named | planned: box, box/run-fixture.sh |
-| ZX50 | --continue at conflicts with a resolution: applying2 and then done | deferred: nothing writes a resolution until the conflict manager; by hand with a written-out file |
+| ZX50 | --continue at conflicts with a resolution: applying2 and then done | planned: box, box/run-kills.sh, which writes the resolution the conflict manager will: the recorded header, no actions and no conflicts |
 | ZX51 | --continue at done: the holds released, and with --verify the repair | planned: box, box/run-fixture.sh |
 | ZX52 | --verify alone: exit 0 over a clean result and over a conflicted one | planned: box, box/run-fixture.sh |
 | ZX53 | --verify over a stray edit: exit 3, the drifted action named, nothing written | planned: box, box/run-fixture.sh |
@@ -530,7 +531,7 @@ only.
 | ZX69 | a file held open under onto: the unmount refuses, exit 2, nothing touched | planned: box, box/run-fixture.sh |
 | ZX70 | readonly on outside the apply, off during it, and the recorded value back at the hand-back | planned: box, box/run-fixture.sh |
 | ZX71 | the hand-back: at conflicts, at done and after a failure the dataset is mounted at home again | planned: box, box/run-fixture.sh |
-| ZX72 | a kill in the dataset form leaves it privately mounted, and the next verb takes it from there | deferred: needs the pause hook; box, kill-tests |
+| ZX72 | a kill in the dataset form leaves it privately mounted, and the next verb takes it from there | planned: box, box/run-kills.sh |
 | ZX73 | --restart in the dataset form: rolled back to the pre-apply snapshot, applied again, same gate and tag | planned: box, box/run-fixture.sh |
 | ZX74 | --abort in the dataset form: rolled back, the pre-apply snapshot destroyed, no zfs_rebase: property left local, mounted at home | planned: box, box/run-fixture.sh |
 | ZX75 | --verify alone in the dataset form: the live tree walked privately and handed back, nothing written | planned: box, box/run-fixture.sh |
@@ -548,6 +549,17 @@ reached on the Mac: the only other way into a decision here is
 --posix, which takes three directories and walks all three, so a
 tree with no root at all is not something a portable test can make
 without a driver of its own. The box closes them, and ZX5 with them.
+
+| ZX84 | the pause hook stops the tool at every gate and SIGCONT takes it on from exactly there | planned: box, box/run-kills.sh |
+| ZX85 | SIGINT and SIGTERM before applying1 (held, cloned, read, decided): nothing has been written, so the run takes itself away whole -- exit 3, no record, no hold, no run directory, the dataset home -- and there is nothing left to continue | planned: box, box/run-kills.sh |
+| ZX86 | SIGKILL at held, cloned or read: the record and the three holds stand with no state and no manifest, and --continue exits 2 naming the manifest it cannot do without | planned: box, box/run-kills.sh |
+| ZX87 | SIGKILL at decided: no state, the manifest written and recorded, and --continue applies it from the first gate | planned: box, box/run-kills.sh |
+| ZX88 | a stop inside applying1, at the gate and before the second action alike: the state is applying1, readonly is back on after a caught signal and off after a SIGKILL, and the holds are all three | planned: box, box/run-kills.sh |
+| ZX89 | a stop at conflicts or at applying2 leaves that state, the three holds and the manifest; a caught signal at conflicts is no stop at all, since nothing looks at the flag past that gate | planned: box, box/run-kills.sh |
+| ZX90 | a stop at done: SIGKILL leaves done with the holds not yet released, a caught signal lets the run finish and release them | planned: box, box/run-kills.sh |
+| ZX91 | --verify over what a kill left: pending before and inside applying1, nothing pending past it, no drift, and the gate, the holds and the tree unmoved | planned: box, box/run-kills.sh |
+| ZX92 | --continue after every kill, with --verify and without, reaches the branch's gate: readonly as the form has it, the dataset home, the holds gone at done and there at conflicts, stage 1 idempotent over the result | planned: box, box/run-kills.sh |
+| ZX93 | zfs destroy of a held input, while the run is stopped, fails and leaves the snapshot standing; where nothing is cloned from it the hold is the only reason and the message says busy | planned: box, box/run-kills.sh |
 
 ZX1 to ZX5 replace the diff parser's cells, which went out with the
 text: ZX1 to ZX12 used to be the "zfs diff -F -H" lines, their
