@@ -147,7 +147,7 @@ the root's .zfs; entry order {readdir's, sorted}; faults.
 | ZW15 | several user-namespace xattrs | planned: check_walk.c |
 | ZW16 | a second namespace | deferred: no namespaces on macOS; box-probe |
 | ZW17 | an empty xattr value and a binary one | planned: check_walk.c |
-| ZW18 | an ACL present | deferred: a real ACL needs ZFS or UFS; box, attr-cells |
+| ZW18 | an ACL present | planned (box: freebsd/acl-kept.zrt and the other acl-*.zrt through run-suite.sh) |
 | ZW19 | no ACL: absent, not an empty blob | planned: check_walk.c |
 | ZW20 | mode, uid, gid, flags, size, times read | planned: check_walk.c |
 | ZW21 | completeness: st_nlink over names found | planned: check_walk.c |
@@ -180,8 +180,9 @@ entries the other way round are a different ACL, and the row is
 checked on ACLs built in memory with acl_init, which needs no
 filesystem and so runs on the box with every other unit test.
 Everywhere else an ACL is the text acl_to_text printed and the row
-is a string comparison. What stays deferred is an ACL read off a
-real pool and written back, ZW18 and ZC9 below.
+is a string comparison. An ACL read off a real pool and written
+back is ZW18, which the box fixtures of tests/fixtures/freebsd/
+close, and ZC9 below, which they close beside it.
 
 ## ZC -- content oracle (check_yellow.c)
 
@@ -481,11 +482,11 @@ rewritten, attrs, untouched}; rejection {every rule the format
 names}; platform {portable, box only}.
 
 Rows for the attributes were added with the attributes themselves
-(issue fixture-attrs). A row that only FreeBSD can reach is
-deferred to attr-cells, the sprint-5 issue that runs the box-only
-fixtures on the box; the Mac still parses those fixtures and still
-holds their expect blocks to the theory, which is what the covered
-rows beside them say.
+(issue fixture-attrs). A row that only FreeBSD can reach names the
+box-only fixture that closes it (issue attr-cells wrote them) and
+stays planned until the box has run it, which is the disposition
+the top of this file gives a row whose only reachable level is
+FreeBSD.
 
 | cell | scenario | disposition |
 |------|----------|-------------|
@@ -505,10 +506,10 @@ rows beside them say.
 | ZF14 | one xattr name twice on a line: rejected | covered: check_fixture.c |
 | ZF15 | an xattr with no colon, no namespace, or a bad escape | covered: check_fixture.c |
 | ZF16 | a system-namespace xattr with no platform line: rejected | covered: check_fixture.c |
-| ZF17 | a system-namespace xattr set and walked back | deferred: root and FreeBSD namespaces; box, attr-cells |
+| ZF17 | a system-namespace xattr set and walked back | planned (box: freebsd/sysxattr-add.zrt, sysxattr-conflict.zrt, mixed-attrs.zrt) |
 | ZF18 | acl=TEXT parses and reaches the pool's handle | covered: check_fixture.c |
 | ZF19 | acl= with no platform line: rejected | covered: check_fixture.c |
-| ZF20 | an ACL set with acl_from_text and walked back | deferred: NFSv4 ACLs are FreeBSD's; box, attr-cells |
+| ZF20 | an ACL set with acl_from_text and walked back | planned (box: freebsd/acl-kept.zrt and the other acl-*.zrt) |
 | ZF21 | the platform line: parsed, and the build off it refused | covered: check_fixture.c |
 | ZF22 | platform after a tree line, twice, or unknown: rejected | covered: check_fixture.c |
 | ZF23 | attributes on a link line land on the shared pool | covered: check_fixture.c |
@@ -519,8 +520,8 @@ rows beside them say.
 | ZF28 | xattr-add.zrt: an xattr added -> write, and a new file -> cp | covered: run-fixtures.sh |
 | ZF29 | xattr-conflict.zrt: one xattr, both sides -> changed-both | covered: run-fixtures.sh |
 | ZF30 | flags-copy.zrt: a from-only file with nodump -> cp | covered: run-fixtures.sh |
-| ZF31 | acl-nfsv4.zrt: an NFSv4 ACL added on from -> write | deferred: box, attr-cells |
-| ZF32 | sysxattr.zrt: a system xattr edited on from -> write | deferred: box, attr-cells |
+| ZF31 | acl-nfsv4.zrt: an NFSv4 ACL added on from -> write | planned (box: run-suite.sh) |
+| ZF32 | sysxattr.zrt: a system xattr edited on from -> write | planned (box: run-suite.sh) |
 | ZF33 | --edit-fixture: base edited into a side walks equal to a fresh build of it | covered: check_fixture.c |
 | ZF34 | the names the fixture leaves alone keep their inode and their ctime; the rest keep neither | covered: check_fixture.c |
 | ZF35 | the six counts are one decision per name and add up to the union of the two trees' names | covered: check_fixture.c |
@@ -538,14 +539,25 @@ rows beside them say.
 | ZF47 | escapes.zrt edited: every byte the encoding has a rule for, and a name leaving one pool for another | covered: check_fixture.c |
 | ZF48 | wide-pool.zrt edited: five names on one object gaining a sixth, the write on the object they share | covered: check_fixture.c |
 | ZF49 | dir-rm.zrt edited: a directory three deep removed, children before parents | covered: check_fixture.c |
-| ZF50 | an ACL changed alone: attrs, the inode kept | deferred: NFSv4 ACLs are FreeBSD's; box, attr-cells |
-| ZF51 | a system-namespace xattr changed alone | deferred: root and FreeBSD namespaces; box, attr-cells |
+| ZF50 | an ACL changed alone: attrs, the inode kept | planned: box, check_fixture.c on FreeBSD (attr-cells builds these fixtures, it does not edit them) |
+| ZF51 | a system-namespace xattr changed alone | planned: box, check_fixture.c on FreeBSD (attr-cells builds these fixtures, it does not edit them) |
+| ZF52 | acl-kept.zrt: one ACL in all three trees and the bytes edited on from -> write, the ACL still there after it | planned (box: run-suite.sh) |
+| ZF53 | acl-copy.zrt: a from-only file carrying an ACL -> cp, the copy carrying it | planned (box: run-suite.sh) |
+| ZF54 | acl-conflict.zrt: from and onto gave one file different ACLs, bytes unchanged -> changed-both | planned (box: run-suite.sh) |
+| ZF55 | acl-same-both.zrt: both sides added the identical ACL -> clean, and no action at all | planned (box: run-suite.sh) |
+| ZF56 | acl-strip.zrt: from took a non-trivial ACL off again -> write, and apply's strip path | planned (box: run-suite.sh) |
+| ZF57 | sysxattr-add.zrt: a system-namespace xattr added on from -> write | planned (box: run-suite.sh) |
+| ZF58 | sysxattr-conflict.zrt: a system-namespace xattr set differently on both sides -> changed-both | planned (box: run-suite.sh) |
+| ZF59 | mixed-attrs.zrt: a user xattr, a system xattr, an ACL and a flag on one object, through a write and through a cp | planned (box: run-suite.sh) |
+| ZF60 | flags-conflict.zrt: uchg on from and nodump on onto -> changed-both | planned (box: run-suite.sh) |
 
 ZF33 to ZF49 are --edit-fixture, added with the mode itself (issue
 fixture-edit) and all of them Mac cells: the mode is plain POSIX
 plus the same two platform sections the builder has, so the only
 rows the Mac cannot reach are the two attributes it has no form of,
-which are ZF50 and ZF51 and go to attr-cells beside ZF17 and ZF20.
+which are ZF50 and ZF51. Those two are the box's, and the box's
+alone: they are edits and not builds, so no fixture run closes
+them and check_fixture.c has to grow them and be run on FreeBSD.
 Every one of the seventeen runs the same way: base is built into one
 directory, edited into a side, and that side is built into another
 from nothing, and the two must then be equal name for name, pool for
@@ -561,6 +573,33 @@ tests/fixtures/freebsd/, where run-fixtures.sh skips it and counts
 the skip. What the Mac does prove of them is ZF18 and ZF21: the
 fixture parses, the attribute reaches the handle, and the expect
 block is held against the theory by hand rather than by the tool.
+
+ZF52 to ZF60 are the nine that issue attr-cells wrote, and they
+are where the two attributes meet the rest of the engine rather
+than the format alone: an ACL and a system-namespace attribute
+kept, copied, stripped, agreed on and disagreed over, and one
+fixture carrying all four attribute kinds at once. Their expect
+blocks were derived by hand from v4-yellow-content.md -- an
+attribute is content, so a one-sided change is a write or a cp, a
+two-sided differing change is changed-both, and an identical
+change on both sides is clean with nothing to do, since onto
+already holds the result's content. run-suite.sh walks
+tests/fixtures/freebsd/ as well as the flat directory, so the box
+runs them with everything else. The Mac runs none of it and, as
+things stand, parses none of it either: check_roundtrip.c scans
+the flat directory alone and run-fixtures.sh skips a platform
+fixture without loading it, so of tests/fixtures/freebsd/ only
+acl-nfsv4.zrt and sysxattr.zrt are parsed on the Mac at all, by
+name, in check_fixture.c's check_boxonly. The nine were parsed and
+their manifests emitted by hand when they were written, through
+zr_fixture_load and zr_fixture_to_tree, which touch no filesystem
+and so agree with the theory without a box. Making check_roundtrip
+or check_boxonly scan the directory would close that gap and is
+not attr-cells's to do.
+The cells that are not fixtures at all -- a nested mount inside an
+input, the securelevel refusal, a snapshot destroyed under a
+running rebase -- are tests/box/run-precond.sh, which closes the
+first and documents the other two.
 
 ## ZY -- verify and idempotent apply (check_verify.c)
 

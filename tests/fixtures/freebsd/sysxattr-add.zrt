@@ -1,0 +1,33 @@
+platform freebsd
+
+# A system-namespace extended attribute added on from, where there
+# was none, to a file onto keeps unchanged. An attribute is content,
+# so base and onto are one content and from another: a write into
+# onto's object. sysxattr.zrt edits such an attribute and this one
+# adds it, which is for the system namespace what xattr-add.zrt is
+# for the user namespace.
+#
+# Box only, and root only: FreeBSD's system namespace is root's to
+# write, and a walk that may not read it sees no attributes at all
+# rather than failing, which would make this fixture say nothing.
+
+tree base
+	/A file x
+
+tree from
+	/A file x xattr=system.tag:on
+
+tree onto
+	/A file x
+
+expect
+#rebase-manifest 4
+#base zrt/base@s
+#from zrt/from@s
+#onto zrt/onto@s
+#mode strict
+#actions 1
+#conflicts 0
+/
+    A write /A
+    ..

@@ -1,0 +1,41 @@
+platform freebsd
+
+# One name, one set of bytes, three ACLs. base has none beyond what
+# its mode says, from gave the file a named user and onto a named
+# group. Both sides changed the content away from base and away from
+# each other, and an ACL is content, so the verdict is changed-both
+# (v4-yellow-content.md section 3, third row). Nothing but the ACL
+# moves: the token is x in all three trees.
+#
+# Box only: an NFSv4 ACL is FreeBSD's. uid 1 is daemon and gid 5 is
+# operator, both of which every FreeBSD has, so the entries apply on
+# a box with no accounts of its own.
+
+tree base
+	/A file x
+
+tree from
+	/A file x acl=user:1:rw-p--aARWcCos:------:allow,owner@:rw-p--aARWcCos:------:allow,group@:r-----a-R-c--s:------:allow,everyone@:r-----a-R-c--s:------:allow
+
+tree onto
+	/A file x acl=group:5:r-----a-R-c--s:------:allow,owner@:rw-p--aARWcCos:------:allow,group@:r-----a-R-c--s:------:allow,everyone@:r-----a-R-c--s:------:allow
+
+expect
+#rebase-manifest 4
+#base zrt/base@s
+#from zrt/from@s
+#onto zrt/onto@s
+#mode strict
+#actions 0
+#conflicts 1
+/
+    A conflict 1
+    ..
+
+# a pool is one file and all its names: {names}letter; same
+# letter, same bytes
+conflict 1 changed-both
+  why  /A changed on both sides
+  base ({/A}x)
+  from ({/A}y)
+  onto ({/A}z)

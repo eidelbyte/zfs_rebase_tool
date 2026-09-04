@@ -1,0 +1,39 @@
+platform freebsd
+
+# Both sides gave one file the same non-trivial ACL, and base had
+# none. Changed on both sides, and the two sides agree: yellow lies
+# beside the working-face edge, so it is clean and the result holds
+# the content both sides chose. That is the second row of the worked
+# verdicts of v4-yellow-content.md, base ({A}x) from ({A}y) onto
+# ({A}y), result ({A}y), and h-yw-row02.zrt is the same shape with
+# bytes in place of the ACL.
+#
+# So the manifest declares no action at all. An action exists to
+# make onto into something it is not, and onto already holds the
+# result's content; the clean verdict is the empty tree section.
+# That the result carries the ACL is onto's own doing, and the
+# harness proves it all the same: its second --posix rebase compares
+# from with the result, and from carries the ACL too, so a result
+# that had lost it would declare a write.
+#
+# Box only: an NFSv4 ACL is FreeBSD's.
+
+tree base
+	/A file x
+
+tree from
+	/A file x acl=user:1:rw-p--aARWcCos:------:allow,owner@:rw-p--aARWcCos:------:allow,group@:r-----a-R-c--s:------:allow,everyone@:r-----a-R-c--s:------:allow
+
+tree onto
+	/A file x acl=user:1:rw-p--aARWcCos:------:allow,owner@:rw-p--aARWcCos:------:allow,group@:r-----a-R-c--s:------:allow,everyone@:r-----a-R-c--s:------:allow
+
+expect
+#rebase-manifest 4
+#base zrt/base@s
+#from zrt/from@s
+#onto zrt/onto@s
+#mode strict
+#actions 0
+#conflicts 0
+/
+    ..

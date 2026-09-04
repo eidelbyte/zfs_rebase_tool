@@ -1,0 +1,57 @@
+platform freebsd
+
+# Every attribute kind on one object at once: a user extended
+# attribute, a system one, a non-trivial NFSv4 ACL and a file flag.
+# Three files carry the whole set and one attribute of it moves per
+# side, on different files, so nothing here conflicts.
+#
+#   /M  from changed its system attribute and onto left it alone, so
+#       from's content wins and onto's object is written
+#   /N  from alone has it, so the pool is copied whole
+#   /O  onto changed its user attribute and from left it alone, so
+#       onto keeps what it has and the manifest says nothing
+#
+# That puts the attribute set through a write and through a cp in
+# one fixture, which is where apply's two writers meet: the one that
+# makes an existing object equal to from's and the one that makes a
+# new object from nothing. Each must set both namespaces, the ACL
+# and the flags, and set the flags last, since an immutable object
+# takes no further attribute.
+#
+# /O is the third case and the manifest is silent about it by
+# design; the harness is what checks it. Its second --posix rebase
+# compares from with the result, and an apply that trampled onto's
+# own attribute would be caught there as a write it should not have
+# needed.
+#
+# nodump is the flag because it holds nothing down. uchg would stop
+# the harness clearing and removing its own built trees, which is
+# what flags-conflict.zrt's comment says about that one.
+#
+# Box only, and root only: the system namespace and the NFSv4 ACL.
+
+tree base
+	/M file m flags=nodump xattr=system.s:one xattr=user.u:one acl=user:1:rw-p--aARWcCos:------:allow,owner@:rw-p--aARWcCos:------:allow,group@:r-----a-R-c--s:------:allow,everyone@:r-----a-R-c--s:------:allow
+	/O file o flags=nodump xattr=system.s:one xattr=user.u:one acl=user:1:rw-p--aARWcCos:------:allow,owner@:rw-p--aARWcCos:------:allow,group@:r-----a-R-c--s:------:allow,everyone@:r-----a-R-c--s:------:allow
+
+tree from
+	/M file m flags=nodump xattr=system.s:two xattr=user.u:one acl=user:1:rw-p--aARWcCos:------:allow,owner@:rw-p--aARWcCos:------:allow,group@:r-----a-R-c--s:------:allow,everyone@:r-----a-R-c--s:------:allow
+	/N file n flags=nodump xattr=system.s:new xattr=user.u:new acl=user:1:rw-p--aARWcCos:------:allow,owner@:rw-p--aARWcCos:------:allow,group@:r-----a-R-c--s:------:allow,everyone@:r-----a-R-c--s:------:allow
+	/O file o flags=nodump xattr=system.s:one xattr=user.u:one acl=user:1:rw-p--aARWcCos:------:allow,owner@:rw-p--aARWcCos:------:allow,group@:r-----a-R-c--s:------:allow,everyone@:r-----a-R-c--s:------:allow
+
+tree onto
+	/M file m flags=nodump xattr=system.s:one xattr=user.u:one acl=user:1:rw-p--aARWcCos:------:allow,owner@:rw-p--aARWcCos:------:allow,group@:r-----a-R-c--s:------:allow,everyone@:r-----a-R-c--s:------:allow
+	/O file o flags=nodump xattr=system.s:one xattr=user.u:two acl=user:1:rw-p--aARWcCos:------:allow,owner@:rw-p--aARWcCos:------:allow,group@:r-----a-R-c--s:------:allow,everyone@:r-----a-R-c--s:------:allow
+
+expect
+#rebase-manifest 4
+#base zrt/base@s
+#from zrt/from@s
+#onto zrt/onto@s
+#mode strict
+#actions 2
+#conflicts 0
+/
+    M write /M
+    N cp /N
+    ..

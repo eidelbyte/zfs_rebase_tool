@@ -3,7 +3,7 @@
 set -u
 cd "$(dirname "$0")/../.." || exit 2
 rc=0; n=0
-for f in tests/fixtures/*.zrt; do
+for f in tests/fixtures/*.zrt tests/fixtures/freebsd/*.zrt; do
 	if sh tests/box/run-fixture.sh "$f" > "/tmp/zr-suite-$(basename "$f").log" 2>&1; then
 		echo "ok   $f"; n=$((n + 1))
 	else

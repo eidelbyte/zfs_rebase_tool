@@ -1,0 +1,47 @@
+platform freebsd
+
+# One file, no flags in base, uchg on from and nodump on onto. Both
+# sides changed it away from base and away from each other, and the
+# file flags are part of the attribute set the content handle folds
+# in, so the verdict is changed-both, exactly as it would be for
+# bytes or for an extended attribute. The token is x in all three
+# trees; the flags are the whole of the difference.
+#
+# Box only. The flags themselves are not: FreeBSD and the Mac name
+# them alike, and flags-copy.zrt runs everywhere. This one is here
+# because uchg is what it turns on, and an immutable file is what a
+# harness has most trouble putting down again -- a built tree
+# carrying one cannot be cleared or removed until the flag comes off
+# (chflags -R nouchg,nouappnd,noschg,nosappnd, which is what
+# FORMAT.md tells a harness to do and what tests/run-fixtures.sh
+# does). The conflict means nothing is applied, so the flag never
+# reaches the result; it is the two input sides that carry it.
+
+tree base
+	/A file x
+
+tree from
+	/A file x flags=uchg
+
+tree onto
+	/A file x flags=nodump
+
+expect
+#rebase-manifest 4
+#base zrt/base@s
+#from zrt/from@s
+#onto zrt/onto@s
+#mode strict
+#actions 0
+#conflicts 1
+/
+    A conflict 1
+    ..
+
+# a pool is one file and all its names: {names}letter; same
+# letter, same bytes
+conflict 1 changed-both
+  why  /A changed on both sides
+  base ({/A}x)
+  from ({/A}y)
+  onto ({/A}z)

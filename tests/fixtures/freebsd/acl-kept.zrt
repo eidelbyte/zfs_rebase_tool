@@ -1,0 +1,44 @@
+platform freebsd
+
+# The same non-trivial NFSv4 ACL on one file in all three trees, and
+# from edited the bytes under it. An ACL is part of the content the
+# oracle compares, and this one is equal everywhere, so the only
+# thing that moved is the token: base and onto are one content and
+# from is another. That is the ordinary one-sided edit, written into
+# onto's object in place.
+#
+# What the box adds beyond the manifest is the apply. A write must
+# leave the ACL standing: the harness rebases from onto the result
+# again in --posix form and that second run must declare no action,
+# so an ACL the write dropped or stripped would show up there as a
+# content that no longer equals from's.
+#
+# The ACL's owner@, group@ and everyone@ entries are the three the
+# mode 0644 stands for, so setting it moves no mode bit; the named
+# user entry is the whole of what makes it non-trivial, which is
+# what acl_is_trivial_np(3) asks and what decides whether the walk
+# keeps it at all. uid 1 is daemon, which every FreeBSD has.
+#
+# Box only: acl_from_text(3) and acl_set_link_np(3) are FreeBSD's,
+# and a text ACL means nothing on any other platform.
+
+tree base
+	/A file x acl=user:1:rw-p--aARWcCos:------:allow,owner@:rw-p--aARWcCos:------:allow,group@:r-----a-R-c--s:------:allow,everyone@:r-----a-R-c--s:------:allow
+
+tree from
+	/A file x2 acl=user:1:rw-p--aARWcCos:------:allow,owner@:rw-p--aARWcCos:------:allow,group@:r-----a-R-c--s:------:allow,everyone@:r-----a-R-c--s:------:allow
+
+tree onto
+	/A file x acl=user:1:rw-p--aARWcCos:------:allow,owner@:rw-p--aARWcCos:------:allow,group@:r-----a-R-c--s:------:allow,everyone@:r-----a-R-c--s:------:allow
+
+expect
+#rebase-manifest 4
+#base zrt/base@s
+#from zrt/from@s
+#onto zrt/onto@s
+#mode strict
+#actions 1
+#conflicts 0
+/
+    A write /A
+    ..

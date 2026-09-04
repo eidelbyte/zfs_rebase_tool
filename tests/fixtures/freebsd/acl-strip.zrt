@@ -1,0 +1,39 @@
+platform freebsd
+
+# The reverse of acl-nfsv4.zrt: base and onto carry a non-trivial
+# ACL and from took it off again, leaving what the mode alone says.
+# The walk stores a trivial ACL as nothing (acl_is_trivial_np), so
+# from's line carries no acl= at all and its content differs from
+# the other two, which agree. A one-sided change, written into
+# onto's object.
+#
+# This is the apply's strip path and the reason it exists. The walk
+# kept nothing for from's ACL, so a write that wrote nothing would
+# leave onto's non-trivial ACL standing on an object meant to equal
+# from's; apply strips it back to the mode with acl_strip_np(3)
+# instead. The harness's second --posix rebase is what catches a
+# strip that did not happen -- the result would still differ from
+# from -- and getfacl on the result is what a reader checks by hand.
+#
+# Box only: an NFSv4 ACL is FreeBSD's.
+
+tree base
+	/A file x acl=user:1:rw-p--aARWcCos:------:allow,owner@:rw-p--aARWcCos:------:allow,group@:r-----a-R-c--s:------:allow,everyone@:r-----a-R-c--s:------:allow
+
+tree from
+	/A file x
+
+tree onto
+	/A file x acl=user:1:rw-p--aARWcCos:------:allow,owner@:rw-p--aARWcCos:------:allow,group@:r-----a-R-c--s:------:allow,everyone@:r-----a-R-c--s:------:allow
+
+expect
+#rebase-manifest 4
+#base zrt/base@s
+#from zrt/from@s
+#onto zrt/onto@s
+#mode strict
+#actions 1
+#conflicts 0
+/
+    A write /A
+    ..
