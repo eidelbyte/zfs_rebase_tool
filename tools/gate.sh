@@ -6,7 +6,7 @@ set -u
 cd "$(dirname "$0")/.." || exit 1
 rc=0
 nonascii=$(printf '[^\t -~]')
-if LC_ALL=C grep -rn "$nonascii" Makefile README.md src tests tools/gate.sh; then
+if LC_ALL=C grep -rn "$nonascii" Makefile README.md src tests tools/gate.sh tools/xcheck-freebsd.sh tools/*.py; then
 	echo "gate: non-ASCII bytes above"; rc=1
 fi
 srcs=$(ls src/*.c src/*.h tests/*.c 2>/dev/null || true)
