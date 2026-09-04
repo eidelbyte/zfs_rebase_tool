@@ -1,0 +1,566 @@
+.\" SPDX-License-Identifier: BSD-3-Clause
+.\"
+.\" Copyright (c) 2026, Eidel Solomon
+.\" All rights reserved.
+.\"
+.\" Redistribution and use in source and binary forms, with or without
+.\" modification, are permitted provided that the conditions of the
+.\" BSD 3-Clause License, reproduced in the LICENSE file of this
+.\" distribution, are met.
+.\"
+.Dd September 3, 2026
+.Dt ZFS_REBASE 8
+.Os
+.Sh NAME
+.Nm zfs_rebase
+.Nd rebase one ZFS filesystem onto another
+.Sh SYNOPSIS
+.Nm
+.Op Fl n
+.Op Fl p
+.Op Fl v
+.Op Fl o Ar file
+.Op Fl -verify
+.Op Fl -overwrite
+.Oo Fl -allow-unrelated Oo Fl -base Ar snapshot Oc Oc
+.Fl -from Ar snapshot Ns | Ns Ar dataset
+.Fl -onto Ar snapshot Ns | Ns Ar dataset
+.Fl -result Ar name
+.Nm
+.Fl -continue
+.Op Fl -verify
+.Op Fl v
+.Fl -result Ar dataset
+.Nm
+.Fl -restart
+.Op Fl v
+.Fl -result Ar dataset
+.Nm
+.Fl -abort
+.Op Fl v
+.Fl -result Ar dataset
+.Nm
+.Fl -verify
+.Op Fl v
+.Fl -result Ar dataset
+.Nm
+.Fl -posix
+.Op Fl p
+.Op Fl o Ar file
+.Ar basedir fromdir ontodir
+.Nm
+.Fl -build-fixture Ar fixture dir
+.Nm
+.Fl -edit-fixture Ar fixture tree dir
+.Sh DESCRIPTION
+The
+.Nm
+utility rebases one ZFS filesystem onto another.
+Given two sides that diverged from a common base, it replays the changes of
+one side onto the other, or reports the names it could not decide and why.
+It is not a
+.Xr zfs 8
+verb and it is not built into the kernel: it is a userspace program that
+does all of its work through the
+.Sy libzfs_core
+and
+.Sy libzfs
+libraries, execs nothing, and must run as root.
+.Pp
+Three trees are read, each through the
+.Pa .zfs/snapshot
+directory of its dataset:
+.Ar base ,
+the branch point;
+.Ar from ,
+the side whose changes are replayed; and
+.Ar onto ,
+the side they are replayed onto.
+Only the two sides are named.
+The base is derived: each side's origin chain is walked back \(em the
+snapshot, then its dataset's origin, then that dataset's origin \(em to the
+nearest dataset both descend from, and the older of the two snapshots they
+name there, by
+.Sy createtxg ,
+is the base.
+Two sides that share no origin are refused unless
+.Fl -allow-unrelated
+is given, and so is a pair whose derived base turns out to be one of the
+arguments: one side already contains the other, and what is wanted there is
+not a rebase.
+.Pp
+The decision is made over names, over hardlink pools \(em a pool being one
+file and every name it has \(em and over content.
+A name only one side touched takes that side's version; a pool edited
+through one of its names is edited for every name of it; a name both sides
+changed differently, a pool the two sides disagree about, a split one side
+healed and an addition whose every anchor the other side deleted are
+conflicts, and a conflict stops the names it covers and nothing else.
+.Pp
+The one output is a manifest.
+It is a single document in two sections: a scoped walk of the result
+namespace, in which every name with something to say carries an action \(em
+.Cm rm ,
+.Cm ln Ar path ,
+.Cm cp Ar path ,
+.Cm dup Ar path ,
+.Cm write Ar path
+or
+.Cm conflict Ar n
+\(em and, after it, one record per conflict giving its class, a one-sentence
+why, and the pools of that group in each of the three trees.
+A header names the three snapshots the run actually read, the mode, and the
+counts of actions and conflicts.
+Names are escaped as a backslash and three octal digits wherever they are
+not plain printable ASCII.
+The format is a document of its own,
+.Pa v4-manifest.md
+in the project's notes, and it is the contract between this tool and
+whatever applies or answers it.
+.Pp
+The manifest is then applied.
+.Fl -onto
+decides where:
+.Bl -bullet
+.It
+.Sy The clone form ,
+.Fl -onto
+given a snapshot.
+.Fl -result
+names a new dataset, created as a read-only clone of that snapshot at the
+run's own private mountpoint, and the rebase is made in it.
+Nothing of yours is written to at all.
+.It
+.Sy The dataset form ,
+.Fl -onto
+given a dataset.
+The rebase is made in that dataset itself, and
+.Fl -result
+names the snapshot the tool takes of it before anything is applied, which
+is kept afterwards as the before-image.
+Exclusivity is the unmount: the dataset is unmounted from its own
+mountpoint and mounted at the run's private directory instead, with its
+.Sy mountpoint
+property untouched.
+A dataset somebody is using will not unmount, and then the tool says so and
+exits 2.
+Nothing is ever forced.
+Wherever the run stops \(em at conflicts, at done, at a failure, at a signal
+\(em the dataset is handed back: off the private mount, readonly as it was,
+mounted where its
+.Sy mountpoint
+property says.
+.El
+.Pp
+A side given as a dataset rather than a snapshot is snapshotted by the tool
+under a generated name, recorded as tool-made, and destroyed when the
+rebase ends, at done or at
+.Fl -abort .
+If that snapshot were wanted, a snapshot would have been passed.
+.Pp
+A rebase outlives the process that started it.
+What makes it one thing rather than a process's leavings is the record it
+writes on the result, the holds it takes on its inputs, and the gates it
+passes; see
+.Sx THE RECORD ,
+.Sx HOLDS
+and
+.Sx THE GATES .
+.Sh OPTIONS
+The inputs and the form of the run:
+.Bl -tag -width indent
+.It Fl -from Ar snapshot Ns | Ns Ar dataset
+The side whose changes are replayed.
+Spelled
+.Fl -off-of
+as well.
+A dataset here is snapshotted by the tool.
+.It Fl -onto Ar snapshot Ns | Ns Ar dataset
+The side they are replayed onto, and the form of the run: a snapshot is
+cloned as
+.Fl -result ,
+a dataset is rebased in place.
+.It Fl -result Ar name
+Two meanings, one per form.
+With
+.Fl -onto
+a snapshot it is the dataset the rebased clone is created as.
+With
+.Fl -onto
+a dataset it is the name of the pre-apply snapshot taken of that dataset \(em
+the short name after the
+.Sy @ ,
+or a full name whose dataset part is onto.
+For every verb it is the dataset carrying the record, and a snapshot name
+is taken as its dataset, so both spellings find the same rebase.
+.It Fl -allow-unrelated
+Rebase two sides that share no origin.
+The base is not derived; it is
+.Fl -base
+or the empty tree.
+Pruning is turned off with it, because object numbers mean nothing across
+lineages.
+.It Fl -base Ar snapshot
+Only with
+.Fl -allow-unrelated :
+the tree to treat as the branch point.
+Its
+.Sy createtxg
+must be at or below that of both inputs.
+.It Fl -overwrite
+In the dataset form, replace a record whose rebase reached done.
+An open rebase is never overwritten by any flag:
+.Fl -continue
+or
+.Fl -abort
+settles it first.
+The clone form never overwrites anything, since every result is a fresh
+dataset with a fresh record.
+.El
+.Pp
+The flags:
+.Bl -tag -width indent
+.It Fl n
+Dry run.
+The manifest is written and nothing else: no clone, no record, no holds,
+and
+.Fl -result
+is ignored.
+Where a side was given as a dataset the tool still snapshots it, because
+there has to be something to read, and destroys that snapshot again before
+it exits.
+.It Fl p
+Permissive-merge mode.
+Sharing that strict mode raises as an
+.Sy unexpressed-sharing
+conflict is resolved instead.
+.It Fl v
+Report counts and the steps taken on standard error.
+.It Fl o Ar file
+Write the manifest to
+.Ar file
+rather than into the run directory.
+The file is yours: the tool records the path and does not remove it, where
+its own manifest goes with the run.
+.It Fl -verify
+Asked for at the start of a run, or with
+.Fl -continue ,
+this is the flag: the final check is made once, after the last stage
+verified and before anything is released, and the request is written into
+the record so a kill and a
+.Fl -continue
+still honour it.
+With
+.Fl -continue
+the check is also a repair.
+Alone on a result it is a verb; see below.
+.El
+.Pp
+The verbs work on a rebase that already exists.
+Each takes
+.Fl -result
+and
+.Fl v
+and nothing else, no two of them go together, and every one keys on the
+record and on nothing else: a dataset that carries none is refused
+untouched.
+Each also checks that every snapshot the record names is still the snapshot
+it named, by guid, since a snapshot destroyed and taken again under the
+same name is another snapshot.
+.Bl -tag -width indent
+.It Fl -continue
+Take the rebase on from the gate its record names, through the gates that
+are left, in one process.
+Applying is idempotent \(em every action means "make this true" \(em so what is
+already true is left alone and what is not is made, which is why a fresh
+run, a resumed one and a repair are one code path.
+With
+.Fl -verify
+it prints, before each stage, how every action of the document stands, and
+repairs the drift it finds on the clean actions; conflicted names are never
+touched, because no action names one.
+.It Fl -restart
+Put the result back as onto was \(em the clone destroyed and made again from
+the recorded onto snapshot with the same record, or the dataset rolled back
+to its pre-apply snapshot \(em and apply the recorded manifest from the first
+gate.
+Nothing is decided again: the manifest is the decision.
+A resolution's edits are discarded by definition.
+.It Fl -abort
+Release the holds, put the result back \(em the clone destroyed, or the
+dataset rolled back to its pre-apply snapshot, that snapshot destroyed,
+every one of its
+.Sy zfs_rebase
+properties taken off it and the dataset mounted where it belongs again \(em
+destroy any snapshot the tool took for itself, unlink the manifest the
+record names, and remove the run directory.
+As if the run never happened.
+.It Fl -verify
+Alone on a result, report and write nothing at all, so that a deliberate
+edit to a rebased file is shown and never overwritten.
+Every action of the manifest, and of the resolution if there is one, is
+classified as
+.Sy done ,
+.Sy pending
+(the object is still as onto had it),
+.Sy blocked
+(impossible until a conflict beneath it is resolved),
+.Sy drifted
+(it matches neither the manifest's outcome nor onto's original) or
+.Sy unchecked
+(a tree it would have to be read against could not be found), and the
+report gives each outcome's count and first name, plus a count of the names
+outside the manifest that changed anyway.
+.El
+.Pp
+Three test aids exist for the project's own harness and are not part of
+ordinary use:
+.Fl -posix
+runs the whole decision over three plain directories given as
+.Ar basedir fromdir ontodir
+and writes the manifest, which is how the core is exercised where there is
+no ZFS;
+.Fl -build-fixture
+materializes a fixture's
+.Pa base ,
+.Pa from ,
+.Pa onto
+and
+.Pa expect
+under a directory; and
+.Fl -edit-fixture
+turns a directory already holding one of those trees into another of them
+by the smallest set of edits, so that everything the two agree on keeps its
+inode and its ctime.
+.Sh THE RECORD
+The result carries the rebase as user properties, written by the create
+itself in the clone form and set on the dataset before anything is touched
+in the other.
+User properties inherit down the naming tree, so every one of them is set
+locally and read back as a local value only: an inherited value is no
+record of ours.
+.Bl -tag -width "zfs_rebase:manifest" -compact
+.It Sy zfs_rebase:base
+the branch point, with
+.Sy :base_guid
+.It Sy zfs_rebase:from
+the side replayed, with
+.Sy :from_guid
+.It Sy zfs_rebase:onto
+the side replayed onto, with
+.Sy :onto_guid
+.It Sy zfs_rebase:made
+which inputs the tool snapshotted itself
+.It Sy zfs_rebase:mode
+strict or permissive
+.It Sy zfs_rebase:form
+clone or dataset
+.It Sy zfs_rebase:tag
+the tag its holds are filed under
+.It Sy zfs_rebase:verify
+whether
+.Fl -verify
+was asked for
+.It Sy zfs_rebase:manifest
+the absolute path the manifest was written to
+.It Sy zfs_rebase:readonly
+what
+.Sy readonly
+was before the run took the dataset over (dataset form only)
+.It Sy zfs_rebase:state
+the last gate the run passed
+.El
+.Pp
+There is no state property at birth, and every verb keys on the record and
+nothing else.
+A dataset carrying neither
+.Sy zfs_rebase:tag
+nor
+.Sy zfs_rebase:manifest
+locally is not a result of this tool and is never touched: the verbs refuse
+it and exit 2.
+.Sh HOLDS
+One persistent hold per input snapshot \(em base, from and onto, three of
+them \(em is taken at the start of a real run, under a tag unique to the run:
+.Sy zr-
+and twelve hex digits, recorded as
+.Sy zfs_rebase:tag .
+The holds carry no cleanup descriptor, so they outlive the process, and
+they are released only at done or at
+.Fl -abort .
+While they are there,
+.Nm zfs Cm destroy
+refuses each of the three with
+.Dq dataset is busy
+and
+.Nm zfs Cm holds
+shows the tag.
+A stranded rebase holds on purpose: it is continuable.
+In the clone form onto's snapshot cannot be destroyed for a second reason,
+which is ZFS's own rule about a clone's origin and not something this tool
+arranges.
+.Sh THE GATES
+A rebase's progress is a sequence of gates, written to
+.Sy zfs_rebase:state
+and nowhere else:
+.Bd -literal -offset indent
+applying1 -> conflicts -> applying2 -> done
+applying1 -> done                          (no conflicts)
+.Ed
+.Pp
+.Sy applying1
+goes down immediately before the result stops being read-only, and the
+clean actions of the manifest are applied under it whether the decision had
+conflicts or not.
+.Sy conflicts
+is written after that apply verified, and is the hand-off to the conflict
+manager, which leaves its answers in the run directory as
+.Pa resolution ,
+a manifest in the same format holding actions and no conflicts.
+.Sy applying2
+applies that file exactly as
+.Sy applying1
+applied the manifest.
+.Sy done
+is written after the result verified and is read-only again, and before the
+holds are released, so that a kill in between leaves a record that says the
+rebase finished and holds that
+.Fl -abort
+can still find.
+.Pp
+What a kill leaves is the last gate reached and nothing else.
+There is no state at all until the first gate, and a stop writes none:
+.Dv SIGINT ,
+.Dv SIGTERM
+and
+.Dv SIGHUP
+stop at the next action and put readonly back, leaving the state at the
+gate;
+.Dv SIGKILL
+leaves the same gate with readonly off, which
+.Fl -continue
+restores.
+.Fl -continue
+resumes from the gate its record names, and does the same thing whichever
+kind of stop left it:
+.Bl -tag -width "applying2" -compact
+.It no state
+start at
+.Sy applying1 :
+applying nothing again is what an idempotent apply does over a tree nothing
+was applied to
+.It Sy applying1
+apply the manifest again and go on
+.It Sy conflicts
+apply the resolution if it is there, else say what is being waited for and
+exit 1
+.It Sy applying2
+apply the resolution again and go on
+.It Sy done
+do the cleanup a kill between the done gate and the release would have
+skipped; with
+.Fl -verify ,
+repair
+.El
+.Sh FILES
+Each run keeps its own directory, 0700 throughout, named for the dataset
+carrying the record with its slashes kept as directories:
+.Bl -tag -width "/var/db/zfs_rebase/<result>/resolution" -compact
+.It Pa /var/db/zfs_rebase/<result>/mnt
+where the result is mounted while the run has it
+.It Pa /var/db/zfs_rebase/<result>/manifest
+the manifest, unless
+.Fl o
+named somewhere else
+.It Pa /var/db/zfs_rebase/<result>/resolution
+where the conflict manager's answers are expected
+.El
+.Pp
+Not
+.Pa /var/run :
+the system's cleanvar deletes every file there at boot, and a rebase
+stopped at conflicts can outlast a reboot.
+.Sh EXIT STATUS
+.Bl -tag -width "0" -compact
+.It 0
+the rebase is done
+.It 1
+it stopped at conflicts
+.It 2
+it was refused before anything was touched
+.It 3
+something failed part way
+.El
+.Pp
+.Fl -verify
+alone exits 0 when nothing is pending or drifted and 3 when something is;
+blocked and unchecked are states and not faults.
+.Sh EXAMPLES
+Rebase a topic snapshot onto the current main, in the clone form:
+.Bd -literal -offset indent
+zfs_rebase -v --from tank/topic@work --onto tank/main@current \e
+    --result tank/rebased
+.Ed
+.Pp
+The result is a read-only clone at
+.Pa /var/db/zfs_rebase/tank/rebased/mnt .
+The tool never promotes it: adopting it is yours to do by hand, when you
+have looked at it and are satisfied.
+.Bd -literal -offset indent
+zfs promote tank/rebased
+zfs rename tank/main tank/main.old
+zfs rename tank/rebased tank/main
+zfs inherit mountpoint tank/main
+zfs inherit readonly tank/main
+.Ed
+.Pp
+The same rebase in the dataset form, which writes into
+.Pa tank/main
+itself and keeps
+.Pa tank/main@pre
+as the before-image:
+.Bd -literal -offset indent
+zfs_rebase -v --from tank/topic --onto tank/main --result pre
+.Ed
+.Pp
+A run that was killed part way is a rebase, not a leftover.
+Look at the gate it left and take it on from there:
+.Bd -literal -offset indent
+zfs get -s local -H -o value zfs_rebase:state tank/rebased
+zfs_rebase --continue --result tank/rebased
+.Ed
+.Pp
+Or take the whole thing away again:
+.Bd -literal -offset indent
+zfs_rebase --abort --result tank/rebased
+.Ed
+.Sh SEE ALSO
+.Xr zfs 8 ,
+.Xr zfs-hold 8 ,
+.Xr zfs-promote 8 ,
+.Xr zfs-rollback 8
+.Sh CAVEATS
+The tool never promotes.
+The clone form's result is a read-only clone at a mountpoint of the run's
+own choosing, and promoting, renaming or inheriting it is the user's work,
+deliberately.
+.Pp
+Conflict resolution is not part of this tool.
+A run with conflicts applies its clean actions, stops at the
+.Sy conflicts
+gate and waits for a resolution file to appear; reading the conflicts back,
+presenting them and taking answers belong to a separate conflict manager.
+.Pp
+A verify after done is best effort.
+Each input is looked for by name and then by guid across the pool, which is
+what survives a rename or a promote, and what cannot be found is reported
+as unchecked rather than guessed at.
+Where a side was given as a dataset, the snapshot the tool took of it is
+gone at done, so the actions that would have to read it cannot be checked
+or redone afterwards.
+After done, drift on a live dataset is indistinguishable from new work, so
+a plain
+.Fl -verify
+before a
+.Fl -continue Fl -verify
+is the habit.

@@ -142,8 +142,28 @@ replay-expect-check: build
 gate:
 	sh tools/gate.sh
 
+# Install whatever zfs_rebase the build left in place: the portable
+# core from "make", or the real tool from "make freebsd". Build the
+# flavor you mean first -- this target has no prerequisite on purpose,
+# so that it can never relink a freebsd binary without the ZFS flags,
+# and install(1) says so plainly when there is nothing to install.
+#
+# sbin, because the tool must run as root. share/man, because that is
+# where FreeBSD's own bsd.man.mk puts a page (MANDIR = ${SHAREDIR}/man/
+# man, SHAREDIR = /usr/share) and where the ports tree has kept them
+# since they moved out of ${PREFIX}/man.
+PREFIX ?= /usr/local
+BINDIR = $(PREFIX)/sbin
+MANDIR = $(PREFIX)/share/man/man8
+
+install:
+	install -d $(DESTDIR)$(BINDIR)
+	install -m 0555 zfs_rebase $(DESTDIR)$(BINDIR)/zfs_rebase
+	install -d $(DESTDIR)$(MANDIR)
+	install -m 0444 zfs_rebase.8 $(DESTDIR)$(MANDIR)/zfs_rebase.8
+
 clean:
 	rm -rf build zfs_rebase
 
 .PHONY: all freebsd check check-freebsd unit battery fixtures gate \
-	replay-expect replay-expect-check clean
+	install replay-expect replay-expect-check clean

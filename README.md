@@ -239,5 +239,19 @@ sprint plan live in the author's freebsd-development notes (the v4
 set under zfs-rebase-theory/ and sprints/sprint-4/). The manifest
 format will be copied into doc/ here when the emitter lands.
 
+Installing:
+
+    make            # or make freebsd, for the real tool
+    make install    # PREFIX=/usr/local unless you say otherwise
+
+install puts whatever zfs_rebase the build left in place into
+$(DESTDIR)$(PREFIX)/sbin -- sbin because the tool must run as root --
+and zfs_rebase.8 into $(DESTDIR)$(PREFIX)/share/man/man8, which is
+where FreeBSD's base system and its ports tree both keep man pages
+today. It builds nothing itself, so build the flavour you mean first:
+a portable core installed on a FreeBSD box would refuse every real
+run. ports/sysutils/zfs_rebase is the port skeleton that wraps the
+same target.
+
 License: BSD 3-Clause (see LICENSE). tools/cstyle.pl is OpenZFS's
 and remains under CDDL-1.0, as its header says.
