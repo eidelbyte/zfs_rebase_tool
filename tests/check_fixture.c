@@ -35,6 +35,20 @@
 #include "name.h"
 #include "walk.h"
 
+/*
+ * A template under TMPDIR, or /tmp without it: the box's /tmp may be
+ * a tmpfs, which has no extended attributes, and the tests that
+ * build attributes must be pointed at a filesystem that has them.
+ */
+static void
+tmp_template(char *buf, size_t len, const char *leaf)
+{
+	const char *d = getenv("TMPDIR");
+
+	(void) snprintf(buf, len, "%s/%s", d != NULL && d[0] != '\0' ?
+	    d : "/tmp", leaf);
+}
+
 /* The platforms with file flags, which are the ones a flags= needs. */
 #if defined(__FreeBSD__) || defined(__APPLE__)
 #define	HAVE_FFLAGS	1
@@ -59,6 +73,19 @@ static int checks;
 			exit(1);					\
 		}							\
 	} while (0)
+
+/* Build one tree, and say why when it fails: the reason is the finding. */
+static void
+build_ok(const struct zr_fixture *fx, enum zr_fixture_tree which,
+    const char *dir)
+{
+	char err[256];
+
+	err[0] = '\0';
+	if (zr_fixture_build_err(fx, which, dir, err, sizeof (err)) != 0)
+		printf("  build %s: %s\n", dir, err);
+	CHECK(err[0] == '\0');
+}
 
 /*
  * One row of what a built tree must look like. ee_arg is a file's or
@@ -524,7 +551,7 @@ check_extra(const char *root)
 
 	join(full, sizeof (full), root, "/extra");
 	CHECK(mkdir(full, 0755) == 0);
-	CHECK(zr_fixture_build(fx, ZR_FX_BASE, full) == 0);
+	build_ok(fx, ZR_FX_BASE, full);
 	check_built(full, exp_extra, (int)(sizeof (exp_extra) /
 	    sizeof (exp_extra[0])));
 
@@ -606,7 +633,7 @@ check_attrs(const char *root)
 	fx = load_spec(root, "/attrs.zrt", spec);
 	join(full, sizeof (full), root, "/attrs");
 	CHECK(mkdir(full, 0755) == 0);
-	CHECK(zr_fixture_build(fx, ZR_FX_BASE, full) == 0);
+	build_ok(fx, ZR_FX_BASE, full);
 	check_built(full, exp_attrs, (int)(sizeof (exp_attrs) /
 	    sizeof (exp_attrs[0])));
 
@@ -1189,8 +1216,8 @@ run_edit(const char *root, struct zr_fixture *fx, enum zr_fixture_tree which,
 	join(b, sizeof (b), root, "/ed-b");
 	CHECK(mkdir(a, 0755) == 0);
 	CHECK(mkdir(b, 0755) == 0);
-	CHECK(zr_fixture_build(fx, ZR_FX_BASE, a) == 0);
-	CHECK(zr_fixture_build(fx, which, b) == 0);
+	build_ok(fx, ZR_FX_BASE, a);
+	build_ok(fx, which, b);
 	snap_take(&s0, a);
 
 	err[0] = '\0';
@@ -1608,7 +1635,7 @@ check_edit_platform(const char *root)
 int
 main(void)
 {
-	char root[] = "/tmp/zrfix.XXXXXX";
+	char root[256];
 	char dir[PATHMAX], err[256];
 	struct zr_fixture *fx = NULL;
 	const char *expect;
@@ -1628,20 +1655,21 @@ main(void)
 
 	check_pools(fx);
 
+	tmp_template(root, sizeof (root), "zrfix.XXXXXX");
 	CHECK(mkdtemp(root) != NULL);
 	join(dir, sizeof (dir), root, "/base");
 	CHECK(mkdir(dir, 0755) == 0);
-	CHECK(zr_fixture_build(fx, ZR_FX_BASE, dir) == 0);
+	build_ok(fx, ZR_FX_BASE, dir);
 	check_built(dir, exp_base, (int)(sizeof (exp_base) /
 	    sizeof (exp_base[0])));
 	join(dir, sizeof (dir), root, "/from");
 	CHECK(mkdir(dir, 0755) == 0);
-	CHECK(zr_fixture_build(fx, ZR_FX_FROM, dir) == 0);
+	build_ok(fx, ZR_FX_FROM, dir);
 	check_built(dir, exp_from, (int)(sizeof (exp_from) /
 	    sizeof (exp_from[0])));
 	join(dir, sizeof (dir), root, "/onto");
 	CHECK(mkdir(dir, 0755) == 0);
-	CHECK(zr_fixture_build(fx, ZR_FX_ONTO, dir) == 0);
+	build_ok(fx, ZR_FX_ONTO, dir);
 	check_built(dir, exp_onto, (int)(sizeof (exp_onto) /
 	    sizeof (exp_onto[0])));
 	zr_fixture_free(fx);

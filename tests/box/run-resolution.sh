@@ -133,7 +133,7 @@ MD=
 pid=
 cases=0
 case_id=setup
-tmp=$(mktemp -d /tmp/zr-res.XXXXXX) || exit 2
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/zr-res.XXXXXX") || exit 2
 
 cleanup() {
 	[ -n "$pid" ] && kill -KILL "$pid" 2>/dev/null

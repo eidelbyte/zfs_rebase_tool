@@ -72,6 +72,20 @@
 #include "walk.h"
 #include "yellow.h"
 
+/*
+ * A template under TMPDIR, or /tmp without it: the box's /tmp may be
+ * a tmpfs, which has no extended attributes, and the tests that
+ * build attributes must be pointed at a filesystem that has them.
+ */
+static void
+tmp_template(char *buf, size_t len, const char *leaf)
+{
+	const char *d = getenv("TMPDIR");
+
+	(void) snprintf(buf, len, "%s/%s", d != NULL && d[0] != '\0' ?
+	    d : "/tmp", leaf);
+}
+
 #define	PATHMAX		1024
 #define	TEXTMAX		4096
 #define	SCAN_MIN	16
@@ -377,9 +391,10 @@ struct shape {
 static void
 shape_init(struct shape *sh)
 {
-	char tmpl[] = "/tmp/zrapplys.XXXXXX";
+	char tmpl[256];
 
 	memset(sh, 0, sizeof (*sh));
+	tmp_template(tmpl, sizeof (tmpl), "zrapplys.XXXXXX");
 	CHECK(mkdtemp(tmpl) != NULL);
 	join(sh->sh_root, sizeof (sh->sh_root), tmpl, "");
 	join(sh->sh_from, sizeof (sh->sh_from), tmpl, "/from");
@@ -888,9 +903,10 @@ struct pick {
 static void
 pick_init(struct pick *p)
 {
-	char tmpl[] = "/tmp/zrchoice.XXXXXX";
+	char tmpl[256];
 
 	memset(p, 0, sizeof (*p));
+	tmp_template(tmpl, sizeof (tmpl), "zrchoice.XXXXXX");
 	CHECK(mkdtemp(tmpl) != NULL);
 	join(p->pk_root, sizeof (p->pk_root), tmpl, "");
 	join(p->pk_onto, sizeof (p->pk_onto), tmpl, "/onto");
@@ -1914,8 +1930,9 @@ check_probe(const char *root)
 int
 main(void)
 {
-	char probe[] = "/tmp/zrapply.XXXXXX";
+	char probe[256];
 
+	tmp_template(probe, sizeof (probe), "zrapply.XXXXXX");
 	CHECK(mkdtemp(probe) != NULL);
 	check_probe(probe);
 	rmtree(probe);

@@ -141,7 +141,7 @@ one() {
 
 	say "$fixture (from $fc, onto $oc, $want unchanged)"
 	[ -f "$fixture" ] || fail "no such fixture"
-	tmp=$(mktemp -d /tmp/zr-replay.XXXXXX) || exit 2
+	tmp=$(mktemp -d "${TMPDIR:-/tmp}/zr-replay.XXXXXX") || exit 2
 	flag=""
 	case "$fixture" in *-permissive.zrt) flag="-p" ;; esac
 

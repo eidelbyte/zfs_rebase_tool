@@ -46,6 +46,20 @@
 #include "name.h"
 #include "walk.h"
 
+/*
+ * A template under TMPDIR, or /tmp without it: the box's /tmp may be
+ * a tmpfs, which has no extended attributes, and the tests that
+ * build attributes must be pointed at a filesystem that has them.
+ */
+static void
+tmp_template(char *buf, size_t len, const char *leaf)
+{
+	const char *d = getenv("TMPDIR");
+
+	(void) snprintf(buf, len, "%s/%s", d != NULL && d[0] != '\0' ?
+	    d : "/tmp", leaf);
+}
+
 #define	PATHMAX		1024
 #define	WALK_MIN	16
 #define	DEEP		64
@@ -903,15 +917,17 @@ check_bad_root(const char *root)
 int
 main(void)
 {
-	char probe[] = "/tmp/zrwalk.XXXXXX";
-	char odd[] = "/tmp/zrwalko.XXXXXX";
+	char probe[256];
+	char odd[256];
 
 	check_acl_equal();
 
+	tmp_template(probe, sizeof (probe), "zrwalk.XXXXXX");
 	CHECK(mkdtemp(probe) != NULL);
 	check_probe(probe);
 	rmtree(probe);
 
+	tmp_template(odd, sizeof (odd), "zrwalko.XXXXXX");
 	CHECK(mkdtemp(odd) != NULL);
 	check_odd_tree(odd);
 	check_bad_root(odd);

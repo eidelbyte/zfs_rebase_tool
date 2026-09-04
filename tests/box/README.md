@@ -15,13 +15,17 @@ real mode of the driver.
     sudo sh tests/box/run-suite.sh
     sudo sh tests/box/run-precond.sh   # the cells no fixture states
 
-run-fixture.sh builds its trees under mktemp -d /tmp/zr-box.XXXXXX,
-and the fixtures in tests/fixtures/freebsd/ carry NFSv4 ACLs and
-system-namespace extended attributes, which a tmpfs /tmp cannot hold
-at all: setting one there fails with EOPNOTSUPP and the fixture fails
-before the pool is even made. The box wants /tmp on ZFS (or UFS), or
-TMPDIR pointed at a directory on one. Those fixtures are root's for
-the same reason: the system attribute namespace is root's.
+Every script here builds its trees under mktemp -d in TMPDIR, or
+/tmp without it, and so do the unit tests and run-fixtures.sh that
+make check-freebsd runs. The fixtures in tests/fixtures/freebsd/
+carry NFSv4 ACLs and system-namespace extended attributes, and
+check_fixture builds user attributes and file flags, none of which a
+tmpfs /tmp can hold: setting one there fails with EOPNOTSUPP and the
+build fails before any pool is made (check_fixture prints the
+builder's reason). The box wants /tmp on ZFS (or UFS), or TMPDIR
+pointed at a directory on one, for make check-freebsd and for every
+run-*.sh alike. The system attribute namespace is root's, so those
+fixtures are root's.
 
 make freebsd builds against the OpenZFS headers in the FreeBSD source
 tree, the way FreeBSD's own zfs(8) is built, because the installed

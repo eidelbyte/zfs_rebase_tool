@@ -44,6 +44,20 @@
 #include "walk.h"
 #include "yellow.h"
 
+/*
+ * A template under TMPDIR, or /tmp without it: the box's /tmp may be
+ * a tmpfs, which has no extended attributes, and the tests that
+ * build attributes must be pointed at a filesystem that has them.
+ */
+static void
+tmp_template(char *buf, size_t len, const char *leaf)
+{
+	const char *d = getenv("TMPDIR");
+
+	(void) snprintf(buf, len, "%s/%s", d != NULL && d[0] != '\0' ?
+	    d : "/tmp", leaf);
+}
+
 #define	PATHMAX		1024
 #define	WALK_MIN	16
 
@@ -520,11 +534,12 @@ build_main(struct trees *t)
 static void
 check_main(void)
 {
-	char tmpl[] = "/tmp/zryellow.XXXXXX";
+	char tmpl[256];
 	char err[256];
 	struct trees t;
 	uint32_t h;
 
+	tmp_template(tmpl, sizeof (tmpl), "zryellow.XXXXXX");
 	trees_open(&t, tmpl);
 	build_main(&t);
 	trees_walk(&t);
@@ -587,7 +602,7 @@ check_main(void)
 static void
 check_big(size_t len, size_t flip, int equal, uint64_t bytes)
 {
-	char tmpl[] = "/tmp/zryellowb.XXXXXX";
+	char tmpl[256];
 	char err[256];
 	struct trees t;
 	unsigned char *buf;
@@ -597,6 +612,7 @@ check_big(size_t len, size_t flip, int equal, uint64_t bytes)
 	CHECK(buf != NULL);
 	for (i = 0; i < len; i++)
 		buf[i] = (unsigned char)(i % 251);
+	tmp_template(tmpl, sizeof (tmpl), "zryellowb.XXXXXX");
 	trees_open(&t, tmpl);
 	wr(t.t_fd[0], "big", buf, len, 0644);
 	if (flip != NOFLIP)
@@ -621,10 +637,11 @@ check_big(size_t len, size_t flip, int equal, uint64_t bytes)
 static void
 check_trans(void)
 {
-	char tmpl[] = "/tmp/zryellowt.XXXXXX";
+	char tmpl[256];
 	char err[256];
 	struct trees t;
 
+	tmp_template(tmpl, sizeof (tmpl), "zryellowt.XXXXXX");
 	trees_open(&t, tmpl);
 	wrs(t.t_fd[0], "a", "shared\n", 0644);
 	wrs(t.t_fd[0], "b", "shared\n", 0644);
@@ -653,12 +670,13 @@ check_trans(void)
 static void
 check_readerr(void)
 {
-	char tmpl[] = "/tmp/zryellowe.XXXXXX";
+	char tmpl[256];
 	char err[256];
 	struct trees t;
 
 	if (geteuid() == 0)
 		return;
+	tmp_template(tmpl, sizeof (tmpl), "zryellowe.XXXXXX");
 	trees_open(&t, tmpl);
 	wrs(t.t_fd[0], "blocked", "abc\n", 0000);
 	wrs(t.t_fd[1], "blocked", "abd\n", 0000);
@@ -799,13 +817,14 @@ attrof(const struct trees *t, int which, const char *path)
 static void
 check_prune_all(void)
 {
-	char tmpl[] = "/tmp/zryellowp.XXXXXX";
+	char tmpl[256];
 	char err[256];
 	struct trees t;
 	uint32_t npools, marked, n, k;
 	zr_pool_t p0, pk;
 	zr_name_t nm;
 
+	tmp_template(tmpl, sizeof (tmpl), "zryellowp.XXXXXX");
 	prune_open(&t, tmpl);
 	prune_sides(&t);
 	npools = t.t_w[0].zw_tree.zt_npools;
@@ -863,13 +882,14 @@ check_prune_all(void)
 static void
 check_prune_changed(void)
 {
-	char tmpl[] = "/tmp/zryellowc.XXXXXX";
+	char tmpl[256];
 	char err[256];
 	struct trees t;
 	uint32_t npools, marked, other;
 	zr_name_t nm;
 	int d, fd;
 
+	tmp_template(tmpl, sizeof (tmpl), "zryellowc.XXXXXX");
 	prune_open(&t, tmpl);
 	npools = t.t_w[0].zw_tree.zt_npools;
 	CHECK(npools == PRUNE_POOLS);
@@ -977,7 +997,7 @@ enum {
 static void
 check_prune_fields(void)
 {
-	char tmpl[] = "/tmp/zryellowf.XXXXXX";
+	char tmpl[256];
 	struct trees t;
 	struct zr_pool *sp, *hp;
 	struct zr_attr *sa;
@@ -988,6 +1008,7 @@ check_prune_fields(void)
 	zr_name_t keep, was;
 	int i;
 
+	tmp_template(tmpl, sizeof (tmpl), "zryellowf.XXXXXX");
 	prune_open(&t, tmpl);
 	prune_sides(&t);
 	zr_oracle_fini(t.t_o);

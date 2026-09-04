@@ -111,7 +111,7 @@ MD=
 pid=
 cases=0
 case_id=setup
-tmp=$(mktemp -d /tmp/zr-kill.XXXXXX) || exit 2
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/zr-kill.XXXXXX") || exit 2
 
 cleanup() {
 	[ -n "$pid" ] && kill -KILL "$pid" 2>/dev/null

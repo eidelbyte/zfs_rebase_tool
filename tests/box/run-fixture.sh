@@ -150,7 +150,7 @@ IMG=/tmp/${POOL}.img
 MNT=/tmp/${POOL}-mnt
 RUNDIR=/var/db/zfs_rebase/$POOL/result
 MD=
-tmp=$(mktemp -d /tmp/zr-box.XXXXXX) || exit 2
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/zr-box.XXXXXX") || exit 2
 rc=1
 
 cleanup() {

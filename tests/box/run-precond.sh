@@ -89,7 +89,7 @@ IMG=/tmp/${POOL}.img
 MNT=/tmp/${POOL}-mnt
 FIXTURE=tests/fixtures/probe.zrt
 MD=
-tmp=$(mktemp -d /tmp/zr-precond.XXXXXX) || exit 2
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/zr-precond.XXXXXX") || exit 2
 
 cleanup() {
 	if [ "${KEEP:-0}" = 1 ]; then
