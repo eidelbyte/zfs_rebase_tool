@@ -1,0 +1,24 @@
+zfs_rebase rebases one ZFS filesystem onto another. Given two sides
+that diverged from a common base, it replays the changes of one side
+onto the other, or reports the names it could not decide and why.
+
+The base is not given: it is the branch point, and the tool derives it
+from the two sides' origin chains. The decision is made over names,
+over hardlink pools and over content, and its one output is a
+manifest of actions and conflicts. That manifest is applied either to
+a read-only clone of the onto snapshot, leaving the user's datasets
+untouched, or to the onto dataset itself with a pre-apply snapshot
+kept as the before-image.
+
+A rebase is durable rather than a process's leavings: the result
+carries a record in user properties, each input snapshot is held for
+the rebase's whole life, and the run's progress is a sequence of
+gates a kill leaves behind, so that it can be continued, restarted,
+verified or aborted afterwards. The tool never promotes; adopting the
+result is the user's own work.
+
+Building it needs the FreeBSD source tree, not just the installed
+headers: the port compiles against sys/contrib/openzfs under SRC_BASE
+(/usr/src by default) the way FreeBSD's own zfs(8) is built. The tool
+links against base's libzfs, libzfs_core and libnvpair, execs
+nothing, and must run as root.

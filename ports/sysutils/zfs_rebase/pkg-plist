@@ -1,0 +1,2 @@
+sbin/zfs_rebase
+share/man/man8/zfs_rebase.8

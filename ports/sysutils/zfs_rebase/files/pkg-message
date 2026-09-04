@@ -1,0 +1,18 @@
+[
+{ type: install
+  message: <<EOM
+zfs_rebase must run as root, and keeps each rebase in its own 0700
+directory under /var/db/zfs_rebase, which it makes as it needs it. A
+rebase left at a gate is meant to be picked up again: --continue
+resumes it, --abort takes it away, and until one of those it holds its
+input snapshots so nothing can destroy them.
+
+It was built against the OpenZFS headers of the source tree in
+SRC_BASE, so it expects the ZFS the system was built with. Rebuild it
+after a source upgrade.
+
+It never promotes. The clone form leaves a read-only clone for you to
+promote, rename or inherit by hand. See zfs_rebase(8).
+EOM
+}
+]

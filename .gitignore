@@ -1,4 +1,4 @@
 build/
-zfs_rebase
+/zfs_rebase
 *.o
 .DS_Store

@@ -1,0 +1,4 @@
+# Placeholder. No release of zfs_rebase is tagged yet, so there is no
+# distfile to checksum. When the first tag exists, run "make makesum"
+# in this directory: it fetches the GitHub tarball and writes the
+# TIMESTAMP, SHA256 and SIZE lines over this file.
