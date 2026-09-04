@@ -168,11 +168,13 @@ int zr_zfs_exists(struct zr_zfs *z, const char *dataset, char *err,
     size_t errlen);
 
 /*
- * One property of dataset as the string zfs(8) would print, which is
- * how mountpoint, mounted, casesensitivity, normalization, acltype
- * and origin are read. A property that has no value and no default
- * reads as "-", as zfs(8) prints it; origin on a dataset that is not
- * a clone is the one this tool asks for.
+ * One property of dataset as the string zfs(8) would print. What is
+ * really a string is what this is for, and after sprint 5 that is
+ * two properties: origin and mountpoint, which are names. A property
+ * that has no value and no default reads as "-", as zfs(8) prints
+ * it; origin on a dataset that is not a clone is the one this tool
+ * asks for. Everything else the tool reads is a number and goes
+ * through zr_zfs_get_int, so that no verdict rests on a word.
  */
 int zr_zfs_get(struct zr_zfs *z, const char *dataset, const char *prop,
     char *buf, size_t buflen, char *err, size_t errlen);
@@ -180,11 +182,44 @@ int zr_zfs_get(struct zr_zfs *z, const char *dataset, const char *prop,
 /*
  * One numeric property as the number it is rather than as zfs(8)
  * would print it: createtxg, the kernel's own ordering of the
- * snapshots in a pool, and guid, which names a snapshot across a
- * rename or a promote.
+ * snapshots in a pool; guid, which names a snapshot across a rename
+ * or a promote; and the index and boolean properties below, which
+ * zfs_prop_get_int answers from the dataset's own stats
+ * (lib/libzfs/libzfs_dataset.c).
  */
 int zr_zfs_get_int(struct zr_zfs *z, const char *dataset, const char *prop,
     uint64_t *out, char *err, size_t errlen);
+
+/*
+ * The values the driver compares those numbers with. They are
+ * spelled out here because run.c is portable code with no ZFS header
+ * in its include path -- only zfsops.c is compiled with those -- and
+ * because neither name the audit expected is usable: zfs_case_t is
+ * in sys/zfs_ioctl.h, which pulls in sys/dmu.h and the kernel
+ * context and will not compile in userspace, and there is no
+ * ZFS_NORMALIZE_NONE anywhere in the tree. What fixes each value:
+ *
+ *	casesensitivity	 the first member of zfs_case_t
+ *			 (sys/zfs_ioctl.h), which zfs_prop_init
+ *			 registers as the property's default
+ *			 (module/zcommon/zfs_prop.c)
+ *	normalization	 the "none" entry of normalize_table, the
+ *			 only one that is 0: the rest are the
+ *			 U8_TEXTPREP_ forms (module/zcommon/zfs_prop.c)
+ *	mounted		 not an index but a boolean the handle
+ *			 answers out of its own mount options --
+ *			 get_numeric_property returns
+ *			 (zhp->zfs_mntopts != NULL) for it
+ *			 (lib/libzfs/libzfs_dataset.c) -- so anything
+ *			 that is not 0 is mounted
+ *
+ * zr_zfs_open holds the first two against ZFS's own property tables
+ * before a run does anything, so a value that drifted is a refusal
+ * to run and never a wrong verdict about a dataset.
+ */
+#define	ZR_CASE_SENSITIVE	0
+#define	ZR_NORMALIZE_NONE	0
+#define	ZR_NOT_MOUNTED		0
 
 /* Set one "module:name" user property. */
 int zr_zfs_set_user(struct zr_zfs *z, const char *dataset, const char *prop,

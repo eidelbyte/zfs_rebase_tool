@@ -98,6 +98,48 @@ zz_hdl_err(struct zr_zfs *z, char *err, size_t errlen, const char *what)
 	return (-1);
 }
 
+/*
+ * The two index values zfsops.h publishes for the driver, held
+ * against the property tables libzfs_init has just built. run.c
+ * compares casesensitivity and normalization with numbers and has no
+ * ZFS header to read them from, so this is where those numbers
+ * answer to ZFS itself: zfs_prop_string_to_index is the registered table --
+ * zprop_string_to_index over the index table zfs_prop_init filled in
+ * (module/zcommon/zfs_prop.c), which libzfs_init calls
+ * (lib/libzfs/libzfs_util.c) -- so this is not a second copy of the
+ * mapping but the mapping. mounted is not in the table: it is a
+ * boolean and "not 0" is the whole of it.
+ */
+static int
+zz_index_check(char *err, size_t errlen)
+{
+	static const struct {
+		zfs_prop_t	zi_prop;
+		const char	*zi_word;
+		uint64_t	zi_want;
+	} tab[] = {
+		{ ZFS_PROP_CASE, "sensitive", ZR_CASE_SENSITIVE },
+		{ ZFS_PROP_NORMALIZE, "none", ZR_NORMALIZE_NONE }
+	};
+	uint64_t idx;
+	size_t i;
+
+	for (i = 0; i < sizeof (tab) / sizeof (tab[0]); i++) {
+		idx = (uint64_t)-1;
+		if (zfs_prop_string_to_index(tab[i].zi_prop, tab[i].zi_word,
+		    &idx) == 0 && idx == tab[i].zi_want)
+			continue;
+		if (err != NULL && errlen > 0) {
+			(void) snprintf(err, errlen, "this ZFS does not put "
+			    "%s=%s at index %llu", zfs_prop_to_name(
+			    tab[i].zi_prop), tab[i].zi_word,
+			    (unsigned long long)tab[i].zi_want);
+		}
+		return (-1);
+	}
+	return (0);
+}
+
 int
 zr_zfs_open(struct zr_zfs **out, char *err, size_t errlen)
 {
@@ -125,6 +167,11 @@ zr_zfs_open(struct zr_zfs **out, char *err, size_t errlen)
 		e = errno;
 		free(z);
 		return (zz_err(err, errlen, "libzfs_init", e));
+	}
+	if (zz_index_check(err, errlen) != 0) {
+		libzfs_fini(z->zz_hdl);
+		free(z);
+		return (-1);
 	}
 	*out = z;
 	return (0);

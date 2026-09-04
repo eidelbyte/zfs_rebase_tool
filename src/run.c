@@ -449,13 +449,24 @@ result_ok(struct run *r, const char *ontods)
  * The base is worked out first, since the rest of the checks are
  * about its dataset as much as the two sides'. Then every dataset
  * must be mounted, and the three must agree on names.
+ *
+ * All three of those are read as the numbers they are: mounted is a
+ * boolean and the other two are index properties, so the words zfs(8)
+ * would print are a rendering of the value and not the value
+ * (sprints/sprint-5/string-audit.md, section 5). What each number
+ * has to be is in zfsops.h, which says what fixes it in the OpenZFS
+ * tree.
  */
 static int
 preconditions(struct run *r)
 {
-	static const char *props[] = { "casesensitivity", "normalization" };
-	static const char *want[] = { "sensitive", "none" };
-	char ds[3][ZR_NAME_MAX], buf[64];
+	static const char *const props[] = { "casesensitivity",
+	    "normalization" };
+	static const uint64_t want[] = { ZR_CASE_SENSITIVE,
+	    ZR_NORMALIZE_NONE };
+	static const char *const wantword[] = { "sensitive", "none" };
+	char ds[3][ZR_NAME_MAX];
+	uint64_t v;
 	int i, p;
 
 	if (derive_base(r) != 0)
@@ -472,22 +483,23 @@ preconditions(struct run *r)
 	dataset_of(r->o.from, ds[1], sizeof (ds[1]));
 	dataset_of(r->o.onto, ds[2], sizeof (ds[2]));
 	for (i = 0; i < 3; i++) {
-		if (zr_zfs_get(r->zfs, ds[i], "mounted", buf, sizeof (buf),
-		    r->err, sizeof (r->err)) != 0)
+		if (zr_zfs_get_int(r->zfs, ds[i], "mounted", &v, r->err,
+		    sizeof (r->err)) != 0)
 			return (-1);
-		if (strcmp(buf, "yes") != 0) {
+		if (v == ZR_NOT_MOUNTED) {
 			(void) snprintf(r->err, sizeof (r->err),
 			    "%s is not mounted", ds[i]);
 			return (-1);
 		}
 		for (p = 0; p < 2; p++) {
-			if (zr_zfs_get(r->zfs, ds[i], props[p], buf,
-			    sizeof (buf), r->err, sizeof (r->err)) != 0)
+			if (zr_zfs_get_int(r->zfs, ds[i], props[p], &v,
+			    r->err, sizeof (r->err)) != 0)
 				return (-1);
-			if (strcmp(buf, want[p]) != 0) {
+			if (v != want[p]) {
 				(void) snprintf(r->err, sizeof (r->err),
-				    "%s has %s=%s; need %s", ds[i], props[p],
-				    buf, want[p]);
+				    "%s has %s index %llu; need %s", ds[i],
+				    props[p], (unsigned long long)v,
+				    wantword[p]);
 				return (-1);
 			}
 		}
@@ -1743,16 +1755,17 @@ empty_walk(struct resume *s, int slot)
 static int
 walk_side(struct resume *s, int which, int slot)
 {
-	char mnt[ZR_NAME_MAX], ds[ZR_SNAP_MAX], buf[64];
+	char mnt[ZR_NAME_MAX], ds[ZR_SNAP_MAX];
 	char path[ZR_NAME_MAX * 2];
+	uint64_t mounted;
 
 	if (s->gone[which] != 0)
 		return (empty_walk(s, slot));
 	dataset_of(s->found[which], ds, sizeof (ds));
-	if (zr_zfs_get(s->zfs, ds, "mounted", buf, sizeof (buf), s->err,
+	if (zr_zfs_get_int(s->zfs, ds, "mounted", &mounted, s->err,
 	    sizeof (s->err)) != 0)
 		return (-1);
-	if (strcmp(buf, "yes") != 0) {
+	if (mounted == ZR_NOT_MOUNTED) {
 		if (!s->report) {
 			(void) snprintf(s->err, sizeof (s->err),
 			    "%s is not mounted", ds);
@@ -1826,6 +1839,7 @@ static int
 mount_result(struct resume *s)
 {
 	char buf[ZR_NAME_MAX];
+	uint64_t mounted;
 
 	if (zr_zfs_get(s->zfs, s->result, "mountpoint", buf, sizeof (buf),
 	    s->err, sizeof (s->err)) != 0)
@@ -1836,10 +1850,10 @@ mount_result(struct resume *s)
 		    buf, s->workmnt);
 		return (-1);
 	}
-	if (zr_zfs_get(s->zfs, s->result, "mounted", buf, sizeof (buf),
-	    s->err, sizeof (s->err)) != 0)
+	if (zr_zfs_get_int(s->zfs, s->result, "mounted", &mounted, s->err,
+	    sizeof (s->err)) != 0)
 		return (-1);
-	if (strcmp(buf, "yes") == 0)
+	if (mounted != ZR_NOT_MOUNTED)
 		return (0);
 	if (mkdir_p(s->workmnt, s->err, sizeof (s->err)) != 0 ||
 	    zr_zfs_mount(s->zfs, s->result, s->err, sizeof (s->err)) != 0)
