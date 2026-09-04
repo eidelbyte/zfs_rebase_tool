@@ -36,6 +36,7 @@ static const char usage[] =
 	"       zfs_rebase --abort --result DATASET\n"
 	"       zfs_rebase --posix [-p] [-o FILE] BASEDIR FROMDIR ONTODIR\n"
 	"       zfs_rebase --build-fixture FIXTURE DIR\n"
+	"       zfs_rebase --edit-fixture FIXTURE TREE DIR\n"
 	"  --from    the snapshot whose changes are replayed (--off-of)\n"
 	"  --onto    the snapshot they are replayed onto; the base is the\n"
 	"            branch point of the two, which the tool works out\n"
@@ -196,6 +197,52 @@ build_fixture(const char *path, const char *dir)
 }
 
 /*
+ * --edit-fixture: DIR, which already holds one built tree, made into
+ * the fixture's TREE -- base, from or onto -- by the smallest set of
+ * edits, so that everything the two trees agree on keeps its inode
+ * and its ctime. The counts go to stdout, one line, six numbers.
+ */
+static int
+edit_fixture(const char *path, const char *tree, const char *dir)
+{
+	static const char *sub[3] = { "base", "from", "onto" };
+	struct zr_fixture_edit_stats st;
+	struct zr_fixture *fx;
+	char err[512];
+	int i, which = -1;
+
+	for (i = 0; i < 3; i++) {
+		if (strcmp(tree, sub[i]) == 0)
+			which = i;
+	}
+	if (which < 0) {
+		(void) fprintf(stderr, "zfs_rebase: %s: the tree to edit to "
+		    "is base, from or onto\n", tree);
+		return (EXIT_PRECOND);
+	}
+	if (zr_fixture_load(path, &fx, err, sizeof (err)) != 0) {
+		(void) fprintf(stderr, "zfs_rebase: %s: %s\n", path, err);
+		return (EXIT_PRECOND);
+	}
+	if (zr_fixture_edit(fx, (enum zr_fixture_tree)which, dir, &st, err,
+	    sizeof (err)) != 0) {
+		(void) fprintf(stderr, "zfs_rebase: edit %s: %s\n", dir, err);
+		zr_fixture_free(fx);
+		return (EXIT_PRECOND);
+	}
+	zr_fixture_free(fx);
+	(void) printf("removed %llu created %llu rewritten %llu relinked %llu"
+	    " attrs %llu untouched %llu\n",
+	    (unsigned long long)st.ze_removed,
+	    (unsigned long long)st.ze_created,
+	    (unsigned long long)st.ze_rewritten,
+	    (unsigned long long)st.ze_relinked,
+	    (unsigned long long)st.ze_attrs,
+	    (unsigned long long)st.ze_untouched);
+	return (EXIT_CLEAN);
+}
+
+/*
  * One long option with its value, written either way round: --name
  * VALUE or --name=VALUE. Returns 1 with *val set and *i advanced
  * over the value, 0 when argv[*i] is some other option, and -1 when
@@ -255,6 +302,11 @@ main(int argc, char **argv)
 		if (argc != 4)
 			return (die_usage());
 		return (build_fixture(argv[2], argv[3]));
+	}
+	if (argc >= 2 && strcmp(argv[1], "--edit-fixture") == 0) {
+		if (argc != 5)
+			return (die_usage());
+		return (edit_fixture(argv[2], argv[3], argv[4]));
 	}
 	if (argc >= 2 && strcmp(argv[1], "--posix") == 0)
 		return (main_posix(argc, argv));

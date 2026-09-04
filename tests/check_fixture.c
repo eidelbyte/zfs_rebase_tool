@@ -6,9 +6,11 @@
  * flags and extended attributes, built and walked back with zr_walk
  * so that what the fixture said is what the walk reads; the two
  * fixtures a platform line makes the box's, which parse here and
- * build nowhere; then every rejection the format promises. Cells
- * ZF1 to ZF16, ZF18, ZF19 and ZF21 to ZF26; ZF17 and ZF20 are the
- * box's.
+ * build nowhere; then every rejection the format promises; and last
+ * the editor, which turns one built tree into another and must land
+ * where a build of that other one would have. Cells ZF1 to ZF16,
+ * ZF18, ZF19, ZF21 to ZF26 and ZF33 to ZF49; ZF17, ZF20, ZF50 and
+ * ZF51 are the box's.
  */
 
 #define	_XOPEN_SOURCE	700
@@ -847,6 +849,762 @@ check_rejections(const char *root)
 	    "tree onto\n", 1, "a platform nothing can build");
 }
 
+/*
+ * ---------------------------------------------------------------
+ * --edit-fixture
+ *
+ * Every case below is run the same way: base is built into A from
+ * nothing, A is edited into one of the other trees, and that tree is
+ * built into B from nothing. Then A must equal B name for name,
+ * pool for pool and byte for byte -- an edit and a build must land
+ * in the same place -- while the objects the fixture leaves alone
+ * between the two trees must still be the objects they were, with
+ * their inode and their ctime intact, and the objects it changes
+ * must not be. The second edit of the same tree must find nothing
+ * left to do.
+ * ---------------------------------------------------------------
+ */
+
+#if defined(__FreeBSD__) || defined(__APPLE__) || defined(__linux__)
+#define	HAVE_XATTRS	1
+#endif
+
+/* The ctime, which POSIX 2008 spells st_ctim and macOS does not. */
+#if defined(__APPLE__)
+#define	CTIME_OF(st)	((st).st_ctimespec)
+#else
+#define	CTIME_OF(st)	((st).st_ctim)
+#endif
+
+#define	SNAP_MIN	16
+
+/* What one name was before an edit: which object, and when it moved. */
+struct snapent {
+	char		*se_path;
+	uint64_t	se_ino;
+	struct timespec	se_ct;
+};
+
+struct snap {
+	struct snapent	*sn_e;
+	int		sn_n;
+	int		sn_cap;
+};
+
+/* What one name's inode must have done: survived, or not. */
+#define	IX_KEPT	1
+#define	IX_NEW	0
+
+struct inoexp {
+	const char	*ix_path;
+	int		ix_kept;
+};
+
+static void
+snap_take(struct snap *s, const char *root)
+{
+	char full[PATHMAX];
+	struct snapent *ne;
+	struct stat st;
+	struct walk w;
+	int i, cap;
+
+	memset(s, 0, sizeof (*s));
+	walk_tree(&w, root);
+	s->sn_cap = w.w_n > SNAP_MIN ? w.w_n : SNAP_MIN;
+	s->sn_e = calloc((size_t)s->sn_cap, sizeof (struct snapent));
+	CHECK(s->sn_e != NULL);
+	for (i = 0; i < w.w_n; i++) {
+		join(full, sizeof (full), root, w.w_path[i]);
+		CHECK(lstat(full, &st) == 0);
+		ne = &s->sn_e[s->sn_n++];
+		ne->se_path = malloc(strlen(w.w_path[i]) + 1);
+		CHECK(ne->se_path != NULL);
+		(void) strcpy(ne->se_path, w.w_path[i]);
+		ne->se_ino = (uint64_t)st.st_ino;
+		ne->se_ct = CTIME_OF(st);
+	}
+	cap = s->sn_cap;
+	CHECK(s->sn_n <= cap);
+	walk_free(&w);
+}
+
+static void
+snap_free(struct snap *s)
+{
+	int i;
+
+	for (i = 0; i < s->sn_n; i++)
+		free(s->sn_e[i].se_path);
+	free(s->sn_e);
+	memset(s, 0, sizeof (*s));
+}
+
+static const struct snapent *
+snap_find(const struct snap *s, const char *path)
+{
+	int i;
+
+	for (i = 0; i < s->sn_n; i++) {
+		if (strcmp(s->sn_e[i].se_path, path) == 0)
+			return (&s->sn_e[i]);
+	}
+	return (NULL);
+}
+
+static int
+same_ct(const struct timespec *a, const struct timespec *b)
+{
+	return (a->tv_sec == b->tv_sec && a->tv_nsec == b->tv_nsec);
+}
+
+/* One whole file, however long, so that two can be compared. */
+static unsigned char *
+readall(const char *full, size_t *lenp)
+{
+	unsigned char *buf, *nb;
+	size_t cap, len;
+	ssize_t n;
+	FILE *fp;
+
+	fp = fopen(full, "rb");
+	CHECK(fp != NULL);
+	cap = 256;
+	len = 0;
+	buf = malloc(cap);
+	CHECK(buf != NULL);
+	for (;;) {
+		n = (ssize_t)fread(buf + len, 1, cap - len, fp);
+		len += (size_t)n;
+		if (len < cap)
+			break;
+		nb = realloc(buf, cap * 2);
+		CHECK(nb != NULL);
+		buf = nb;
+		cap *= 2;
+	}
+	CHECK(ferror(fp) == 0);
+	CHECK(fclose(fp) == 0);
+	*lenp = len;
+	return (buf);
+}
+
+static void
+same_bytes(const char *ra, const char *rb, const char *path)
+{
+	char fa[PATHMAX], fb[PATHMAX];
+	unsigned char *ba, *bb;
+	size_t la, lb;
+
+	join(fa, sizeof (fa), ra, path);
+	join(fb, sizeof (fb), rb, path);
+	ba = readall(fa, &la);
+	bb = readall(fb, &lb);
+	CHECK(la == lb);
+	CHECK(la == 0 || memcmp(ba, bb, la) == 0);
+	free(ba);
+	free(bb);
+}
+
+/*
+ * The attributes of two pools, field by field, the walk's own view.
+ * The size of a directory is left out of it: it is how much room the
+ * filesystem gave the entries, not what the entries are, and a
+ * directory that lost one keeps the room on some of them.
+ */
+static void
+same_attrs(const struct zr_attr *a, const struct zr_attr *b, zr_type_t type)
+{
+	uint32_t i;
+
+	CHECK(a->za_mode == b->za_mode);
+	CHECK(a->za_uid == b->za_uid);
+	CHECK(a->za_gid == b->za_gid);
+	CHECK(a->za_flags == b->za_flags);
+	if (type != ZR_T_DIR)
+		CHECK(a->za_size == b->za_size);
+	CHECK(a->za_rdev == b->za_rdev);
+	CHECK((a->za_target == NULL) == (b->za_target == NULL));
+	if (a->za_target != NULL)
+		CHECK(strcmp(a->za_target, b->za_target) == 0);
+	CHECK(a->za_nxattrs == b->za_nxattrs);
+	for (i = 0; i < a->za_nxattrs; i++) {
+		CHECK(strcmp(a->za_xattrs[i].zx_name,
+		    b->za_xattrs[i].zx_name) == 0);
+		CHECK(a->za_xattrs[i].zx_len == b->za_xattrs[i].zx_len);
+		CHECK(a->za_xattrs[i].zx_len == 0 ||
+		    memcmp(a->za_xattrs[i].zx_value, b->za_xattrs[i].zx_value,
+		    a->za_xattrs[i].zx_len) == 0);
+	}
+	CHECK(zr_acl_equal(a->za_acl, b->za_acl) == 1);
+	CHECK(zr_acl_equal(a->za_dacl, b->za_dacl) == 1);
+}
+
+/*
+ * The edited tree against the built one: the same names, the same
+ * names on the same objects, the same types, the same attributes and
+ * the same bytes. Both walks share one name table, so a name is one
+ * id on both sides and the pools can be compared by name.
+ */
+static void
+same_tree(const char *ra, const char *rb)
+{
+	const struct zr_pool *qa, *qb;
+	struct zr_names *ns;
+	struct zr_walk wa, wb;
+	char err[256];
+	uint32_t i, k, n;
+	zr_pool_t pa, pb;
+
+	ns = zr_names_create();
+	CHECK(ns != NULL);
+	err[0] = '\0';
+	if (zr_walk(ra, ns, &wa, err, sizeof (err)) != 0)
+		printf("  walk %s: %s\n", ra, err);
+	CHECK(err[0] == '\0');
+	if (zr_walk(rb, ns, &wb, err, sizeof (err)) != 0)
+		printf("  walk %s: %s\n", rb, err);
+	CHECK(err[0] == '\0');
+	CHECK(wa.zw_tree.zt_npools == wb.zw_tree.zt_npools);
+	n = zr_names_count(ns);
+	for (i = 0; i < n; i++) {
+		pa = zr_tree_pool(&wa.zw_tree, (zr_name_t)i);
+		pb = zr_tree_pool(&wb.zw_tree, (zr_name_t)i);
+		if (pa == ZR_POOL_NONE || pb == ZR_POOL_NONE) {
+			printf("  %s: only in %s\n",
+			    zr_names_str(ns, (zr_name_t)i, NULL),
+			    pa == ZR_POOL_NONE ? rb : ra);
+		}
+		CHECK(pa != ZR_POOL_NONE && pb != ZR_POOL_NONE);
+		qa = &wa.zw_tree.zt_pools[pa];
+		qb = &wb.zw_tree.zt_pools[pb];
+		CHECK(qa->zp_type == qb->zp_type);
+		CHECK(qa->zp_nlink == qb->zp_nlink);
+		CHECK(qa->zp_nnames == qb->zp_nnames);
+		for (k = 0; k < qa->zp_nnames; k++)
+			CHECK(qa->zp_names[k] == qb->zp_names[k]);
+		same_attrs(&wa.zw_attrs[pa], &wb.zw_attrs[pb],
+		    qa->zp_type);
+		if (qa->zp_type == ZR_T_FILE && qa->zp_names[0] == i) {
+			same_bytes(ra, rb,
+			    zr_names_str(ns, (zr_name_t)i, NULL));
+		}
+	}
+	zr_walk_fini(&wb);
+	zr_walk_fini(&wa);
+	zr_names_destroy(ns);
+}
+
+/*
+ * Is this name one the fixture leaves alone between the two trees?
+ * In both of them, one content handle -- which folds the type, the
+ * bytes and every attribute -- and the same set of names on its
+ * pool, which is the editor's own rule read off the spec alone.
+ */
+static int
+spec_same(const struct zr_tree *a, const struct zr_tree *b, zr_name_t nm)
+{
+	const struct zr_pool *qa, *qb;
+	zr_pool_t pa, pb;
+	uint32_t i;
+
+	pa = zr_tree_pool(a, nm);
+	pb = zr_tree_pool(b, nm);
+	if (pa == ZR_POOL_NONE || pb == ZR_POOL_NONE)
+		return (0);
+	qa = &a->zt_pools[pa];
+	qb = &b->zt_pools[pb];
+	if (qa->zp_content != qb->zp_content || qa->zp_nnames != qb->zp_nnames)
+		return (0);
+	for (i = 0; i < qa->zp_nnames; i++) {
+		if (qa->zp_names[i] != qb->zp_names[i])
+			return (0);
+	}
+	return (1);
+}
+
+/*
+ * Does this directory gain or lose a child between the two trees?
+ * The kernel moves a directory's ctime when its entries change,
+ * whatever the directory itself is, so those are the names whose
+ * ctime says nothing about whether the editor touched them.
+ */
+static int
+kids_moved(const struct zr_tree *a, const struct zr_tree *b,
+    struct zr_names *ns, zr_name_t nm)
+{
+	uint32_t i, n;
+	int ina, inb;
+
+	n = zr_names_count(ns);
+	for (i = 0; i < n; i++) {
+		if (zr_names_parent(ns, (zr_name_t)i) != nm)
+			continue;
+		ina = zr_tree_pool(a, (zr_name_t)i) != ZR_POOL_NONE;
+		inb = zr_tree_pool(b, (zr_name_t)i) != ZR_POOL_NONE;
+		if (ina != inb)
+			return (1);
+	}
+	return (0);
+}
+
+static void
+same_stats(const struct zr_fixture_edit_stats *got,
+    const struct zr_fixture_edit_stats *want, const char *what)
+{
+	if (memcmp(got, want, sizeof (*got)) != 0) {
+		printf("  %s: removed %llu created %llu rewritten %llu "
+		    "relinked %llu attrs %llu untouched %llu\n", what,
+		    (unsigned long long)got->ze_removed,
+		    (unsigned long long)got->ze_created,
+		    (unsigned long long)got->ze_rewritten,
+		    (unsigned long long)got->ze_relinked,
+		    (unsigned long long)got->ze_attrs,
+		    (unsigned long long)got->ze_untouched);
+	}
+	CHECK(memcmp(got, want, sizeof (*got)) == 0);
+}
+
+/*
+ * One case, end to end. want is the six counts the edit must
+ * report, ino the names whose object must have survived the edit or
+ * must not have.
+ */
+static void
+run_edit(const char *root, struct zr_fixture *fx, enum zr_fixture_tree which,
+    const char *what, const struct zr_fixture_edit_stats *want,
+    const struct inoexp *ino)
+{
+	struct zr_fixture_edit_stats st, again;
+	struct zr_tree base, side;
+	const struct snapent *b4, *now;
+	struct zr_names *ns;
+	struct snap s0, s1;
+	char a[PATHMAX], b[PATHMAX], err[256];
+	uint64_t sum, names;
+	uint32_t i, n;
+	int k;
+
+	join(a, sizeof (a), root, "/ed-a");
+	join(b, sizeof (b), root, "/ed-b");
+	CHECK(mkdir(a, 0755) == 0);
+	CHECK(mkdir(b, 0755) == 0);
+	CHECK(zr_fixture_build(fx, ZR_FX_BASE, a) == 0);
+	CHECK(zr_fixture_build(fx, which, b) == 0);
+	snap_take(&s0, a);
+
+	err[0] = '\0';
+	if (zr_fixture_edit(fx, which, a, &st, err, sizeof (err)) != 0)
+		printf("  %s: %s\n", what, err);
+	CHECK(err[0] == '\0');
+	same_stats(&st, want, what);
+	same_tree(a, b);
+	snap_take(&s1, a);
+
+	/* the two trees as the spec alone gives them, one name table */
+	ns = zr_names_create();
+	CHECK(ns != NULL);
+	CHECK(zr_fixture_to_tree(fx, ZR_FX_BASE, ns, &base) == 0);
+	CHECK(zr_fixture_to_tree(fx, which, ns, &side) == 0);
+	n = zr_names_count(ns);
+	sum = st.ze_removed + st.ze_created + st.ze_rewritten +
+	    st.ze_relinked + st.ze_attrs + st.ze_untouched;
+	names = 0;
+	for (i = 0; i < n; i++) {
+		const char *p = zr_names_str(ns, (zr_name_t)i, NULL);
+		int inb = zr_tree_pool(&base, (zr_name_t)i) != ZR_POOL_NONE;
+		int ins = zr_tree_pool(&side, (zr_name_t)i) != ZR_POOL_NONE;
+
+		if (inb || ins)
+			names++;
+		if (!inb || !ins)
+			continue;
+		b4 = snap_find(&s0, p);
+		now = snap_find(&s1, p);
+		CHECK(b4 != NULL && now != NULL);
+		if (spec_same(&base, &side, (zr_name_t)i)) {
+			CHECK(b4->se_ino == now->se_ino);
+			if (!kids_moved(&base, &side, ns, (zr_name_t)i))
+				CHECK(same_ct(&b4->se_ct, &now->se_ct));
+		} else {
+			/*
+			 * Something was done to it, so either it is
+			 * another object now or the one it was moved.
+			 * The ctime is nanoseconds here; a filesystem
+			 * whose clock could not tell the build from
+			 * the edit would fail this and should.
+			 */
+			CHECK(b4->se_ino != now->se_ino ||
+			    !same_ct(&b4->se_ct, &now->se_ct));
+		}
+	}
+	if (sum != names)
+		printf("  %s: %llu decisions over %llu names\n", what,
+		    (unsigned long long)sum, (unsigned long long)names);
+	CHECK(sum == names);
+	zr_tree_fini(&side);
+	zr_tree_fini(&base);
+	zr_names_destroy(ns);
+
+	for (k = 0; ino != NULL && ino[k].ix_path != NULL; k++) {
+		b4 = snap_find(&s0, ino[k].ix_path);
+		now = snap_find(&s1, ino[k].ix_path);
+		CHECK(b4 != NULL && now != NULL);
+		if ((b4->se_ino == now->se_ino) != (ino[k].ix_kept != 0)) {
+			printf("  %s: %s %s its inode\n", what,
+			    ino[k].ix_path,
+			    ino[k].ix_kept ? "lost" : "kept");
+		}
+		CHECK((b4->se_ino == now->se_ino) == (ino[k].ix_kept != 0));
+	}
+
+	/* the same edit again: nothing left to do, and nothing moved */
+	CHECK(zr_fixture_edit(fx, which, a, &again, err,
+	    sizeof (err)) == 0);
+	CHECK(again.ze_removed == 0 && again.ze_created == 0 &&
+	    again.ze_rewritten == 0 && again.ze_relinked == 0 &&
+	    again.ze_attrs == 0);
+	CHECK(again.ze_untouched == (uint64_t)s1.sn_n);
+	snap_free(&s0);
+	snap_take(&s0, a);
+	CHECK(s0.sn_n == s1.sn_n);
+	for (k = 0; k < s1.sn_n; k++) {
+		b4 = snap_find(&s0, s1.sn_e[k].se_path);
+		CHECK(b4 != NULL);
+		CHECK(b4->se_ino == s1.sn_e[k].se_ino);
+		CHECK(same_ct(&b4->se_ct, &s1.sn_e[k].se_ct));
+	}
+	same_tree(a, b);
+
+	snap_free(&s1);
+	snap_free(&s0);
+	rmtree(a);
+	rmtree(b);
+}
+
+/* One inline spec run through run_edit and freed. */
+static void
+edit_case(const char *root, const char *spec, enum zr_fixture_tree which,
+    const char *what, const struct zr_fixture_edit_stats *want,
+    const struct inoexp *ino)
+{
+	struct zr_fixture *fx;
+
+	fx = load_spec(root, "/edit.zrt", spec);
+	run_edit(root, fx, which, what, want, ino);
+	zr_fixture_free(fx);
+}
+
+/* One fixture of the suite, loaded and run through run_edit. */
+static void
+edit_file(const char *root, const char *path, enum zr_fixture_tree which,
+    const char *what, const struct zr_fixture_edit_stats *want,
+    const struct inoexp *ino)
+{
+	struct zr_fixture *fx = NULL;
+	char err[256];
+
+	err[0] = '\0';
+	if (zr_fixture_load(path, &fx, err, sizeof (err)) != 0)
+		printf("  %s: %s\n", path, err);
+	CHECK(fx != NULL);
+	run_edit(root, fx, which, what, want, ino);
+	zr_fixture_free(fx);
+}
+
+/*
+ * ZF33 to ZF35 and ZF45: the probe fixture, which has a name
+ * removed, a name created, a file edited, a pool grown by a name and
+ * a whole directory replaced by another, and two names -- /keep and
+ * /keep/k -- that neither side touches. Both of its sides are
+ * edited, since both are what a replay would edit.
+ */
+static void
+check_edit_probe(const char *root)
+{
+	static const struct inoexp fromino[] = {
+		{ "/a", IX_KEPT },		/* rewritten in place */
+		{ "/h1", IX_KEPT },		/* the pool grew a name */
+		{ "/h2", IX_KEPT },
+		{ "/keep", IX_KEPT },
+		{ "/keep/k", IX_KEPT },
+		{ NULL, 0 }
+	};
+	static const struct inoexp ontoino[] = {
+		{ "/a", IX_KEPT },
+		{ "/keep/k", IX_KEPT },
+		{ "/h1", IX_KEPT },
+		{ "/d/f", IX_KEPT },
+		{ NULL, 0 }
+	};
+	static const struct zr_fixture_edit_stats fromwant = {
+		3, 3, 1, 3, 0, 2
+	};
+	static const struct zr_fixture_edit_stats ontowant = {
+		0, 0, 2, 0, 0, 6
+	};
+	edit_file(root, "tests/fixtures/probe.zrt", ZR_FX_FROM, "probe from",
+	    &fromwant, fromino);
+	edit_file(root, "tests/fixtures/probe.zrt", ZR_FX_ONTO, "probe onto",
+	    &ontowant, ontoino);
+}
+
+/*
+ * ZF47 to ZF49: three more of the suite, for what the probe has not
+ * got. escapes.zrt is every byte the encoding has a rule for in a
+ * leaf name, with one name leaving its own pool to join another's;
+ * wide-pool.zrt is five names on one object gaining a sixth, where
+ * the write must land on the object they all share and not on a copy
+ * of it; dir-rm.zrt is a directory three levels deep going, which
+ * only comes out right children before parents.
+ */
+static void
+check_edit_more(const char *root)
+{
+	static const struct zr_fixture_edit_stats w_esc = { 1, 3, 0, 4, 0, 0 };
+	static const struct zr_fixture_edit_stats w_wide =
+	    { 0, 1, 0, 6, 0, 4 };
+	static const struct zr_fixture_edit_stats w_rm = { 7, 0, 0, 0, 0, 1 };
+	static const struct inoexp i_esc[] = {
+		{ "/a b", IX_KEPT },		/* its pool grew a name */
+		{ "/#", IX_KEPT },
+		{ NULL, 0 }
+	};
+	static const struct inoexp i_wide[] = {
+		{ "/d1/n1", IX_KEPT }, { "/d1/n2", IX_KEPT },
+		{ "/d2/n3", IX_KEPT }, { "/d3/n4", IX_KEPT },
+		{ "/d4/n5", IX_KEPT }, { "/d1", IX_KEPT },
+		{ NULL, 0 }
+	};
+	static const struct inoexp i_rm[] = {
+		{ "/keep", IX_KEPT }, { NULL, 0 }
+	};
+
+	edit_file(root, "tests/fixtures/escapes.zrt", ZR_FX_FROM,
+	    "names that need escaping", &w_esc, i_esc);
+	edit_file(root, "tests/fixtures/wide-pool.zrt", ZR_FX_FROM,
+	    "a pool of five names", &w_wide, i_wide);
+	edit_file(root, "tests/fixtures/dir-rm.zrt", ZR_FX_FROM,
+	    "a directory three deep removed", &w_rm, i_rm);
+}
+
+/* ZF36 to ZF42: one case each, the smallest fixture that says it. */
+static void
+check_edit_cases(const char *root)
+{
+	static const struct zr_fixture_edit_stats w_edit = { 0, 0, 1, 0, 0, 1 };
+	static const struct zr_fixture_edit_stats w_link = { 0, 0, 0, 3, 0, 0 };
+	static const struct zr_fixture_edit_stats w_split =
+	    { 0, 0, 0, 2, 0, 0 };
+	static const struct zr_fixture_edit_stats w_move = { 1, 1, 0, 0, 0, 0 };
+	static const struct zr_fixture_edit_stats w_empty =
+	    { 1, 0, 0, 0, 0, 1 };
+	static const struct zr_fixture_edit_stats w_type = { 1, 0, 1, 0, 0, 0 };
+	static const struct zr_fixture_edit_stats w_sym = { 0, 0, 1, 0, 0, 1 };
+	static const struct inoexp i_edit[] = {
+		{ "/a", IX_KEPT }, { "/b", IX_KEPT }, { NULL, 0 }
+	};
+	static const struct inoexp i_link[] = {
+		{ "/h1", IX_KEPT }, { "/h2", IX_KEPT }, { NULL, 0 }
+	};
+	static const struct inoexp i_split[] = {
+		{ "/h1", IX_KEPT }, { "/h2", IX_NEW }, { NULL, 0 }
+	};
+	static const struct inoexp i_empty[] = {
+		{ "/d", IX_KEPT }, { NULL, 0 }
+	};
+	static const struct inoexp i_type[] = {
+		{ "/d", IX_NEW }, { NULL, 0 }
+	};
+	static const struct inoexp i_sym[] = {
+		{ "/s", IX_NEW }, { "/k", IX_KEPT }, { NULL, 0 }
+	};
+
+	/* ZF36: a file's bytes, written through the name it had */
+	edit_case(root,
+	    "tree base\n"
+	    "\t/a file x\n"
+	    "\t/b file y\n"
+	    "tree from\n"
+	    "\t/a file x2\n"
+	    "\t/b file y\n"
+	    "tree onto\n", ZR_FX_FROM, "a file edited", &w_edit, i_edit);
+
+	/* ZF37: a name linked onto a pool that stays */
+	edit_case(root,
+	    "tree base\n"
+	    "\t/h1 file h\n"
+	    "\t/h2 link /h1\n"
+	    "tree from\n"
+	    "\t/h1 file h\n"
+	    "\t/h2 link /h1\n"
+	    "\t/h3 link /h1\n"
+	    "tree onto\n", ZR_FX_FROM, "a link added", &w_link, i_link);
+
+	/*
+	 * ZF38: a pool broken in two. The pool with the most names on
+	 * the object keeps it -- here a tie, which the fixture's own
+	 * order settles -- and the other name is made afresh. Neither
+	 * is untouched: unlinking /h2 moved the ctime of the object
+	 * /h1 is on, which is what the unchanged rule reads.
+	 */
+	edit_case(root,
+	    "tree base\n"
+	    "\t/h1 file h\n"
+	    "\t/h2 link /h1\n"
+	    "tree from\n"
+	    "\t/h1 file h\n"
+	    "\t/h2 file h\n"
+	    "tree onto\n", ZR_FX_FROM, "a pool split", &w_split, i_split);
+
+	/* ZF39: a rename, which the format has no word for */
+	edit_case(root,
+	    "tree base\n"
+	    "\t/a file x\n"
+	    "tree from\n"
+	    "\t/b file x\n"
+	    "tree onto\n", ZR_FX_FROM, "a rename", &w_move, NULL);
+
+	/* ZF40: a directory that loses its child and stays */
+	edit_case(root,
+	    "tree base\n"
+	    "\t/d dir\n"
+	    "\t/d/f file f\n"
+	    "tree from\n"
+	    "\t/d dir\n"
+	    "tree onto\n", ZR_FX_FROM, "a directory emptied", &w_empty,
+	    i_empty);
+
+	/* ZF41: a directory that becomes a file, its child gone first */
+	edit_case(root,
+	    "tree base\n"
+	    "\t/d dir\n"
+	    "\t/d/f file f\n"
+	    "tree from\n"
+	    "\t/d file t\n"
+	    "tree onto\n", ZR_FX_FROM, "a directory to a file", &w_type,
+	    i_type);
+
+	/* ZF42: a symlink retargeted, which no filesystem does in place */
+	edit_case(root,
+	    "tree base\n"
+	    "\t/s symlink a\n"
+	    "\t/k file t\n"
+	    "tree from\n"
+	    "\t/s symlink b\n"
+	    "\t/k file t\n"
+	    "tree onto\n", ZR_FX_FROM, "a symlink retargeted", &w_sym, i_sym);
+}
+
+#ifdef HAVE_XATTRS
+
+/* ZF43: one extended attribute changed and nothing else. */
+static void
+check_edit_xattr(const char *root)
+{
+	static const struct zr_fixture_edit_stats want = { 0, 0, 0, 0, 1, 0 };
+	static const struct inoexp ino[] = {
+		{ "/f", IX_KEPT }, { NULL, 0 }
+	};
+
+	edit_case(root,
+	    "tree base\n"
+	    "\t/f file t xattr=user.a:1\n"
+	    "tree from\n"
+	    "\t/f file t xattr=user.a:2\n"
+	    "tree onto\n", ZR_FX_FROM, "an xattr edited", &want, ino);
+}
+
+#endif	/* HAVE_XATTRS */
+
+#ifdef HAVE_FFLAGS
+
+/*
+ * ZF44: the file flags. First a flag changed on its own, then the
+ * ordering the flags force: an immutable directory takes no child
+ * and loses none, so its flag comes off before the child under it
+ * goes and back on when the edit is over -- while the immutable file
+ * beside it, which nothing asks anything of, is never touched at all
+ * and keeps its ctime to prove it.
+ */
+static void
+check_edit_flags(const char *root)
+{
+	static const struct zr_fixture_edit_stats w_one =
+	    { 0, 0, 0, 0, 1, 0 };
+	static const struct zr_fixture_edit_stats w_dir =
+	    { 1, 0, 0, 0, 0, 2 };
+	static const struct inoexp i_one[] = {
+		{ "/f", IX_KEPT }, { NULL, 0 }
+	};
+	static const struct zr_fixture_edit_stats w_imm =
+	    { 0, 0, 1, 0, 0, 0 };
+	static const struct inoexp i_dir[] = {
+		{ "/f", IX_KEPT }, { "/d", IX_KEPT }, { NULL, 0 }
+	};
+
+	edit_case(root,
+	    "tree base\n"
+	    "\t/f file t flags=nodump\n"
+	    "tree from\n"
+	    "\t/f file t flags=uchg\n"
+	    "tree onto\n", ZR_FX_FROM, "a flag changed", &w_one, i_one);
+
+	edit_case(root,
+	    "tree base\n"
+	    "\t/d dir flags=uchg\n"
+	    "\t/d/g file g\n"
+	    "\t/f file t flags=uchg\n"
+	    "tree from\n"
+	    "\t/d dir flags=uchg\n"
+	    "\t/f file t flags=uchg\n"
+	    "tree onto\n", ZR_FX_FROM, "under an immutable directory",
+	    &w_dir, i_dir);
+
+	/*
+	 * An immutable file whose own bytes change: unflagged,
+	 * written, flagged again, and still the object it was.
+	 */
+	edit_case(root,
+	    "tree base\n"
+	    "\t/f file t flags=uchg\n"
+	    "tree from\n"
+	    "\t/f file t2 flags=uchg\n"
+	    "tree onto\n", ZR_FX_FROM, "an immutable file edited", &w_imm,
+	    i_one);
+}
+
+#endif	/* HAVE_FFLAGS */
+
+/*
+ * ZF46: a fixture that says "platform freebsd" is edited nowhere
+ * else, and says so in the same words a build does.
+ */
+static void
+check_edit_platform(const char *root)
+{
+	struct zr_fixture *fx = NULL;
+	char dir[PATHMAX], err[256];
+
+	err[0] = '\0';
+	CHECK(zr_fixture_load("tests/fixtures/freebsd/sysxattr.zrt", &fx, err,
+	    sizeof (err)) == 0);
+	CHECK(fx != NULL);
+	join(dir, sizeof (dir), root, "/edplat");
+	CHECK(mkdir(dir, 0755) == 0);
+#ifndef __FreeBSD__
+	err[0] = '\0';
+	errno = 0;
+	CHECK(zr_fixture_edit(fx, ZR_FX_FROM, dir, NULL, err,
+	    sizeof (err)) == -1);
+	CHECK(errno == ENOTSUP);
+	CHECK(strstr(err, "platform freebsd") != NULL);
+	CHECK(strstr(err, "line 1:") != NULL);
+#endif
+	CHECK(rmdir(dir) == 0);
+	zr_fixture_free(fx);
+}
+
 int
 main(void)
 {
@@ -895,6 +1653,16 @@ main(void)
 	check_boxonly(root, "tests/fixtures/freebsd/acl-nfsv4.zrt");
 	check_boxonly(root, "tests/fixtures/freebsd/sysxattr.zrt");
 	check_rejections(root);
+	check_edit_probe(root);
+	check_edit_more(root);
+	check_edit_cases(root);
+#ifdef HAVE_XATTRS
+	check_edit_xattr(root);
+#endif
+#ifdef HAVE_FFLAGS
+	check_edit_flags(root);
+#endif
+	check_edit_platform(root);
 
 	rmtree(root);
 	printf("check_fixture: %d checks passed\n", checks);

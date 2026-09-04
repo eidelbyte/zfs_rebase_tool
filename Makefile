@@ -72,7 +72,7 @@ build/name.o: src/name.c src/name.h
 build/decide.o: src/decide.c src/decide.h src/name.h
 	$(CC) $(CFLAGS) -c -o $@ src/decide.c
 
-build/fixture.o: src/fixture.c src/fixture.h src/name.h src/vis.h
+build/fixture.o: src/fixture.c src/fixture.h src/name.h src/vis.h src/walk.h
 	$(CC) $(CFLAGS) -c -o $@ src/fixture.c
 
 build/manifest.o: src/manifest.c src/manifest.h src/decide.h src/name.h

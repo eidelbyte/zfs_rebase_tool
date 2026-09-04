@@ -452,8 +452,10 @@ and built again as pools in memory, where the two builders must
 agree. Dimensions: syntax element {tree lines, the four types, the
 escapes, mode, uid, gid, flags, xattr, acl, the platform line,
 expect}; what it acts on {file, dir, symlink, a link line, the pool
-two names share}; builder {directories, pools}; rejection {every
-rule the format names}; platform {portable, box only}.
+two names share}; builder {directories, pools, one directory edited
+into another}; the edit's decision {removed, created, relinked,
+rewritten, attrs, untouched}; rejection {every rule the format
+names}; platform {portable, box only}.
 
 Rows for the attributes were added with the attributes themselves
 (issue fixture-attrs). A row that only FreeBSD can reach is
@@ -496,6 +498,38 @@ rows beside them say.
 | ZF30 | flags-copy.zrt: a from-only file with nodump -> cp | covered: run-fixtures.sh |
 | ZF31 | acl-nfsv4.zrt: an NFSv4 ACL added on from -> write | deferred: box, attr-cells |
 | ZF32 | sysxattr.zrt: a system xattr edited on from -> write | deferred: box, attr-cells |
+| ZF33 | --edit-fixture: base edited into a side walks equal to a fresh build of it | covered: check_fixture.c |
+| ZF34 | the names the fixture leaves alone keep their inode and their ctime; the rest keep neither | covered: check_fixture.c |
+| ZF35 | the six counts are one decision per name and add up to the union of the two trees' names | covered: check_fixture.c |
+| ZF36 | a file's bytes rewritten through the name it had, the inode kept | covered: check_fixture.c |
+| ZF37 | a name linked onto a pool that stays; every name of it relinked, the object kept | covered: check_fixture.c |
+| ZF38 | a pool broken in two: the survivor keeps the object, the other name is made afresh | covered: check_fixture.c |
+| ZF39 | a rename, which the format has no word for: one removed, one created | covered: check_fixture.c |
+| ZF40 | a directory that loses its child and stays keeps its inode | covered: check_fixture.c |
+| ZF41 | a directory that becomes a file: emptied, removed, made again | covered: check_fixture.c |
+| ZF42 | a symlink retargeted: made again, since no filesystem retargets one | covered: check_fixture.c |
+| ZF43 | one extended attribute changed and nothing else: attrs, the inode kept | covered: check_fixture.c |
+| ZF44 | flags: one changed alone; uchg off a directory to empty it and on again; an immutable file edited | covered: check_fixture.c |
+| ZF45 | the same edit twice: everything untouched, nothing else, nothing moved | covered: check_fixture.c |
+| ZF46 | a platform fixture edited off its platform is refused in words | covered: check_fixture.c |
+| ZF47 | escapes.zrt edited: every byte the encoding has a rule for, and a name leaving one pool for another | covered: check_fixture.c |
+| ZF48 | wide-pool.zrt edited: five names on one object gaining a sixth, the write on the object they share | covered: check_fixture.c |
+| ZF49 | dir-rm.zrt edited: a directory three deep removed, children before parents | covered: check_fixture.c |
+| ZF50 | an ACL changed alone: attrs, the inode kept | deferred: NFSv4 ACLs are FreeBSD's; box, attr-cells |
+| ZF51 | a system-namespace xattr changed alone | deferred: root and FreeBSD namespaces; box, attr-cells |
+
+ZF33 to ZF49 are --edit-fixture, added with the mode itself (issue
+fixture-edit) and all of them Mac cells: the mode is plain POSIX
+plus the same two platform sections the builder has, so the only
+rows the Mac cannot reach are the two attributes it has no form of,
+which are ZF50 and ZF51 and go to attr-cells beside ZF17 and ZF20.
+Every one of the seventeen runs the same way: base is built into one
+directory, edited into a side, and that side is built into another
+from nothing, and the two must then be equal name for name, pool for
+pool, attribute for attribute and byte for byte. That equality is
+the positive proof of the mode -- an edit and a build must land in
+the same place -- and the inode and ctime rows are the proof that it
+got there without touching what it did not have to.
 
 ZF17 and ZF20 are the two the Mac cannot reach at all: it has no
 extended-attribute namespaces and no NFSv4 ACLs, so a fixture

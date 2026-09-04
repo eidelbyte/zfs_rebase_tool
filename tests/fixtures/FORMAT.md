@@ -206,6 +206,71 @@ space, and a real one lists every entry the file is to have, as
 tests/fixtures/freebsd/acl-nfsv4.zrt does; and its flags go on after
 the file has its mode, its attributes and its ACL.
 
+## Editing a built tree
+
+    zfs_rebase --edit-fixture FIXTURE TREE DIR
+
+turns DIR, which already holds one built tree -- typically this
+fixture's base -- into the fixture's TREE, which is base, from or
+onto, by the smallest set of edits it can. What the two trees agree
+on is not touched: the object keeps its inode, its generation number
+and its ctime, and only what differs is removed, created, relinked,
+written or given new attributes.
+
+That is the point of the mode. zfs diff calls an object unchanged
+when its object number is the same on both snapshots and neither its
+gen nor its ctime moved, so a replay that rebuilt each side from
+nothing would offer every object as new and prune nothing. A side
+edited in place offers a real diff, with real unchanged objects in
+it.
+
+One decision is taken per name, over the union of the names DIR
+holds and the names TREE lists, the root apart. The tests are made
+in this order and the first that answers yes is the decision:
+
+    removed     DIR has the name and TREE has not
+    created     TREE has the name, DIR has not, and the pool it
+                belongs to is new here
+    relinked    the names on one object have to change: a name
+                linked onto an object that stays, a name taken off
+                one, or a name that leaves the pool it was in
+    rewritten   the name and its pooling are right and the object
+                is not: a file's bytes written through it, which
+                keeps the inode, or a symlink or an object of the
+                wrong type removed and made again, which does not
+    attrs       only the pool's attributes differ
+    untouched   nothing differs, and nothing is done
+
+The six are printed on one line, in that order, and add up to that
+union, which is what makes them countable from the fixture alone.
+The pooling test comes before the object itself because it is what
+decides whether an object stays the object it was: it is the "same
+name set" of the unchanged rule, and it is why the survivor of a
+pool broken in two is not untouched -- unlinking its fellow moved
+the ctime of the object it is on.
+
+Untouched is a property of a whole pool: if one name of a pool is
+untouched then that pool's name set and its object both matched, so
+every name of it did. A directory is the one thing untouched does
+not make unchanged, since the kernel moves a directory's ctime when
+a child is created or removed under it, as it would for any real
+edit.
+
+Two things the editor must do that a builder need not. The file
+flags come off before anything is edited beneath them -- an
+immutable file cannot be unlinked, written or given an attribute,
+and an immutable directory can be given no child and lose none --
+and they go back on last of all, children before parents, which is
+the builder's own order. And the group of a new object is the group
+of the directory it is made in on the BSD kernels this tool targets,
+not the group of the process, so an absent gid= is resolved that way
+here even though the content handle, which compares one fixture with
+another and never with a filesystem, resolves it to the process's
+own. A fixture that writes a gid= naming exactly the group its
+object would have had anyway is therefore a fixture whose handles
+say a content changed where the filesystem sees nothing; write no
+such line, for the same reason a symlink's mode= is not written.
+
 ## Reading a fixture in C
 
 src/fixture.h loads one:
@@ -220,6 +285,11 @@ src/fixture.h loads one:
                            standardised
     zr_fixture_build_err() the same, with a message; a fixture off
                            its platform is refused here in words
+    zr_fixture_edit()      turn a directory that holds one built
+                           tree into another of them, by the
+                           smallest set of edits, with the six
+                           counts above; a fixture off its platform
+                           is refused here too
     zr_fixture_to_tree()   fill a sealed struct zr_tree from the
                            spec alone, touching no filesystem
     zr_fixture_expect()    the expect block, or NULL

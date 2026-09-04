@@ -36,6 +36,7 @@
 #include "fixture.h"
 #include "name.h"
 #include "vis.h"
+#include "walk.h"
 
 #define	FX_FILE		0
 #define	FX_LINK		1
@@ -74,11 +75,19 @@
  *
  *	fx_setx()	one extended attribute, on the link itself,
  *			in the namespace the name's prefix names
+ *	fx_rmx()	that attribute taken off again, which the
+ *			editor needs and a build never does
  *	fx_setacl()	the ACL, from its acl_from_text(3) text
+ *	fx_stripacl()	the ACL cut back to what the mode says,
+ *			which is how an ACL is taken off where an
+ *			object always has one
+ *	fx_acl_same()	an ACL of the fixture's, as text, against one
+ *			of the walk's, in whatever form this platform
+ *			keeps it
  *	fx_setflags()	the file flags, already a number
  *	fx_flags_value() the chflags(1) names as that number
  *
- * All of them return 0, or -1 with errno set. FX_HAVE_FFLAGS says
+ * All but fx_acl_same return 0, or -1 with errno set. FX_HAVE_FFLAGS says
  * the platform has file flags and can name them, and without it the
  * parser refuses a flags= attribute outright: a platform that cannot
  * name a flag cannot set one, and its walk reads none back either.
@@ -89,6 +98,15 @@
 
 #if defined(__FreeBSD__) || defined(__APPLE__)
 #define	FX_HAVE_FFLAGS	1
+/*
+ * A new object takes the group of the directory it is made in, not
+ * the group of the process that made it: the BSD rule, and the one
+ * ZFS follows on the target. Elsewhere a new object takes the
+ * process's group unless the directory is set-gid, where every
+ * system inherits. Only the editor asks, because only the editor
+ * compares what the fixture says with what a filesystem did.
+ */
+#define	FX_GID_INHERITS	1
 #endif
 #if defined(__FreeBSD__)
 #define	FX_HAVE_ACL	1
@@ -185,6 +203,102 @@ fx_setflags(const char *full, uint32_t flags)
 	(void) flags;
 	errno = ENOTSUP;
 	return (-1);
+#endif
+}
+
+/*
+ * One extended attribute taken off the link itself. The name is the
+ * walk's own spelling; a name with neither namespace on it came
+ * from a walk of a platform that has no namespaces, and belongs to
+ * the user namespace here, which is the only one an unprivileged
+ * process may write anyway.
+ */
+static int
+fx_rmx(const char *full, const char *name)
+{
+#if defined(__FreeBSD__)
+	const char *bare = name;
+	int ns = EXTATTR_NAMESPACE_USER;
+
+	if (strncmp(name, FX_NS_USER, sizeof (FX_NS_USER) - 1) == 0) {
+		bare = name + sizeof (FX_NS_USER) - 1;
+	} else if (strncmp(name, FX_NS_SYSTEM,
+	    sizeof (FX_NS_SYSTEM) - 1) == 0) {
+		ns = EXTATTR_NAMESPACE_SYSTEM;
+		bare = name + sizeof (FX_NS_SYSTEM) - 1;
+	}
+	return (extattr_delete_link(full, ns, bare));
+#elif defined(__APPLE__)
+	return (removexattr(full, name, XATTR_NOFOLLOW));
+#elif defined(__linux__)
+	return (lremovexattr(full, name));
+#else
+	(void) full;
+	(void) name;
+	errno = ENOTSUP;
+	return (-1);
+#endif
+}
+
+/*
+ * The ACL taken off. On the target every object has an NFSv4 ACL
+ * and "no ACL" means the trivial one the mode already says in full,
+ * so what takes an ACL off is putting that one on -- the same
+ * acl_strip_np(3) apply.c uses, and for the same reason. Nowhere
+ * else can a fixture ask for an ACL at all, the platform line
+ * seeing to that, so nowhere else is there one to take off.
+ */
+static int
+fx_stripacl(const char *full)
+{
+#ifdef FX_HAVE_ACL
+	acl_t a, s;
+	int rc;
+
+	a = acl_get_link_np(full, ACL_TYPE_NFS4);
+	if (a == NULL)
+		return (0);
+	s = acl_strip_np(a, 0);
+	(void) acl_free(a);
+	if (s == NULL)
+		return (-1);
+	rc = acl_set_link_np(full, ACL_TYPE_NFS4, s);
+	(void) acl_free(s);
+	return (rc);
+#else
+	(void) full;
+	errno = ENOTSUP;
+	return (-1);
+#endif
+}
+
+/*
+ * Is the ACL the fixture asks for the ACL the walk found? The
+ * fixture's is text and the walk's is whatever the platform keeps,
+ * so the text is parsed and the two are compared the way the oracle
+ * compares two walked ones. Off the platform an acl= belongs to, a
+ * fixture names no ACL, and one the object already carries is left
+ * where it is: there is no text of this platform's kind to compare
+ * it with and no fixture that could have asked for it.
+ */
+static int
+fx_acl_same(const char *text, zr_acl_t cur)
+{
+#ifdef FX_HAVE_ACL
+	acl_t a;
+	int same;
+
+	if (text == NULL)
+		return (cur == NULL);
+	a = acl_from_text(text);
+	if (a == NULL)
+		return (0);
+	same = zr_acl_equal(a, cur);
+	(void) acl_free(a);
+	return (same);
+#else
+	(void) cur;
+	return (text == NULL);
 #endif
 }
 
@@ -1079,60 +1193,79 @@ fx_eff_xattr(struct fx_eff *ef, const struct fx_xattr *x)
 }
 
 /*
- * Everything the content oracle would compare about one pool, in one
- * byte string: the type, the bytes, and the attributes every name of
- * the pool folded into it, an absent one resolved to what the
- * builder would leave behind. Every field is tagged and every run of
- * bytes carries its length, so two descriptors are equal exactly
- * when the pools they stand for are.
+ * The attributes one pool ends up with: every name of it folded in,
+ * the later name winning attribute by attribute, and every absent
+ * attribute resolved to what the builder would leave behind. Both
+ * the content handle and the editor read a pool this way, which is
+ * what makes the two agree about what "the same attributes" is.
+ * Returns 0, or -1 out of memory; the caller frees ef->ef_x either
+ * way.
  */
 static int
-fx_pool_desc(const struct zr_fixture *fx, const struct fx_tree *t,
-    uint32_t owner, const struct fx_deflt *dv, struct fx_buf *out)
+fx_effective(const struct fx_tree *t, uint32_t owner,
+    const struct fx_deflt *dv, struct fx_eff *ef)
 {
-	struct fx_eff ef;
 	const struct fx_entry *e, *o;
 	uint32_t i, k;
-	int rc = -1;
 
-	memset(&ef, 0, sizeof (ef));
+	memset(ef, 0, sizeof (*ef));
 	o = &t->ft_ents[owner];
 	for (i = 0; i < t->ft_n; i++) {
 		e = &t->ft_ents[i];
 		if (e->fe_pool != owner)
 			continue;
 		if (e->fe_has_mode) {
-			ef.ef_mode = e->fe_mode;
-			ef.ef_has_mode = 1;
+			ef->ef_mode = e->fe_mode;
+			ef->ef_has_mode = 1;
 		}
 		if (e->fe_has_uid) {
-			ef.ef_uid = e->fe_uid;
-			ef.ef_has_uid = 1;
+			ef->ef_uid = e->fe_uid;
+			ef->ef_has_uid = 1;
 		}
 		if (e->fe_has_gid) {
-			ef.ef_gid = e->fe_gid;
-			ef.ef_has_gid = 1;
+			ef->ef_gid = e->fe_gid;
+			ef->ef_has_gid = 1;
 		}
 		if (e->fe_has_flags)
-			ef.ef_flags = e->fe_flags;
+			ef->ef_flags = e->fe_flags;
 		if (e->fe_acl != NULL)
-			ef.ef_acl = e->fe_acl;
+			ef->ef_acl = e->fe_acl;
 		for (k = 0; k < e->fe_nxattr; k++) {
-			if (fx_eff_xattr(&ef, &e->fe_xattr[k]) != 0)
-				goto out;
+			if (fx_eff_xattr(ef, &e->fe_xattr[k]) != 0)
+				return (-1);
 		}
 	}
-	if (!ef.ef_has_mode) {
-		ef.ef_mode = o->fe_type == FX_DIR ? dv->fd_dirmode :
+	if (!ef->ef_has_mode) {
+		ef->ef_mode = o->fe_type == FX_DIR ? dv->fd_dirmode :
 		    dv->fd_filemode;
 	}
 	if (o->fe_type == FX_SYMLINK)
-		ef.ef_mode = 0;		/* nothing here honours one */
-	if (!ef.ef_has_uid)
-		ef.ef_uid = dv->fd_uid;
-	if (!ef.ef_has_gid)
-		ef.ef_gid = dv->fd_gid;
+		ef->ef_mode = 0;	/* nothing here honours one */
+	if (!ef->ef_has_uid)
+		ef->ef_uid = dv->fd_uid;
+	if (!ef->ef_has_gid)
+		ef->ef_gid = dv->fd_gid;
+	return (0);
+}
 
+/*
+ * Everything the content oracle would compare about one pool, in one
+ * byte string: the type, the bytes, and the attributes above. Every
+ * field is tagged and every run of bytes carries its length, so two
+ * descriptors are equal exactly when the pools they stand for are.
+ */
+static int
+fx_pool_desc(const struct zr_fixture *fx, const struct fx_tree *t,
+    uint32_t owner, const struct fx_deflt *dv, struct fx_buf *out)
+{
+	struct fx_eff ef;
+	const struct fx_entry *o;
+	uint32_t i;
+	int rc = -1;
+
+	o = &t->ft_ents[owner];
+	if (fx_effective(t, owner, dv, &ef) != 0)
+		goto out;
 	if (fx_buf_num(out, 't', (uint64_t)o->fe_type) != 0)
 		goto out;
 	if (o->fe_type == FX_FILE) {
@@ -1459,8 +1592,14 @@ fx_dir_empty(const char *dir)
 	return (0);
 }
 
+/*
+ * The token and a newline into the file at full. oflags is what the
+ * caller wants of open(2) beyond writing: O_CREAT and O_EXCL where
+ * the file is being made, O_TRUNC where the editor is writing over
+ * one that is to keep its inode.
+ */
 static int
-fx_write_file(const char *full, const char *tok, size_t toklen)
+fx_write_file(const char *full, const char *tok, size_t toklen, int oflags)
 {
 	char *buf;
 	ssize_t w;
@@ -1475,7 +1614,7 @@ fx_write_file(const char *full, const char *tok, size_t toklen)
 	}
 	memcpy(buf, tok, toklen);
 	buf[toklen] = '\n';
-	fd = open(full, O_WRONLY | O_CREAT | O_EXCL, 0644);
+	fd = open(full, O_WRONLY | O_NOFOLLOW | oflags, 0644);
 	if (fd < 0) {
 		saved = errno;
 		free(buf);
@@ -1635,7 +1774,8 @@ zr_fixture_build_err(const struct zr_fixture *fx, enum zr_fixture_tree which,
 		case FX_FILE:
 			rc = fx_write_file(full,
 			    fx->zf_tok.ft_p[e->fe_token],
-			    fx->zf_tok.ft_len[e->fe_token]);
+			    fx->zf_tok.ft_len[e->fe_token],
+			    O_CREAT | O_EXCL);
 			break;
 		case FX_SYMLINK:
 			rc = symlink(e->fe_arg, full);
@@ -1738,4 +1878,1128 @@ fail:
 	free(nlink);
 	zr_tree_fini(out);
 	return (-1);
+}
+
+/*
+ * ---------------------------------------------------------------
+ * The editor
+ *
+ * A build writes a tree where there was nothing. zr_fixture_edit
+ * turns a directory that already holds one of the fixture's trees
+ * into another of them, and touches nothing it does not have to: an
+ * object that is already what the tree asks for is not opened, not
+ * chmod'd and not relinked, so its inode, its generation number and
+ * its ctime all survive. That is the signal a replay of two sides
+ * prunes by -- zfs diff calls an object unchanged when its object
+ * number is the same and neither its gen nor its ctime moved -- and
+ * a harness that rebuilt each side from nothing would offer every
+ * object as new and prove nothing.
+ *
+ * One decision is taken per name, over the union of the names the
+ * directory holds and the names the tree lists, the root apart, and
+ * the six of them are what struct zr_fixture_edit_stats counts. The
+ * tests are made in this order, and the first that answers yes is
+ * the decision:
+ *
+ *	the directory has the name and the tree has not	removed
+ *	the tree has the name and the directory has not	created,
+ *		or relinked when the pool it joins is one that stays
+ *	the names on this name's object are not the names
+ *		the tree gives its pool			relinked
+ *	the object cannot be edited into the one the tree
+ *		asks for -- another type, another symlink
+ *		target -- so it is removed and made again	rewritten
+ *	a file's bytes differ				rewritten
+ *	the pool's attributes differ			attrs
+ *	nothing differs					untouched
+ *
+ * The pooling test is third because it is the one that decides
+ * whether an object stays the object it was: it is the "same name
+ * set" of the unchanged rule, and it is why the survivor of a
+ * broken-up pool is not untouched -- unlinking its fellow moved its
+ * ctime, whatever it did to its bytes.
+ *
+ * Untouched is a property of a whole pool. If one name of a pool is
+ * untouched then that pool's name set and its object both matched,
+ * so every name of it did. A directory is the one thing untouched
+ * does not make unchanged: its own attributes may be untouched
+ * while a child is created or removed under it, and the kernel
+ * moves its ctime for that, as it would for any real edit.
+ * ---------------------------------------------------------------
+ */
+
+/* One decision, the six of them in the order they are tested. */
+#define	FE_REMOVE	0
+#define	FE_CREATE	1
+#define	FE_RELINK	2
+#define	FE_REWRITE	3
+#define	FE_ATTRS	4
+#define	FE_UNTOUCHED	5
+
+/* What one pool of the fixture's tree needs done to it. */
+#define	FE_W_FRESH	0x01	/* its object is made here */
+#define	FE_W_LINKS	0x02	/* the names on its object change */
+#define	FE_W_WRITE	0x04	/* its bytes are written through a name */
+#define	FE_W_ATTR	0x08	/* mode, owner, xattrs or the ACL differ */
+#define	FE_W_FLAGS	0x10	/* the file flags differ */
+#define	FE_W_DONE	0x20	/* its flags have been put back on */
+
+/*
+ * The edit in hand. The arrays indexed "per pool" are indexed by the
+ * entry that owns the pool, which is the fixture's own way of naming
+ * one; the slots of the entries that own nothing are never read.
+ */
+struct fx_ed {
+	const struct zr_fixture	*ed_fx;
+	const struct fx_tree	*ed_t;
+	const char		*ed_root;
+	size_t			ed_rootlen;
+	struct zr_names		*ed_ns;
+	struct zr_walk		ed_w;
+	int			ed_walked;
+	struct fx_deflt		ed_dv;
+	struct fx_eff		*ed_eff;	/* per pool: its attributes */
+	zr_pool_t		*ed_claim;	/* per pool: the object kept */
+	uint32_t		*ed_rep;	/* per pool: the name to link */
+	uint32_t		*ed_cnt;	/* per pool: its name count */
+	uint32_t		*ed_igid;	/* per pool: its new group */
+	unsigned char		*ed_need;	/* per pool: the FE_W_ bits */
+	zr_name_t		*ed_nm;		/* per entry: its walked name */
+	zr_pool_t		*ed_dp;		/* per entry: its walked pool */
+	unsigned char		*ed_act;	/* per entry: its decision */
+	uint32_t		*ed_dspec;	/* per name: its entry */
+	unsigned char		*ed_gone;	/* per name: it is unlinked */
+	unsigned char		*ed_clear;	/* per walked pool: unflag it */
+	char			*ed_full;	/* the path in hand */
+	size_t			ed_fullcap;
+	zr_name_t		ed_rootnm;
+	uint32_t		ed_nnames;
+	uint32_t		ed_npools;
+	uint32_t		ed_rootflags;	/* the root's, to put back */
+};
+
+/* Every failure of the edit names a path, the step and the reason. */
+static int
+fx_ed_fail(char *err, size_t errlen, const char *full, const char *what)
+{
+	int saved = errno;
+
+	if (err != NULL && errlen > 0) {
+		(void) snprintf(err, errlen, "%s: %s: %s",
+		    full == NULL ? "(a name of the tree)" : full, what,
+		    strerror(saved));
+	}
+	errno = saved;
+	return (-1);
+}
+
+/*
+ * The root's path with one path of either side appended; both sides
+ * spell a path the same way, absolute from the root. The pointer is
+ * good until the next call. The root's own name adds nothing.
+ */
+static const char *
+fx_ed_full(struct fx_ed *ed, const char *path, size_t len)
+{
+	char *buf;
+	size_t need;
+
+	if (len == 1 && ed->ed_rootlen != 0)
+		len = 0;
+	need = ed->ed_rootlen + len + 1;
+	if (need > ed->ed_fullcap) {
+		buf = realloc(ed->ed_full, need);
+		if (buf == NULL) {
+			errno = ENOMEM;
+			return (NULL);
+		}
+		ed->ed_full = buf;
+		ed->ed_fullcap = need;
+	}
+	memcpy(ed->ed_full, ed->ed_root, ed->ed_rootlen);
+	memcpy(ed->ed_full + ed->ed_rootlen, path, len);
+	ed->ed_full[ed->ed_rootlen + len] = '\0';
+	return (ed->ed_full);
+}
+
+/* The same for one entry of the fixture, and for one walked name. */
+static const char *
+fx_ed_entpath(struct fx_ed *ed, uint32_t i)
+{
+	const struct fx_entry *e = &ed->ed_t->ft_ents[i];
+
+	return (fx_ed_full(ed, e->fe_path, e->fe_pathlen));
+}
+
+static const char *
+fx_ed_namepath(struct fx_ed *ed, zr_name_t nm)
+{
+	const char *p;
+	size_t len;
+
+	p = zr_names_str(ed->ed_ns, nm, &len);
+	if (p == NULL) {
+		errno = EINVAL;
+		return (NULL);
+	}
+	return (fx_ed_full(ed, p, len));
+}
+
+static void
+fx_ed_fini(struct fx_ed *ed)
+{
+	uint32_t i;
+
+	if (ed->ed_eff != NULL) {
+		for (i = 0; i < ed->ed_t->ft_n; i++)
+			free(ed->ed_eff[i].ef_x);
+	}
+	free(ed->ed_eff);
+	free(ed->ed_claim);
+	free(ed->ed_rep);
+	free(ed->ed_cnt);
+	free(ed->ed_igid);
+	free(ed->ed_need);
+	free(ed->ed_nm);
+	free(ed->ed_dp);
+	free(ed->ed_act);
+	free(ed->ed_dspec);
+	free(ed->ed_gone);
+	free(ed->ed_clear);
+	free(ed->ed_full);
+	if (ed->ed_walked)
+		zr_walk_fini(&ed->ed_w);
+	if (ed->ed_ns != NULL)
+		zr_names_destroy(ed->ed_ns);
+	memset(ed, 0, sizeof (*ed));
+}
+
+/*
+ * Walk the directory into a name table of this edit's own, then the
+ * arrays over the two sides. Every entry of the fixture is looked up
+ * in that table, which is what pairs the two sides: one name, one
+ * spelling, both ways round.
+ */
+static int
+fx_ed_open(struct fx_ed *ed, char *err, size_t errlen)
+{
+	const struct fx_entry *e;
+	uint32_t i, n, nn, np;
+	zr_pool_t p;
+	zr_name_t nm;
+
+	ed->ed_ns = zr_names_create();
+	if (ed->ed_ns == NULL) {
+		errno = ENOMEM;
+		return (fx_ed_fail(err, errlen, ed->ed_root, "names"));
+	}
+	/* the walk leaves its own state consistent either way */
+	i = zr_walk(ed->ed_root, ed->ed_ns, &ed->ed_w, err, errlen) == 0;
+	ed->ed_walked = 1;
+	if (!i)
+		return (-1);
+	ed->ed_nnames = zr_names_count(ed->ed_ns);
+	ed->ed_npools = ed->ed_w.zw_tree.zt_npools;
+	ed->ed_rootnm = zr_names_lookup(ed->ed_ns, "/", 1);
+	n = ed->ed_t->ft_n != 0 ? ed->ed_t->ft_n : 1;
+	nn = ed->ed_nnames != 0 ? ed->ed_nnames : 1;
+	np = ed->ed_npools != 0 ? ed->ed_npools : 1;
+	ed->ed_eff = calloc(n, sizeof (struct fx_eff));
+	ed->ed_claim = calloc(n, sizeof (zr_pool_t));
+	ed->ed_rep = calloc(n, sizeof (uint32_t));
+	ed->ed_cnt = calloc(n, sizeof (uint32_t));
+	ed->ed_igid = calloc(n, sizeof (uint32_t));
+	ed->ed_need = calloc(n, 1);
+	ed->ed_nm = calloc(n, sizeof (zr_name_t));
+	ed->ed_dp = calloc(n, sizeof (zr_pool_t));
+	ed->ed_act = calloc(n, 1);
+	ed->ed_dspec = calloc(nn, sizeof (uint32_t));
+	ed->ed_gone = calloc(nn, 1);
+	ed->ed_clear = calloc(np, 1);
+	if (ed->ed_eff == NULL || ed->ed_claim == NULL || ed->ed_rep == NULL ||
+	    ed->ed_cnt == NULL || ed->ed_igid == NULL || ed->ed_need == NULL ||
+	    ed->ed_nm == NULL || ed->ed_dp == NULL || ed->ed_act == NULL ||
+	    ed->ed_dspec == NULL || ed->ed_gone == NULL ||
+	    ed->ed_clear == NULL) {
+		errno = ENOMEM;
+		return (fx_ed_fail(err, errlen, ed->ed_root, "memory"));
+	}
+	for (i = 0; i < ed->ed_nnames; i++)
+		ed->ed_dspec[i] = FX_NOTOKEN;
+	for (i = 0; i < ed->ed_t->ft_n; i++) {
+		e = &ed->ed_t->ft_ents[i];
+		ed->ed_claim[i] = ZR_POOL_NONE;
+		ed->ed_dp[i] = ZR_POOL_NONE;
+		ed->ed_nm[i] = ZR_NAME_NONE;
+		ed->ed_cnt[e->fe_pool]++;
+		nm = zr_names_lookup(ed->ed_ns, e->fe_path, e->fe_pathlen);
+		if (nm == ZR_NAME_NONE)
+			continue;
+		p = zr_tree_pool(&ed->ed_w.zw_tree, nm);
+		if (p == ZR_POOL_NONE)
+			continue;
+		ed->ed_nm[i] = nm;
+		ed->ed_dp[i] = p;
+		ed->ed_dspec[nm] = i;
+	}
+	return (0);
+}
+
+/*
+ * Could this pool of the fixture keep this object? Only one of its
+ * own type, and -- a symbolic link having no content that can be
+ * written -- only one whose target is already the one asked for. A
+ * file's bytes and every attribute can be put right in place, so
+ * neither stands in the way.
+ */
+static int
+fx_ed_fits(const struct fx_ed *ed, uint32_t owner, zr_pool_t dp)
+{
+	const struct fx_entry *o = &ed->ed_t->ft_ents[owner];
+	const struct zr_pool *p = &ed->ed_w.zw_tree.zt_pools[dp];
+	const struct zr_attr *at = &ed->ed_w.zw_attrs[dp];
+
+	if (p->zp_type != fx_zrtype(o->fe_type))
+		return (0);
+	if (o->fe_type != FX_SYMLINK)
+		return (1);
+	return (at->za_target != NULL &&
+	    strlen(at->za_target) == o->fe_arglen &&
+	    memcmp(at->za_target, o->fe_arg, o->fe_arglen) == 0);
+}
+
+/*
+ * Which object each pool of the fixture keeps. A name of a pool that
+ * is already on an object the pool could keep is a vote for it; of
+ * the pools that could keep one object the one with the most votes
+ * keeps it, so that the fewest names have to move, and the rest is
+ * unlinked and linked or made afresh. Ties go to the pool the
+ * fixture lists first, which makes the choice a function of the
+ * fixture and not of the order the walk happened to take.
+ *
+ * The votes are a short list of (pool, object, count), not a matrix:
+ * a name votes once, so the list is never longer than the tree.
+ */
+struct fx_vote {
+	uint32_t	fv_owner;
+	zr_pool_t	fv_dir;
+	uint32_t	fv_n;
+};
+
+static int
+fx_ed_claim(struct fx_ed *ed)
+{
+	struct fx_vote *v;
+	unsigned char *taken;
+	uint32_t i, k, nv, best, owner;
+
+	if (ed->ed_t->ft_n == 0)
+		return (0);
+	v = calloc(ed->ed_t->ft_n, sizeof (struct fx_vote));
+	taken = calloc(ed->ed_npools != 0 ? ed->ed_npools : 1, 1);
+	if (v == NULL || taken == NULL) {
+		free(v);
+		free(taken);
+		errno = ENOMEM;
+		return (-1);
+	}
+	nv = 0;
+	for (i = 0; i < ed->ed_t->ft_n; i++) {
+		owner = ed->ed_t->ft_ents[i].fe_pool;
+		if (ed->ed_dp[i] == ZR_POOL_NONE ||
+		    !fx_ed_fits(ed, owner, ed->ed_dp[i]))
+			continue;
+		for (k = 0; k < nv; k++) {
+			if (v[k].fv_owner == owner &&
+			    v[k].fv_dir == ed->ed_dp[i])
+				break;
+		}
+		if (k == nv) {
+			v[nv].fv_owner = owner;
+			v[nv].fv_dir = ed->ed_dp[i];
+			nv++;
+		}
+		v[k].fv_n++;
+	}
+	for (;;) {
+		best = nv;
+		for (k = 0; k < nv; k++) {
+			if (v[k].fv_n == 0 || taken[v[k].fv_dir] ||
+			    ed->ed_claim[v[k].fv_owner] != ZR_POOL_NONE)
+				continue;
+			if (best == nv || v[k].fv_n > v[best].fv_n)
+				best = k;
+		}
+		if (best == nv)
+			break;
+		ed->ed_claim[v[best].fv_owner] = v[best].fv_dir;
+		taken[v[best].fv_dir] = 1;
+	}
+	free(v);
+	free(taken);
+	return (0);
+}
+
+/*
+ * The name of a pool that everything else of it is linked to: the
+ * first name that is already on the object the pool keeps, or, when
+ * the pool keeps none, the first name of the pool, which is the one
+ * that makes the object. Entries are visited in order when the tree
+ * is made, so a pool that makes its own object must make it at its
+ * first name or the names before it would have nothing to link to.
+ */
+static void
+fx_ed_reps(struct fx_ed *ed)
+{
+	uint32_t i, owner;
+
+	for (i = 0; i < ed->ed_t->ft_n; i++)
+		ed->ed_rep[i] = FX_NOTOKEN;
+	for (i = 0; i < ed->ed_t->ft_n; i++) {
+		owner = ed->ed_t->ft_ents[i].fe_pool;
+		if (ed->ed_rep[owner] != FX_NOTOKEN)
+			continue;
+		if (ed->ed_claim[owner] == ZR_POOL_NONE ||
+		    ed->ed_dp[i] == ed->ed_claim[owner])
+			ed->ed_rep[owner] = i;
+	}
+	for (i = 0; i < ed->ed_t->ft_n; i++) {
+		owner = ed->ed_t->ft_ents[i].fe_pool;
+		if (ed->ed_rep[owner] == FX_NOTOKEN)
+			ed->ed_rep[owner] = owner;
+	}
+}
+
+/*
+ * Are the names on this object exactly the names the fixture gives
+ * this pool? Two sets of the same size, one of them inside the
+ * other, are the same set.
+ */
+static int
+fx_ed_sameset(const struct fx_ed *ed, uint32_t owner, zr_pool_t dp)
+{
+	const struct zr_pool *p;
+	uint32_t k, s;
+
+	if (dp == ZR_POOL_NONE)
+		return (0);
+	p = &ed->ed_w.zw_tree.zt_pools[dp];
+	if (p->zp_nnames != ed->ed_cnt[owner])
+		return (0);
+	for (k = 0; k < p->zp_nnames; k++) {
+		s = ed->ed_dspec[p->zp_names[k]];
+		if (s == FX_NOTOKEN ||
+		    ed->ed_t->ft_ents[s].fe_pool != owner)
+			return (0);
+	}
+	return (1);
+}
+
+/*
+ * The bytes of one file against the token the fixture gives it. The
+ * size the walk read answers most of it without a read at all; the
+ * rest is one buffer the size of what is expected.
+ */
+static int
+fx_ed_bytes(const char *full, const char *tok, size_t toklen, uint64_t size,
+    int *samep)
+{
+	unsigned char *buf;
+	ssize_t n;
+	size_t off, want;
+	int fd, saved;
+
+	*samep = 0;
+	if (size != (uint64_t)toklen + 1)
+		return (0);
+	want = toklen + 1;
+	buf = malloc(want);
+	if (buf == NULL) {
+		errno = ENOMEM;
+		return (-1);
+	}
+	fd = open(full, O_RDONLY | O_NOFOLLOW);
+	if (fd < 0) {
+		saved = errno;
+		free(buf);
+		errno = saved;
+		return (-1);
+	}
+	n = 0;
+	for (off = 0; off < want; off += (size_t)n) {
+		n = read(fd, buf + off, want - off);
+		if (n <= 0) {
+			saved = n < 0 ? errno : EIO;
+			(void) close(fd);
+			free(buf);
+			errno = saved;
+			return (-1);
+		}
+	}
+	(void) close(fd);
+	*samep = memcmp(buf, tok, toklen) == 0 && buf[toklen] == '\n';
+	free(buf);
+	return (0);
+}
+
+/*
+ * The attributes the fixture asks for against the ones the walk
+ * read, the file flags apart: those go on last of all and are
+ * compared where they are set. A symlink's mode is nothing anywhere
+ * this tool runs, which is why the fixture passes it by and so does
+ * this.
+ */
+static int
+fx_ed_attr_same(const struct fx_eff *ef, const struct zr_attr *at, int type)
+{
+	uint32_t i;
+
+	if (type != FX_SYMLINK && (uint32_t)(at->za_mode & 07777) !=
+	    ef->ef_mode)
+		return (0);
+	if ((uint32_t)at->za_uid != ef->ef_uid ||
+	    (uint32_t)at->za_gid != ef->ef_gid)
+		return (0);
+	if (at->za_nxattrs != ef->ef_nx)
+		return (0);
+	for (i = 0; i < ef->ef_nx; i++) {
+		if (strcmp(at->za_xattrs[i].zx_name,
+		    ef->ef_x[i]->fa_name) != 0)
+			return (0);
+		if (at->za_xattrs[i].zx_len != ef->ef_x[i]->fa_len)
+			return (0);
+		if (ef->ef_x[i]->fa_len != 0 &&
+		    memcmp(at->za_xattrs[i].zx_value, ef->ef_x[i]->fa_val,
+		    ef->ef_x[i]->fa_len) != 0)
+			return (0);
+	}
+	return (fx_acl_same(ef->ef_acl, at->za_acl));
+}
+
+/*
+ * What an object made here starts out as: the mode the builder's
+ * mkdir(2) and open(2) land on under this umask, this process's own
+ * owner, the group the directory it is made in hands it, and no
+ * flags, extended attributes or ACL -- so a pool the fixture says
+ * nothing about needs nothing done to it once it is made.
+ */
+static void
+fx_ed_newattr(const struct fx_ed *ed, uint32_t owner, struct zr_attr *at)
+{
+	int type = ed->ed_t->ft_ents[owner].fe_type;
+
+	memset(at, 0, sizeof (*at));
+	at->za_mode = type == FX_DIR ? (mode_t)ed->ed_dv.fd_dirmode :
+	    (mode_t)ed->ed_dv.fd_filemode;
+	at->za_uid = (uid_t)ed->ed_dv.fd_uid;
+	at->za_gid = (gid_t)ed->ed_igid[owner];
+}
+
+/* The attributes one pool of the fixture is being compared against. */
+static const struct zr_attr *
+fx_ed_curattr(const struct fx_ed *ed, uint32_t owner, struct zr_attr *fresh)
+{
+	if (ed->ed_claim[owner] != ZR_POOL_NONE)
+		return (&ed->ed_w.zw_attrs[ed->ed_claim[owner]]);
+	fx_ed_newattr(ed, owner, fresh);
+	return (fresh);
+}
+
+/* The entry that owns the directory this one is in, or -1: the root. */
+static long
+fx_ed_upent(const struct fx_tree *t, const struct fx_entry *e)
+{
+	size_t i;
+
+	for (i = e->fe_pathlen; i > 1; i--) {
+		if (e->fe_path[i - 1] == '/')
+			break;
+	}
+	if (i <= 1)
+		return (-1);
+	return (fx_find(t, e->fe_path, i - 1));
+}
+
+/*
+ * The attributes every pool of the fixture ends up with, and with
+ * them the group a pool that has to be made would land in. A pool
+ * is made at the first name of it the fixture lists, so the group
+ * is the one of the directory that name is in -- the fixture's own
+ * for a directory it describes, since the builder gives a directory
+ * its attributes before it puts anything in it, and the walk's for
+ * the root, which no fixture describes. Entries come parents first,
+ * so a directory's group is settled before its children ask for it.
+ * Where the fixture names a gid= this is not the answer but what the
+ * answer is compared against: it says what a make(2) would leave
+ * behind, which is what an lchown(2) is or is not needed after.
+ */
+static int
+fx_ed_effective(struct fx_ed *ed, char *err, size_t errlen)
+{
+	const struct fx_entry *e;
+	const struct zr_attr *rt;
+	uint32_t i, pgid, pmode;
+	zr_pool_t rp;
+	long up;
+
+	rp = zr_tree_pool(&ed->ed_w.zw_tree, ed->ed_rootnm);
+	if (rp == ZR_POOL_NONE || rp >= ed->ed_w.zw_nattrs) {
+		errno = EINVAL;
+		return (fx_ed_fail(err, errlen, ed->ed_root, "root"));
+	}
+	rt = &ed->ed_w.zw_attrs[rp];
+	for (i = 0; i < ed->ed_t->ft_n; i++) {
+		e = &ed->ed_t->ft_ents[i];
+		if (e->fe_pool != i)
+			continue;
+		if (fx_effective(ed->ed_t, i, &ed->ed_dv,
+		    &ed->ed_eff[i]) != 0) {
+			errno = ENOMEM;
+			return (fx_ed_fail(err, errlen, e->fe_path,
+			    "attributes"));
+		}
+		up = fx_ed_upent(ed->ed_t, e);
+		if (up < 0) {
+			pgid = (uint32_t)rt->za_gid;
+			pmode = (uint32_t)rt->za_mode;
+		} else {
+			pgid = ed->ed_eff[up].ef_gid;
+			pmode = ed->ed_eff[up].ef_mode;
+		}
+#ifdef FX_GID_INHERITS
+		(void) pmode;
+		ed->ed_igid[i] = pgid;
+#else
+		ed->ed_igid[i] = (pmode & (uint32_t)S_ISGID) != 0 ? pgid :
+		    ed->ed_dv.fd_gid;
+#endif
+		if (!ed->ed_eff[i].ef_has_gid)
+			ed->ed_eff[i].ef_gid = ed->ed_igid[i];
+	}
+	return (0);
+}
+
+/* What each pool of the fixture needs done to it, pool by pool. */
+static int
+fx_ed_needs(struct fx_ed *ed, char *err, size_t errlen)
+{
+	const struct fx_entry *o;
+	const struct zr_attr *at;
+	struct zr_attr fresh;
+	const char *full;
+	uint32_t i;
+	int same;
+
+	for (i = 0; i < ed->ed_t->ft_n; i++) {
+		o = &ed->ed_t->ft_ents[i];
+		if (o->fe_pool != i)
+			continue;
+		at = fx_ed_curattr(ed, i, &fresh);
+		if (ed->ed_claim[i] == ZR_POOL_NONE) {
+			ed->ed_need[i] |= FE_W_FRESH;
+		} else {
+			if (!fx_ed_sameset(ed, i, ed->ed_claim[i]))
+				ed->ed_need[i] |= FE_W_LINKS;
+			if (o->fe_type == FX_FILE) {
+				full = fx_ed_entpath(ed, ed->ed_rep[i]);
+				if (full == NULL) {
+					return (fx_ed_fail(err, errlen,
+					    o->fe_path, "memory"));
+				}
+				if (fx_ed_bytes(full,
+				    ed->ed_fx->zf_tok.ft_p[o->fe_token],
+				    ed->ed_fx->zf_tok.ft_len[o->fe_token],
+				    at->za_size, &same) != 0) {
+					return (fx_ed_fail(err, errlen, full,
+					    "read"));
+				}
+				if (!same)
+					ed->ed_need[i] |= FE_W_WRITE;
+			}
+		}
+		if (!fx_ed_attr_same(&ed->ed_eff[i], at, o->fe_type))
+			ed->ed_need[i] |= FE_W_ATTR;
+		if (ed->ed_eff[i].ef_flags != at->za_flags)
+			ed->ed_need[i] |= FE_W_FLAGS;
+	}
+	return (0);
+}
+
+static void
+fx_ed_count(struct zr_fixture_edit_stats *st, int act)
+{
+	switch (act) {
+	case FE_REMOVE:
+		st->ze_removed++;
+		break;
+	case FE_CREATE:
+		st->ze_created++;
+		break;
+	case FE_RELINK:
+		st->ze_relinked++;
+		break;
+	case FE_REWRITE:
+		st->ze_rewritten++;
+		break;
+	case FE_ATTRS:
+		st->ze_attrs++;
+		break;
+	default:
+		st->ze_untouched++;
+		break;
+	}
+}
+
+/*
+ * One decision per name, and with it the set of names that are
+ * unlinked: every name the tree has not, and every name that is on
+ * an object its pool does not keep. A name that is already on the
+ * object its pool keeps is never unlinked, which is what lets the
+ * rest of the pool link to it.
+ */
+static void
+fx_ed_decide(struct fx_ed *ed, struct zr_fixture_edit_stats *st)
+{
+	uint32_t i, owner;
+	zr_pool_t c;
+	zr_name_t nm;
+	int act;
+
+	for (i = 0; i < ed->ed_t->ft_n; i++) {
+		owner = ed->ed_t->ft_ents[i].fe_pool;
+		c = ed->ed_claim[owner];
+		nm = ed->ed_nm[i];
+		if (nm == ZR_NAME_NONE) {
+			act = c == ZR_POOL_NONE ? FE_CREATE : FE_RELINK;
+		} else if (!fx_ed_sameset(ed, owner, ed->ed_dp[i])) {
+			act = FE_RELINK;
+		} else if (ed->ed_dp[i] != c) {
+			act = FE_REWRITE;	/* the object is remade */
+		} else if ((ed->ed_need[owner] & FE_W_WRITE) != 0) {
+			act = FE_REWRITE;
+		} else if ((ed->ed_need[owner] &
+		    (FE_W_ATTR | FE_W_FLAGS)) != 0) {
+			act = FE_ATTRS;
+		} else {
+			act = FE_UNTOUCHED;
+		}
+		if (nm != ZR_NAME_NONE && ed->ed_dp[i] != c)
+			ed->ed_gone[nm] = 1;
+		ed->ed_act[i] = (unsigned char)act;
+		fx_ed_count(st, act);
+	}
+	for (nm = 0; nm < ed->ed_nnames; nm++) {
+		if (nm == ed->ed_rootnm || ed->ed_dspec[nm] != FX_NOTOKEN)
+			continue;
+		ed->ed_gone[nm] = 1;
+		fx_ed_count(st, FE_REMOVE);
+	}
+}
+
+/* The pool of the directory one path of either side lives in. */
+static zr_pool_t
+fx_ed_parent(struct fx_ed *ed, const char *path, size_t len)
+{
+	zr_name_t nm;
+	size_t i;
+
+	for (i = len; i > 1; i--) {
+		if (path[i - 1] == '/')
+			break;
+	}
+	nm = zr_names_lookup(ed->ed_ns, path, i == 1 ? 1 : i - 1);
+	if (nm == ZR_NAME_NONE)
+		return (ZR_POOL_NONE);
+	return (zr_tree_pool(&ed->ed_w.zw_tree, nm));
+}
+
+/*
+ * Which objects have to have their file flags taken off before
+ * anything else happens: an immutable file cannot be unlinked,
+ * written or given an attribute, and an immutable directory can be
+ * given no child and lose none. So the flags come off the object
+ * being edited, off the object a name is being taken from, and off
+ * the directory a name is appearing in or leaving. They go back on
+ * last of all, which is where fx_ed_setflags puts them.
+ *
+ * A pool whose flags are the only thing that differs needs nothing
+ * taken off: one lchflags(2) puts it where it must be.
+ */
+static void
+fx_ed_marks(struct fx_ed *ed)
+{
+	const struct fx_entry *e;
+	zr_pool_t p;
+	uint32_t i;
+	zr_name_t nm, up;
+
+	for (i = 0; i < ed->ed_t->ft_n; i++) {
+		e = &ed->ed_t->ft_ents[i];
+		if (ed->ed_claim[e->fe_pool] != ZR_POOL_NONE &&
+		    (ed->ed_need[e->fe_pool] & (FE_W_LINKS | FE_W_WRITE |
+		    FE_W_ATTR)) != 0)
+			ed->ed_clear[ed->ed_claim[e->fe_pool]] = 1;
+		if (ed->ed_act[i] == FE_UNTOUCHED || ed->ed_act[i] == FE_ATTRS)
+			continue;
+		if (ed->ed_nm[i] != ZR_NAME_NONE && !ed->ed_gone[ed->ed_nm[i]])
+			continue;
+		p = fx_ed_parent(ed, e->fe_path, e->fe_pathlen);
+		if (p != ZR_POOL_NONE)
+			ed->ed_clear[p] = 1;
+	}
+	for (nm = 0; nm < ed->ed_nnames; nm++) {
+		if (!ed->ed_gone[nm])
+			continue;
+		p = zr_tree_pool(&ed->ed_w.zw_tree, nm);
+		if (p != ZR_POOL_NONE)
+			ed->ed_clear[p] = 1;
+		up = zr_names_parent(ed->ed_ns, nm);
+		if (up == ZR_NAME_NONE)
+			continue;
+		p = zr_tree_pool(&ed->ed_w.zw_tree, up);
+		if (p != ZR_POOL_NONE)
+			ed->ed_clear[p] = 1;
+	}
+}
+
+/*
+ * The flags off everything marked. The root of the tree is nothing
+ * the fixture describes, so what it had is remembered and put back
+ * when the edit is over rather than left as the fixture's silence.
+ */
+static int
+fx_ed_clearflags(struct fx_ed *ed, char *err, size_t errlen)
+{
+	const struct zr_pool *p;
+	const char *full;
+	uint32_t i;
+
+	for (i = 0; i < ed->ed_npools; i++) {
+		if (!ed->ed_clear[i] || ed->ed_w.zw_attrs[i].za_flags == 0)
+			continue;
+		p = &ed->ed_w.zw_tree.zt_pools[i];
+		if (p->zp_nnames == 0)
+			continue;
+		if (p->zp_names[0] == ed->ed_rootnm)
+			ed->ed_rootflags = ed->ed_w.zw_attrs[i].za_flags;
+		full = fx_ed_namepath(ed, p->zp_names[0]);
+		if (full == NULL)
+			return (fx_ed_fail(err, errlen, NULL, "memory"));
+		if (fx_setflags(full, 0) != 0)
+			return (fx_ed_fail(err, errlen, full, "chflags"));
+	}
+	return (0);
+}
+
+/*
+ * Every name that goes, children before parents, which is the order
+ * the walk handed the names out reversed: a name is always interned
+ * after the directory it is in. A directory that is being made into
+ * something else is emptied by this same pass, since a tree that
+ * says nothing under it lists nothing under it either.
+ */
+static int
+fx_ed_remove(struct fx_ed *ed, char *err, size_t errlen)
+{
+	const char *full;
+	uint32_t i;
+	zr_pool_t p;
+	zr_name_t nm;
+
+	for (i = ed->ed_nnames; i > 0; i--) {
+		nm = (zr_name_t)(i - 1);
+		if (nm == ed->ed_rootnm || !ed->ed_gone[nm])
+			continue;
+		p = zr_tree_pool(&ed->ed_w.zw_tree, nm);
+		full = fx_ed_namepath(ed, nm);
+		if (full == NULL)
+			return (fx_ed_fail(err, errlen, NULL, "memory"));
+		if (p != ZR_POOL_NONE &&
+		    ed->ed_w.zw_tree.zt_pools[p].zp_type == ZR_T_DIR) {
+			if (rmdir(full) != 0)
+				return (fx_ed_fail(err, errlen, full, "rmdir"));
+		} else if (unlink(full) != 0) {
+			return (fx_ed_fail(err, errlen, full, "unlink"));
+		}
+	}
+	return (0);
+}
+
+/*
+ * Every name that arrives and every file whose bytes have to change,
+ * parents before children, which is the order the fixture lists
+ * them: a pool that makes its own object makes it at its first name,
+ * and every later name of it is a link to that one.
+ */
+static int
+fx_ed_make(struct fx_ed *ed, char *err, size_t errlen)
+{
+	const struct fx_entry *e, *o;
+	const char *full;
+	char *anchor;
+	uint32_t i, owner;
+	int rc, saved;
+
+	for (i = 0; i < ed->ed_t->ft_n; i++) {
+		e = &ed->ed_t->ft_ents[i];
+		owner = e->fe_pool;
+		o = &ed->ed_t->ft_ents[owner];
+		if (ed->ed_nm[i] != ZR_NAME_NONE && !ed->ed_gone[ed->ed_nm[i]])
+			goto bytes;
+		full = fx_ed_entpath(ed, i);
+		if (full == NULL)
+			return (fx_ed_fail(err, errlen, e->fe_path, "memory"));
+		if (ed->ed_claim[owner] == ZR_POOL_NONE &&
+		    ed->ed_rep[owner] == i) {
+			switch (e->fe_type) {
+			case FX_DIR:
+				rc = mkdir(full, 0755);
+				break;
+			case FX_FILE:
+				rc = fx_write_file(full,
+				    ed->ed_fx->zf_tok.ft_p[e->fe_token],
+				    ed->ed_fx->zf_tok.ft_len[e->fe_token],
+				    O_CREAT | O_EXCL);
+				break;
+			default:
+				rc = symlink(e->fe_arg, full);
+				break;
+			}
+			if (rc != 0) {
+				return (fx_ed_fail(err, errlen, full,
+				    e->fe_type == FX_DIR ? "mkdir" :
+				    e->fe_type == FX_FILE ? "create" :
+				    "symlink"));
+			}
+		} else {
+			anchor = fx_join(ed->ed_root, ed->ed_rootlen,
+			    ed->ed_t->ft_ents[ed->ed_rep[owner]].fe_path,
+			    ed->ed_t->ft_ents[ed->ed_rep[owner]].fe_pathlen);
+			if (anchor == NULL) {
+				return (fx_ed_fail(err, errlen, e->fe_path,
+				    "memory"));
+			}
+			rc = link(anchor, full);
+			saved = errno;
+			free(anchor);
+			errno = saved;
+			if (rc != 0)
+				return (fx_ed_fail(err, errlen, full, "link"));
+		}
+bytes:
+		if (ed->ed_rep[owner] != i ||
+		    (ed->ed_need[owner] & FE_W_WRITE) == 0)
+			continue;
+		full = fx_ed_entpath(ed, i);
+		if (full == NULL)
+			return (fx_ed_fail(err, errlen, e->fe_path, "memory"));
+		if (fx_write_file(full, ed->ed_fx->zf_tok.ft_p[o->fe_token],
+		    ed->ed_fx->zf_tok.ft_len[o->fe_token], O_TRUNC) != 0)
+			return (fx_ed_fail(err, errlen, full, "write"));
+	}
+	return (0);
+}
+
+/*
+ * The attributes of one pool put right, in the order the builder
+ * uses and for the same reasons: chown before chmod, because chown
+ * may drop the set-id bits a mode just asked for; the extended
+ * attributes and the ACL after the mode, because setting a mode
+ * rewrites an NFSv4 ACL. Only what differs is written, so an object
+ * that needed one attribute is not handed the other five.
+ */
+static int
+fx_ed_setattrs(struct fx_ed *ed, uint32_t owner, const char *full, char *err,
+    size_t errlen)
+{
+	const struct fx_eff *ef = &ed->ed_eff[owner];
+	const struct zr_attr *at;
+	struct zr_attr fresh;
+	uint32_t i, k;
+	int type;
+
+	type = ed->ed_t->ft_ents[owner].fe_type;
+	at = fx_ed_curattr(ed, owner, &fresh);
+	if ((uint32_t)at->za_uid != ef->ef_uid ||
+	    (uint32_t)at->za_gid != ef->ef_gid) {
+		if (lchown(full, (uid_t)ef->ef_uid, (gid_t)ef->ef_gid) != 0)
+			return (fx_ed_fail(err, errlen, full, "lchown"));
+	}
+	if (type != FX_SYMLINK &&
+	    (uint32_t)(at->za_mode & 07777) != ef->ef_mode) {
+		if (chmod(full, (mode_t)ef->ef_mode) != 0)
+			return (fx_ed_fail(err, errlen, full, "chmod"));
+	}
+	for (i = 0; i < at->za_nxattrs; i++) {
+		for (k = 0; k < ef->ef_nx; k++) {
+			if (strcmp(ef->ef_x[k]->fa_name,
+			    at->za_xattrs[i].zx_name) == 0)
+				break;
+		}
+		if (k == ef->ef_nx &&
+		    fx_rmx(full, at->za_xattrs[i].zx_name) != 0)
+			return (fx_ed_fail(err, errlen, full, "rmxattr"));
+	}
+	for (i = 0; i < ef->ef_nx; i++) {
+		for (k = 0; k < at->za_nxattrs; k++) {
+			if (strcmp(ef->ef_x[i]->fa_name,
+			    at->za_xattrs[k].zx_name) != 0)
+				continue;
+			if (at->za_xattrs[k].zx_len == ef->ef_x[i]->fa_len &&
+			    (ef->ef_x[i]->fa_len == 0 ||
+			    memcmp(at->za_xattrs[k].zx_value,
+			    ef->ef_x[i]->fa_val, ef->ef_x[i]->fa_len) == 0))
+				break;
+			k = at->za_nxattrs;
+			break;
+		}
+		if (k < at->za_nxattrs)
+			continue;
+		if (fx_setx(full, ef->ef_x[i]->fa_name,
+		    (const unsigned char *)ef->ef_x[i]->fa_val,
+		    ef->ef_x[i]->fa_len) != 0)
+			return (fx_ed_fail(err, errlen, full, "xattr"));
+	}
+	if (fx_acl_same(ef->ef_acl, at->za_acl))
+		return (0);
+	if (ef->ef_acl == NULL) {
+		if (fx_stripacl(full) != 0)
+			return (fx_ed_fail(err, errlen, full, "acl"));
+		return (0);
+	}
+	if (fx_setacl(full, ef->ef_acl) != 0)
+		return (fx_ed_fail(err, errlen, full, "acl"));
+	return (0);
+}
+
+static int
+fx_ed_attrs(struct fx_ed *ed, char *err, size_t errlen)
+{
+	const char *full;
+	uint32_t i;
+
+	for (i = 0; i < ed->ed_t->ft_n; i++) {
+		if (ed->ed_t->ft_ents[i].fe_pool != i ||
+		    (ed->ed_need[i] & FE_W_ATTR) == 0)
+			continue;
+		full = fx_ed_entpath(ed, ed->ed_rep[i]);
+		if (full == NULL) {
+			return (fx_ed_fail(err, errlen,
+			    ed->ed_t->ft_ents[i].fe_path, "memory"));
+		}
+		if (fx_ed_setattrs(ed, i, full, err, errlen) != 0)
+			return (-1);
+	}
+	return (0);
+}
+
+/*
+ * The file flags, last of all and children before parents, which is
+ * the fixture's order reversed: an immutable directory takes no
+ * child, so a directory waits for everything under it. A pool is
+ * flagged through the last of its names, and what it is compared
+ * against is what it has now -- nothing, where the flags came off at
+ * the start. The root's own flags, which no fixture describes, go
+ * back exactly as they were.
+ */
+static int
+fx_ed_setflags(struct fx_ed *ed, char *err, size_t errlen)
+{
+	const struct fx_entry *e;
+	const char *full;
+	uint32_t i, owner, cur;
+
+	for (i = ed->ed_t->ft_n; i > 0; i--) {
+		e = &ed->ed_t->ft_ents[i - 1];
+		owner = e->fe_pool;
+		if ((ed->ed_need[owner] & FE_W_DONE) != 0)
+			continue;
+		cur = 0;
+		if (ed->ed_claim[owner] != ZR_POOL_NONE &&
+		    !ed->ed_clear[ed->ed_claim[owner]])
+			cur = ed->ed_w.zw_attrs[ed->ed_claim[owner]].za_flags;
+		ed->ed_need[owner] |= FE_W_DONE;
+		if (ed->ed_eff[owner].ef_flags == cur)
+			continue;
+		full = fx_ed_entpath(ed, i - 1);
+		if (full == NULL)
+			return (fx_ed_fail(err, errlen, e->fe_path, "memory"));
+		if (fx_setflags(full, ed->ed_eff[owner].ef_flags) != 0)
+			return (fx_ed_fail(err, errlen, full, "chflags"));
+	}
+	if (ed->ed_rootflags == 0)
+		return (0);
+	full = fx_ed_full(ed, "/", 1);
+	if (full == NULL)
+		return (fx_ed_fail(err, errlen, ed->ed_root, "memory"));
+	if (fx_setflags(full, ed->ed_rootflags) != 0)
+		return (fx_ed_fail(err, errlen, full, "chflags"));
+	return (0);
+}
+
+int
+zr_fixture_edit(const struct zr_fixture *fx, enum zr_fixture_tree which,
+    const char *dir, struct zr_fixture_edit_stats *st, char *err,
+    size_t errlen)
+{
+	struct zr_fixture_edit_stats scratch;
+	struct fx_ed ed;
+	int rc;
+
+	if (err != NULL && errlen > 0)
+		err[0] = '\0';
+	if (st == NULL)
+		st = &scratch;
+	memset(st, 0, sizeof (*st));
+	if (fx == NULL || dir == NULL || (unsigned)which > ZR_FX_ONTO) {
+		errno = EINVAL;
+		if (err != NULL && errlen > 0) {
+			(void) snprintf(err, errlen, "%s",
+			    strerror(EINVAL));
+		}
+		return (-1);
+	}
+	if (!fx_platform_ok(fx)) {
+		(void) fx_errf(err, errlen, fx->zf_platline, "this fixture "
+		    "says \"platform %s\", and is edited on no other "
+		    "platform", fx->zf_platform);
+		errno = ENOTSUP;
+		return (-1);
+	}
+	memset(&ed, 0, sizeof (ed));
+	ed.ed_fx = fx;
+	ed.ed_t = &fx->zf_trees[which];
+	ed.ed_root = dir;
+	ed.ed_rootlen = strlen(dir);
+	while (ed.ed_rootlen > 1 && dir[ed.ed_rootlen - 1] == '/')
+		ed.ed_rootlen--;
+	if (ed.ed_rootlen == 1 && dir[0] == '/')
+		ed.ed_rootlen = 0;
+	fx_defaults(&ed.ed_dv);
+	rc = fx_ed_open(&ed, err, errlen);
+	if (rc == 0 && fx_ed_claim(&ed) != 0)
+		rc = fx_ed_fail(err, errlen, dir, "memory");
+	if (rc == 0) {
+		fx_ed_reps(&ed);
+		rc = fx_ed_effective(&ed, err, errlen);
+	}
+	if (rc == 0)
+		rc = fx_ed_needs(&ed, err, errlen);
+	if (rc == 0) {
+		fx_ed_decide(&ed, st);
+		fx_ed_marks(&ed);
+		rc = fx_ed_clearflags(&ed, err, errlen);
+	}
+	if (rc == 0)
+		rc = fx_ed_remove(&ed, err, errlen);
+	if (rc == 0)
+		rc = fx_ed_make(&ed, err, errlen);
+	if (rc == 0)
+		rc = fx_ed_attrs(&ed, err, errlen);
+	if (rc == 0)
+		rc = fx_ed_setflags(&ed, err, errlen);
+	fx_ed_fini(&ed);
+	if (rc != 0)
+		memset(st, 0, sizeof (*st));
+	return (rc);
 }
