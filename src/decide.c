@@ -609,8 +609,10 @@ static int
 pass_unexpressed(struct ctx *c)
 {
 	struct u64set covered;
+	uint32_t *scratch, *off;
 	zr_pool_t *bp;
-	uint32_t maxn = 0, i, k;
+	zr_name_t *memb;
+	uint32_t maxn = 0, i, k, total;
 	int side, rc = 0;
 	zr_name_t n;
 
@@ -627,16 +629,30 @@ pass_unexpressed(struct ctx *c)
 				maxn = t->zt_pools[i].zp_nnames;
 	}
 	/*
-	 * First half: base pools of one side pool, or of one class.
-	 * Second half, at offset nnames: a witness name per base pool.
+	 * One scratch block for the whole pass, carved into three
+	 * regions. An undersized block here segfaulted once, so every
+	 * region's bound is spelled out.
+	 *
+	 *   bp    (maxn + nnames + 1) * 2 slots, as before: the base
+	 *         pools of one side pool, or of one class, in the first
+	 *         half; at offset nnames, a witness name per base pool
+	 *         of the class.
+	 *   off   nclass + 1 slots: the class index's offsets.
+	 *   memb  nnames slots: the class index's members. A settled
+	 *         base name has exactly one class, so nnames bounds
+	 *         every class list together.
 	 */
 	if (maxn < c->nnames)
 		maxn = c->nnames;
-	bp = malloc((size_t)(maxn + c->nnames + 1) * 2 * sizeof (*bp));
-	if (bp == NULL) {
+	scratch = malloc((((size_t)maxn + c->nnames + 1) * 2 +
+	    ((size_t)c->nclass + 1) + c->nnames) * sizeof (*scratch));
+	if (scratch == NULL) {
 		u64set_fini(&covered);
 		return (-1);
 	}
+	bp = scratch;
+	off = scratch + ((size_t)maxn + c->nnames + 1) * 2;
+	memb = off + (size_t)c->nclass + 1;
 	for (side = T_FROM; side <= T_ONTO; side++) {
 		const struct zr_tree *t = c->t[side];
 		zr_pool_t qi;
@@ -663,14 +679,40 @@ pass_unexpressed(struct ctx *c)
 			}
 		}
 	}
+	/*
+	 * Index the settled base names by result class: count, prefix
+	 * sum, fill in ascending name order, then shift the offsets
+	 * back. Class k is memb[off[k] .. off[k + 1]), ascending, the
+	 * order a scan of the name table gave. pass_classes gave every
+	 * settled name one class below nclass, which is what bounds
+	 * both regions. The step below then walks its own class and
+	 * not the whole name table, which is what makes it linear.
+	 */
+	for (k = 0; k <= c->nclass; k++)
+		off[k] = 0;
+	for (n = 0; n < c->nnames; n++)
+		if (settled(c, n) && inbase(c, n))
+			off[c->klass[n]]++;
+	total = 0;
+	for (k = 0; k <= c->nclass; k++) {
+		uint32_t cnt = off[k];
+
+		off[k] = total;
+		total += cnt;
+	}
+	for (n = 0; n < c->nnames; n++)
+		if (settled(c, n) && inbase(c, n))
+			memb[off[c->klass[n]]++] = n;
+	for (k = c->nclass; k > 0; k--)
+		off[k] = off[k - 1];
+	off[0] = 0;
 	/* every class: every pair of its base pools must be covered */
 	for (k = 0; k < c->nclass && rc == 0; k++) {
-		uint32_t cnt = 0, a, b;
+		uint32_t cnt = 0, a, b, e;
 		zr_name_t first = ZR_NAME_NONE;
 
-		for (n = 0; n < c->nnames; n++) {
-			if (!settled(c, n) || c->klass[n] != k || !inbase(c, n))
-				continue;
+		for (e = off[k]; e < off[k + 1]; e++) {
+			n = memb[e];
 			bp[cnt] = zr_tree_pool(c->t[T_BASE], n);
 			for (a = 0; a < cnt; a++)
 				if (bp[a] == bp[cnt])
@@ -695,7 +737,7 @@ pass_unexpressed(struct ctx *c)
 			}
 		}
 	}
-	free(bp);
+	free(scratch);
 	u64set_fini(&covered);
 	return (rc);
 }
