@@ -140,10 +140,12 @@ read-only, and under it the clean actions of the manifest are applied
 -- whether the decision had conflicts or not, since a conflict stops
 the names it covers and nothing else, and conflicts are answered over
 the tree the rest of the rebase has already made. conflicts is
-written after that apply verified, and is the hand-off: the conflict
-manager (a separate tool, a later sprint) leaves its answers in the
-run directory as "resolution", a manifest in the same format holding
-only actions, and applying2 applies that file the same way. done is
+written after that apply verified, and is the hand-off: the run wrote
+a resolution beside the manifest when it wrote the manifest -- one
+line per conflicted name, each with a choice of "-", keep, onto or
+from, in the manifest's own tree grammar (v4-manifest.md section 8)
+-- and the gate is passed by answering every "-" and running
+--continue. applying2 carries the choices out. done is
 written after the result verified and is read-only again, and before
 the holds are released. What a kill leaves is the last gate reached,
 there is no state at all until the first one, and a stop writes none:
@@ -153,7 +155,11 @@ Each run keeps its own directory, 0700 throughout:
 
     /var/db/zfs_rebase/<result as a path>/mnt          the result
     /var/db/zfs_rebase/<result as a path>/manifest     unless -o
-    /var/db/zfs_rebase/<result as a path>/resolution   the answers
+    /var/db/zfs_rebase/<result as a path>/resolution   the choices
+
+With -o FILE the manifest is FILE and the resolution is
+FILE.resolution, beside it. Either way the record names both, and
+every verb finds them there and never by guessing a path.
 
 Not /var/run: FreeBSD's cleanvar deletes every regular file there at
 boot, and a rebase stopped at conflicts can outlast one.
@@ -190,9 +196,10 @@ one.
 puts the result back as onto was -- destroying the clone and making
 it again from the recorded onto snapshot with the same record, or
 rolling the dataset back to its pre-apply snapshot -- and then
-applies the recorded manifest from the first gate. Nothing is decided
-again: the manifest is the decision, and a resolution's edits are
-discarded by definition.
+applies the recorded manifest from the first gate, with the
+resolution put back to its skeleton. Nothing is decided again: the
+manifest is the decision, and a resolution's edits are discarded by
+definition.
 
     zfs_rebase --verify --result DATASET
 

@@ -401,6 +401,42 @@ anchor {first name in manifest order, onto-created}; record parts
 | ZM51 | a type change: rm of onto's directory, then cp | covered: check_roundtrip.c |
 | ZM52 | dup: a severed half copies onto's own bytes | covered: check_apply.c, h-th-op1-edit-vs-split.zrt |
 
+The resolution of section 8 shares this family: it is the same tree
+grammar read and written by the same machinery, with a choice per
+name where the manifest has an action. Dimensions: line kind
+{conflict N, drift, a directory that only scopes}; choice {-, keep,
+onto, from}; scoping {root only, nested, a directory carrying a
+choice, on-the-way directories}; escaping; header {version,
+datasets, mode, #names, #unanswered}; builders {skeleton with each
+default, add_drift}; parse rejections; round trip.
+
+| cell | scenario | disposition |
+|------|----------|-------------|
+| ZM60 | the section 8 example parses, field by field | covered: check_manifest.c |
+| ZM61 | parse then write is byte identical | covered: check_manifest.c |
+| ZM62 | skeleton: every conflict mark, in manifest order, group and directory flag kept | covered: check_manifest.c |
+| ZM63 | skeleton of a manifest with no conflicts: #names 0 | covered: check_manifest.c |
+| ZM64 | skeleton with the default choice onto | covered: check_manifest.c |
+| ZM65 | add_drift, then write and parse again | covered: check_manifest.c |
+| ZM66 | the unanswered count is the "-" lines | covered: check_manifest.c |
+| ZM67 | the run path's skeleton and the library's are the same bytes | covered: check_manifest.c |
+| ZM68 | a space, a hash and a high byte in a resolution line | covered: check_manifest.c |
+| ZM69 | on-the-way directories are derived by the writer | covered: check_manifest.c |
+| ZM70 | parse refuses a manifest header | covered: check_manifest.c |
+| ZM71 | parse refuses a version that is not 4 | covered: check_manifest.c |
+| ZM72 | parse refuses a raw action word | covered: check_manifest.c |
+| ZM73 | parse refuses a word that is neither conflict nor drift | covered: check_manifest.c |
+| ZM74 | parse refuses a choice outside the four | covered: check_manifest.c |
+| ZM75 | parse refuses "-" on a drift line | covered: check_manifest.c |
+| ZM76 | parse refuses a conflict line with no group | covered: check_manifest.c |
+| ZM77 | parse refuses #names that miscounts | covered: check_manifest.c |
+| ZM78 | parse refuses #unanswered that miscounts | covered: check_manifest.c |
+| ZM79 | parse refuses a name with no choice and no slash | covered: check_manifest.c |
+| ZM80 | parse refuses anything after the tree section | covered: check_manifest.c |
+| ZM81 | parse refuses a fifth field on a line | covered: check_manifest.c |
+| ZM82 | the skeleton beside the manifest, the record naming it, --restart putting it back | planned: box, tests/box/run-fixture.sh |
+| ZM83 | an unanswered skeleton stops at conflicts, an answered one goes on | planned: box, tests/box/run-fixture.sh and run-kills.sh |
+
 ## ZA -- apply (check_apply.c)
 
 Dimensions: action {cp, write, ln, rm, conflict}; cp type {file,

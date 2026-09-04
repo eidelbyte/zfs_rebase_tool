@@ -1300,8 +1300,8 @@ za_pend(struct za_ctx *c, const struct zr_action *a)
  * A directory already gone is a removal that is true, and a
  * directory that will not go because a conflicted name is still
  * inside it is the one removal the manifest cannot ask for yet: it
- * is left, counted as skipped, and the conflict manager's resolution
- * is what frees it. Anything else that will not go is a manifest
+ * is left, counted as skipped, and the choices of the resolution are
+ * what free it. Anything else that will not go is a manifest
  * that did not remove its children, which is loud.
  */
 static int

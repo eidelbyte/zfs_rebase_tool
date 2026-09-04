@@ -84,12 +84,13 @@
 #   snapshot the hold is the only thing in the way and the message
 #   must say busy.
 #
-# The conflicted fixture reaches applying2 and done only through a
-# resolution, which nothing in this sprint writes, so the harness
-# writes one itself: the recorded manifest's header with zero actions
-# and zero conflicts, which is a resolution that answers the
-# conflicts by leaving the names as onto had them. That is enough to
-# take the stage, which is what these cases are about.
+# The conflicted fixture reaches applying2 and done only through an
+# answered resolution. The tool writes the skeleton itself when it
+# writes the manifest, so the harness answers it: every "-" becomes
+# keep, which leaves the conflicted names as they stand, and the
+# header's count of what is unanswered goes to zero with them. An
+# unanswered skeleton stops at conflicts, which is what every gate
+# before applying2 relies on.
 set -u
 cd "$(dirname "$0")/../.." || exit 2
 bin=./zfs_rebase
@@ -236,14 +237,21 @@ reset_pool() {
 	return 0
 }
 
-# The resolution the conflict manager would write, in the form the
-# tool insists on: the recorded manifest's header -- the same three
-# snapshots -- and no actions and no conflicts, which answers them by
-# leaving the conflicted names as onto had them.
-write_resolution() {
-	sed -n '1,/^#mode/p' "$1" > "$2" || fail "cannot read $1"
-	printf '#actions 0\n#conflicts 0\n/\n    ..\n' >> "$2" || \
-	    fail "cannot write $2"
+# The skeleton the run wrote, answered the way a person would answer
+# it: one field per line changed, "-" to keep, and the header's count
+# of what is unanswered changed with them. Lines are never added and
+# never removed. It must have been the tool's own unanswered document
+# before this touched it.
+answer_resolution() {
+	[ -f "$1" ] || fail "the run wrote no resolution at $1"
+	grep -q '^#rebase-resolution 4$' "$1" || \
+	    { head -3 "$1"; fail "$1 is no resolution"; }
+	left=$(sed -n 's/^#unanswered //p' "$1")
+	[ "${left:-0}" -gt 0 ] || \
+	    { head -8 "$1"; fail "$1 was already answered"; }
+	sed -e 's/ -$/ keep/' -e 's/^#unanswered .*$/#unanswered 0/' \
+	    "$1" > "$1.answered" || fail "cannot answer $1"
+	mv "$1.answered" "$1" || fail "cannot answer $1"
 }
 
 # ---------------------------------------------------------------
@@ -330,9 +338,9 @@ kill_case() {
 		wro=off
 	fi
 
-	# A gate past conflicts is reached by a --continue over a
-	# resolution, since a fresh run stops at conflicts and nothing
-	# in this sprint writes one.
+	# A gate past conflicts is reached by a --continue over an
+	# answered resolution, since a fresh run stops at conflicts
+	# with its skeleton unanswered.
 	if [ $resumed = yes ]; then
 		if [ "$form" = clone ]; then
 			"$bin" $flag --off-of "$POOL/from@work" \
@@ -346,7 +354,7 @@ kill_case() {
 		[ $st -eq 1 ] || { cat "$log"; fail "the run before the resolution exited $st, want 1"; }
 		[ "$(statenow "$rds")" = conflicts ] || \
 		    fail "that run did not stop at conflicts"
-		write_resolution "$man" "$res"
+		answer_resolution "$res"
 		ZFS_REBASE_PAUSE=$gate "$bin" --continue --result "$rds" \
 		    > "$log" 2>&1 &
 		pid=$!
@@ -452,8 +460,10 @@ kill_case() {
 	    fail "readonly is $(recval readonly "$rds"), want $wro"
 	if [ $wman = yes ]; then
 		[ -f "$man" ] || fail "no manifest at $man"
+		[ -f "$res" ] || fail "no resolution at $res"
 	else
 		[ -e "$man" ] && fail "a manifest at $man before the decision"
+		[ -e "$res" ] && fail "a resolution at $res before the decision"
 	fi
 	if [ "$form" = dataset ]; then
 		if [ $wmnt = home ]; then
@@ -505,7 +515,11 @@ kill_case() {
 	[ "$(holdcount)" = "$whold_now" ] || \
 	    fail "--verify changed the holds"
 
-	if [ $clean -eq 1 ] || [ -f "$res" ]; then
+	# Where the --continue lands: at done when there is nothing to
+	# answer or the answers are in, and back at conflicts while the
+	# skeleton the run wrote is still unanswered. The file being
+	# there is not the signal; its being complete is.
+	if [ $clean -eq 1 ] || [ $resumed = yes ]; then
 		wcont=0; wend=done; whold=0
 	else
 		wcont=1; wend=conflicts; whold=3
@@ -563,8 +577,8 @@ one_fixture() {
 	    { echo "FAIL: $fixture declares $nact actions; the action:2 gate wants two"; exit 1; }
 
 	# The gates a fresh run passes, in the order it passes them,
-	# and then the two a conflicted rebase reaches only through a
-	# resolution.
+	# and then the two a conflicted rebase reaches only through an
+	# answered resolution.
 	gates="held cloned read decided applying1 action:2"
 	if [ $clean -eq 1 ]; then
 		gates="$gates done"

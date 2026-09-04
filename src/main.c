@@ -83,7 +83,8 @@ static const char usage[] =
 	"       nothing behind; --result is ignored\n"
 	"  -p   permissive-merge mode\n"
 	"  -v   report counts on stderr\n"
-	"  -o   write the manifest to FILE\n"
+	"  -o   write the manifest to FILE, the resolution to\n"
+	"       FILE.resolution beside it\n"
 	"exit: 0 done, 1 stopped at conflicts, 2 refused, 3 failed\n";
 
 static int

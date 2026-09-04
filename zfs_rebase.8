@@ -283,7 +283,7 @@ touched, because no action names one.
 Put the result back as onto was \(em the clone destroyed and made again from
 the recorded onto snapshot with the same record, or the dataset rolled back
 to its pre-apply snapshot \(em and apply the recorded manifest from the first
-gate.
+gate, with the resolution put back to its skeleton.
 Nothing is decided again: the manifest is the decision.
 A resolution's edits are discarded by definition.
 .It Fl -abort
@@ -292,14 +292,13 @@ dataset rolled back to its pre-apply snapshot, that snapshot destroyed,
 every one of its
 .Sy zfs_rebase
 properties taken off it and the dataset mounted where it belongs again \(em
-destroy any snapshot the tool took for itself, unlink the manifest the
-record names, and remove the run directory.
+destroy any snapshot the tool took for itself, unlink the manifest and the
+resolution the record names, and remove the run directory.
 As if the run never happened.
 .It Fl -verify
 Alone on a result, report and write nothing at all, so that a deliberate
 edit to a rebased file is shown and never overwritten.
-Every action of the manifest, and of the resolution if there is one, is
-classified as
+Every action of the manifest is classified as
 .Sy done ,
 .Sy pending
 (the object is still as onto had it),
@@ -413,14 +412,27 @@ goes down immediately before the result stops being read-only, and the
 clean actions of the manifest are applied under it whether the decision had
 conflicts or not.
 .Sy conflicts
-is written after that apply verified, and is the hand-off to the conflict
-manager, which leaves its answers in the run directory as
-.Pa resolution ,
-a manifest in the same format holding actions and no conflicts.
+is written after that apply verified, and is the hand-off.
+The run wrote the resolution beside the manifest when it wrote the manifest:
+one line per conflicted name, in the manifest's own tree grammar, each
+carrying the conflict's group number and a choice of
+.Sy \&- ,
+.Sy keep ,
+.Sy onto
+or
+.Sy from .
+Lines are never added by hand and never removed; answering a conflict
+changes its choice, and the document is complete when no
+.Sy \&-
+is left.
+The move to
 .Sy applying2
-applies that file exactly as
-.Sy applying1
-applied the manifest.
+is made on a complete resolution and a
+.Fl -continue ,
+and on nothing else: only the person who answered the conflicts can say
+they are answered.
+.Sy applying2
+carries the choices out.
 .Sy done
 is written after the result verified and is read-only again, and before the
 holds are released, so that a kill in between leaves a record that says the
@@ -452,10 +464,10 @@ was applied to
 .It Sy applying1
 apply the manifest again and go on
 .It Sy conflicts
-apply the resolution if it is there, else say what is being waited for and
-exit 1
+go on when the resolution is complete, else say how many of its names are
+still unanswered and exit 1
 .It Sy applying2
-apply the resolution again and go on
+carry the choices out again and go on
 .It Sy done
 do the cleanup a kill between the done gate and the release would have
 skipped; with
@@ -473,8 +485,17 @@ the manifest, unless
 .Fl o
 named somewhere else
 .It Pa /var/db/zfs_rebase/<result>/resolution
-where the conflict manager's answers are expected
+the resolution, beside the manifest
 .El
+.Pp
+With
+.Fl o Ar FILE
+the manifest is
+.Ar FILE
+and the resolution is
+.Ar FILE Ns .resolution ,
+beside it.
+The record names both, and every verb finds them by the record.
 .Pp
 Not
 .Pa /var/run :
@@ -546,10 +567,11 @@ own choosing, and promoting, renaming or inheriting it is the user's work,
 deliberately.
 .Pp
 Conflict resolution is not part of this tool.
-A run with conflicts applies its clean actions, stops at the
+A run with conflicts applies its clean actions, writes the resolution as a
+skeleton of unanswered choices and stops at the
 .Sy conflicts
-gate and waits for a resolution file to appear; reading the conflicts back,
-presenting them and taking answers belong to a separate conflict manager.
+gate; reading the conflicts back and presenting them for answering belong to
+a separate conflict manager.
 .Pp
 A verify after done is best effort.
 Each input is looked for by name and then by guid across the pool, which is

@@ -64,8 +64,9 @@ int zr_run(const struct zr_run_opts *);
  * zr_continue takes the rebase on from the gate its record names,
  * through the gates that are left, in one process: the recorded
  * manifest is applied again (which is idempotent, so what is already
- * true is left alone), the resolution after it if the conflict
- * manager has left one, and then done, which releases the holds.
+ * true is left alone), the choices of the resolution after it once
+ * every one of them is answered, and then done, which releases the
+ * holds. An unanswered resolution is where the rebase waits.
  * With verify it prints the classification of every action as it
  * goes and repairs drift on the clean ones; conflicted names are
  * never touched.
@@ -74,8 +75,9 @@ int zr_run(const struct zr_run_opts *);
  * the first gate: the clone form destroys the clone and makes it
  * again from the recorded onto snapshot with the same record, and
  * the dataset form rolls the dataset back to it. Nothing is decided
- * again: the recorded manifest is the decision, and a resolution's
- * edits are discarded by definition.
+ * again: the recorded manifest is the decision, and the resolution
+ * goes back to its skeleton, which is what discarding its edits
+ * means.
  *
  * zr_report is --verify alone: it classifies and prints and writes
  * nothing at all, finding each input by name and then by guid, and

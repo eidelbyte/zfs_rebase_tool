@@ -57,6 +57,7 @@
 #define	ZR_PROP_TAG		"zfs_rebase:tag"
 #define	ZR_PROP_VERIFY		"zfs_rebase:verify"
 #define	ZR_PROP_MANIFEST	"zfs_rebase:manifest"
+#define	ZR_PROP_RESOLUTION	"zfs_rebase:resolution"
 #define	ZR_PROP_READONLY	"zfs_rebase:readonly"
 #define	ZR_PROP_STATE		"zfs_rebase:state"
 
@@ -68,7 +69,9 @@
  * string. made names the inputs the tool snapshotted itself and is
  * "" when both were given as snapshots; mode is "strict" or
  * "permissive"; form is "clone" or "dataset"; verify is "yes" or
- * "no".
+ * "no". manifest and resolution are the two documents of the run,
+ * written together and found by every verb through these two
+ * properties and never by guessing a path.
  *
  * readonly is the dataset form's own: the value the onto dataset's
  * readonly property had before the run took the dataset over, so
@@ -89,6 +92,7 @@ struct zr_rebase_record {
 	const char	*tag;		/* the hold tag, "zr-<12 hex>" */
 	const char	*verify;
 	const char	*manifest;	/* absolute path */
+	const char	*resolution;	/* absolute path, beside it */
 	const char	*readonly;	/* "on", "off", or NULL */
 };
 

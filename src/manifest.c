@@ -1061,10 +1061,16 @@ struct zp_ref {
 	uint32_t	zf_line;
 };
 
-/* Everything one parse run carries. */
+/*
+ * Everything one parse run carries. One of zp_out and zp_res is set:
+ * the manifest's parse fills the first, the resolution's the second,
+ * and everything between the line reader and the two dots is the same
+ * machinery for both.
+ */
 struct zp {
 	FILE			*zp_in;
 	struct zr_parsed	*zp_out;
+	struct zr_resolution	*zp_res;
 	char			*zp_err;
 	size_t			zp_errlen;
 	char			*zp_line;	/* the line just read */
@@ -1418,12 +1424,33 @@ zp_add_record(struct zp *p, const struct zr_record *r)
 	return (0);
 }
 
-/* The six header keys, in the order the format writes them. */
+/*
+ * The six header keys of each document, in the order it writes them.
+ * The two documents differ in the last two alone, and the version
+ * line the parse demands is passed in beside the table.
+ */
 static const char *const zp_hdrkey[] = {
 	"#base", "#from", "#onto", "#mode", "#actions", "#conflicts"
 };
 
+static const char *const zr_hdrkey[] = {
+	"#base", "#from", "#onto", "#mode", "#names", "#unanswered"
+};
+
 #define	ZP_NHDR		(sizeof (zp_hdrkey) / sizeof (zp_hdrkey[0]))
+
+/* strict or permissive-merge, and nothing else, in either document. */
+static int
+zp_mode(const char *v, size_t vlen, zr_mode_t *out)
+{
+	if (vlen == 6 && memcmp(v, "strict", 6) == 0)
+		*out = ZR_MODE_STRICT;
+	else if (vlen == 16 && memcmp(v, "permissive-merge", 16) == 0)
+		*out = ZR_MODE_PERMISSIVE;
+	else
+		return (-1);
+	return (0);
+}
 
 /* One header line's value: three names, the mode and the two counts. */
 static int
@@ -1442,11 +1469,7 @@ zp_header_value(struct zp *p, uint32_t which, const char *v, size_t vlen)
 		o->zp_onto = zp_dup(v, vlen);
 		return (o->zp_onto != NULL ? 0 : zp_errf(p, "out of memory"));
 	case 3:
-		if (vlen == 6 && memcmp(v, "strict", 6) == 0)
-			o->zp_mode = ZR_MODE_STRICT;
-		else if (vlen == 16 && memcmp(v, "permissive-merge", 16) == 0)
-			o->zp_mode = ZR_MODE_PERMISSIVE;
-		else
+		if (zp_mode(v, vlen, &o->zp_mode) != 0)
 			return (zp_errf(p, "the mode is strict or "
 			    "permissive-merge"));
 		return (0);
@@ -1464,15 +1487,56 @@ zp_header_value(struct zp *p, uint32_t which, const char *v, size_t vlen)
 }
 
 /*
- * The version line, which is the first line of the file and nothing
- * else, then the six headers in order. Any other line beginning with a
- * hash between them is a comment and is passed over.
+ * The resolution's header, the same six lines with the two counts of
+ * its own: how many name lines the tree section holds and how many of
+ * them are still unanswered, so that a tool can tell completeness
+ * without scanning.
  */
 static int
-zp_header(struct zp *p)
+zr_header_value(struct zp *p, uint32_t which, const char *v, size_t vlen)
+{
+	struct zr_resolution *o = p->zp_res;
+
+	switch (which) {
+	case 0:
+		o->zs_base = zp_dup(v, vlen);
+		return (o->zs_base != NULL ? 0 : zp_errf(p, "out of memory"));
+	case 1:
+		o->zs_from = zp_dup(v, vlen);
+		return (o->zs_from != NULL ? 0 : zp_errf(p, "out of memory"));
+	case 2:
+		o->zs_onto = zp_dup(v, vlen);
+		return (o->zs_onto != NULL ? 0 : zp_errf(p, "out of memory"));
+	case 3:
+		if (zp_mode(v, vlen, &o->zs_mode) != 0)
+			return (zp_errf(p, "the mode is strict or "
+			    "permissive-merge"));
+		return (0);
+	case 4:
+		p->zp_aline = p->zp_lineno;
+		if (zp_uint(v, vlen, &o->zs_names_declared) != 0)
+			return (zp_errf(p, "#names wants a count"));
+		return (0);
+	default:
+		p->zp_cline = p->zp_lineno;
+		if (zp_uint(v, vlen, &o->zs_unanswered_declared) != 0)
+			return (zp_errf(p, "#unanswered wants a count"));
+		return (0);
+	}
+}
+
+/*
+ * The version line, which is the first line of the file and nothing
+ * else, then the six headers in order. Any other line beginning with a
+ * hash between them is a comment and is passed over. Which document
+ * this is the version line says, and the caller has already decided:
+ * keys and the setter follow from it.
+ */
+static int
+zp_header(struct zp *p, const char *version, const char *const *keys)
 {
 	const char *s = NULL;
-	size_t klen, len = 0;
+	size_t klen, len = 0, vlen = strlen(version);
 	uint32_t i;
 	int rc;
 
@@ -1480,28 +1544,28 @@ zp_header(struct zp *p)
 	if (rc < 0)
 		return (zp_errf(p, "out of memory"));
 	if (rc == 0)
-		return (zp_errf(p, "expected #rebase-manifest 4"));
+		return (zp_errf(p, "expected %s", version));
 	zp_trim(p, &s, &len);
-	if (len != 18 || memcmp(s, "#rebase-manifest 4", 18) != 0)
-		return (zp_errf(p, "expected #rebase-manifest 4"));
+	if (len != vlen || memcmp(s, version, vlen) != 0)
+		return (zp_errf(p, "expected %s", version));
 	for (i = 0; i < ZP_NHDR; i++) {
-		klen = strlen(zp_hdrkey[i]);
+		klen = strlen(keys[i]);
 		for (;;) {
 			rc = zp_next(p, 0, &s, &len);
 			if (rc < 0)
 				return (-1);
 			if (rc == 0)
-				return (zp_errf(p, "expected %s",
-				    zp_hdrkey[i]));
+				return (zp_errf(p, "expected %s", keys[i]));
 			if (len > klen && s[klen] == ' ' &&
-			    memcmp(s, zp_hdrkey[i], klen) == 0)
+			    memcmp(s, keys[i], klen) == 0)
 				break;
 			if (*s != '#')
-				return (zp_errf(p, "expected %s",
-				    zp_hdrkey[i]));
+				return (zp_errf(p, "expected %s", keys[i]));
 		}
-		if (zp_header_value(p, i, s + klen + 1,
-		    len - klen - 1) != 0)
+		rc = p->zp_res != NULL ?
+		    zr_header_value(p, i, s + klen + 1, len - klen - 1) :
+		    zp_header_value(p, i, s + klen + 1, len - klen - 1);
+		if (rc != 0)
 			return (-1);
 	}
 	return (0);
@@ -1639,6 +1703,164 @@ zp_name_line(struct zp *p, const char *s, size_t len)
 }
 
 /*
+ * The four choices, in the order section 8 lists them, and the words
+ * they are written as. The index is the enum, so one table both reads
+ * a choice and writes it.
+ */
+static const char *const zr_choiceword[] = { "-", "keep", "onto", "from" };
+
+#define	ZR_NCHOICE	(sizeof (zr_choiceword) / sizeof (zr_choiceword[0]))
+
+/* The word one field holds, as a choice. Returns 0, or -1 for none. */
+static int
+zr_choice_of(const char *s, size_t len, enum zr_choice *out)
+{
+	size_t i;
+
+	for (i = 0; i < ZR_NCHOICE; i++) {
+		if (strlen(zr_choiceword[i]) == len &&
+		    memcmp(zr_choiceword[i], s, len) == 0) {
+			*out = (enum zr_choice)i;
+			return (0);
+		}
+	}
+	return (-1);
+}
+
+/*
+ * The five action words of section 4, which a resolution refuses on
+ * purpose: keep already expresses anything an action could, and a
+ * choice can be verified against the side it names.
+ */
+static int
+zr_is_action(const char *s, size_t len)
+{
+	static const char *const act[] = { "rm", "ln", "cp", "dup", "write" };
+	size_t i;
+
+	for (i = 0; i < sizeof (act) / sizeof (act[0]); i++) {
+		if (strlen(act[i]) == len && memcmp(act[i], s, len) == 0)
+			return (1);
+	}
+	return (0);
+}
+
+/* Take one line; the resolution owns its path from here on. */
+static int
+zr_res_add(struct zr_resolution *r, const struct zr_rline *l)
+{
+	if (r->zs_nlines == r->zs_cap) {
+		uint32_t cap = r->zs_cap != 0 ? r->zs_cap * 2 : 16;
+		struct zr_rline *nl;
+
+		nl = realloc(r->zs_lines, (size_t)cap * sizeof (*nl));
+		if (nl == NULL)
+			return (-1);
+		r->zs_lines = nl;
+		r->zs_cap = cap;
+	}
+	r->zs_lines[r->zs_nlines++] = *l;
+	return (0);
+}
+
+/* The two counts the header carries, worked out from the lines. */
+static void
+zr_res_counts(struct zr_resolution *r)
+{
+	r->zs_names_declared = r->zs_nlines;
+	r->zs_unanswered_declared = zr_resolution_unanswered(r);
+}
+
+/*
+ * One name line of a resolution: NAME, then what the name is --
+ * conflict N or drift -- and the one choice made for it. A name with
+ * neither is a directory that only scopes the lines under it and
+ * needs its trailing slash, exactly as in the manifest.
+ */
+static int
+zr_name_line(struct zp *p, const char *s, size_t len)
+{
+	struct zr_rline l;
+	unsigned char *name = NULL, *path = NULL;
+	const char *f = NULL;
+	size_t flen = 0, namelen = 0, pathlen = 0, pos = 0;
+	int isdir = 0, rc;
+
+	memset(&l, 0, sizeof (l));
+	if (zp_field(s, len, &pos, &f, &flen) == 0)
+		return (zp_errf(p, "a name line needs a name"));
+	if (f[flen - 1] == '/') {
+		isdir = 1;
+		flen--;
+	}
+	if (flen == 0)
+		return (zp_errf(p, "a name line needs a name"));
+	if (zp_decode(p, f, flen, "name", &name, &namelen) != 0)
+		return (-1);
+	rc = zp_join(p, p->zp_stack[p->zp_depth - 1].zs_path,
+	    p->zp_stack[p->zp_depth - 1].zs_len, name, namelen, &path,
+	    &pathlen);
+	free(name);
+	if (rc != 0)
+		return (-1);
+	if (zp_field(s, len, &pos, &f, &flen) == 0) {
+		if (isdir == 0) {
+			free(path);
+			return (zp_errf(p, "a name with no choice needs a "
+			    "trailing slash"));
+		}
+		rc = zp_push(p, path, pathlen, 0);
+		free(path);
+		return (rc);
+	}
+	if (flen == 8 && memcmp(f, "conflict", 8) == 0) {
+		l.zl_kind = ZR_RL_CONFLICT;
+	} else if (flen == 5 && memcmp(f, "drift", 5) == 0) {
+		l.zl_kind = ZR_RL_DRIFT;
+	} else {
+		int isact = zr_is_action(f, flen);
+
+		free(path);
+		if (isact != 0)
+			return (zp_errf(p, "\"%.*s\" is an action; a "
+			    "resolution holds choices", (int)flen, f));
+		return (zp_errf(p, "a name is conflict or drift, not "
+		    "\"%.*s\"", (int)flen, f));
+	}
+	if (l.zl_kind == ZR_RL_CONFLICT &&
+	    (zp_field(s, len, &pos, &f, &flen) == 0 ||
+	    zp_uint(f, flen, &l.zl_group) != 0 || l.zl_group == 0)) {
+		free(path);
+		return (zp_errf(p, "conflict wants a group number"));
+	}
+	if (zp_field(s, len, &pos, &f, &flen) == 0) {
+		free(path);
+		return (zp_errf(p, "this name has no choice"));
+	}
+	if (zr_choice_of(f, flen, &l.zl_choice) != 0) {
+		free(path);
+		return (zp_errf(p, "\"%.*s\" is no choice: -, keep, onto "
+		    "or from", (int)flen, f));
+	}
+	if (l.zl_kind == ZR_RL_DRIFT && l.zl_choice == ZR_CH_NONE) {
+		free(path);
+		return (zp_errf(p, "only a conflict line is unanswered"));
+	}
+	if (zp_field(s, len, &pos, &f, &flen) != 0) {
+		free(path);
+		return (zp_errf(p, "too many fields on a name line"));
+	}
+	l.zl_path = path;
+	l.zl_pathlen = pathlen;
+	l.zl_isdir = isdir;
+	if (zr_res_add(p->zp_res, &l) != 0) {
+		free(path);
+		return (zp_errf(p, "out of memory"));
+	}
+	return (isdir != 0 ? zp_push(p, path, pathlen, 0) : 0);
+}
+
+/*
  * The tree section: the root line, then name lines and the two dots
  * that close each open directory, until the two dots that close the
  * root and end the section.
@@ -1675,7 +1897,9 @@ zp_tree(struct zp *p)
 				return (0);
 			continue;
 		}
-		if (zp_name_line(p, s, len) != 0)
+		rc = p->zp_res != NULL ? zr_name_line(p, s, len) :
+		    zp_name_line(p, s, len);
+		if (rc != 0)
 			return (-1);
 	}
 }
@@ -1920,7 +2144,7 @@ zr_manifest_parse(FILE *in, struct zr_parsed *out, char *err, size_t errlen)
 	p.zp_out = out;
 	p.zp_err = err;
 	p.zp_errlen = errlen;
-	rc = zp_header(&p);
+	rc = zp_header(&p, "#rebase-manifest 4", zp_hdrkey);
 	if (rc == 0)
 		rc = zp_tree(&p);
 	if (rc == 0)
@@ -2062,14 +2286,21 @@ zw_entries(const struct zr_parsed *pp, uint32_t *np)
 	return (e);
 }
 
+/* Does the directory dir hold path, at any depth below it? */
+static int
+zp_under(const unsigned char *dir, size_t dirlen, const unsigned char *path,
+    size_t len)
+{
+	if (len <= dirlen || memcmp(dir, path, dirlen) != 0)
+		return (0);
+	return (dirlen == 1 || path[dirlen] == '/');
+}
+
 /* Does the directory d hold the line e, at any depth below it? */
 static int
 zw_under(const struct zw_ent *d, const struct zw_ent *e)
 {
-	if (e->ze_len <= d->ze_len ||
-	    memcmp(d->ze_path, e->ze_path, d->ze_len) != 0)
-		return (0);
-	return (d->ze_len == 1 || e->ze_path[d->ze_len] == '/');
+	return (zp_under(d->ze_path, d->ze_len, e->ze_path, e->ze_len));
 }
 
 /* Bytes as the format escapes them, one byte's escaping at a time. */
@@ -2225,4 +2456,380 @@ zr_parsed_write(FILE *out, const struct zr_parsed *pp)
 	for (i = 0; i < pp->zp_nrecords; i++)
 		zw_record(out, &pp->zp_records[i]);
 	return (ferror(out) != 0 ? -1 : 0);
+}
+
+/*
+ * ---------------------------------------------------------------
+ * The resolution (v4-manifest.md, section 8). Its parse is the
+ * manifest's parse with another header, another name line and no
+ * conflict section, so everything from the line reader to the two
+ * dots is shared above; what is left is here, with the writer that
+ * gives back the bytes it read and the two builders that make a
+ * document out of a manifest and out of a verify's drift.
+ * ---------------------------------------------------------------
+ */
+
+/* Nothing follows the tree section: there is no second section. */
+static int
+zr_tail(struct zp *p)
+{
+	const char *s = NULL;
+	size_t len = 0;
+	int rc;
+
+	rc = zp_next(p, 1, &s, &len);
+	if (rc < 0)
+		return (-1);
+	if (rc == 0)
+		return (0);
+	return (zp_errf(p, "nothing follows the tree section of a "
+	    "resolution"));
+}
+
+/*
+ * What only the whole file can answer: the two counts the header
+ * promised. The blame goes to the line that made the promise, as it
+ * does for the manifest's own counts.
+ */
+static int
+zr_finish(struct zp *p)
+{
+	struct zr_resolution *o = p->zp_res;
+	uint32_t n;
+
+	if (o->zs_nlines != o->zs_names_declared) {
+		p->zp_lineno = p->zp_aline;
+		return (zp_errf(p, "#names says %u but the tree has %u",
+		    o->zs_names_declared, o->zs_nlines));
+	}
+	n = zr_resolution_unanswered(o);
+	if (n != o->zs_unanswered_declared) {
+		p->zp_lineno = p->zp_cline;
+		return (zp_errf(p, "#unanswered says %u but %u of the lines "
+		    "are", o->zs_unanswered_declared, n));
+	}
+	return (0);
+}
+
+void
+zr_resolution_fini(struct zr_resolution *r)
+{
+	uint32_t i;
+
+	if (r == NULL)
+		return;
+	free(r->zs_base);
+	free(r->zs_from);
+	free(r->zs_onto);
+	for (i = 0; i < r->zs_nlines; i++)
+		free(r->zs_lines[i].zl_path);
+	free(r->zs_lines);
+	memset(r, 0, sizeof (*r));
+}
+
+uint32_t
+zr_resolution_unanswered(const struct zr_resolution *r)
+{
+	uint32_t i, n = 0;
+
+	if (r == NULL)
+		return (0);
+	for (i = 0; i < r->zs_nlines; i++)
+		if (r->zs_lines[i].zl_choice == ZR_CH_NONE)
+			n++;
+	return (n);
+}
+
+const char *
+zr_choice_str(enum zr_choice ch)
+{
+	return ((size_t)ch < ZR_NCHOICE ? zr_choiceword[ch] :
+	    zr_choiceword[ZR_CH_NONE]);
+}
+
+int
+zr_resolution_parse(FILE *in, struct zr_resolution *out, char *err,
+    size_t errlen)
+{
+	struct zp p;
+	int rc;
+
+	if (out == NULL)
+		return (-1);
+	memset(out, 0, sizeof (*out));
+	if (err != NULL && errlen > 0)
+		err[0] = '\0';
+	if (in == NULL)
+		return (-1);
+	memset(&p, 0, sizeof (p));
+	p.zp_in = in;
+	p.zp_res = out;
+	p.zp_err = err;
+	p.zp_errlen = errlen;
+	rc = zp_header(&p, "#rebase-resolution 4", zr_hdrkey);
+	if (rc == 0)
+		rc = zp_tree(&p);
+	if (rc == 0)
+		rc = zr_tail(&p);
+	if (rc == 0)
+		rc = zr_finish(&p);
+	while (p.zp_depth > 0)
+		free(p.zp_stack[--p.zp_depth].zs_path);
+	free(p.zp_closed);
+	free(p.zp_stack);
+	free(p.zp_line);
+	return (rc);
+}
+
+/*
+ * Writing a resolution. The tree section is not kept as a tree: the
+ * line paths are, and every directory the walk needs is an ancestor
+ * of one of them. Sorting them in manifest order puts them in the
+ * walk's own order, and one stack of open directories turns that list
+ * back into the scoped form -- the same shape zr_parsed_write has,
+ * without the type change's pair of lines, since a resolution names
+ * every path once.
+ */
+
+/* One line of the tree section: a line of the document, or a scope. */
+struct zs_ent {
+	const unsigned char	*ze_path;
+	size_t			ze_len;
+	uint32_t		ze_line;	/* index, or ZM_NONE */
+	int			ze_dir;
+};
+
+static int
+zs_cmp(const void *a, const void *b)
+{
+	const struct zs_ent *x = a, *y = b;
+
+	return (zp_path_cmp(x->ze_path, x->ze_len, y->ze_path, y->ze_len));
+}
+
+/* One entry per path: fold the repeated ancestors into one. */
+static uint32_t
+zs_dedupe(struct zs_ent *e, uint32_t n)
+{
+	uint32_t i, k = 0;
+
+	for (i = 1; i < n; i++) {
+		if (zp_path_cmp(e[k].ze_path, e[k].ze_len, e[i].ze_path,
+		    e[i].ze_len) == 0) {
+			if (e[i].ze_dir != 0)
+				e[k].ze_dir = 1;
+			if (e[i].ze_line != ZM_NONE)
+				e[k].ze_line = e[i].ze_line;
+			continue;
+		}
+		k++;
+		e[k] = e[i];
+	}
+	return (n != 0 ? k + 1 : 0);
+}
+
+/* Every line the tree section needs, in manifest order. */
+static struct zs_ent *
+zs_entries(const struct zr_resolution *r, uint32_t *np)
+{
+	struct zs_ent *e;
+	uint32_t i, n = 0;
+	size_t cap = 1, j;
+
+	for (i = 0; i < r->zs_nlines; i++) {
+		cap++;
+		for (j = 1; j < r->zs_lines[i].zl_pathlen; j++)
+			if (r->zs_lines[i].zl_path[j] == '/')
+				cap++;
+	}
+	e = malloc(cap * sizeof (*e));
+	if (e == NULL)
+		return (NULL);
+	e[n].ze_path = (const unsigned char *)"/";
+	e[n].ze_len = 1;
+	e[n].ze_line = ZM_NONE;
+	e[n].ze_dir = 1;
+	n++;
+	for (i = 0; i < r->zs_nlines; i++) {
+		const struct zr_rline *l = &r->zs_lines[i];
+
+		for (j = 1; j < l->zl_pathlen; j++) {
+			if (l->zl_path[j] != '/')
+				continue;
+			e[n].ze_path = l->zl_path;
+			e[n].ze_len = j;
+			e[n].ze_line = ZM_NONE;
+			e[n].ze_dir = 1;
+			n++;
+		}
+		e[n].ze_path = l->zl_path;
+		e[n].ze_len = l->zl_pathlen;
+		e[n].ze_line = i;
+		e[n].ze_dir = l->zl_isdir;
+		n++;
+	}
+	qsort(e, n, sizeof (*e), zs_cmp);
+	*np = zs_dedupe(e, n);
+	return (e);
+}
+
+/* One tree line: the name, its trailing slash, and its choice. */
+static void
+zs_line(FILE *out, const struct zr_resolution *r, const struct zs_ent *e,
+    uint32_t depth)
+{
+	const struct zr_rline *l;
+	const char *leaf;
+	size_t leaflen = 0;
+
+	zm_indent(out, depth);
+	if (e->ze_len == 1) {
+		(void) fputc('/', out);
+	} else {
+		leaf = zm_leaf((const char *)e->ze_path, e->ze_len, &leaflen);
+		zw_vis(out, (const unsigned char *)leaf, leaflen);
+		if (e->ze_dir != 0)
+			(void) fputc('/', out);
+	}
+	if (e->ze_line != ZM_NONE) {
+		l = &r->zs_lines[e->ze_line];
+		if (l->zl_kind == ZR_RL_CONFLICT)
+			(void) fprintf(out, " conflict %u", l->zl_group);
+		else
+			(void) fputs(" drift", out);
+		(void) fprintf(out, " %s", zr_choice_str(l->zl_choice));
+	}
+	(void) fputc('\n', out);
+}
+
+/* Close one open directory, at the depth its own line was written at. */
+static void
+zs_close(FILE *out, uint32_t depth)
+{
+	zm_indent(out, depth + 1);
+	(void) fputs("..\n", out);
+}
+
+int
+zr_resolution_write(FILE *out, const struct zr_resolution *r)
+{
+	struct zs_ent *e;
+	uint32_t *stack;
+	uint32_t i, n = 0, sd = 0;
+
+	if (out == NULL || r == NULL)
+		return (-1);
+	e = zs_entries(r, &n);
+	stack = e != NULL ? malloc((size_t)n * sizeof (*stack)) : NULL;
+	if (e == NULL || stack == NULL) {
+		free(e);
+		free(stack);
+		return (-1);
+	}
+	(void) fputs("#rebase-resolution 4\n", out);
+	(void) fprintf(out, "#base %s\n", zm_text(r->zs_base));
+	(void) fprintf(out, "#from %s\n", zm_text(r->zs_from));
+	(void) fprintf(out, "#onto %s\n", zm_text(r->zs_onto));
+	(void) fprintf(out, "#mode %s\n",
+	    r->zs_mode == ZR_MODE_PERMISSIVE ? "permissive-merge" : "strict");
+	(void) fprintf(out, "#names %u\n", r->zs_nlines);
+	(void) fprintf(out, "#unanswered %u\n", zr_resolution_unanswered(r));
+	for (i = 0; i < n; i++) {
+		while (sd > 0 && zp_under(e[stack[sd - 1]].ze_path,
+		    e[stack[sd - 1]].ze_len, e[i].ze_path, e[i].ze_len) == 0) {
+			sd--;
+			zs_close(out, sd);
+		}
+		zs_line(out, r, &e[i], sd);
+		if (e[i].ze_dir == 0)
+			continue;
+		stack[sd++] = i;
+	}
+	while (sd > 0) {
+		sd--;
+		zs_close(out, sd);
+	}
+	free(stack);
+	free(e);
+	return (ferror(out) != 0 ? -1 : 0);
+}
+
+/* One line's path, copied and terminated, as the document owns it. */
+static unsigned char *
+zs_path_dup(const unsigned char *path, size_t len)
+{
+	unsigned char *copy = malloc(len + 1);
+
+	if (copy != NULL) {
+		memcpy(copy, path, len);
+		copy[len] = '\0';
+	}
+	return (copy);
+}
+
+int
+zr_resolution_skeleton(const struct zr_parsed *m, enum zr_choice def,
+    struct zr_resolution *out)
+{
+	uint32_t i;
+
+	if (out == NULL)
+		return (-1);
+	memset(out, 0, sizeof (*out));
+	if (m == NULL || (size_t)def >= ZR_NCHOICE)
+		return (-1);
+	out->zs_base = zp_dup(zm_text(m->zp_base), strlen(zm_text(m->zp_base)));
+	out->zs_from = zp_dup(zm_text(m->zp_from), strlen(zm_text(m->zp_from)));
+	out->zs_onto = zp_dup(zm_text(m->zp_onto), strlen(zm_text(m->zp_onto)));
+	out->zs_mode = m->zp_mode;
+	if (out->zs_base == NULL || out->zs_from == NULL ||
+	    out->zs_onto == NULL) {
+		zr_resolution_fini(out);
+		return (-1);
+	}
+	for (i = 0; i < m->zp_nactions; i++) {
+		const struct zr_action *a = &m->zp_actions[i];
+		struct zr_rline l;
+
+		if (a->za_kind != ZR_ACT_CONFLICT)
+			continue;
+		memset(&l, 0, sizeof (l));
+		l.zl_kind = ZR_RL_CONFLICT;
+		l.zl_choice = def;
+		l.zl_group = a->za_conflict;
+		l.zl_isdir = a->za_isdir;
+		l.zl_pathlen = a->za_pathlen;
+		l.zl_path = zs_path_dup(a->za_path, a->za_pathlen);
+		if (l.zl_path == NULL || zr_res_add(out, &l) != 0) {
+			free(l.zl_path);
+			zr_resolution_fini(out);
+			return (-1);
+		}
+	}
+	zr_res_counts(out);
+	return (0);
+}
+
+int
+zr_resolution_add_drift(struct zr_resolution *r, const unsigned char *path,
+    size_t len, int isdir, enum zr_choice ch)
+{
+	struct zr_rline l;
+
+	if (r == NULL || path == NULL || len == 0 || path[0] != '/' ||
+	    (len > 1 && path[len - 1] == '/') || ch == ZR_CH_NONE ||
+	    (size_t)ch >= ZR_NCHOICE)
+		return (-1);
+	memset(&l, 0, sizeof (l));
+	l.zl_kind = ZR_RL_DRIFT;
+	l.zl_choice = ch;
+	l.zl_isdir = isdir != 0;
+	l.zl_pathlen = len;
+	l.zl_path = zs_path_dup(path, len);
+	if (l.zl_path == NULL || zr_res_add(r, &l) != 0) {
+		free(l.zl_path);
+		return (-1);
+	}
+	zr_res_counts(r);
+	return (0);
 }

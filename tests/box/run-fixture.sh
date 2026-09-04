@@ -228,6 +228,7 @@ zfs snapshot "$POOL/from@work" "$POOL/onto@work" || exit 2
 # destroy a dataset no run ever made.
 zfs set zfs_rebase:tag=bogus "$POOL" || exit 2
 zfs set zfs_rebase:manifest=/nonexistent/manifest "$POOL" || exit 2
+zfs set zfs_rebase:resolution=/nonexistent/resolution "$POOL" || exit 2
 zfs create "$POOL/plain" || exit 2
 
 say "0. the base derivation refuses what it should"
@@ -371,7 +372,7 @@ cmnt=$(zfs get -H -o value mountpoint "$POOL/result")
 
 # Every property of the record is the result's own, not the pool's.
 for prop in base base_guid from from_guid onto onto_guid made mode \
-    form tag verify manifest; do
+    form tag verify manifest resolution; do
 	src=$(recsrc "zfs_rebase:$prop" "$POOL/result")
 	[ "$src" = local ] || \
 	    fail "zfs_rebase:$prop has source $src, want local"
@@ -390,6 +391,24 @@ want=strict
     fail "zfs_rebase:mode is not $want"
 [ "$(recval zfs_rebase:manifest "$POOL/result")" = "$tmp/got" ] || \
     fail "zfs_rebase:manifest is not $tmp/got"
+# -o names the manifest and the resolution goes beside it, which is
+# that name and .resolution: the record says so and every verb reads
+# the record rather than guessing a path.
+RES=$tmp/got.resolution
+[ "$(recval zfs_rebase:resolution "$POOL/result")" = "$RES" ] || \
+    fail "zfs_rebase:resolution is not $RES"
+[ -f "$RES" ] || fail "the run wrote no resolution at $RES"
+grep -q '^#rebase-resolution 4$' "$RES" || \
+    { head -3 "$RES"; fail "$RES is no resolution"; }
+grep -q "^#onto $POOL/onto@work\$" "$RES" || \
+    { head -8 "$RES"; fail "the resolution names other snapshots"; }
+# One line per conflicted name of the manifest, and every one of
+# them unanswered: that is what a skeleton is.
+want_names=$(grep -c ' conflict [0-9][0-9]*$' "$tmp/expect" || true)
+[ "$(sed -n 's/^#names //p' "$RES")" = "$want_names" ] || \
+    { head -8 "$RES"; fail "the resolution has not $want_names names"; }
+[ "$(sed -n 's/^#unanswered //p' "$RES")" = "$want_names" ] || \
+    { head -8 "$RES"; fail "the skeleton is not wholly unanswered"; }
 for side in base:$POOL/base@base from:$POOL/from@work onto:$POOL/onto@work; do
 	which=${side%%:*}
 	snap=${side#*:}
@@ -450,8 +469,8 @@ grep -q 'pending 0' "$tmp/verify1" || \
 echo "ok   --verify: exit 0, counts printed, still at $state"
 
 # --continue on a rebase that is where it should be changes nothing:
-# a done one is done, and a conflicted one waits for a resolution
-# that nothing in this sprint writes.
+# a done one is done, and a conflicted one waits at its skeleton,
+# which nobody has answered, and says how much of it is unanswered.
 "$bin" --continue --result "$POOL/result" > "$tmp/cont1" 2>&1
 st=$?
 if [ $clean -eq 1 ]; then
@@ -460,8 +479,10 @@ if [ $clean -eq 1 ]; then
 else
 	[ $st -eq 1 ] || \
 	    { cat "$tmp/cont1"; fail "--continue at conflicts exited $st, want 1"; }
-	grep -q "$RUNDIR/resolution" "$tmp/cont1" || \
+	grep -q "$RES" "$tmp/cont1" || \
 	    { cat "$tmp/cont1"; fail "--continue did not name the resolution"; }
+	grep -q "$want_names of $want_names name"  "$tmp/cont1" || \
+	    { cat "$tmp/cont1"; fail "--continue did not count the unanswered"; }
 fi
 [ "$(recval zfs_rebase:state "$POOL/result")" = "$state" ] || \
     fail "--continue moved the state"
@@ -554,6 +575,42 @@ case "$fixture" in
 	again "$tmp/again3"
 	idempotent "$tmp/again3" "$want_conf"
 	echo "ok   --restart: rebuilt, at $state, held under $tag, tree equal"
+
+	say "3d. the resolution answered (probe.zrt)"
+	# The restart above put the skeleton back: the tool wrote it
+	# again from the recorded manifest, every line unanswered,
+	# whatever had been written into it before.
+	[ "$(sed -n 's/^#unanswered //p' "$RES")" = "$want_names" ] || \
+	    { head -8 "$RES"; fail "--restart did not put the skeleton back"; }
+	# Answering is one field per line -- "-" becomes keep -- and the
+	# header's count goes with them. Lines are never added, never
+	# removed: the file is the record of what was chosen.
+	sed -e 's/ -$/ keep/' -e 's/^#unanswered .*$/#unanswered 0/' \
+	    "$RES" > "$RES.answered" || fail "cannot answer $RES"
+	mv "$RES.answered" "$RES" || fail "cannot answer $RES"
+	[ "$(grep -c ' keep$' "$RES")" = "$want_names" ] || \
+	    { cat "$RES"; fail "the answers did not take"; }
+	[ "$(sed -n 's/^#names //p' "$RES")" = "$want_names" ] || \
+	    { cat "$RES"; fail "answering changed the count of names"; }
+	"$bin" --continue --result "$POOL/result" > "$tmp/cont3" 2>&1
+	st=$?
+	[ $st -eq 0 ] || \
+	    { cat "$tmp/cont3"; fail "--continue over an answered resolution exited $st, want 0"; }
+	nowstate=$(recval zfs_rebase:state "$POOL/result")
+	[ "$nowstate" = done ] || \
+	    fail "the answered rebase is at $nowstate, want done"
+	for s in "$POOL/base@base" "$POOL/from@work" "$POOL/onto@work"; do
+		held=$(zfs holds -H "$s") || fail "zfs holds $s"
+		[ -z "$held" ] || fail "$s is still held after done: $held"
+	done
+	[ "$(zfs get -H -o value readonly "$POOL/result")" = on ] || \
+	    fail "done left the result writable"
+	# Every choice is keep for now, so applying2 wrote nothing and
+	# the tree is still the one stage 1 made: a second rebase has no
+	# action and the same conflicts. apply-choices changes this.
+	again "$tmp/again4"
+	idempotent "$tmp/again4" "$want_conf"
+	echo "ok   answered: --continue -> done, holds released, tree equal"
 	;;
 esac
 
@@ -568,6 +625,9 @@ if zfs list -H -o name "$POOL/result" > /dev/null 2>&1; then
 fi
 if [ -e "$tmp/got" ]; then
 	fail "the recorded manifest $tmp/got survived the abort"
+fi
+if [ -e "$RES" ]; then
+	fail "the recorded resolution $RES survived the abort"
 fi
 if [ -e "/var/db/zfs_rebase/$POOL" ]; then
 	fail "/var/db/zfs_rebase/$POOL survived the abort"
@@ -687,7 +747,7 @@ dataset_pass() {
 	dtag=$(recval zfs_rebase:tag "$POOL/onto")
 	dfrom=$(recval zfs_rebase:from "$POOL/onto")
 	for prop in base base_guid from from_guid onto onto_guid made mode \
-	    form tag verify manifest readonly; do
+	    form tag verify manifest resolution readonly; do
 		src=$(recsrc "zfs_rebase:$prop" "$POOL/onto")
 		[ "$src" = local ] || \
 		    dfail "zfs_rebase:$prop has source $src, want local"
@@ -716,6 +776,16 @@ dataset_pass() {
 	    dfail "the pre-apply snapshot $POOL/onto@$dname is not there"
 	echo "ok   record: form dataset, made from, readonly off, the"
 	echo "     pre-apply snapshot $dname, every property local"
+
+	# -o named the manifest, so the resolution is beside it, and
+	# the record says so: an unanswered skeleton, one line per
+	# conflicted name, whatever form the run was made in.
+	DRES=$tmp/got-d.resolution
+	[ "$(recval zfs_rebase:resolution "$POOL/onto")" = "$DRES" ] || \
+	    dfail "zfs_rebase:resolution is not $DRES"
+	[ -f "$DRES" ] || dfail "the run wrote no resolution at $DRES"
+	[ "$(sed -n 's/^#unanswered //p' "$DRES")" = "$want_names" ] || \
+	    { head -8 "$DRES"; dfail "the skeleton is not wholly unanswered"; }
 
 	dsay "the dataset is back in service"
 	[ "$(zfs get -H -o value mountpoint "$POOL/onto")" = "$MNT/onto" ] || \
@@ -776,8 +846,10 @@ dataset_pass() {
 	else
 		[ $dst -eq 1 ] || \
 		    { cat "$tmp/d-cont"; dfail "--continue exited $dst, want 1"; }
-		grep -q "$DRUN/resolution" "$tmp/d-cont" || \
+		grep -q "$DRES" "$tmp/d-cont" || \
 		    { cat "$tmp/d-cont"; dfail "--continue named no resolution"; }
+		grep -q "$want_names of $want_names name" "$tmp/d-cont" || \
+		    { cat "$tmp/d-cont"; dfail "--continue did not count the unanswered"; }
 	fi
 	[ "$(recval zfs_rebase:state "$POOL/onto")" = "$dstate" ] || \
 	    dfail "--continue moved the state"
@@ -815,6 +887,7 @@ dataset_pass() {
 	hassnap "$POOL/onto@$dname" && \
 	    dfail "the pre-apply snapshot survived the abort"
 	hassnap "$dfrom" && dfail "$dfrom survived the abort"
+	[ -e "$DRES" ] && dfail "the resolution $DRES survived the abort"
 	[ -e "$DRUN" ] && dfail "$DRUN survived the abort"
 	mount | grep -q " on $MNT/onto " || \
 	    dfail "onto is not at $MNT/onto after the abort"

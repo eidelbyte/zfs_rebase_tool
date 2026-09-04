@@ -11,9 +11,13 @@
  * every record checked field by field, the fixture's expect block
  * parsed against the emitted text, a parse written out again and
  * compared with the bytes it came from, and one test per way a
- * manifest can be wrong, each demanding the line its error names. The
- * family is ZM of tests/MATRIX.md and every test below names the cells
- * it closes.
+ * manifest can be wrong, each demanding the line its error names.
+ *
+ * Then the resolution of section 8, which is the same tree grammar
+ * with a choice per name: the example parsed and written back, the
+ * skeleton a manifest makes, a drift line added to one, and one test
+ * per way a resolution can be wrong. The family is ZM of
+ * tests/MATRIX.md and every test below names the cells it closes.
  */
 
 #include <stdio.h>
@@ -732,6 +736,444 @@ test_rejections(void)
 	    "line 12: ");
 }
 
+/*
+ * ---------------------------------------------------------------
+ * The resolution of v4-manifest.md section 8: the same tree grammar
+ * with a choice per name. Cells ZM60 to ZM81 of family ZM.
+ * ---------------------------------------------------------------
+ */
+
+/* The section 8 example, which is the grammar's own statement of itself. */
+static const char want_res[] =
+	"#rebase-resolution 4\n"
+	"#base zrtdiff/fs@base\n"
+	"#from zrtdiff/from@work\n"
+	"#onto zrtdiff/onto@work\n"
+	"#mode strict\n"
+	"#names 4\n"
+	"#unanswered 1\n"
+	"/\n"
+	"    a conflict 1 -\n"
+	"    d/ conflict 2 onto\n"
+	"        f conflict 2 onto\n"
+	"        ..\n"
+	"    k drift keep\n"
+	"    ..\n";
+
+/* One resolution parsed out of a string, through a temporary file. */
+static int
+res_parse_text(const char *text, struct zr_resolution *out, char *err,
+    size_t errlen)
+{
+	FILE *f;
+	int rc;
+
+	f = tmpfile();
+	CHECK(f != NULL);
+	CHECK(fwrite(text, 1, strlen(text), f) == strlen(text));
+	CHECK(fseek(f, 0, SEEK_SET) == 0);
+	rc = zr_resolution_parse(f, out, err, errlen);
+	(void) fclose(f);
+	return (rc);
+}
+
+static void
+res_parse_ok(const char *tag, const char *text, struct zr_resolution *out)
+{
+	char err[192];
+
+	err[0] = '\0';
+	checks++;
+	if (res_parse_text(text, out, err, sizeof (err)) != 0) {
+		printf("%s: the parse failed: %s\n", tag, err);
+		exit(1);
+	}
+}
+
+/* One resolution that must be rejected, with the line its error names. */
+static void
+res_reject(const char *tag, const char *text, const char *want)
+{
+	struct zr_resolution r;
+	char err[192];
+
+	err[0] = '\0';
+	CHECK(res_parse_text(text, &r, err, sizeof (err)) == -1);
+	checks++;
+	if (strncmp(err, want, strlen(want)) != 0) {
+		printf("%s: want \"%s...\", got \"%s\"\n", tag, want, err);
+		exit(1);
+	}
+	zr_resolution_fini(&r);
+}
+
+/* One resolution written into a temporary file and read back whole. */
+static char *
+res_write(const struct zr_resolution *r, size_t *lenp)
+{
+	FILE *f;
+
+	f = tmpfile();
+	CHECK(f != NULL);
+	CHECK(zr_resolution_write(f, r) == 0);
+	return (slurp(f, lenp));
+}
+
+/* Parse a resolution, write it out again, and demand the same bytes. */
+static void
+res_roundtrip(const char *tag, const char *text)
+{
+	struct zr_resolution r;
+	char *got;
+	size_t gotlen = 0;
+
+	res_parse_ok(tag, text, &r);
+	got = res_write(&r, &gotlen);
+	compare(tag, got, gotlen, text);
+	free(got);
+	zr_resolution_fini(&r);
+}
+
+/* One parsed line, field by field. */
+static void
+check_rline(const struct zr_resolution *r, uint32_t i,
+    enum zr_rline_kind kind, const char *path, int isdir, uint32_t group,
+    enum zr_choice ch)
+{
+	const struct zr_rline *l;
+
+	CHECK(i < r->zs_nlines);
+	l = &r->zs_lines[i];
+	CHECK(l->zl_kind == kind);
+	CHECK(l->zl_pathlen == strlen(path));
+	CHECK(memcmp(l->zl_path, path, l->zl_pathlen) == 0);
+	CHECK(l->zl_isdir == isdir);
+	CHECK(l->zl_group == group);
+	CHECK(l->zl_choice == ch);
+}
+
+/*
+ * ZM60, ZM61, ZM66: the section 8 example, read back line by line --
+ * the paths rebuilt from the scoping, the group numbers kept, the
+ * choices as written -- then written out again byte for byte.
+ */
+static void
+test_res_example(void)
+{
+	struct zr_resolution r;
+
+	res_parse_ok("resolution example", want_res, &r);
+	CHECK(strcmp(r.zs_base, "zrtdiff/fs@base") == 0);
+	CHECK(strcmp(r.zs_from, "zrtdiff/from@work") == 0);
+	CHECK(strcmp(r.zs_onto, "zrtdiff/onto@work") == 0);
+	CHECK(r.zs_mode == ZR_MODE_STRICT);
+	CHECK(r.zs_names_declared == 4);
+	CHECK(r.zs_unanswered_declared == 1);
+	CHECK(r.zs_nlines == 4);
+	check_rline(&r, 0, ZR_RL_CONFLICT, "/a", 0, 1, ZR_CH_NONE);
+	check_rline(&r, 1, ZR_RL_CONFLICT, "/d", 1, 2, ZR_CH_ONTO);
+	check_rline(&r, 2, ZR_RL_CONFLICT, "/d/f", 0, 2, ZR_CH_ONTO);
+	check_rline(&r, 3, ZR_RL_DRIFT, "/k", 0, 0, ZR_CH_KEEP);
+	CHECK(zr_resolution_unanswered(&r) == 1);
+	zr_resolution_fini(&r);
+	res_roundtrip("resolution example", want_res);
+	/* the words, which are the same table the parse read */
+	CHECK(strcmp(zr_choice_str(ZR_CH_NONE), "-") == 0);
+	CHECK(strcmp(zr_choice_str(ZR_CH_KEEP), "keep") == 0);
+	CHECK(strcmp(zr_choice_str(ZR_CH_ONTO), "onto") == 0);
+	CHECK(strcmp(zr_choice_str(ZR_CH_FROM), "from") == 0);
+}
+
+/*
+ * A manifest with conflicts at four depths: a leaf, a directory and
+ * its child, and one under two directories that carry nothing of
+ * their own. The skeleton of it is what the tests below turn on.
+ */
+static const char man_conf[] =
+	"#rebase-manifest 4\n"
+	"#base b\n"
+	"#from f\n"
+	"#onto o\n"
+	"#mode strict\n"
+	"#actions 1\n"
+	"#conflicts 2\n"
+	"/\n"
+	"    a conflict 1\n"
+	"    d/ conflict 2\n"
+	"        f conflict 2\n"
+	"        ..\n"
+	"    e/\n"
+	"        deep/\n"
+	"            x conflict 2\n"
+	"            ..\n"
+	"        ..\n"
+	"    k rm\n"
+	"    ..\n"
+	"\n"
+	"# a pool is one file and all its names: {names}letter; same\n"
+	"# letter, same bytes\n"
+	"conflict 1 changed-both\n"
+	"  why  /a changed on both sides\n"
+	"  base ({/a}x)\n"
+	"  from ({/a}y)\n"
+	"  onto ({/a}z)\n"
+	"conflict 2 disagree\n"
+	"  why  /d and /d/f disagree\n"
+	"  base ({/d}x)\n"
+	"  from ({/d}y)\n"
+	"  onto ({/d}z)\n";
+
+/* The skeleton of it: every conflict mark, nothing else, unanswered. */
+static const char want_skel[] =
+	"#rebase-resolution 4\n"
+	"#base b\n"
+	"#from f\n"
+	"#onto o\n"
+	"#mode strict\n"
+	"#names 4\n"
+	"#unanswered 4\n"
+	"/\n"
+	"    a conflict 1 -\n"
+	"    d/ conflict 2 -\n"
+	"        f conflict 2 -\n"
+	"        ..\n"
+	"    e/\n"
+	"        deep/\n"
+	"            x conflict 2 -\n"
+	"            ..\n"
+	"        ..\n"
+	"    ..\n";
+
+/* Parse one manifest and hand back the skeleton it makes. */
+static char *
+skeleton_of(const char *tag, const char *text, enum zr_choice def,
+    size_t *lenp)
+{
+	struct zr_resolution r;
+	struct zr_parsed p;
+	char *got;
+
+	parse_ok(tag, text, &p);
+	CHECK(zr_resolution_skeleton(&p, def, &r) == 0);
+	got = res_write(&r, lenp);
+	zr_resolution_fini(&r);
+	zr_parsed_fini(&p);
+	return (got);
+}
+
+/*
+ * ZM62, ZM63, ZM64, ZM67, ZM69: the skeleton. Every conflict mark of
+ * the manifest becomes a line, in manifest order, keeping its group
+ * number and its trailing slash; the rm is not one and neither are
+ * the directories that only scope, which the writer derives again
+ * from the paths. A manifest with no conflicts gives an empty
+ * document. The default choice is what every line starts as, which is
+ * what a --take flag will pass. And the skeleton the run path writes
+ * -- parse the manifest file, skeleton, write -- is these same bytes,
+ * since it is this same call over the same text.
+ */
+static void
+test_res_skeleton(void)
+{
+	struct zr_resolution r;
+	struct zr_parsed p;
+	char *got, *again;
+	size_t gotlen = 0, againlen = 0;
+
+	got = skeleton_of("skeleton", man_conf, ZR_CH_NONE, &gotlen);
+	compare("skeleton", got, gotlen, want_skel);
+	again = skeleton_of("skeleton again", man_conf, ZR_CH_NONE,
+	    &againlen);
+	compare("skeleton twice", again, againlen, got);
+	free(again);
+	free(got);
+	/* the lines themselves, not only the bytes they are written as */
+	parse_ok("skeleton fields", man_conf, &p);
+	CHECK(zr_resolution_skeleton(&p, ZR_CH_NONE, &r) == 0);
+	CHECK(r.zs_nlines == 4);
+	CHECK(zr_resolution_unanswered(&r) == 4);
+	check_rline(&r, 0, ZR_RL_CONFLICT, "/a", 0, 1, ZR_CH_NONE);
+	check_rline(&r, 1, ZR_RL_CONFLICT, "/d", 1, 2, ZR_CH_NONE);
+	check_rline(&r, 2, ZR_RL_CONFLICT, "/d/f", 0, 2, ZR_CH_NONE);
+	check_rline(&r, 3, ZR_RL_CONFLICT, "/e/deep/x", 0, 2, ZR_CH_NONE);
+	zr_resolution_fini(&r);
+	zr_parsed_fini(&p);
+	/* a --take flag's skeleton: answered on every line from the start */
+	got = skeleton_of("take onto", man_conf, ZR_CH_ONTO, &gotlen);
+	CHECK(strstr(got, "#unanswered 0\n") != NULL);
+	CHECK(strstr(got, "    a conflict 1 onto\n") != NULL);
+	CHECK(strstr(got, "            x conflict 2 onto\n") != NULL);
+	CHECK(strstr(got, " -\n") == NULL);
+	free(got);
+	/* and a manifest with nothing to answer */
+	got = skeleton_of("no conflicts",
+	    "#rebase-manifest 4\n#base b\n#from f\n#onto o\n"
+	    "#mode permissive-merge\n#actions 1\n#conflicts 0\n"
+	    "/\n    a rm\n    ..\n", ZR_CH_NONE, &gotlen);
+	compare("no conflicts", got, gotlen,
+	    "#rebase-resolution 4\n#base b\n#from f\n#onto o\n"
+	    "#mode permissive-merge\n#names 0\n#unanswered 0\n"
+	    "/\n    ..\n");
+	free(got);
+}
+
+/*
+ * ZM65: a drift line added to a skeleton, which is what a verify at
+ * the conflicts gate does, and the document written and read again
+ * with both kinds of line in it. A drift line is answered by
+ * definition, so the unanswered count does not move.
+ */
+static void
+test_res_drift(void)
+{
+	struct zr_resolution r, back;
+	struct zr_parsed p;
+	char *got;
+	size_t gotlen = 0;
+
+	parse_ok("drift base", man_conf, &p);
+	CHECK(zr_resolution_skeleton(&p, ZR_CH_NONE, &r) == 0);
+	zr_parsed_fini(&p);
+	CHECK(zr_resolution_add_drift(&r, (const unsigned char *)"/e/deep",
+	    7, 1, ZR_CH_KEEP) == 0);
+	CHECK(zr_resolution_add_drift(&r, (const unsigned char *)"/n", 2, 0,
+	    ZR_CH_ONTO) == 0);
+	CHECK(r.zs_nlines == 6);
+	CHECK(zr_resolution_unanswered(&r) == 4);
+	CHECK(r.zs_names_declared == 6);
+	CHECK(r.zs_unanswered_declared == 4);
+	/* a drift line is never unanswered, and a path is absolute */
+	CHECK(zr_resolution_add_drift(&r, (const unsigned char *)"/n", 2, 0,
+	    ZR_CH_NONE) == -1);
+	CHECK(zr_resolution_add_drift(&r, (const unsigned char *)"n", 1, 0,
+	    ZR_CH_KEEP) == -1);
+	CHECK(zr_resolution_add_drift(&r, (const unsigned char *)"/n/", 3, 1,
+	    ZR_CH_KEEP) == -1);
+	got = res_write(&r, &gotlen);
+	zr_resolution_fini(&r);
+	compare("drift", got, gotlen,
+	    "#rebase-resolution 4\n#base b\n#from f\n#onto o\n"
+	    "#mode strict\n#names 6\n#unanswered 4\n"
+	    "/\n"
+	    "    a conflict 1 -\n"
+	    "    d/ conflict 2 -\n"
+	    "        f conflict 2 -\n"
+	    "        ..\n"
+	    "    e/\n"
+	    "        deep/ drift keep\n"
+	    "            x conflict 2 -\n"
+	    "            ..\n"
+	    "        ..\n"
+	    "    n drift onto\n"
+	    "    ..\n");
+	res_parse_ok("drift back", got, &back);
+	CHECK(back.zs_nlines == 6);
+	check_rline(&back, 3, ZR_RL_DRIFT, "/e/deep", 1, 0, ZR_CH_KEEP);
+	check_rline(&back, 5, ZR_RL_DRIFT, "/n", 0, 0, ZR_CH_ONTO);
+	zr_resolution_fini(&back);
+	free(got);
+}
+
+/*
+ * ZM68: the escaping is the manifest's, in a resolution line: a
+ * space, a hash and the two bytes of an accented letter, in a leaf
+ * and in a directory that scopes another line.
+ */
+static const char want_res_esc[] =
+	"#rebase-resolution 4\n"
+	"#base b\n"
+	"#from f\n"
+	"#onto o\n"
+	"#mode strict\n"
+	"#names 3\n"
+	"#unanswered 1\n"
+	"/\n"
+	"    a\\043b drift keep\n"
+	"    caf\\303\\251\\040x conflict 1 -\n"
+	"    d\\040d/\n"
+	"        n conflict 2 from\n"
+	"        ..\n"
+	"    ..\n";
+
+static void
+test_res_escapes(void)
+{
+	struct zr_resolution r;
+
+	res_roundtrip("resolution escapes", want_res_esc);
+	res_parse_ok("resolution escapes", want_res_esc, &r);
+	check_rline(&r, 0, ZR_RL_DRIFT, "/a#b", 0, 0, ZR_CH_KEEP);
+	check_rline(&r, 1, ZR_RL_CONFLICT, "/caf\303\251 x", 0, 1,
+	    ZR_CH_NONE);
+	check_rline(&r, 2, ZR_RL_CONFLICT, "/d d/n", 0, 2, ZR_CH_FROM);
+	zr_resolution_fini(&r);
+}
+
+/* The seven header lines of a resolution to be rejected further down. */
+#define	RR(names, unans)						\
+	"#rebase-resolution 4\n#base b\n#from f\n#onto o\n"		\
+	"#mode strict\n#names " names "\n#unanswered " unans "\n"
+
+/*
+ * ZM70 to ZM81: every way a resolution can be wrong, one test each,
+ * and each one demanding the line the error names. The header is
+ * seven lines, so the tree section starts at line 8.
+ */
+static void
+test_res_rejections(void)
+{
+	/* ZM70: a manifest is not a resolution, however well formed */
+	res_reject("manifest header", want_probe, "line 1: ");
+	/* ZM71: the version line is the first line or the file is not one */
+	res_reject("version", "#rebase-resolution 5\n" RR("0", "0"),
+	    "line 1: ");
+	/* ZM72: the five actions of section 4 are not choices */
+	res_reject("action rm", RR("1", "0") "/\n    a rm\n    ..\n",
+	    "line 9: ");
+	res_reject("action write",
+	    RR("1", "0") "/\n    a write /a\n    ..\n", "line 9: ");
+	res_reject("action dup", RR("1", "0") "/\n    a dup /a\n    ..\n",
+	    "line 9: ");
+	/* ZM73: and neither is anything else */
+	res_reject("kind", RR("1", "0") "/\n    a zap keep\n    ..\n",
+	    "line 9: ");
+	/* ZM74: a choice outside the four */
+	res_reject("choice", RR("1", "0") "/\n    a drift base\n    ..\n",
+	    "line 9: ");
+	/* ZM75: only a conflict line is unanswered */
+	res_reject("drift dash", RR("1", "1") "/\n    a drift -\n    ..\n",
+	    "line 9: ");
+	/* ZM76: a conflict line without its group number */
+	res_reject("no group", RR("1", "0") "/\n    a conflict keep\n"
+	    "    ..\n", "line 9: ");
+	res_reject("group zero", RR("1", "0") "/\n    a conflict 0 keep\n"
+	    "    ..\n", "line 9: ");
+	/* and a conflict line with a group and no choice */
+	res_reject("no choice", RR("1", "0") "/\n    a conflict 1\n"
+	    "    ..\n", "line 9: ");
+	/* ZM77: the count the header promised is not the count there is */
+	res_reject("names", RR("2", "0") "/\n    a drift keep\n    ..\n",
+	    "line 6: ");
+	/* ZM78: and the same for the count that says completeness */
+	res_reject("unanswered", RR("1", "0") "/\n    a conflict 1 -\n"
+	    "    ..\n", "line 7: ");
+	/* ZM79: a name with neither a choice nor a trailing slash */
+	res_reject("bare leaf", RR("0", "0") "/\n    a\n    ..\n",
+	    "line 9: ");
+	/* ZM80: there is no second section */
+	res_reject("tail", RR("1", "0") "/\n    a drift keep\n    ..\n"
+	    "conflict 1 disagree\n", "line 11: ");
+	/* ZM81: a field the grammar has no room for */
+	res_reject("fifth field",
+	    RR("1", "0") "/\n    a conflict 1 keep now\n    ..\n",
+	    "line 9: ");
+	/* the shared machinery still holds: escapes, scoping, the root */
+	res_reject("escape", RR("1", "0") "/\n    a\\09 drift keep\n"
+	    "    ..\n", "line 9: ");
+	res_reject("no root", RR("1", "0") "    a drift keep\n    ..\n",
+	    "line 8: ");
+}
+
 int
 main(void)
 {
@@ -743,6 +1185,11 @@ main(void)
 	test_write_back();
 	test_write_shapes();
 	test_rejections();
+	test_res_example();
+	test_res_skeleton();
+	test_res_drift();
+	test_res_escapes();
+	test_res_rejections();
 	printf("check_manifest: %d checks passed\n", checks);
 	return (0);
 }

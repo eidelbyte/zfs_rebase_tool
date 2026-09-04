@@ -124,7 +124,9 @@ The record is read back with zfs get: the three snapshot names, their
 guids against zfs get guid on the snapshots themselves,
 zfs_rebase:form clone, the mode the flag asked for, zfs_rebase:made
 empty (the tool snapshots nothing of its own), zfs_rebase:verify no,
-the tag, the manifest path, and zfs_rebase:state -- "done" for a
+the tag, the manifest path, the resolution path -- FILE.resolution
+beside the -o manifest, and the file itself an unanswered skeleton
+with one line per conflicted name -- and zfs_rebase:state -- "done" for a
 clean fixture, "conflicts" for a conflicted one, the gates being
 applying1, conflicts, applying2 and done. The run directory is
 /var/db/zfs_rebase/<result>, not /var/run: cleanvar empties /var/run
@@ -149,19 +151,23 @@ applies its clean actions before it stops -- prints one line per
 outcome with its count and first name, and writes nothing at all:
 the state after it is the state before it. --continue exits 0 on a
 done result and 1 on one at conflicts, where it names the resolution
-file it is waiting for, and leaves the tree as stage 1 made it, which
-the --posix re-run is asked again to confirm. For probe.zrt there
-are two more: a byte appended to /n, which the manifest copied,
+and how many of its names are still unanswered, and leaves the tree
+as stage 1 made it, which the --posix re-run is asked again to
+confirm. For probe.zrt there are three more: a byte appended to /n, which the manifest copied,
 behind the tool's back with readonly off and on again, must make
 --verify exit 3 naming "drifted 1, first /n" and change nothing,
 and --continue --verify must put it back and leave --verify clean
 and the result read-only; and --restart must destroy the clone,
 make it again from the recorded onto snapshot with the same record,
 apply the manifest from the first gate and land at the same state,
-under the same tag, with the same three holds and the same tree.
+under the same tag, with the same three holds and the same tree, with
+the resolution put back to its skeleton; and then that skeleton
+answered -- every "-" to keep, and #unanswered to 0 with them -- must
+take --continue to done and release the holds, leaving the tree as it
+was, since every choice is keep until apply-choices lands.
 
 Step 4 aborts the run and checks that the holds, the dataset, the
-manifest file the run recorded and the directory under /var/db are
+two documents the run recorded and the directory under /var/db are
 all gone, and that a second --abort exits 2. Then a second real run
 given --verify -- every clean fixture takes this, and probe.zrt takes
 it as the conflicted one: zfs_rebase:verify is "yes" in its record
@@ -198,14 +204,17 @@ next thing has not started:
                 at its private mount, before any walk
     read        the walks and the pruning are done, before anything
                 is decided
-    decided     the manifest is written and recorded, before
-                applying1 is written
+    decided     the manifest and the resolution are written and
+                recorded, before applying1 is written
     applying1   that state is written and readonly is off, before
                 the first action (a fresh run or --continue)
     conflicts   that state is written, before the hand-back and the
                 message (a fresh run or --continue)
     applying2   that state is written and readonly is off, before
-                the first action of the resolution (--continue)
+                the choices of the resolution are carried out
+                (--continue). Until apply-choices lands there is
+                nothing to carry out and the stage only opens and
+                closes the gate
     done        that state is written, before the holds are released
     action:<n>  inside the apply, before the n'th action it performs,
                 counting the ones it performs and not the ones a
@@ -274,12 +283,14 @@ stage 1 idempotence. While the tool is stopped at the held gate, zfs
 destroy of each held input must fail and leave the snapshot
 standing.
 
-The conflicted fixture reaches applying2 and done only through a
-resolution, which nothing in this sprint writes, so the harness
-writes one: the recorded manifest's header with no actions and no
-conflicts, which answers the conflicts by leaving those names as
-onto had them. That is enough to take the stage, which is what the
-case is about.
+The conflicted fixture reaches applying2 and done only through an
+answered resolution. The tool writes the skeleton itself when it
+writes the manifest, so the harness answers it: every "-" becomes
+keep, which leaves the conflicted names as they stand, and the
+header's #unanswered goes to zero with them -- a hand edit has to
+change the count too, since the parser refuses a header that does
+not match its lines. An unanswered skeleton stops at conflicts,
+which is what every gate before applying2 relies on.
 
 ## run-strays.sh
 

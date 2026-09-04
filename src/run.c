@@ -74,14 +74,19 @@
  * covers and nothing else, and whoever has to answer one should be
  * answering it over the tree the rest of the rebase has already
  * made. "conflicts" goes down after that apply verified, and is the
- * hand-off: the conflict manager -- a later sprint, another tool or
- * mode -- leaves its answers at <rundir>/resolution, a manifest in
- * the same format holding actions and no conflicts, and "applying2"
- * applies that file exactly as applying1 applied this one. Nothing
- * here writes that file; the tool only reads it. "done" is written
- * after the re-walk verified and readonly is back on -- and before
- * the holds are released, so that a kill in between leaves a done
- * record whose holds --abort still finds.
+ * hand-off: the resolution, which this run wrote beside the manifest
+ * as a skeleton of choices (v4-manifest.md, section 8), is answered
+ * there -- by a person, by a picker acting for them, or by a --take
+ * flag before it was written -- and "applying2" carries the answers
+ * out. The gate keys on completeness: every line answered, and a
+ * --continue, which is the human input the move needs. "done" is
+ * written after the re-walk verified and readonly is back on -- and
+ * before the holds are released, so that a kill in between leaves a
+ * done record whose holds --abort still finds.
+ *
+ * Turning the choices into actions is apply-choices' work, which
+ * follows this issue; until it lands every choice is treated as
+ * keep, so applying2 writes nothing at all.
  *
  * At birth there is no state at all, and a stop writes none: what a
  * stop leaves is the gate it was working under, and --continue
@@ -153,10 +158,11 @@
 #define	WORKDIR		"/var/db/zfs_rebase"
 
 /*
- * The gates, and the one file the conflict manager and this tool
- * agree on. The resolution is <rundir>/resolution, in the manifest
- * format, holding only actions; applying2 is the stage that applies
- * it. Nothing in this sprint writes it.
+ * The gates, and the second document of a run. The resolution sits
+ * beside the manifest -- <rundir>/resolution beside <rundir>/manifest,
+ * or FILE.resolution beside a -o FILE -- and the record names it, so
+ * that every verb finds it the way it finds the manifest and never by
+ * guessing a path.
  */
 #define	ZR_STATE_APPLYING1	"applying1"
 #define	ZR_STATE_CONFLICTS	"conflicts"
@@ -222,6 +228,7 @@ struct run {
 	char			rundir[ZR_NAME_MAX];	/* WORKDIR/<rds> */
 	char			workmnt[ZR_NAME_MAX];	/* <rundir>/mnt */
 	char			manpath[ZR_NAME_MAX];	/* the manifest */
+	char			respath[ZR_NAME_MAX];	/* the resolution */
 	char			basemnt[ZR_NAME_MAX];	/* mountpoints */
 	char			frommnt[ZR_NAME_MAX];
 	char			ontomnt[ZR_NAME_MAX];	/* where onto is read */
@@ -246,6 +253,7 @@ struct run {
 	int			privmnt;	/* onto is at workmnt */
 	int			dropfrom;	/* done: the made snap goes */
 	int			nheld;		/* holds taken, base first */
+	uint32_t		unanswered;	/* lines of the skeleton */
 	struct zr_names		*names;
 	struct zr_walk		wb, wf, wo;
 	struct zr_oracle	*oracle;
@@ -318,13 +326,13 @@ signals_restore(const struct sigaction *saved)
  *			run's own at its private mount, before any walk
  *	read		the walks and the pruning are done, before
  *			anything is decided
- *	decided		the manifest is written and recorded, before
- *			applying1 is written
+ *	decided		the manifest and the resolution are written and
+ *			recorded, before applying1 is written
  *	applying1	that gate is written and readonly is off,
  *			before the first action
  *	conflicts	that gate is written, before the hand-back
  *	applying2	that gate is written and readonly is off,
- *			before the first resolution action
+ *			before the choices are carried out
  *	done		that gate is written, before the release
  *	action:<n>	inside the apply, before the n'th action it
  *			performs (apply.c, zr_apply_pause_at)
@@ -1105,15 +1113,28 @@ rmdir_run(const char *result)
 }
 
 /*
- * Where the conflict manager leaves its answers for this result, and
- * where applying2 looks for them: one place, spelled once. The run
- * directory is WORKDIR and the result's name, so the path follows
- * from the result alone and needs no record to find.
+ * Where the resolution of this result goes when the manifest went to
+ * the run directory: beside it, under the name every run before -o
+ * used. It is also what a record written before the resolution had a
+ * property of its own is read as.
  */
 static void
 resolution_path(char *buf, size_t len, const char *result)
 {
 	(void) snprintf(buf, len, "%s/%s/%s", WORKDIR, result, ZR_RESOLUTION);
+}
+
+/*
+ * And where it goes when -o named the manifest: FILE.resolution,
+ * beside FILE, which is what "beside the manifest" means once the
+ * user has chosen where the manifest lives. The suffix is appended
+ * rather than substituted, so that no -o path can name a file the
+ * user meant to keep.
+ */
+static void
+resolution_beside(char *buf, size_t len, const char *manifest)
+{
+	(void) snprintf(buf, len, "%s.%s", manifest, ZR_RESOLUTION);
 }
 
 /*
@@ -1125,7 +1146,7 @@ static const char *zr_record_props[] = {
 	ZR_PROP_BASE, ZR_PROP_BASE_GUID, ZR_PROP_FROM, ZR_PROP_FROM_GUID,
 	ZR_PROP_ONTO, ZR_PROP_ONTO_GUID, ZR_PROP_MADE, ZR_PROP_MODE,
 	ZR_PROP_FORM, ZR_PROP_TAG, ZR_PROP_VERIFY, ZR_PROP_MANIFEST,
-	ZR_PROP_READONLY, ZR_PROP_STATE
+	ZR_PROP_RESOLUTION, ZR_PROP_READONLY, ZR_PROP_STATE
 };
 
 #define	ZR_NRECORD	(sizeof (zr_record_props) / sizeof (zr_record_props[0]))
@@ -1158,27 +1179,43 @@ clear_record(struct zr_zfs *z, const char *dataset, int verbose)
 }
 
 /*
+ * One document of the rebase before this one, when that rebase wrote
+ * it in the run directory rather than where a -o put it. It has to
+ * go: the directory is removed next, and rmdir will not take one
+ * that still holds a file.
+ */
+static void
+overwrite_file(struct run *r, const char *prop, const char *dir, size_t n,
+    const char *what)
+{
+	char old[ZR_NAME_MAX], e[512];
+
+	if (zr_zfs_get_user(r->zfs, r->rds, prop, old, sizeof (old), e,
+	    sizeof (e)) > 0 && strncmp(old, dir, n) == 0 &&
+	    unlink(old) == 0 && r->o.verbose)
+		(void) fprintf(stderr, "zfs_rebase: removed %s, the %s of "
+		    "the rebase before this one\n", old, what);
+}
+
+/*
  * What --overwrite takes away before the new run starts: the
- * finished rebase's manifest, when that rebase wrote it in the run
- * directory rather than where a -o put it, and the run directory
- * itself, which the new run makes again. Every other property of the
- * record is set again by the new run; only the state has to go here,
- * because the new run has passed no gate and a leftover "done" would
- * say it had.
+ * finished rebase's two documents, when that rebase wrote them in the
+ * run directory, and the run directory itself, which the new run
+ * makes again. Every other property of the record is set again by the
+ * new run; only the state has to go here, because the new run has
+ * passed no gate and a leftover "done" would say it had.
  */
 static void
 overwrite_clear(struct run *r)
 {
-	char old[ZR_NAME_MAX], dir[ZR_NAME_MAX], e[512];
+	char dir[ZR_NAME_MAX], e[512];
 	size_t n;
 
 	n = (size_t)snprintf(dir, sizeof (dir), "%s/%s/", WORKDIR, r->rds);
-	if (n < sizeof (dir) &&
-	    zr_zfs_get_user(r->zfs, r->rds, ZR_PROP_MANIFEST, old,
-	    sizeof (old), e, sizeof (e)) > 0 &&
-	    strncmp(old, dir, n) == 0 && unlink(old) == 0 && r->o.verbose)
-		(void) fprintf(stderr, "zfs_rebase: removed %s, the manifest "
-		    "of the rebase before this one\n", old);
+	if (n < sizeof (dir)) {
+		overwrite_file(r, ZR_PROP_MANIFEST, dir, n, "manifest");
+		overwrite_file(r, ZR_PROP_RESOLUTION, dir, n, "resolution");
+	}
 	if (zr_zfs_clear_user(r->zfs, r->rds, ZR_PROP_STATE, e,
 	    sizeof (e)) != 0)
 		(void) fprintf(stderr, "zfs_rebase: %s on %s: %s\n",
@@ -1434,6 +1471,7 @@ fill_record(struct run *r, struct zr_rebase_record *rec)
 	rec->tag = r->tag;
 	rec->verify = r->o.verify ? "yes" : "no";
 	rec->manifest = r->manpath;
+	rec->resolution = r->respath;
 	/*
 	 * The dataset form gives the dataset back as it found it, so
 	 * what readonly was is part of the record; the clone form has
@@ -1444,32 +1482,92 @@ fill_record(struct run *r, struct zr_rebase_record *rec)
 }
 
 /*
- * The clone was created with the manifest path the run intended; now
- * that the file is there, resolve it and record what it really is,
- * so that --abort unlinks the file this run wrote whatever directory
- * it was started from.
+ * The clone was created with the paths the run intended; now that the
+ * file is there, resolve it and record what it really is, so that
+ * --abort unlinks the file this run wrote whatever directory it was
+ * started from.
  */
 static void
-record_manifest(struct run *r)
+record_path(struct run *r, const char *prop, char *path, size_t pathlen)
 {
 	char e[512];
 	char *real;
 
-	if (!r->recorded || r->manpath[0] == '\0')
+	if (!r->recorded || path[0] == '\0')
 		return;
-	real = realpath(r->manpath, NULL);
+	real = realpath(path, NULL);
 	if (real == NULL) {
-		(void) fprintf(stderr, "zfs_rebase: %s: %s\n", r->manpath,
+		(void) fprintf(stderr, "zfs_rebase: %s: %s\n", path,
 		    strerror(errno));
 		return;
 	}
-	if (zr_zfs_set_user(r->zfs, r->rds, ZR_PROP_MANIFEST, real, e,
-	    sizeof (e)) != 0)
-		(void) fprintf(stderr, "zfs_rebase: %s: %s\n",
-		    ZR_PROP_MANIFEST, e);
+	if (zr_zfs_set_user(r->zfs, r->rds, prop, real, e, sizeof (e)) != 0)
+		(void) fprintf(stderr, "zfs_rebase: %s: %s\n", prop, e);
 	else
-		(void) snprintf(r->manpath, sizeof (r->manpath), "%s", real);
+		(void) snprintf(path, pathlen, "%s", real);
 	free(real);
+}
+
+/*
+ * The resolution, written beside the manifest and at the same moment,
+ * out of the same bytes: the manifest just written is read back and
+ * every conflict mark of it becomes one line with the choice "-",
+ * which is the document section 8 calls the skeleton. Answering it is
+ * what takes the rebase past the conflicts gate; a run with no
+ * conflicts writes an empty one, so that the two documents of a
+ * rebase are always both there and --abort and --restart have one
+ * rule each rather than two.
+ *
+ * The parse is not a formality. What is written here describes what
+ * the file on disk says, exactly as apply_manifest applies what the
+ * file says and not a second copy of it.
+ */
+static int
+write_skeleton(struct run *r)
+{
+	struct zr_parsed parsed;
+	struct zr_resolution res;
+	FILE *in, *out;
+	int rc = -1;
+
+	memset(&parsed, 0, sizeof (parsed));
+	memset(&res, 0, sizeof (res));
+	if (r->manpath[0] == '\0' || r->respath[0] == '\0') {
+		(void) snprintf(r->err, sizeof (r->err),
+		    "the run wrote no manifest to answer");
+		return (-1);
+	}
+	in = fopen(r->manpath, "r");
+	if (in == NULL) {
+		(void) snprintf(r->err, sizeof (r->err), "%s: %s", r->manpath,
+		    strerror(errno));
+		return (-1);
+	}
+	if (zr_manifest_parse(in, &parsed, r->err, sizeof (r->err)) != 0)
+		goto done;
+	if (zr_resolution_skeleton(&parsed, ZR_CH_NONE, &res) != 0) {
+		(void) snprintf(r->err, sizeof (r->err), "out of memory");
+		goto done;
+	}
+	out = fopen(r->respath, "w");
+	if (out == NULL) {
+		(void) snprintf(r->err, sizeof (r->err), "%s: %s", r->respath,
+		    strerror(errno));
+		goto done;
+	}
+	if (zr_resolution_write(out, &res) != 0 || fclose(out) != 0) {
+		(void) snprintf(r->err, sizeof (r->err), "%s: write failed",
+		    r->respath);
+		goto done;
+	}
+	r->unanswered = zr_resolution_unanswered(&res);
+	record_path(r, ZR_PROP_RESOLUTION, r->respath, sizeof (r->respath));
+	rc = 0;
+done:
+	zr_resolution_fini(&res);
+	zr_parsed_fini(&parsed);
+	(void) fclose(in);
+	return (rc);
 }
 
 /* Say where the manifest went, when it went anywhere but stdout. */
@@ -1844,14 +1942,16 @@ teardown(struct run *r, int keep)
 			clear_record(r->zfs, r->rds, r->o.verbose);
 		}
 		/*
-		 * Only the run's own manifest goes, and it has to,
-		 * because it is inside the directory about to be
-		 * removed. A file the user named with -o is theirs;
-		 * the run wrote it where they asked and does not take
-		 * it back.
+		 * Only the run's own two documents go, and they have
+		 * to, because they are inside the directory about to
+		 * be removed. Where -o named the manifest the pair is
+		 * the user's: the run wrote them where they asked and
+		 * does not take them back.
 		 */
-		if (r->recorded && r->o.outpath == NULL)
+		if (r->recorded && r->o.outpath == NULL) {
 			(void) unlink(r->manpath);
+			(void) unlink(r->respath);
+		}
 		/*
 		 * The pre-apply snapshot is the user's and is kept at
 		 * done -- but this is a run that was discarded before
@@ -2005,11 +2105,16 @@ zr_run(const struct zr_run_opts *o)
 			rc = fail(&r, EXIT_PRECOND, "run directory");
 			goto done;
 		}
-		(void) snprintf(r.manpath, sizeof (r.manpath), "%s",
-		    o->outpath != NULL ? o->outpath : "");
-		if (r.manpath[0] == '\0')
+		if (o->outpath != NULL) {
+			(void) snprintf(r.manpath, sizeof (r.manpath), "%s",
+			    o->outpath);
+			resolution_beside(r.respath, sizeof (r.respath),
+			    o->outpath);
+		} else {
 			(void) snprintf(r.manpath, sizeof (r.manpath),
 			    "%s/manifest", r.rundir);
+			resolution_path(r.respath, sizeof (r.respath), r.rds);
+		}
 		if (fill_record(&r, &rec) != 0) {
 			rc = fail(&r, EXIT_PRECOND, "record");
 			goto done;
@@ -2102,7 +2207,7 @@ zr_run(const struct zr_run_opts *o)
 		rc = fail(&r, EXIT_INTERNAL, "manifest");
 		goto done;
 	}
-	record_manifest(&r);
+	record_path(&r, ZR_PROP_MANIFEST, r.manpath, sizeof (r.manpath));
 	/*
 	 * A dry run stops here: it created nothing to apply to, and
 	 * its whole output is the manifest it just wrote.
@@ -2116,6 +2221,15 @@ zr_run(const struct zr_run_opts *o)
 		} else {
 			rc = EXIT_CLEAN;
 		}
+		goto done;
+	}
+	/*
+	 * And the resolution beside it, in this same process: a
+	 * conflicts gate the tool did not write the skeleton for
+	 * would be a gate nobody could pass.
+	 */
+	if (write_skeleton(&r) != 0) {
+		rc = fail(&r, EXIT_INTERNAL, "resolution");
 		goto done;
 	}
 
@@ -2164,23 +2278,22 @@ zr_run(const struct zr_run_opts *o)
 		goto done;
 	}
 	if (r.d.zd_nconflicts != 0) {
-		char res[ZR_NAME_MAX];
-
 		/*
 		 * The hand-off. The clean part of the rebase is in the
 		 * result and the conflicts are the manifest's; the
-		 * conflict manager answers them at the path below and
-		 * --continue takes the rebase on from there.
+		 * skeleton written above is where they are answered,
+		 * and a --continue over a complete one takes the
+		 * rebase on from here.
 		 */
 		set_state(&r, ZR_STATE_CONFLICTS);
 		zr_pause(ZR_STATE_CONFLICTS);
-		resolution_path(res, sizeof (res), r.rds);
 		(void) fprintf(stderr, "zfs_rebase: %u conflict%s; the clean "
 		    "actions are applied and %s waits at conflicts\n",
 		    r.d.zd_nconflicts, r.d.zd_nconflicts == 1 ? "" : "s",
 		    r.rds);
-		(void) fprintf(stderr, "zfs_rebase: the resolution is expected "
-		    "at %s\n", res);
+		(void) fprintf(stderr, "zfs_rebase: %u name%s unanswered in "
+		    "the resolution %s\n", r.unanswered,
+		    r.unanswered == 1 ? "" : "s", r.respath);
 		manifest_note(&r);
 		kept_hint(&r);
 		rc = EXIT_CONFLICTS;
@@ -2269,6 +2382,7 @@ struct record {
 	char			tag[ZR_TAG_MAX];
 	char			verify[8];
 	char			manifest[ZR_NAME_MAX];
+	char			resolution[ZR_NAME_MAX];
 	char			readonly[8];	/* the dataset form's own */
 	char			state[32];	/* "" before the first gate */
 };
@@ -2427,6 +2541,8 @@ read_record(struct resume *s)
 	    rec_str(s, ZR_PROP_MODE, rb->mode, sizeof (rb->mode)) < 0 ||
 	    rec_str(s, ZR_PROP_FORM, rb->form, sizeof (rb->form)) < 0 ||
 	    rec_str(s, ZR_PROP_VERIFY, rb->verify, sizeof (rb->verify)) < 0 ||
+	    rec_str(s, ZR_PROP_RESOLUTION, rb->resolution,
+	    sizeof (rb->resolution)) < 0 ||
 	    rec_str(s, ZR_PROP_READONLY, rb->readonly,
 	    sizeof (rb->readonly)) < 0 ||
 	    rec_str(s, ZR_PROP_STATE, rb->state, sizeof (rb->state)) < 0 ||
@@ -2443,6 +2559,7 @@ read_record(struct resume *s)
 	rb->rec.tag = rb->tag;
 	rb->rec.verify = rb->verify;
 	rb->rec.manifest = rb->manifest;
+	rb->rec.resolution = rb->resolution;
 	rb->rec.readonly = rb->readonly;
 	/*
 	 * The form the run was made in, which decides what the result
@@ -2462,7 +2579,15 @@ verify_asked(const struct record *rb)
 	return (strcmp(rb->verify, "yes") == 0);
 }
 
-/* The run directory, the mount point and the resolution's path. */
+/*
+ * The run directory, the mount point and the resolution's path. The
+ * record names the resolution, as it names the manifest, and that is
+ * where every verb looks: -o put it beside a manifest of the user's
+ * choosing and no path can be guessed from the result's name alone.
+ * A record written before the resolution had a property of its own
+ * is read as the run directory's file, which is where such a run
+ * would have looked for it.
+ */
 static int
 resume_paths(struct resume *s)
 {
@@ -2473,7 +2598,11 @@ resume_paths(struct resume *s)
 		return (-1);
 	}
 	(void) snprintf(s->workmnt, sizeof (s->workmnt), "%s/mnt", s->rundir);
-	resolution_path(s->respath, sizeof (s->respath), s->result);
+	if (s->rb.resolution[0] != '\0')
+		(void) snprintf(s->respath, sizeof (s->respath), "%s",
+		    s->rb.resolution);
+	else
+		resolution_path(s->respath, sizeof (s->respath), s->result);
 	return (0);
 }
 
@@ -2918,22 +3047,21 @@ read_manifest(struct resume *s)
 }
 
 /*
- * The resolution, if the conflict manager has left one: 1 with *out
- * parsed, 0 when there is no such file, -1 with err set. It is a
- * manifest in the same format holding only actions -- the conflicts
- * are what it answers -- and it must carry the same three header
- * lines, since a resolution written for another rebase describes
- * another tree.
+ * The resolution the record names: 1 with *out parsed, 0 when there
+ * is no such file, -1 with err set. It is the document of choices of
+ * v4-manifest.md section 8, and it must carry the same three header
+ * lines the record does, since a resolution written for another
+ * rebase describes another tree.
  *
- * Either way *out is safe to hand to zr_parsed_fini.
+ * Either way *out is safe to hand to zr_resolution_fini.
  */
 static int
-read_resolution(struct resume *s, struct zr_parsed *out)
+read_resolution(struct resume *s, struct zr_resolution *out)
 {
 	FILE *fp;
 	int rc;
 
-	memset(out, 0, sizeof (struct zr_parsed));
+	memset(out, 0, sizeof (struct zr_resolution));
 	fp = fopen(s->respath, "r");
 	if (fp == NULL) {
 		if (errno == ENOENT)
@@ -2942,25 +3070,62 @@ read_resolution(struct resume *s, struct zr_parsed *out)
 		    strerror(errno));
 		return (-1);
 	}
-	rc = zr_manifest_parse(fp, out, s->err, sizeof (s->err));
+	rc = zr_resolution_parse(fp, out, s->err, sizeof (s->err));
 	(void) fclose(fp);
 	if (rc != 0)
 		return (-1);
-	if (out->zp_conflicts_declared != 0) {
-		(void) snprintf(s->err, sizeof (s->err), "%s declares %u "
-		    "conflicts; a resolution answers them", s->respath,
-		    out->zp_conflicts_declared);
-		return (-1);
-	}
-	if (out->zp_base == NULL || out->zp_from == NULL ||
-	    out->zp_onto == NULL || strcmp(out->zp_base, s->rb.base) != 0 ||
-	    strcmp(out->zp_from, s->rb.from) != 0 ||
-	    strcmp(out->zp_onto, s->rb.onto) != 0) {
+	if (out->zs_base == NULL || out->zs_from == NULL ||
+	    out->zs_onto == NULL || strcmp(out->zs_base, s->rb.base) != 0 ||
+	    strcmp(out->zs_from, s->rb.from) != 0 ||
+	    strcmp(out->zs_onto, s->rb.onto) != 0) {
 		(void) snprintf(s->err, sizeof (s->err), "%s names other "
 		    "snapshots than the record does", s->respath);
 		return (-1);
 	}
 	return (1);
+}
+
+/*
+ * The resolution is the tool's own file: it wrote the skeleton when
+ * it wrote the manifest, so one that is not there is a precondition
+ * failure and not a stage waiting to begin.
+ */
+static int
+no_resolution(struct resume *s)
+{
+	(void) snprintf(s->err, sizeof (s->err), "%s is gone; the run wrote "
+	    "it beside the manifest and %s cannot go on without it",
+	    s->respath, s->result);
+	return (vfail(s, EXIT_PRECOND, "resolution"));
+}
+
+/*
+ * What waits at the conflicts gate, said the same way wherever the
+ * rebase stopped there: how many of the resolution's names are still
+ * unanswered, and where the file is. A resolution that cannot be read
+ * says only where it should be; the verb that has to read it says the
+ * rest.
+ */
+static void
+unanswered_note(const struct resume *s, uint32_t left, uint32_t total)
+{
+	(void) fprintf(stderr, "zfs_rebase: %u of %u name%s unanswered in "
+	    "the resolution %s\n", left, total, total == 1 ? "" : "s",
+	    s->respath);
+}
+
+static void
+conflicts_note(struct resume *s)
+{
+	struct zr_resolution res;
+
+	if (read_resolution(s, &res) <= 0)
+		(void) fprintf(stderr, "zfs_rebase: the resolution is %s\n",
+		    s->respath);
+	else
+		unanswered_note(s, zr_resolution_unanswered(&res),
+		    res.zs_nlines);
+	zr_resolution_fini(&res);
 }
 
 /* Hold one manifest against the trees as they stand. */
@@ -3123,31 +3288,22 @@ out:
 
 /*
  * The last gate. A record that asked for the final check gets it
- * here, over the manifest and over the resolution if there is one,
- * and only then is done written and the holds given back -- in that
- * order, so that a kill in between leaves a record that says the
- * rebase finished and holds that --abort can still find.
+ * here, over the manifest, and only then is done written and the
+ * holds given back -- in that order, so that a kill in between leaves
+ * a record that says the rebase finished and holds that --abort can
+ * still find.
+ *
+ * The resolution is not classified here. Its lines are choices and
+ * not actions, and holding a choice against the side it names is
+ * verify-choices' work; until that lands every choice is keep, which
+ * is the one choice a verify never compares.
  */
 static int
 done_gate(struct resume *s)
 {
-	struct zr_parsed res;
-	int rc, code = EXIT_CLEAN;
-
-	if (verify_asked(&s->rb)) {
-		if (final_check(s, &s->man, "the manifest") != 0)
-			return (vfail(s, EXIT_INTERNAL, "verify"));
-		rc = read_resolution(s, &res);
-		if (rc < 0) {
-			zr_parsed_fini(&res);
-			return (vfail(s, EXIT_PRECOND, "resolution"));
-		}
-		if (rc > 0 && final_check(s, &res, "the resolution") != 0)
-			code = vfail(s, EXIT_INTERNAL, "verify");
-		zr_parsed_fini(&res);
-		if (code != EXIT_CLEAN)
-			return (code);
-	}
+	if (verify_asked(&s->rb) &&
+	    final_check(s, &s->man, "the manifest") != 0)
+		return (vfail(s, EXIT_INTERNAL, "verify"));
 	put_state(s->zfs, s->result, ZR_STATE_DONE);
 	zr_pause(ZR_STATE_DONE);
 	release_record(s);
@@ -3176,36 +3332,59 @@ vstopped(struct resume *s)
 	return (-1);
 }
 
-/* applying2: the answers the conflict manager left, applied. */
+/*
+ * applying2: the choices of the resolution, carried out. The document
+ * is read again here, because this is a gate a --continue can arrive
+ * at on its own, and a stage cannot begin without the document it is
+ * the stage of.
+ *
+ * In this issue every choice is treated as keep -- the result stands
+ * as it is -- so the stage takes readonly off, has nothing to write
+ * and puts it back. apply-choices turns the choices into actions
+ * here, and this is the shape it fills.
+ */
 static int
 stage2(struct resume *s)
 {
-	struct zr_parsed res;
-	int rc, code;
+	struct zr_resolution res;
+	uint32_t left;
+	int rc;
 
 	rc = read_resolution(s, &res);
-	if (rc <= 0) {
-		zr_parsed_fini(&res);
-		if (rc == 0)
-			(void) snprintf(s->err, sizeof (s->err), "%s is gone; "
-			    "the rebase is at applying2 and cannot go on "
-			    "without it", s->respath);
-		return (vfail(s, EXIT_PRECOND, s->result));
+	if (rc < 0) {
+		zr_resolution_fini(&res);
+		return (vfail(s, EXIT_PRECOND, "resolution"));
 	}
-	if (stage_apply(s, &res, ZR_STATE_APPLYING2, "the resolution") != 0)
-		code = vfail(s, EXIT_INTERNAL, "apply");
-	else if (vstopped(s) != 0)
-		code = vfail(s, EXIT_INTERNAL, "apply");
-	else
-		code = done_gate(s);
-	zr_parsed_fini(&res);
-	return (code);
+	if (rc == 0) {
+		zr_resolution_fini(&res);
+		return (no_resolution(s));
+	}
+	left = zr_resolution_unanswered(&res);
+	zr_resolution_fini(&res);
+	if (left != 0) {
+		(void) snprintf(s->err, sizeof (s->err), "%s is at applying2 "
+		    "and %u name%s of %s went back to unanswered", s->result,
+		    left, left == 1 ? "" : "s", s->respath);
+		return (vfail(s, EXIT_PRECOND, NULL));
+	}
+	put_state(s->zfs, s->result, ZR_STATE_APPLYING2);
+	if (ro_off(s) != 0)
+		return (vfail(s, EXIT_INTERNAL, "apply"));
+	zr_pause(ZR_STATE_APPLYING2);
+	if (ro_on(s) != 0)
+		return (vfail(s, EXIT_INTERNAL, "apply"));
+	if (vstopped(s) != 0)
+		return (vfail(s, EXIT_INTERNAL, "apply"));
+	return (done_gate(s));
 }
 
 /*
- * The conflicts gate. The answers are either there, in which case
- * the rebase goes on into applying2, or they are not, in which case
- * this is where it waits and the state does not move.
+ * The conflicts gate. The resolution is complete, in which case the
+ * rebase goes on into applying2, or a name of it is still unanswered,
+ * in which case this is where it waits and the state does not move.
+ * Completeness plus this --continue is the whole of the signal: the
+ * move is made on human input, and nothing but the person who
+ * answered the conflicts can say they are answered.
  *
  * A repair asked for here is the applying1 stage made true again:
  * the clean actions are what this gate has passed, and drift on any
@@ -3218,15 +3397,30 @@ stage2(struct resume *s)
 static int
 stage_conflicts(struct resume *s)
 {
+	struct zr_resolution res;
+	uint32_t left, total;
+	int rc;
+
 	if (s->verify && stage_apply(s, &s->man, NULL, "the manifest") != 0)
 		return (vfail(s, EXIT_INTERNAL, "repair"));
-	if (access(s->respath, F_OK) != 0) {
-		(void) fprintf(stderr, "zfs_rebase: %s: conflicts unresolved; "
-		    "the resolution is expected at %s\n", s->result,
-		    s->respath);
+	rc = read_resolution(s, &res);
+	if (rc < 0) {
+		zr_resolution_fini(&res);
+		return (vfail(s, EXIT_PRECOND, "resolution"));
+	}
+	if (rc == 0) {
+		zr_resolution_fini(&res);
+		return (no_resolution(s));
+	}
+	left = zr_resolution_unanswered(&res);
+	total = res.zs_nlines;
+	zr_resolution_fini(&res);
+	if (left != 0) {
+		(void) fprintf(stderr, "zfs_rebase: %s: conflicts "
+		    "unresolved\n", s->result);
+		unanswered_note(s, left, total);
 		return (EXIT_CONFLICTS);
 	}
-	put_state(s->zfs, s->result, ZR_STATE_APPLYING2);
 	return (stage2(s));
 }
 
@@ -3246,8 +3440,7 @@ stage1(struct resume *s)
 	    "are applied and %s waits at conflicts\n",
 	    s->man.zp_conflicts_declared,
 	    s->man.zp_conflicts_declared == 1 ? "" : "s", s->result);
-	(void) fprintf(stderr, "zfs_rebase: the resolution is expected at "
-	    "%s\n", s->respath);
+	conflicts_note(s);
 	return (EXIT_CONFLICTS);
 }
 
@@ -3256,8 +3449,8 @@ stage1(struct resume *s)
  * nothing left but the cleanup a kill between the done gate and the
  * release would have skipped. With it, --continue is the repair:
  * every clean action is made true again, drift included, and the
- * conflicted names are not touched, because no action of either
- * document names one.
+ * conflicted names are not touched, because no action of the manifest
+ * names one and the resolution holds no actions at all.
  *
  * The gate does not move while that happens. done is a fact about a
  * rebase that reached its end, and a repair that is killed part way
@@ -3267,9 +3460,6 @@ stage1(struct resume *s)
 static int
 stage_done(struct resume *s)
 {
-	struct zr_parsed res;
-	int rc, code = EXIT_CLEAN;
-
 	if (s->verify) {
 		/*
 		 * A repair writes, and what it writes it reads out of
@@ -3288,17 +3478,6 @@ stage_done(struct resume *s)
 		}
 		if (stage_apply(s, &s->man, NULL, "the manifest") != 0)
 			return (vfail(s, EXIT_INTERNAL, "repair"));
-		rc = read_resolution(s, &res);
-		if (rc < 0) {
-			zr_parsed_fini(&res);
-			return (vfail(s, EXIT_PRECOND, "resolution"));
-		}
-		if (rc > 0 && stage_apply(s, &res, NULL,
-		    "the resolution") != 0)
-			code = vfail(s, EXIT_INTERNAL, "repair");
-		zr_parsed_fini(&res);
-		if (code != EXIT_CLEAN)
-			return (code);
 	}
 	release_record(s);
 	s->dropfrom = made_says(&s->rb, "from");
@@ -3458,6 +3637,62 @@ zr_continue(const char *result, int verify, int verbose)
 	return (rc);
 }
 
+/*
+ * --restart's half of the resolution: the edits go with the tree they
+ * were edits on. The skeleton is built again from the recorded
+ * manifest, which is still the decision, so what comes back is the
+ * document the run wrote in the first place, every line unanswered.
+ * A failure here is a failure of the restart: a rebase whose result
+ * went back to onto and whose resolution still holds yesterday's
+ * answers is worse than one that stopped.
+ */
+static int
+reset_resolution(struct resume *s)
+{
+	struct zr_resolution res;
+	FILE *out;
+	int rc = -1;
+
+	if (zr_resolution_skeleton(&s->man, ZR_CH_NONE, &res) != 0) {
+		(void) snprintf(s->err, sizeof (s->err), "out of memory");
+		zr_resolution_fini(&res);
+		return (-1);
+	}
+	out = fopen(s->respath, "w");
+	if (out == NULL) {
+		(void) snprintf(s->err, sizeof (s->err), "%s: %s", s->respath,
+		    strerror(errno));
+		zr_resolution_fini(&res);
+		return (-1);
+	}
+	if (zr_resolution_write(out, &res) != 0 || fclose(out) != 0)
+		(void) snprintf(s->err, sizeof (s->err), "%s: write failed",
+		    s->respath);
+	else
+		rc = 0;
+	if (rc == 0 && s->verbose)
+		(void) fprintf(stderr, "zfs_rebase: %s is a skeleton again, "
+		    "%u name%s to answer\n", s->respath, res.zs_nlines,
+		    res.zs_nlines == 1 ? "" : "s");
+	zr_resolution_fini(&res);
+	return (rc);
+}
+
+/*
+ * The trees, the recorded manifest and the resolution put back to the
+ * skeleton: what both forms of --restart do once the result is onto
+ * again. Returns 0, or the status to give up with.
+ */
+static int
+restart_from(struct resume *s)
+{
+	if (resume_trees(s) != 0)
+		return (vfail(s, EXIT_PRECOND, s->result));
+	if (reset_resolution(s) != 0)
+		return (vfail(s, EXIT_INTERNAL, "resolution"));
+	return (stage1(s));
+}
+
 int
 zr_restart(const char *result, int verbose)
 {
@@ -3511,8 +3746,7 @@ zr_restart(const char *result, int verbose)
 		if (verbose)
 			(void) fprintf(stderr, "zfs_rebase: %s is %s again\n",
 			    s.result, s.rb.onto);
-		rc = resume_trees(&s) != 0 ?
-		    vfail(&s, EXIT_PRECOND, s.result) : stage1(&s);
+		rc = restart_from(&s);
 		goto done;
 	}
 	if (strcmp(s.rb.form, ZR_FORM_CLONE) != 0 && s.rb.form[0] != '\0') {
@@ -3557,8 +3791,7 @@ zr_restart(const char *result, int verbose)
 	if (verbose)
 		(void) fprintf(stderr, "zfs_rebase: %s is a fresh clone of "
 		    "%s again\n", s.result, s.rb.onto);
-	rc = resume_trees(&s) != 0 ? vfail(&s, EXIT_PRECOND, s.result) :
-	    stage1(&s);
+	rc = restart_from(&s);
 done:
 	resume_close(&s);
 	signals_restore(saved);
@@ -3624,7 +3857,7 @@ out:
 int
 zr_report(const char *result, int verbose)
 {
-	struct zr_parsed res;
+	struct zr_resolution res;
 	struct resume s;
 	int rc, code;
 
@@ -3649,15 +3882,25 @@ zr_report(const char *result, int verbose)
 		    "something this can tell from what the rebase made\n",
 		    s.result);
 	code = report_one(&s, &s.man, "the manifest");
+	/*
+	 * And the resolution, which is not classified: its lines are
+	 * choices, and holding a choice against the side it names is
+	 * verify-choices' work. What a report can say about it now is
+	 * how much of it is still unanswered, which is what says
+	 * whether the rebase can move at all. It is a report: an
+	 * unreadable resolution is said and does not change the
+	 * outcome of the check that was asked for.
+	 */
 	rc = read_resolution(&s, &res);
-	if (rc < 0) {
-		code = vfail(&s, EXIT_PRECOND, "resolution");
-	} else if (rc > 0) {
-		rc = report_one(&s, &res, "the resolution");
-		if (rc != EXIT_CLEAN)
-			code = rc;
-	}
-	zr_parsed_fini(&res);
+	if (rc < 0)
+		(void) fprintf(stderr, "zfs_rebase: %s\n", s.err);
+	else if (rc == 0)
+		(void) fprintf(stderr, "zfs_rebase: the resolution %s is "
+		    "gone\n", s.respath);
+	else
+		unanswered_note(&s, zr_resolution_unanswered(&res),
+		    res.zs_nlines);
+	zr_resolution_fini(&res);
 done:
 	resume_close(&s);
 	return (code);
@@ -3777,7 +4020,8 @@ abort_dataset(struct zr_zfs *z, const char *result, const char *rundir,
  * the clone destroyed, or the dataset rolled back to its pre-apply
  * snapshot, stripped of the record and mounted where it belongs
  * again -- the snapshots the tool took for itself are destroyed, the
- * manifest the record names is unlinked and the run directories go.
+ * two documents the record names -- the manifest and the resolution
+ * -- are unlinked and the run directories go.
  *
  * The record is the key, and the refusal is the point of it. A
  * dataset that does not carry both zfs_rebase:tag and
@@ -3793,13 +4037,13 @@ abort_dataset(struct zr_zfs *z, const char *result, const char *rundir,
  * It can be run again. The holds are released first, so a destroy
  * that fails leaves nothing held that a second --abort would have
  * to redo; a release of a tag that is not there, or of a snapshot
- * that is not there, is not a failure; a manifest already unlinked
+ * that is not there, is not a failure; a document already unlinked
  * is not one either; and a run whose dataset is gone but whose
  * directory is not is finished by removing the directory. Only when
  * there is nothing at all left does --abort say "no such run".
- * Nothing is removed recursively: the one file this unlinks is the
- * manifest the record names, and every directory goes by rmdir,
- * which will not touch one that is not empty.
+ * Nothing is removed recursively: the only files this unlinks are
+ * the two the record names, and every directory goes by rmdir, which
+ * will not touch one that is not empty.
  */
 int
 zr_abort(const char *result, int verbose)
@@ -3807,7 +4051,8 @@ zr_abort(const char *result, int verbose)
 	static const char *nameprop[3] = {
 		ZR_PROP_BASE, ZR_PROP_FROM, ZR_PROP_ONTO
 	};
-	char manifest[ZR_NAME_MAX], dir[ZR_NAME_MAX];
+	char manifest[ZR_NAME_MAX], resolution[ZR_NAME_MAX];
+	char dir[ZR_NAME_MAX];
 	char snap[ZR_SNAP_MAX], tag[ZR_TAG_MAX];
 	char state[64], form[16], made[ZR_SNAP_MAX], err[512];
 	struct zr_zfs *z = NULL;
@@ -3969,6 +4214,20 @@ zr_abort(const char *result, int verbose)
 		else if (errno != ENOENT)
 			(void) fprintf(stderr, "zfs_rebase: %s: %s\n",
 			    manifest, strerror(errno));
+		/*
+		 * And the resolution the run wrote beside it. A record
+		 * from before the resolution had a property of its own
+		 * names none, and there is nothing to remove.
+		 */
+		if (zr_zfs_get_user(z, result, ZR_PROP_RESOLUTION, resolution,
+		    sizeof (resolution), err, sizeof (err)) > 0) {
+			if (unlink(resolution) == 0)
+				(void) fprintf(stderr, "zfs_rebase: removed "
+				    "the resolution %s\n", resolution);
+			else if (errno != ENOENT)
+				(void) fprintf(stderr, "zfs_rebase: %s: %s\n",
+				    resolution, strerror(errno));
+		}
 	}
 	if (hasdir) {
 		rmdir_run(result);
