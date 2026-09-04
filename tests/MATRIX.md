@@ -443,9 +443,13 @@ Dimensions: the unchanged set {pruned, not pruned, not attempted};
 zfs ops {hold, clone, mount, prop flip, release, destroy}; the
 record {every property, guids, local against inherited, the states};
 the gates {applying1, conflicts, applying2, done, and what a stop
-leaves}; guards {securelevel, private mountpoint, readonly flip,
-re-walk}; driver {flags, preconditions, exit status}. Every row
-here is box only.
+leaves}; the input forms {from a snapshot or a dataset, onto a
+snapshot or a dataset, --result as a clone name or as a snapshot
+name, short and full}; the dataset form's own {the unmount, the
+private mount, the readonly flips, the hand-back, the rollback};
+guards {securelevel, private mountpoint, readonly flip, re-walk};
+driver {flags, preconditions, exit status}. Every row here is box
+only.
 
 | cell | scenario | disposition |
 |------|----------|-------------|
@@ -461,7 +465,7 @@ here is box only.
 | ZX10 | (retired with zfs diff) | -- |
 | ZX11 | (retired with zfs diff) | -- |
 | ZX12 | (retired with zfs diff) | -- |
-| ZX13 | snapshot from and onto @rebase-ID | deferred: the tool takes none until input-forms |
+| ZX13 | a side given as a dataset is snapshotted as <dataset>@zfs_rebase-<tag> and recorded made=from | planned: box, box/run-fixture.sh |
 | ZX14 | one hold per input, under the record's tag | planned: box, box/run-fixture.sh |
 | ZX15 | the holds outlive the process; done and --abort release them | planned: box, box/run-fixture.sh |
 | ZX16 | clone readonly=on, private mount | planned: box, box/run-fixture.sh |
@@ -511,6 +515,22 @@ here is box only.
 | ZX60 | a result left unmounted (a reboot) is mounted again by a verb | deferred: a reboot, or zfs unmount by hand; box |
 | ZX61 | a dataset carrying no record: every verb exits 2 and touches nothing | planned: box, box/run-fixture.sh |
 | ZX62 | --verify on a fresh run: the final check at the done gate, before the release | planned: box, box/run-fixture.sh |
+| ZX63 | a tool-made from snapshot goes at done and at --abort, and never at --restart | planned: box, box/run-fixture.sh |
+| ZX64 | -n with a dataset side takes a snapshot, reads it, destroys it and holds nothing | planned: box, box/run-fixture.sh |
+| ZX65 | the dataset form's --result: the short name and the full name are the same snapshot; a full name of another dataset exits 2 | planned: box, box/run-fixture.sh |
+| ZX66 | the dataset form's record lives on onto: form=dataset, readonly recorded, every property local | planned: box, box/run-fixture.sh |
+| ZX67 | the pre-apply snapshot already exists: exit 2, since the user chose the name | planned: box, box/run-fixture.sh |
+| ZX68 | exclusivity: onto is unmounted from its own place and mounted at <rundir>/mnt, with the mountpoint property untouched | planned: box, box/run-fixture.sh |
+| ZX69 | a file held open under onto: the unmount refuses, exit 2, nothing touched | planned: box, box/run-fixture.sh |
+| ZX70 | readonly on outside the apply, off during it, and the recorded value back at the hand-back | planned: box, box/run-fixture.sh |
+| ZX71 | the hand-back: at conflicts, at done and after a failure the dataset is mounted at home again | planned: box, box/run-fixture.sh |
+| ZX72 | a kill in the dataset form leaves it privately mounted, and the next verb takes it from there | deferred: needs the pause hook; box, kill-tests |
+| ZX73 | --restart in the dataset form: rolled back to the pre-apply snapshot, applied again, same gate and tag | planned: box, box/run-fixture.sh |
+| ZX74 | --abort in the dataset form: rolled back, the pre-apply snapshot destroyed, no zfs_rebase: property left local, mounted at home | planned: box, box/run-fixture.sh |
+| ZX75 | --verify alone in the dataset form: the live tree walked privately and handed back, nothing written | planned: box, box/run-fixture.sh |
+| ZX76 | --overwrite: a done record replaced; without it exit 2; an open record exits 2 either way | planned: box, box/run-fixture.sh |
+| ZX77 | a base that is a snapshot of onto is read through the private mount | deferred: needs a from cloned out of onto, which the fixtures do not build; by hand on the box |
+| ZX78 | a snapshot newer than the pre-apply one: --restart and --abort refuse rather than destroy it | deferred: needs a snapshot taken during a rebase; by hand on the box |
 
 ZX1 to ZX5 replace the diff parser's cells, which went out with the
 text: ZX1 to ZX12 used to be the "zfs diff -F -H" lines, their

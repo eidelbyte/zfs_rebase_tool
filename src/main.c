@@ -31,8 +31,9 @@
 #define	EXIT_INTERNAL	3
 
 static const char usage[] =
-	"usage: zfs_rebase [-n] [-p] [-v] [-o FILE] [--verify] "
-	"--from SNAP --onto SNAP --result DATASET\n"
+	"usage: zfs_rebase [-n] [-p] [-v] [-o FILE] [--verify] [--overwrite]\n"
+	"                  --from SNAP|DATASET --onto SNAP|DATASET "
+	"--result NAME\n"
 	"       zfs_rebase --continue [--verify] [-v] --result DATASET\n"
 	"       zfs_rebase --restart [-v] --result DATASET\n"
 	"       zfs_rebase --abort [-v] --result DATASET\n"
@@ -40,25 +41,40 @@ static const char usage[] =
 	"       zfs_rebase --posix [-p] [-o FILE] BASEDIR FROMDIR ONTODIR\n"
 	"       zfs_rebase --build-fixture FIXTURE DIR\n"
 	"       zfs_rebase --edit-fixture FIXTURE TREE DIR\n"
-	"  --from      the snapshot whose changes are replayed (--off-of)\n"
-	"  --onto      the snapshot they are replayed onto; the base is\n"
-	"              the branch point of the two, which the tool works\n"
-	"              out\n"
-	"  --result    the dataset the rebased clone is created as, and\n"
-	"              for every verb the dataset carrying the record; a\n"
-	"              snapshot name is taken as its dataset\n"
+	"  --from      the side whose changes are replayed (--off-of): a\n"
+	"              snapshot, or a dataset the tool snapshots itself\n"
+	"              and destroys again when the rebase ends\n"
+	"  --onto      the side they are replayed onto, and the form of\n"
+	"              the run: a snapshot, which is cloned as --result,\n"
+	"              or a dataset, which is rebased in place. The base\n"
+	"              is the branch point of the two, which the tool\n"
+	"              works out\n"
+	"  --result    with --onto SNAP, the dataset the rebased clone is\n"
+	"              created as; with --onto DATASET, the name of the\n"
+	"              snapshot taken of it before anything is applied,\n"
+	"              which is kept as the before-image -- the short\n"
+	"              name, or a full name whose dataset part is onto.\n"
+	"              For every verb it is the dataset carrying the\n"
+	"              record, and a snapshot name is taken as its\n"
+	"              dataset\n"
+	"  --overwrite in the dataset form, replace a record whose rebase\n"
+	"              reached done; an open rebase is never overwritten\n"
 	"  --continue  take the rebase on from the gate it stopped at\n"
-	"  --restart   destroy the result, clone it again from the\n"
-	"              recorded onto snapshot and apply the recorded\n"
-	"              manifest from the first gate\n"
-	"  --abort     release the holds that result records, destroy it,\n"
-	"              remove the manifest it recorded and its run\n"
-	"              directory, and nothing else\n"
+	"  --restart   put the result back as onto was -- the clone made\n"
+	"              again, or the dataset rolled back to the pre-apply\n"
+	"              snapshot -- and apply the recorded manifest from\n"
+	"              the first gate\n"
+	"  --abort     release the holds that result records, put the\n"
+	"              result back (the clone destroyed, or the dataset\n"
+	"              rolled back and the record taken off), destroy any\n"
+	"              snapshot the tool took itself, remove the manifest\n"
+	"              it recorded and its run directory, and nothing else\n"
 	"  --verify    alone on a result, report what is done, pending,\n"
 	"              blocked, drifted or unchecked and write nothing;\n"
 	"              with a rebase or a --continue, ask for the final\n"
 	"              check, which --continue also makes a repair\n"
-	"  -n   dry run: write the manifest, create nothing, hold nothing\n"
+	"  -n   dry run: write the manifest, hold nothing, and leave\n"
+	"       nothing behind; --result is ignored\n"
 	"  -p   permissive-merge mode\n"
 	"  -v   report counts on stderr\n"
 	"  -o   write the manifest to FILE\n"
@@ -309,6 +325,7 @@ main(int argc, char **argv)
 	const char *outpath = NULL, *v;
 	zr_mode_t mode = ZR_MODE_STRICT;
 	int dryrun = 0, verbose = 0, abrt = 0, verify = 0, cont = 0, rest = 0;
+	int overwrite = 0;
 	struct zr_run_opts ro;
 	int i, t;
 
@@ -339,6 +356,8 @@ main(int argc, char **argv)
 			rest = 1;
 		} else if (strcmp(argv[i], "--verify") == 0) {
 			verify = 1;
+		} else if (strcmp(argv[i], "--overwrite") == 0) {
+			overwrite = 1;
 		} else if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
 			outpath = argv[++i];
 		} else if ((t = longopt(argc, argv, &i, "--from", &v)) != 0 ||
@@ -370,8 +389,14 @@ main(int argc, char **argv)
 		return (die_usage());
 	if (abrt != 0 || cont != 0 || rest != 0 ||
 	    (verify != 0 && from == NULL && onto == NULL)) {
+		/*
+		 * --overwrite belongs to a fresh run in the dataset
+		 * form: there is nothing for a verb to overwrite, and
+		 * an open rebase is settled by --continue or --abort.
+		 */
 		if (result == NULL || from != NULL || onto != NULL ||
-		    outpath != NULL || dryrun != 0 || mode != ZR_MODE_STRICT)
+		    outpath != NULL || dryrun != 0 || overwrite != 0 ||
+		    mode != ZR_MODE_STRICT)
 			return (die_usage());
 		if (abrt != 0 || rest != 0) {
 			if (verify != 0)
@@ -383,19 +408,22 @@ main(int argc, char **argv)
 			return (zr_continue(result, verify, verbose));
 		return (zr_report(result, verbose));
 	}
+	/*
+	 * Each side is a snapshot or a dataset -- an argument with an
+	 * '@' in it is a snapshot -- and --onto decides the form.
+	 * --result is the clone's name in one form and the pre-apply
+	 * snapshot's in the other, and a dry run ignores it, since it
+	 * creates nothing that would need a name.
+	 */
 	if (from == NULL || onto == NULL || (result == NULL && !dryrun))
 		return (die_usage());
-	if (strchr(from, '@') == NULL || strchr(onto, '@') == NULL) {
-		(void) fprintf(stderr, "zfs_rebase: --from and --onto must "
-		    "name snapshots, as pool/dataset@snapshot\n");
-		return (EXIT_PRECOND);
-	}
 	ro.from = from;
 	ro.onto = onto;
 	ro.result = dryrun ? NULL : result;
 	ro.outpath = outpath;
 	ro.mode = mode;
 	ro.dryrun = dryrun;
+	ro.overwrite = overwrite;
 	ro.verify = verify;
 	ro.verbose = verbose;
 	return (zr_run(&ro));

@@ -1,13 +1,18 @@
 /*
- * zfsops: the ZFS operations one run needs -- hold, clone and mount,
- * property get and set, existence, release and destroy -- behind one
- * handle that owns the libzfs handle. All of it is library calls
- * into libzfs_core and libzfs; the tool never execs zfs(8).
+ * zfsops: the ZFS operations one run needs -- hold, snapshot, clone,
+ * mount and unmount, rollback, property get and set, existence,
+ * release and destroy -- behind one handle that owns the libzfs
+ * handle. All of it is library calls into libzfs_core and libzfs;
+ * the tool never execs zfs(8).
  *
- * The tool takes no snapshots: the three it works from are the
- * user's, and it holds them for the life of the rebase, not the life
- * of the process. The one dataset it creates is the result clone,
- * which the user names, and which carries the record.
+ * A snapshot the user gives is the user's, and the tool holds it for
+ * the life of the rebase rather than the life of the process. A
+ * dataset the user gives is snapshotted by the tool, and that
+ * snapshot lives exactly as long as the rebase: the record says
+ * which of them the tool made. The one dataset the tool creates is
+ * the result clone of the clone form, which the user names; in the
+ * dataset form it creates none and the record lives on the onto
+ * dataset itself.
  *
  * The bodies compile only with ZR_FREEBSD. Without it every call
  * here fails with "not built with ZR_FREEBSD", which is what the
@@ -52,6 +57,7 @@
 #define	ZR_PROP_TAG		"zfs_rebase:tag"
 #define	ZR_PROP_VERIFY		"zfs_rebase:verify"
 #define	ZR_PROP_MANIFEST	"zfs_rebase:manifest"
+#define	ZR_PROP_READONLY	"zfs_rebase:readonly"
 #define	ZR_PROP_STATE		"zfs_rebase:state"
 
 /*
@@ -60,8 +66,15 @@
  * property has no other type: zfs_set_prop_nvlist (module/zfs/
  * zfs_ioctl.c) returns EINVAL for a user property that is not a
  * string. made names the inputs the tool snapshotted itself and is
- * "" while the tool takes none; mode is "strict" or "permissive";
- * form is "clone"; verify is "yes" or "no".
+ * "" when both were given as snapshots; mode is "strict" or
+ * "permissive"; form is "clone" or "dataset"; verify is "yes" or
+ * "no".
+ *
+ * readonly is the dataset form's own: the value the onto dataset's
+ * readonly property had before the run took the dataset over, so
+ * that handing it back restores it. The clone form leaves it NULL
+ * and the property is not written at all -- a clone is created
+ * read-only and stays that way, and there is nothing to put back.
  */
 struct zr_rebase_record {
 	const char	*base;		/* pool/fs@snap */
@@ -76,6 +89,7 @@ struct zr_rebase_record {
 	const char	*tag;		/* the hold tag, "zr-<12 hex>" */
 	const char	*verify;
 	const char	*manifest;	/* absolute path */
+	const char	*readonly;	/* "on", "off", or NULL */
 };
 
 struct zr_zfs;
@@ -115,6 +129,55 @@ int zr_zfs_clone(struct zr_zfs *z, const char *snapshot, const char *clone,
     size_t errlen);
 
 /*
+ * Write the whole record on a dataset that already exists, which is
+ * what the dataset form does: there is no create to carry the
+ * properties, so each of them is set on onto itself. Every one is
+ * set locally, which is what a set does, and the state is not among
+ * them -- the state is written at the gates.
+ */
+int zr_zfs_write_record(struct zr_zfs *z, const char *dataset,
+    const struct zr_rebase_record *rec, char *err, size_t errlen);
+
+/*
+ * Take one snapshot. Returns 0 when it was taken, 1 when a snapshot
+ * of that name is already there, and -1 with err set otherwise, so
+ * that a caller naming a snapshot itself can try the next name and a
+ * caller carrying the user's name can refuse.
+ */
+int zr_zfs_snapshot(struct zr_zfs *z, const char *snapshot, char *err,
+    size_t errlen);
+
+/*
+ * Destroy one snapshot, with defer off: a snapshot that is held or
+ * cloned is a failure here rather than a promise to destroy it
+ * later, because the tool releases its own holds first and has
+ * nothing else to wait for. A snapshot that is not there is not a
+ * failure -- lzc_destroy_snaps ignores it -- which is what lets
+ * --abort be run twice.
+ */
+int zr_zfs_destroy_snap(struct zr_zfs *z, const char *snapshot, char *err,
+    size_t errlen);
+
+/*
+ * Roll dataset back to snapshot, which must be its most recent one.
+ * The dataset may be mounted: zfs_ioc_rollback (module/zfs/
+ * zfs_ioctl.c) looks the filesystem up with getzfsvfs and suspends
+ * and resumes it around the rollback itself, and zfs(8) unmounts
+ * nothing for a rollback either (zfs_do_rollback, cmd/zfs/
+ * zfs_main.c, calls zfs_rollback, which calls lzc_rollback_to and
+ * no mount call at all). The mount stays where it is, which is what
+ * the dataset form needs: its dataset is mounted privately at the
+ * time.
+ *
+ * Nothing else is destroyed. zfs rollback -r destroys the snapshots
+ * that came after the target first; this does not, so a rollback
+ * that would need that fails with EEXIST and says so rather than
+ * taking a snapshot of the user's away.
+ */
+int zr_zfs_rollback(struct zr_zfs *z, const char *dataset,
+    const char *snapshot, char *err, size_t errlen);
+
+/*
  * Hold snapshot under tag against a cleanup descriptor of this
  * process's own, so that the kernel gives the hold back when the
  * process ends, however it ends. That is what --verify wants and a
@@ -151,6 +214,39 @@ int zr_zfs_find_guid(struct zr_zfs *z, const char *pool, uint64_t guid,
  */
 int zr_zfs_mount(struct zr_zfs *z, const char *dataset, char *err,
     size_t errlen);
+
+/*
+ * Mount dataset at path, whatever its mountpoint property says, and
+ * without changing that property: zfs_mount_at (lib/libzfs/
+ * libzfs_mount.c) takes the path as an argument, and only zfs_mount
+ * reads the property to find one. The directory must exist or be
+ * creatable and must be empty, as it is for any mount. This is how
+ * the dataset form takes a dataset over: the mountpoint it will go
+ * back to is untouched all along.
+ */
+int zr_zfs_mount_at(struct zr_zfs *z, const char *dataset, const char *path,
+    char *err, size_t errlen);
+
+/*
+ * Unmount dataset from wherever it is mounted. Nothing is forced:
+ * the flags are 0, so MNT_FORCE is never passed (do_unmount, lib/
+ * libzfs/os/freebsd/libzfs_zmount.c, hands its flags straight to
+ * unmount(2)), and a dataset somebody is using comes back EBUSY,
+ * which is the refusal the dataset form is built on. A dataset that
+ * is not mounted is nothing to do and not a failure.
+ */
+int zr_zfs_unmount(struct zr_zfs *z, const char *dataset, char *err,
+    size_t errlen);
+
+/*
+ * Where dataset is mounted just now, which is not always where its
+ * mountpoint property says: 1 with the path in buf, 0 when it is not
+ * mounted, -1 with err set. zfs_is_mounted (lib/libzfs/
+ * libzfs_mount.c) answers from the mount table and not from the
+ * property.
+ */
+int zr_zfs_mounted_at(struct zr_zfs *z, const char *dataset, char *buf,
+    size_t buflen, char *err, size_t errlen);
 
 /* Set readonly on or off. */
 int zr_zfs_set_readonly(struct zr_zfs *z, const char *dataset, int on,
@@ -224,6 +320,18 @@ int zr_zfs_get_int(struct zr_zfs *z, const char *dataset, const char *prop,
 /* Set one "module:name" user property. */
 int zr_zfs_set_user(struct zr_zfs *z, const char *dataset, const char *prop,
     const char *value, char *err, size_t errlen);
+
+/*
+ * Take one "module:name" user property off a dataset. Inheriting a
+ * user property is how it is removed: zfs_prop_inherit (lib/libzfs/
+ * libzfs_dataset.c) takes the ZPROP_USERPROP arm straight to
+ * ZFS_IOC_INHERIT_PROP, and dsl_prop_set_sync_impl (module/zfs/
+ * dsl_prop.c) removes the local entry for ZPROP_SRC_INHERITED. It is
+ * what zfs inherit does for a user property, and a property that is
+ * not there is not a failure.
+ */
+int zr_zfs_clear_user(struct zr_zfs *z, const char *dataset, const char *prop,
+    char *err, size_t errlen);
 
 /*
  * Read one local "module:name" user property: 1 with buf set when

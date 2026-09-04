@@ -8,19 +8,35 @@
 #define	ZR_NAME_MAX	1024	/* dataset names and mountpoints */
 
 /*
- * The two sides are snapshots the user took; the tool takes none.
- * The base is not given: it is the branch point, and the run works
- * it out from the origin chains of the two. result is the dataset
- * the rebased clone is created as, and may be NULL only for a dry
- * run, which creates nothing.
+ * Each side is a snapshot the user took or a dataset the tool
+ * snapshots for itself, and --onto decides the form of the run:
+ *
+ *	onto a snapshot -- the clone form. result names the dataset
+ *	the rebased clone is created as, read-only at the run's own
+ *	mountpoint, and carries the record.
+ *
+ *	onto a dataset -- the dataset form. The rebase is made in that
+ *	dataset, which carries the record, and result names the
+ *	snapshot taken of it before anything is applied: the short
+ *	name after the '@', or a full name whose dataset part is onto
+ *	itself. That snapshot is the user's before-image and stays
+ *	after done.
+ *
+ * The base is not given either way: it is the branch point, and the
+ * run works it out from the origin chains of the two sides. result
+ * may be NULL only for a dry run, which creates nothing and ignores
+ * it. overwrite replaces a record whose rebase reached done, and is
+ * the dataset form's alone: a clone-form result is a fresh dataset
+ * with a fresh record and there is nothing there to overwrite.
  */
 struct zr_run_opts {
-	const char	*from;		/* pool/fs@snap */
-	const char	*onto;		/* pool/fs@snap */
-	const char	*result;	/* pool/fs, the clone to create */
+	const char	*from;		/* pool/fs@snap or pool/fs */
+	const char	*onto;		/* pool/fs@snap or pool/fs */
+	const char	*result;	/* the clone, or the snapshot name */
 	const char	*outpath;	/* manifest file, or NULL */
 	zr_mode_t	mode;
-	int		dryrun;		/* manifest only, no clone, no apply */
+	int		dryrun;		/* manifest only, nothing created */
+	int		overwrite;	/* replace a record that is done */
 	int		verify;		/* the demand for a final check */
 	int		verbose;
 };
@@ -42,11 +58,12 @@ int zr_run(const struct zr_run_opts *);
  * goes and repairs drift on the clean ones; conflicted names are
  * never touched.
  *
- * zr_restart destroys the result and clones it again from the
- * recorded onto snapshot with the same record, then continues from
- * the first gate. Nothing is decided again: the recorded manifest is
- * the decision, and a resolution's edits are discarded by
- * definition.
+ * zr_restart puts the result back as onto was and applies again from
+ * the first gate: the clone form destroys the clone and makes it
+ * again from the recorded onto snapshot with the same record, and
+ * the dataset form rolls the dataset back to it. Nothing is decided
+ * again: the recorded manifest is the decision, and a resolution's
+ * edits are discarded by definition.
  *
  * zr_report is --verify alone: it classifies and prints and writes
  * nothing at all, finding each input by name and then by guid, and
@@ -58,12 +75,16 @@ int zr_restart(const char *result, int verbose);
 int zr_report(const char *result, int verbose);
 
 /*
- * Undo one rebase: release the holds its record names, destroy the
- * result dataset, remove the manifest the record names, and take the
- * run directory away. Only a dataset carrying the record -- the hold
- * tag and the manifest path, both as local values -- is touched, and
- * nothing is ever removed recursively. It can be run again over a
- * half-aborted rebase.
+ * Undo one rebase: release the holds its record names, put the
+ * result back -- destroying the clone in the clone form, and in the
+ * dataset form rolling the dataset back to its pre-apply snapshot,
+ * destroying that snapshot, taking the record off and mounting the
+ * dataset where it belongs again -- destroy any snapshot the tool
+ * took for itself, remove the manifest the record names, and take
+ * the run directory away. Only a dataset carrying the record -- the
+ * hold tag and the manifest path, both as local values -- is
+ * touched, and nothing is ever removed recursively. It can be run
+ * again over a half-aborted rebase.
  */
 int zr_abort(const char *result, int verbose);
 
