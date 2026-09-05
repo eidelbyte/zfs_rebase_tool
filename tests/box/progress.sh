@@ -19,7 +19,9 @@
 # EL, which the FreeBSD console and every xterm-class terminal take.
 # The size is read again at every draw, so a resized window is
 # followed at the next step. Every function is safe to call when the
-# display is off, before prog_start, or twice.
+# display is off, before prog_start, or twice. While the display is
+# on, SIGINT, SIGTERM and SIGHUP take it down and leave through exit,
+# so the harness's EXIT trap and its teardown run on a Ctrl-C too.
 #
 #   prog_start TOTAL [UNITS]   begin: TOTAL units to come (0: count up)
 #   prog_step [LABEL]          one unit done; LABEL is what is on now
@@ -78,6 +80,13 @@ prog_start() {
 	prog_size
 	[ "$prog_rows" -ge 6 ] || return 0
 	prog_on=1
+	# A signal that would kill the shell would leave the region set
+	# and the display on the screen, and would skip the harness's
+	# own EXIT trap with its teardown: take the display down and
+	# leave through exit, which runs that trap.
+	trap 'prog_end; exit 130' INT
+	trap 'prog_end; exit 143' TERM
+	trap 'prog_end; exit 129' HUP
 	# Two rows of room, the cursor kept, the region shrunk, the
 	# cursor put back and two rows up, so output goes on inside.
 	printf '\n\n\0337\033[1;%dr\0338\033[2A' $((prog_rows - 2))
@@ -122,9 +131,9 @@ prog_draw() {
 	else
 		label=$(prog_clean "$prog_label")
 	fi
-	# Both rows padded to the width, so the reverse video is one
-	# block across the two, set off from the text scrolling above.
-	label=$(printf "%-${prog_cols}s" "$label")
+	# The label's block ends a space after its text; the bar's runs
+	# the width, which it fills anyway.
+	label="$label "
 	line=$(printf "%-${prog_cols}s" "$line")
 	# Save the cursor; set the region again, since the window may
 	# have been resized; the label row, then the bar row, each
@@ -149,6 +158,7 @@ prog_note() {
 prog_end() {
 	[ "$prog_on" = 1 ] || return 0
 	prog_on=0
+	trap - INT TERM HUP
 	prog_size
 	if [ "$prog_rows" -ge 2 ]; then
 		printf '\0337\033[%d;1H\033[2K\033[%d;1H\033[2K\033[r\0338' \
