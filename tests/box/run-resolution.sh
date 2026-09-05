@@ -889,8 +889,12 @@ case_killwindow() {
 	[ -z "$(statenow "$rds")" ] || \
 	    fail "the state is '$(statenow "$rds")', want none"
 	[ "$(holdcount)" = 3 ] || fail "$(holdcount) holds after the kill, want 3"
-	[ "$(recsrc zfs_rebase:resolution "$rds")" = local ] && \
-	    fail "the record names a resolution the run never wrote"
+	# The record has named the resolution's place since the result
+	# was made, the way it names the manifest's: the plan, not the
+	# file. What the kill leaves is the plan without the file, and
+	# --abort takes a file that is not there in its stride.
+	[ "$(recsrc zfs_rebase:resolution "$rds")" = local ] || \
+	    fail "the record does not name the resolution's place"
 	if [ "$form" = dataset ]; then
 		mounted_at "$rundir/mnt" || \
 		    fail "onto is not at the private mount $rundir/mnt"
@@ -909,23 +913,10 @@ case_killwindow() {
 		[ "$(statenow "$rds")" = conflicts ] || \
 		    fail "the restart is at '$(statenow "$rds")', want conflicts"
 		echo "ok   $case_id: the skeleton was written again and the gate is shut"
-		# One thing --restart does not do here is record the path
-		# it just wrote to, since the record has carried no
-		# zfs_rebase:resolution since the kill: reset_resolution
-		# writes the file and no property. --abort then has
-		# nothing to unlink, and the file it leaves keeps the run
-		# directory from going. That is a finding for the author
-		# and not this harness's to mend, so the file is taken
-		# away here and the case says so; if the record does name
-		# it, the tool has been fixed and --abort takes it.
-		if [ "$(recsrc zfs_rebase:resolution "$rds")" = local ]; then
-			echo "     and the record names it, so --abort takes it"
-		else
-			echo "note $case_id: --restart wrote $res and recorded no"
-			echo "     path for it, so --abort cannot unlink it; the"
-			echo "     harness does, to leave the pool as it found it"
-			rm -f "$res"
-		fi
+		# The record named the place all along, so the --abort
+		# that ends the case takes the skeleton with the rest.
+		[ "$(recsrc zfs_rebase:resolution "$rds")" = local ] || \
+		    fail "the record lost the resolution's place"
 	else
 		echo "ok   $case_id: manifest yes, resolution no, three holds"
 	fi
