@@ -49,9 +49,10 @@
 #    being edited by hand, an edit cannot be told from a stray, and
 #    the gate reports and passes rather than blocking done for good.
 #    Then the same edit to a conflicted name, which is never
-#    classified at all: exit 0, no drift, nothing outside the
-#    manifest, and the edit still there, because answering a conflict
-#    is the conflict manager's and not a rebase's.
+#    classified at all: the report is what it was (the one clean
+#    drift, still standing, still exit 3), nothing outside the
+#    manifest, and the edit still there, because answering a
+#    conflict is the conflict manager's and not a rebase's.
 #
 # 4. A stray write into the live from or onto dataset while the run
 #    is reading, at the read gate: the tool reads snapshots, so the
