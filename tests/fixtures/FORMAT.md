@@ -113,9 +113,12 @@ and no ACL.
                     is 0 or less). uchg and uappnd are the Mac's
                     and UFS's; ZFS answers them with EOPNOTSUPP and
                     the build fails. A fixture that runs everywhere
-                    uses nodump and hidden. A platform with no
-                    flags at all cannot read this attribute, and
-                    says so.
+                    uses nodump and hidden. An entry without
+                    flags= means the flags a new object is born
+                    with on that filesystem: none on the Mac, the
+                    archive bit on ZFS, which every write sets
+                    again. A platform with no flags at all cannot
+                    read this attribute, and says so.
     xattr=NAME:VAL  one extended attribute, and the only attribute a
                     line may repeat. NAME is the name the walk
                     itself reports, "user.NAME" or "system.NAME";

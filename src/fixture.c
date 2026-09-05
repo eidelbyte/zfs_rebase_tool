@@ -112,6 +112,21 @@
 #define	FX_HAVE_ACL	1
 #define	FX_PLATFORM	"freebsd"	/* what a platform line calls us */
 #endif
+/*
+ * The flags a new object is born with on the target. FreeBSD ZFS
+ * gives every new object ZFS_ARCHIVE (zfs_mknode), which getattr
+ * shows as UF_ARCHIVE and every write sets again. An entry that says
+ * no flags= means "as born": that bit is neither drift for the editor
+ * to report nor something for it to clear, and an object the editor
+ * has to make flag-less is given it. The Mac is born with nothing.
+ * On a UFS TMPDIR this is one bit too many on that last kind of
+ * object and nothing else; ZFS is the target.
+ */
+#if defined(__FreeBSD__)
+#define	FX_BORN_FLAGS	((uint32_t)UF_ARCHIVE)
+#else
+#define	FX_BORN_FLAGS	((uint32_t)0)
+#endif
 #if defined(__FreeBSD__)
 #include <sys/acl.h>
 #include <sys/extattr.h>
@@ -191,6 +206,18 @@ fx_setacl(const char *full, const char *text)
 	errno = ENOTSUP;
 	return (-1);
 #endif
+}
+
+/*
+ * Does an object's flag word satisfy an entry's? Declared flags are
+ * exact; no flags= tolerates the born bits and nothing else.
+ */
+static int
+fx_flags_ok(uint32_t want, uint32_t have)
+{
+	if (want != 0)
+		return (have == want);
+	return ((have & ~FX_BORN_FLAGS) == 0);
 }
 
 static int
@@ -2519,7 +2546,7 @@ fx_ed_needs(struct fx_ed *ed, char *err, size_t errlen)
 		}
 		if (!fx_ed_attr_same(&ed->ed_eff[i], at, o->fe_type))
 			ed->ed_need[i] |= FE_W_ATTR;
-		if (ed->ed_eff[i].ef_flags != at->za_flags)
+		if (!fx_flags_ok(ed->ed_eff[i].ef_flags, at->za_flags))
 			ed->ed_need[i] |= FE_W_FLAGS;
 	}
 	return (0);
@@ -2675,7 +2702,8 @@ fx_ed_clearflags(struct fx_ed *ed, char *err, size_t errlen)
 	uint32_t i;
 
 	for (i = 0; i < ed->ed_npools; i++) {
-		if (!ed->ed_clear[i] || ed->ed_w.zw_attrs[i].za_flags == 0)
+		if (!ed->ed_clear[i] ||
+		    (ed->ed_w.zw_attrs[i].za_flags & ~FX_BORN_FLAGS) == 0)
 			continue;
 		p = &ed->ed_w.zw_tree.zt_pools[i];
 		if (p->zp_nnames == 0)
@@ -2685,7 +2713,8 @@ fx_ed_clearflags(struct fx_ed *ed, char *err, size_t errlen)
 		full = fx_ed_namepath(ed, p->zp_names[0]);
 		if (full == NULL)
 			return (fx_ed_fail(err, errlen, NULL, "memory"));
-		if (fx_setflags(full, 0) != 0)
+		if (fx_setflags(full, ed->ed_w.zw_attrs[i].za_flags &
+		    FX_BORN_FLAGS) != 0)
 			return (fx_ed_fail(err, errlen, full, "chflags"));
 	}
 	return (0);
@@ -2914,17 +2943,25 @@ fx_ed_setflags(struct fx_ed *ed, char *err, size_t errlen)
 		owner = e->fe_pool;
 		if ((ed->ed_need[owner] & FE_W_DONE) != 0)
 			continue;
-		cur = 0;
-		if (ed->ed_claim[owner] != ZR_POOL_NONE &&
-		    !ed->ed_clear[ed->ed_claim[owner]])
+		/*
+		 * What the object carries now: a new one, and one the
+		 * clearing pass took down to its born bits, carry those;
+		 * the rest carry what the walk saw.
+		 */
+		cur = FX_BORN_FLAGS;
+		if (ed->ed_claim[owner] != ZR_POOL_NONE) {
 			cur = ed->ed_w.zw_attrs[ed->ed_claim[owner]].za_flags;
+			if (ed->ed_clear[ed->ed_claim[owner]])
+				cur &= FX_BORN_FLAGS;
+		}
 		ed->ed_need[owner] |= FE_W_DONE;
-		if (ed->ed_eff[owner].ef_flags == cur)
+		if (fx_flags_ok(ed->ed_eff[owner].ef_flags, cur))
 			continue;
 		full = fx_ed_entpath(ed, i - 1);
 		if (full == NULL)
 			return (fx_ed_fail(err, errlen, e->fe_path, "memory"));
-		if (fx_setflags(full, ed->ed_eff[owner].ef_flags) != 0)
+		if (fx_setflags(full, ed->ed_eff[owner].ef_flags != 0 ?
+		    ed->ed_eff[owner].ef_flags : FX_BORN_FLAGS) != 0)
 			return (fx_ed_fail(err, errlen, full, "chflags"));
 	}
 	if (ed->ed_rootflags == 0)
