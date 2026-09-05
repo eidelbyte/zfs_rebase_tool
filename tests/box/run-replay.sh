@@ -209,9 +209,10 @@ one() {
 	    { head -5 "$tmp/got"; fail "the real run did not derive base"; }
 	unchanged "$tmp/err" "$want" "the real run"
 	if grep -q '^#conflicts 0$' "$tmp/expect"; then
-		[ $st -eq 0 ] || fail "clean fixture exited $st"
+		[ $st -eq 0 ] || { cat "$tmp/err"; fail "clean fixture exited $st"; }
 	else
-		[ $st -eq 1 ] || fail "conflicted fixture exited $st, want 1"
+		[ $st -eq 1 ] || \
+		    { cat "$tmp/err"; fail "conflicted fixture exited $st, want 1"; }
 	fi
 	echo "ok   real run (exit $st): manifest equal, $want pools unchanged"
 

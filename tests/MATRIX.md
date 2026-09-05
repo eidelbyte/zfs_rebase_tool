@@ -944,6 +944,8 @@ snapshot, a clone and a kill need the box.
 | ZY93 | a name a resolution line covers, deleted or added: no entry on the name axis either | covered: check_verify.c |
 | ZY94 | a stray edit to a clean name at the conflicts gate: --continue --verify writes it into the resolution as a drift keep line, the rebase reaches done with the edit intact, and --verify afterwards reports the name under the resolution and not as drift | planned: box, box/run-strays.sh |
 | ZY95 | --verify on a --continue at applying1: the record gains zfs_rebase:verify and the final check is made at done as if the fresh run had asked for it | planned: box, box/run-kills.sh, which asserts the property after every SIGKILL case whose gate is before or inside applying1, since those are the ones that continue with --verify |
+| ZY96 | a type change (rm and a make on one name): before the apply both lines pending | covered: check_verify.c |
+| ZY97 | a type change after the apply: the name holds the later line's product, the removal reads done and not drifted; a name with no later line that holds something else stays drifted (ZY2) | covered: check_verify.c; box: run-replay.sh over type-change.zrt |
 
 ZY40 to ZY45 are the post-done verify's: a tree that is not there
 any more is walked as the empty tree and named in the missing mask,

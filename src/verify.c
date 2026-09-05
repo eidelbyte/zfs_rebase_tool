@@ -45,6 +45,7 @@
 #define	ZV_CONFLICT	0x2	/* and that line is a conflict mark */
 #define	ZV_RMDIR	0x4	/* and that line removes a directory */
 #define	ZV_CHOSEN	0x8	/* a resolution line names it */
+#define	ZV_REMADE	0x10	/* a later line makes an object at it */
 
 /* How many entries the name list starts at and grows by. */
 #define	ZV_DIFF_MIN	16
@@ -177,6 +178,7 @@ static int
 zv_rm(struct zv_ctx *c, const struct zr_action *a, zr_pool_t po, zr_pool_t pr,
     enum zr_outcome *out)
 {
+	zr_name_t nm;
 	int eq;
 
 	if (pr == ZR_POOL_NONE) {
@@ -195,7 +197,23 @@ zv_rm(struct zv_ctx *c, const struct zr_action *a, zr_pool_t po, zr_pool_t pr,
 	eq = zv_same(c, ZV_ONTO, po, ZV_RESULT, pr);
 	if (eq < 0)
 		return (-1);
-	*out = eq != 0 ? ZR_OC_PENDING : ZR_OC_DRIFTED;
+	if (eq != 0) {
+		*out = ZR_OC_PENDING;
+		return (0);
+	}
+	/*
+	 * Not onto's object at the name. A type change is two lines on
+	 * one name, this removal and the make after it, and once the
+	 * apply has been through, what sits here is the later line's
+	 * product and that line's to judge; the removal has done its
+	 * part. With no later line, whatever sits here is a stray.
+	 */
+	nm = zv_name(c, a->za_path, a->za_pathlen);
+	if (nm != ZR_NAME_NONE && nm < c->zc_nnames &&
+	    (c->zc_mark[nm] & ZV_REMADE) != 0)
+		*out = ZR_OC_DONE;
+	else
+		*out = ZR_OC_DRIFTED;
 	return (0);
 }
 
@@ -373,6 +391,8 @@ zv_marks(struct zv_ctx *c)
 			c->zc_mark[nm] |= ZV_CONFLICT;
 		if (a->za_kind == ZR_ACT_RM && a->za_isdir != 0)
 			c->zc_mark[nm] |= ZV_RMDIR;
+		if (a->za_kind != ZR_ACT_RM && a->za_kind != ZR_ACT_CONFLICT)
+			c->zc_mark[nm] |= ZV_REMADE;
 		pr = zv_pool(c, ZV_RESULT, nm);
 		if (pr != ZR_POOL_NONE && pr < c->zc_npools)
 			c->zc_pmark[pr] = 1;

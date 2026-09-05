@@ -464,6 +464,70 @@ check_rm_states(void)
 }
 
 /*
+ * ZY96, ZY97: a type change is two lines on one name, the removal of
+ * onto's directory and the making of from's file. Before the apply
+ * both read pending; after it the name holds from's file, which is
+ * not onto's directory and is not drift either, since it is the
+ * later line's product: the removal is done, and so is the make.
+ * The stray case stays what it was: a name with no later line that
+ * holds something else is drifted (ZY2).
+ */
+static void
+check_rm_typechange(void)
+{
+	struct zr_verify_report rep;
+	struct zr_parsed p;
+	struct vshape v;
+	char full[PATHMAX];
+	uint32_t i, rm = ZR_ACTION_NONE, cp = ZR_ACTION_NONE;
+	static const char body[] =
+	    "    d/ rm\n"
+	    "        f rm\n"
+	    "        ..\n"
+	    "    d cp /d\n";
+
+	vshape_init(&v);
+	mkdirp(v.vs_onto, "/d", 0755);
+	mkfile(v.vs_onto, "/d/f", "f\n", 0644);
+	mkfile(v.vs_from, "/d", "g\n", 0644);
+	mkdirp(v.vs_res, "/d", 0755);
+	mkfile(v.vs_res, "/d/f", "f\n", 0644);
+	vshape_run(&v, body, 3, 0, "", &p, &rep);
+	CHECK(p.zp_nactions == 3);
+	for (i = 0; i < p.zp_nactions; i++) {
+		if (strcmp((const char *)p.zp_actions[i].za_path, "/d") != 0)
+			continue;
+		if (p.zp_actions[i].za_kind == ZR_ACT_RM)
+			rm = i;
+		else
+			cp = i;
+	}
+	CHECK(rm != ZR_ACTION_NONE && cp != ZR_ACTION_NONE);
+	CHECK(rep.zv_outcome[rm] == ZR_OC_PENDING);
+	CHECK(rep.zv_outcome[cp] == ZR_OC_PENDING);
+	CHECK(rep.zv_outcome[idx_of(&p, "/d/f")] == ZR_OC_PENDING);
+	CHECK(rep.zv_ndiffs == 0);
+	zr_verify_report_fini(&rep);
+	zr_parsed_fini(&p);
+
+	/* as the apply leaves it: from's file where onto's directory was */
+	rmname(v.vs_res, "/d/f");
+	join(full, sizeof (full), v.vs_res, "/d");
+	CHECK(rmdir(full) == 0);
+	mkfile(v.vs_res, "/d", "g\n", 0644);
+	vshape_run(&v, body, 3, 0, "", &p, &rep);
+	CHECK(rep.zv_outcome[rm] == ZR_OC_DONE);
+	CHECK(rep.zv_outcome[cp] == ZR_OC_DONE);
+	CHECK(rep.zv_outcome[idx_of(&p, "/d/f")] == ZR_OC_DONE);
+	CHECK(rep.zv_count[ZR_OC_DONE] == 3);
+	CHECK(rep.zv_count[ZR_OC_DRIFTED] == 0);
+	CHECK(rep.zv_ndiffs == 0);
+	zr_verify_report_fini(&rep);
+	zr_parsed_fini(&p);
+	vshape_fini(&v);
+}
+
+/*
  * ZY4, ZY20: the removal of a directory a conflict holds open. The
  * directory is blocked, which is a state and not drift; the conflict
  * mark itself is classified as nothing and counted nowhere.
@@ -2186,6 +2250,7 @@ int
 main(void)
 {
 	check_rm_states();
+	check_rm_typechange();
 	check_rm_blocked();
 	check_ln_states();
 	check_cp_new();
