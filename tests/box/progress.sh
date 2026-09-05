@@ -117,15 +117,19 @@ prog_draw() {
 		    $((el / 60)) $((el % 60)))
 	fi
 	line=$(prog_clean "$line")
-	if [ -n "$prog_head" ]; then
+	if [ -n "$prog_head" ] && [ "$prog_head" != "$prog_label" ]; then
 		label=$(prog_clean "$prog_label: $prog_head")
 	else
 		label=$(prog_clean "$prog_label")
 	fi
+	# Both rows padded to the width, so the reverse video is one
+	# block across the two, set off from the text scrolling above.
+	label=$(printf "%-${prog_cols}s" "$label")
+	line=$(printf "%-${prog_cols}s" "$line")
 	# Save the cursor; set the region again, since the window may
-	# have been resized; the label row, cleared and written; the bar
-	# row, cleared and written in reverse video; the cursor back.
-	printf '\0337\033[1;%dr\033[%d;1H\033[2K%s\033[%d;1H\033[2K\033[7m%s\033[0m\0338' \
+	# have been resized; the label row, then the bar row, each
+	# cleared and written in reverse video; the cursor back.
+	printf '\0337\033[1;%dr\033[%d;1H\033[2K\033[7m%s\033[0m\033[%d;1H\033[2K\033[7m%s\033[0m\0338' \
 	    $((prog_rows - 2)) $((prog_rows - 1)) "$label" "$prog_rows" \
 	    "$line"
 }

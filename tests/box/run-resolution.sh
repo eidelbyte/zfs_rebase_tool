@@ -1056,7 +1056,7 @@ res_pass() {
 	man=$rundir/manifest
 	res=$rundir/resolution
 	log=$tmp/pass.log
-	prog_step "$(basename "$fixture" .zrt), the $form form"
+	prog_step "$fixture, the $form form"
 	say "$fixture, the $form form"
 	case_headless onto
 	case_headless from
