@@ -160,6 +160,9 @@ Wherever the run stops \(em at conflicts, at done, at a failure, at a signal
 mounted where its
 .Sy mountpoint
 property says.
+The private mount is root's alone and writable for its whole life: a dataset
+that was read-only is made writable once, while it is off its mountpoint, and
+the record remembers what it was for the hand-back.
 .El
 .Pp
 A side given as a dataset rather than a snapshot is snapshotted by the tool

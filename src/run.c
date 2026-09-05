@@ -1293,6 +1293,34 @@ overwrite_clear(struct run *r)
  * to it. What the property was before this is in the record, and the
  * hand-back puts it back.
  */
+/*
+ * The readonly property in the dataset form is touched only while
+ * the dataset is off its mountpoint: here, before the private mount,
+ * and at the hand-back, after the private mount is undone. libzfs
+ * answers a change of readonly on a mounted dataset with a remount
+ * at the mountpoint property (changelist_postfix,
+ * lib/libzfs/libzfs_changelist.c), which is an update on a directory
+ * nothing is mounted on while the dataset sits at the private mount,
+ * and EINVAL from the kernel. The kernel itself needs no remount --
+ * readonly_changed_cb applies the property to the live mount -- but
+ * libzfs makes one anyway. So a dataset that was read-only is made
+ * writable once, unmounted, for the private mount's whole life, the
+ * record keeping what it was; the private mount is root's alone, and
+ * the per-stage flips are the clone form's.
+ */
+static int
+private_rw(struct zr_zfs *z, const char *dataset, char *err, size_t errlen)
+{
+	char ro[16];
+
+	if (zr_zfs_get(z, dataset, "readonly", ro, sizeof (ro), err,
+	    errlen) != 0)
+		return (-1);
+	if (strcmp(ro, "on") != 0)
+		return (0);
+	return (zr_zfs_set_readonly(z, dataset, 0, err, errlen));
+}
+
 static int
 exclusive(struct run *r)
 {
@@ -1303,18 +1331,18 @@ exclusive(struct run *r)
 		    "or give a snapshot\n", r->ontods);
 		return (-1);
 	}
-	if (zr_zfs_mount_at(r->zfs, r->ontods, r->workmnt, r->err,
+	if (private_rw(r->zfs, r->ontods, r->err, sizeof (r->err)) != 0 ||
+	    zr_zfs_mount_at(r->zfs, r->ontods, r->workmnt, r->err,
 	    sizeof (r->err)) != 0) {
 		/* it came from somewhere: put it back before giving up */
-		if (zr_zfs_mount(r->zfs, r->ontods, e, sizeof (e)) != 0)
+		if (zr_zfs_set_readonly(r->zfs, r->ontods,
+		    strcmp(r->roorig, "on") == 0, e, sizeof (e)) != 0 ||
+		    zr_zfs_mount(r->zfs, r->ontods, e, sizeof (e)) != 0)
 			(void) fprintf(stderr, "zfs_rebase: %s is unmounted "
 			    "and will not mount: %s\n", r->ontods, e);
 		return (-1);
 	}
 	r->privmnt = 1;
-	if (zr_zfs_set_readonly(r->zfs, r->ontods, 1, r->err,
-	    sizeof (r->err)) != 0)
-		return (-1);
 	if (r->o.verbose)
 		(void) fprintf(stderr, "zfs_rebase: %s is this run's alone, "
 		    "mounted at %s\n", r->ontods, r->workmnt);
@@ -1840,8 +1868,8 @@ apply_manifest(struct run *r)
 	 * says the tree was being written to.
 	 */
 	set_state(r, ZR_STATE_APPLYING1);
-	if (zr_zfs_set_readonly(r->zfs, r->rds, 0, r->err,
-	    sizeof (r->err)) != 0)
+	if (!in_dataset_form(r) && zr_zfs_set_readonly(r->zfs, r->rds, 0,
+	    r->err, sizeof (r->err)) != 0)
 		goto done;
 	zr_pause(ZR_STATE_APPLYING1);
 	/*
@@ -1881,8 +1909,8 @@ apply_manifest(struct run *r)
 			    (unsigned long long)rst.zs_removed,
 			    (unsigned long long)rst.zs_relinked);
 	}
-	if (zr_zfs_set_readonly(r->zfs, r->rds, 1, r->err,
-	    sizeof (r->err)) != 0)
+	if (!in_dataset_form(r) && zr_zfs_set_readonly(r->zfs, r->rds, 1,
+	    r->err, sizeof (r->err)) != 0)
 		rc = -1;
 done:
 	zr_parsed_fini(&parsed);
@@ -2885,8 +2913,9 @@ release_record(struct resume *s)
 static int
 ro_off(struct resume *s)
 {
-	if (zr_zfs_set_readonly(s->zfs, s->result, 0, s->err,
-	    sizeof (s->err)) != 0)
+	/* the dataset form's private mount is writable for its life */
+	if (!s->dataset && zr_zfs_set_readonly(s->zfs, s->result, 0,
+	    s->err, sizeof (s->err)) != 0)
 		return (-1);
 	s->writable = 1;
 	return (0);
@@ -2899,7 +2928,8 @@ ro_on(struct resume *s)
 
 	if (s->writable == 0)
 		return (0);
-	if (zr_zfs_set_readonly(s->zfs, s->result, 1, e, sizeof (e)) != 0) {
+	if (!s->dataset &&
+	    zr_zfs_set_readonly(s->zfs, s->result, 1, e, sizeof (e)) != 0) {
 		(void) fprintf(stderr, "zfs_rebase: readonly on %s: %s\n",
 		    s->result, e);
 		return (-1);
@@ -3059,7 +3089,9 @@ take_over(struct resume *s)
 			    "unmount it and try again\n", s->result);
 			return (-1);
 		}
-		if (zr_zfs_mount_at(s->zfs, s->result, s->workmnt, s->err,
+		if (private_rw(s->zfs, s->result, s->err,
+		    sizeof (s->err)) != 0 ||
+		    zr_zfs_mount_at(s->zfs, s->result, s->workmnt, s->err,
 		    sizeof (s->err)) != 0) {
 			char e[512];
 
@@ -3076,9 +3108,13 @@ take_over(struct resume *s)
 			    "alone, mounted at %s\n", s->result, s->workmnt);
 	}
 	/*
-	 * Read-only outside a stage, which is the clone form's own
-	 * rule: ro_off and ro_on then work the same way in both.
+	 * Read-only outside a stage is the clone form's rule, made at
+	 * the clone's own mountpoint; the dataset form's private mount
+	 * is writable for its life (private_rw), and its record says
+	 * what readonly was.
 	 */
+	if (s->dataset)
+		return (0);
 	return (zr_zfs_set_readonly(s->zfs, s->result, 1, s->err,
 	    sizeof (s->err)));
 }

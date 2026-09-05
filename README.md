@@ -84,7 +84,13 @@ as it was before, mounted where its mountpoint property says. A
 rebase that is waiting for a conflict to be answered can wait for
 days, and it does not hold a filesystem out of service while it
 waits. Only a hard kill leaves it privately mounted, and the next
---continue, --verify or --abort takes it from there.
+--continue, --verify or --abort takes it from there. The private
+mount is root's alone and writable for its whole life: a dataset that
+was read-only is made writable once, while it is off its mountpoint,
+and the record remembers what it was for the hand-back. (libzfs
+answers a readonly change on a mounted dataset with a remount at the
+mountpoint property, which cannot be done while the dataset sits at
+the private mount, so the property is only ever touched unmounted.)
 
 --result for every verb is the dataset carrying the rebase's record
 -- the clone in one form, onto itself in the other -- and a snapshot
