@@ -132,14 +132,14 @@ prog_draw() {
 		prog_label_cut=$(prog_clean "$prog_label")
 	fi
 	# The label sits in a block a space wide on each side of its
-	# text, set in from the margin by one plain space; the bar's
-	# block runs the width, which the bar fills anyway.
-	label=$(printf '%s' "$prog_label_cut" | cut -c1-$((prog_cols - 3)) 2>/dev/null)
+	# text; the bar's block runs the width, which the bar fills
+	# anyway.
+	label=$(printf '%s' "$prog_label_cut" | cut -c1-$((prog_cols - 2)) 2>/dev/null)
 	line=$(printf "%-${prog_cols}s" "$line")
 	# Save the cursor; set the region again, since the window may
 	# have been resized; the label row, then the bar row, each
 	# cleared and written in reverse video; the cursor back.
-	printf '\0337\033[1;%dr\033[%d;1H\033[2K \033[7m %s \033[0m\033[%d;1H\033[2K\033[7m%s\033[0m\0338' \
+	printf '\0337\033[1;%dr\033[%d;1H\033[2K\033[7m %s \033[0m\033[%d;1H\033[2K\033[7m%s\033[0m\0338' \
 	    $((prog_rows - 2)) $((prog_rows - 1)) "$label" "$prog_rows" \
 	    "$line"
 }
