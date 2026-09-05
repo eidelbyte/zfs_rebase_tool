@@ -2936,7 +2936,10 @@ fx_ed_setflags(struct fx_ed *ed, char *err, size_t errlen)
 {
 	const struct fx_entry *e;
 	const char *full;
-	uint32_t i, owner, cur;
+	uint32_t i, owner, cur, want;
+#ifdef FX_HAVE_FFLAGS
+	struct stat st;
+#endif
 
 	for (i = ed->ed_t->ft_n; i > 0; i--) {
 		e = &ed->ed_t->ft_ents[i - 1];
@@ -2955,13 +2958,29 @@ fx_ed_setflags(struct fx_ed *ed, char *err, size_t errlen)
 				cur &= FX_BORN_FLAGS;
 		}
 		ed->ed_need[owner] |= FE_W_DONE;
-		if (fx_flags_ok(ed->ed_eff[owner].ef_flags, cur))
-			continue;
+		want = ed->ed_eff[owner].ef_flags;
 		full = fx_ed_entpath(ed, i - 1);
 		if (full == NULL)
 			return (fx_ed_fail(err, errlen, e->fe_path, "memory"));
-		if (fx_setflags(full, ed->ed_eff[owner].ef_flags != 0 ?
-		    ed->ed_eff[owner].ef_flags : FX_BORN_FLAGS) != 0)
+#ifdef FX_HAVE_FFLAGS
+		/*
+		 * Declared flags are exact, and the walk's word is stale
+		 * for an object the edit touched: ZFS puts the archive bit
+		 * back on every mtime or ctime update
+		 * (zfs_tstamp_update_setup) -- a write, a link, a chmod, a
+		 * child made under a directory. One lstat says what is
+		 * there now; the flag-less case tolerates the born bits
+		 * and needs no look.
+		 */
+		if (want != 0) {
+			if (lstat(full, &st) != 0)
+				return (fx_ed_fail(err, errlen, full, "lstat"));
+			cur = (uint32_t)st.st_flags;
+		}
+#endif
+		if (fx_flags_ok(want, cur))
+			continue;
+		if (fx_setflags(full, want != 0 ? want : FX_BORN_FLAGS) != 0)
 			return (fx_ed_fail(err, errlen, full, "chflags"));
 	}
 	if (ed->ed_rootflags == 0)
