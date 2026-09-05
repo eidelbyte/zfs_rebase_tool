@@ -724,7 +724,7 @@ FreeBSD.
 | ZF7 | flags=NAMES parses to the number lchflags takes | covered: check_fixture.c |
 | ZF8 | a flag name chflags(1) does not know is rejected | covered: check_fixture.c |
 | ZF9 | flags on a file, walked back as za_flags | covered: check_fixture.c |
-| ZF10 | uchg on a directory: set after its children exist | covered: check_fixture.c |
+| ZF10 | the immutable flag on a directory (uchg where a user one exists, schg on ZFS as root): set after its children exist; skipped with a line where neither can be set | covered: check_fixture.c (immutable half box-root) |
 | ZF11 | xattr=NAME:VALUE parses; the walk reads that name | covered: check_fixture.c |
 | ZF12 | an empty value, and a value needing an escape | covered: check_fixture.c |
 | ZF13 | two xattrs out of bytewise name order: rejected | covered: check_fixture.c |
@@ -758,7 +758,7 @@ FreeBSD.
 | ZF41 | a directory that becomes a file: emptied, removed, made again | covered: check_fixture.c |
 | ZF42 | a symlink retargeted: made again, since no filesystem retargets one | covered: check_fixture.c |
 | ZF43 | one extended attribute changed and nothing else: attrs, the inode kept | covered: check_fixture.c |
-| ZF44 | flags: one changed alone; uchg off a directory to empty it and on again; an immutable file edited | covered: check_fixture.c |
+| ZF44 | flags: one changed alone (nodump to hidden); the immutable flag off a directory to empty it and on again; an immutable file edited (the last two skipped with a line where no immutable flag can be set) | covered: check_fixture.c |
 | ZF45 | the same edit twice: everything untouched, nothing else, nothing moved | covered: check_fixture.c |
 | ZF46 | a platform fixture edited off its platform is refused in words | covered: check_fixture.c |
 | ZF47 | escapes.zrt edited: every byte the encoding has a rule for, and a name leaving one pool for another | covered: check_fixture.c |
@@ -774,7 +774,7 @@ FreeBSD.
 | ZF57 | sysxattr-add.zrt: a system-namespace xattr added on from -> write | planned (box: run-suite.sh) |
 | ZF58 | sysxattr-conflict.zrt: a system-namespace xattr set differently on both sides -> changed-both | planned (box: run-suite.sh) |
 | ZF59 | mixed-attrs.zrt: a user xattr, a system xattr, an ACL and a flag on one object, through a write and through a cp | planned (box: run-suite.sh) |
-| ZF60 | flags-conflict.zrt: uchg on from and nodump on onto -> changed-both | planned (box: run-suite.sh) |
+| ZF60 | flags-conflict.zrt: hidden on from and nodump on onto -> changed-both (uchg is not a ZFS flag: EOPNOTSUPP) | planned (box: run-suite.sh) |
 
 ZF33 to ZF49 are --edit-fixture, added with the mode itself (issue
 fixture-edit) and all of them Mac cells: the mode is plain POSIX

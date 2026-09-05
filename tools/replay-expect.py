@@ -624,7 +624,7 @@ tree base
 	/f file x
 	/g file y
 tree from
-	/f file x flags=uchg
+	/f file x flags=hidden
 	/g file y
 tree onto
 	/f file x

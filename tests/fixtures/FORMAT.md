@@ -105,10 +105,16 @@ and no ACL.
     uid=N           a decimal number.
     gid=N           a decimal number.
     flags=NAMES     the BSD file flags by their chflags(1) names,
-                    comma separated: uchg, nodump, uappnd and the
-                    rest. FreeBSD and the Mac both have them and
-                    name them the same way; a platform that has
-                    neither cannot read this attribute at all, and
+                    comma separated. FreeBSD and the Mac name them
+                    the same way, but ZFS holds only some: nodump,
+                    hidden, uarch, rdonly, offline, sparse, system,
+                    and the system flags schg, sappnd and sunlnk
+                    (root's, and off again only while securelevel
+                    is 0 or less). uchg and uappnd are the Mac's
+                    and UFS's; ZFS answers them with EOPNOTSUPP and
+                    the build fails. A fixture that runs everywhere
+                    uses nodump and hidden. A platform with no
+                    flags at all cannot read this attribute, and
                     says so.
     xattr=NAME:VAL  one extended attribute, and the only attribute a
                     line may repeat. NAME is the name the walk
@@ -196,7 +202,7 @@ nothing can: the block ends at the end of the file.
 and one line carrying all three of the newer attributes, from a
 fixture whose platform line lets it:
 
-    /rc file c mode=0640 flags=uchg,nodump xattr=system.audit:on
+    /rc file c mode=0640 flags=hidden,nodump xattr=system.audit:on
         xattr=user.origin:v1 acl=user:1001:rwxp--aARWcCos:------:allow
 
 (again one line in the file, wrapped here for the page). Its two

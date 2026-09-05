@@ -30,6 +30,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#ifdef __FreeBSD__
+#include <sys/sysctl.h>
+#endif
 
 #include "fixture.h"
 #include "name.h"
@@ -280,6 +283,61 @@ clearflags(const char *root)
 #else
 	(void) root;
 #endif
+}
+
+/*
+ * The immutable flag this filesystem lets this process set, probed
+ * on a file under root: uchg where the filesystem has a user
+ * immutable flag (the Mac, UFS); schg on ZFS, which knows no user
+ * one and answers uchg with EOPNOTSUPP, and only when root and
+ * securelevel let it come off again; NULL when there is none. The
+ * tests that need one say what they skipped.
+ */
+static const char *
+imm_flag(const char *root)
+{
+#ifdef HAVE_FFLAGS
+	char full[PATHMAX];
+	const char *name = NULL;
+	FILE *fp;
+#ifdef __FreeBSD__
+	int level = 0;
+	size_t len = sizeof (level);
+#endif
+
+	join(full, sizeof (full), root, "/imm-probe");
+	fp = fopen(full, "w");
+	CHECK(fp != NULL);
+	CHECK(fclose(fp) == 0);
+	if (lchflags(full, UF_IMMUTABLE) == 0)
+		name = "uchg";
+#ifdef __FreeBSD__
+	else if (geteuid() == 0 &&
+	    sysctlbyname("kern.securelevel", &level, &len, NULL, 0) == 0 &&
+	    level <= 0 && lchflags(full, SF_IMMUTABLE) == 0)
+		name = "schg";
+#endif
+	CHECK(lchflags(full, 0) == 0);
+	CHECK(unlink(full) == 0);
+	return (name);
+#else
+	(void) root;
+	return (NULL);
+#endif
+}
+
+/* The number a probed flag name walks back as. */
+static uint32_t
+imm_value(const char *name)
+{
+#ifdef HAVE_FFLAGS
+	if (strcmp(name, "uchg") == 0)
+		return (UF_IMMUTABLE);
+	if (strcmp(name, "schg") == 0)
+		return (SF_IMMUTABLE);
+#endif
+	(void) name;
+	return (UF_NODUMP);
 }
 
 /* Children before parents, which is the walk order reversed. */
@@ -612,10 +670,10 @@ check_extra(const char *root)
 static void
 check_attrs(const char *root)
 {
-	static const char spec[] =
+	static const char fmt[] =
 	    "# file flags and extended attributes\n"
 	    "tree base\n"
-	    "\t/d dir flags=uchg\n"
+	    "\t/d dir flags=%s\n"
 	    "\t/d/f file t flags=nodump xattr=user.a: xattr=user.b:v\\040w\n"
 	    "\t/e dir\n"
 	    "\t/h1 file t\n"
@@ -623,13 +681,28 @@ check_attrs(const char *root)
 	    "\t/plain file t\n"
 	    "tree from\n"
 	    "tree onto\n";
-	char full[PATHMAX], err[256];
+	char full[PATHMAX], err[256], spec[512];
 	struct zr_fixture *fx;
 	const struct zr_attr *at;
 	struct zr_names *ns;
 	struct zr_walk w;
 	struct zr_tree tr;
+	const char *imm = imm_flag(root);
+	uint32_t immval;
 
+	/*
+	 * ZF10 wants the directory immutable. Without a flag for that,
+	 * the directory takes nodump and the ordering half is not
+	 * proved here; the box proves it as root.
+	 */
+	if (imm == NULL) {
+		printf("  skip ZF10 (ordering): no immutable flag this "
+		    "filesystem and user can set; ZFS has no uchg, and "
+		    "schg is root's\n");
+		imm = "nodump";
+	}
+	immval = imm_value(imm);
+	(void) snprintf(spec, sizeof (spec), fmt, imm);
 	fx = load_spec(root, "/attrs.zrt", spec);
 	join(full, sizeof (full), root, "/attrs");
 	CHECK(mkdir(full, 0755) == 0);
@@ -656,7 +729,7 @@ check_attrs(const char *root)
 
 	/* the directory kept its child and became immutable after it */
 	at = &w.zw_attrs[poolof(&w.zw_tree, ns, "/d")];
-	CHECK(at->za_flags == UF_IMMUTABLE);
+	CHECK(at->za_flags == immval);
 	at = &w.zw_attrs[poolof(&w.zw_tree, ns, "/e")];
 	CHECK(at->za_flags == 0);
 
@@ -1570,34 +1643,48 @@ check_edit_flags(const char *root)
 		{ "/f", IX_KEPT }, { "/d", IX_KEPT }, { NULL, 0 }
 	};
 
+	static const char fmt_dir[] =
+	    "tree base\n"
+	    "\t/d dir flags=%s\n"
+	    "\t/d/g file g\n"
+	    "\t/f file t flags=%s\n"
+	    "tree from\n"
+	    "\t/d dir flags=%s\n"
+	    "\t/f file t flags=%s\n"
+	    "tree onto\n";
+	static const char fmt_imm[] =
+	    "tree base\n"
+	    "\t/f file t flags=%s\n"
+	    "tree from\n"
+	    "\t/f file t2 flags=%s\n"
+	    "tree onto\n";
+	const char *imm = imm_flag(root);
+	char spec[512];
+
+	/* hidden and nodump: the two user flags ZFS and the Mac share */
 	edit_case(root,
 	    "tree base\n"
 	    "\t/f file t flags=nodump\n"
 	    "tree from\n"
-	    "\t/f file t flags=uchg\n"
+	    "\t/f file t flags=hidden\n"
 	    "tree onto\n", ZR_FX_FROM, "a flag changed", &w_one, i_one);
 
-	edit_case(root,
-	    "tree base\n"
-	    "\t/d dir flags=uchg\n"
-	    "\t/d/g file g\n"
-	    "\t/f file t flags=uchg\n"
-	    "tree from\n"
-	    "\t/d dir flags=uchg\n"
-	    "\t/f file t flags=uchg\n"
-	    "tree onto\n", ZR_FX_FROM, "under an immutable directory",
+	if (imm == NULL) {
+		printf("  skip ZF44 (immutable): no immutable flag this "
+		    "filesystem and user can set; ZFS has no uchg, and "
+		    "schg is root's\n");
+		return;
+	}
+	(void) snprintf(spec, sizeof (spec), fmt_dir, imm, imm, imm, imm);
+	edit_case(root, spec, ZR_FX_FROM, "under an immutable directory",
 	    &w_dir, i_dir);
 
 	/*
 	 * An immutable file whose own bytes change: unflagged,
 	 * written, flagged again, and still the object it was.
 	 */
-	edit_case(root,
-	    "tree base\n"
-	    "\t/f file t flags=uchg\n"
-	    "tree from\n"
-	    "\t/f file t2 flags=uchg\n"
-	    "tree onto\n", ZR_FX_FROM, "an immutable file edited", &w_imm,
+	(void) snprintf(spec, sizeof (spec), fmt_imm, imm, imm);
+	edit_case(root, spec, ZR_FX_FROM, "an immutable file edited", &w_imm,
 	    i_one);
 }
 

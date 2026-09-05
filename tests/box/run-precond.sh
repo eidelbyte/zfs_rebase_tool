@@ -66,12 +66,13 @@
 #    sysxattr-*.zrt with EOPNOTSUPP. Check 0 below says which /tmp
 #    this box has.
 #
-#  - flags-conflict.zrt sets uchg. A built tree carrying it cannot
-#    be cleared or removed until the flag comes off, so a harness
-#    that removes its scratch directory must clear the flags first
-#    (chflags -R nouchg,nouappnd,noschg,nosappnd DIR), as
+#  - flags-conflict.zrt sets hidden (uchg is not a ZFS flag: the
+#    builder gets EOPNOTSUPP). A built tree carrying a system flag
+#    cannot be cleared or removed until the flag comes off, so a
+#    harness that removes its scratch directory clears the flags
+#    first (chflags -R nouchg,nouappnd,noschg,nosappnd DIR), as
 #    tests/run-fixtures.sh does and as tests/fixtures/FORMAT.md
-#    tells it to. Nothing else the nine set holds anything down:
+#    tells it to. Nothing the nine set holds anything down:
 #    nodump is the flag mixed-attrs.zrt uses for that reason.
 #
 # The ACL fixtures name uid 1 (daemon) and gid 5 (operator), which
