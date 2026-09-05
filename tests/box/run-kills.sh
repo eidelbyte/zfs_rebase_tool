@@ -520,6 +520,16 @@ kill_case() {
 	""|applying1) wrep=3 ;;
 	*) wrep=0 ;;
 	esac
+	# A caught signal at action:2 comes in at the pause before that
+	# action, which is then performed, and the apply stops at the
+	# next one: a manifest of exactly two actions has none, so the
+	# apply finishes, the self-check passes, and the run still
+	# leaves the gate because it was told to stop. Nothing is
+	# pending then, and --continue walks through. A SIGKILL there
+	# never performs the action it was stopped before.
+	if [ "$gate" = action:2 ] && [ "$sig" != KILL ] && [ "$nact" -eq 2 ]; then
+		wrep=0
+	fi
 	"$bin" --verify --result "$rds" > "$tmp/verify" 2>&1
 	st=$?
 	[ $st -eq $wrep ] || \
