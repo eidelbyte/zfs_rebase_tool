@@ -442,10 +442,16 @@ case_drift() {
 		zfs set readonly=off "$rds" || fail "readonly=off"
 		printf 'mine\n' >> "$hmnt$cname" || fail "cannot edit $cname"
 		zfs set "readonly=$ro0" "$rds" || fail "readonly=$ro0"
+		# The clean drift above still stands, since nothing past
+		# applying1 mends it, so the verb still exits 3. What the
+		# edit to the conflicted name must not do is add to that:
+		# the same one drifted name, and the name list still empty.
 		"$bin" --verify --result "$rds" > "$tmp/verify3" 2>&1
 		st=$?
-		[ $st -eq 0 ] || \
-		    { cat "$tmp/verify3"; fail "--verify over a conflicted name exited $st, want 0"; }
+		[ $st -eq 3 ] || \
+		    { cat "$tmp/verify3"; fail "--verify over a conflicted name exited $st, want 3 (the clean drift stands)"; }
+		grep -q "drifted 1, first $tgt" "$tmp/verify3" || \
+		    { cat "$tmp/verify3"; fail "the edit to the conflicted name changed the drift report"; }
 		no_outside "$tmp/verify3" || \
 		    { cat "$tmp/verify3"; fail "a conflicted name reached the name list"; }
 		"$bin" --continue --verify --result "$rds" > "$tmp/cont2" 2>&1
