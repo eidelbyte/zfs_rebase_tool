@@ -69,9 +69,12 @@ prog_draw() {
 	fi
 	lmax=$(( prog_cols / 3 ))
 	[ "$lmax" -lt 8 ] && lmax=8
+	# Cut to the cap and padded to it, so the bar's width does not
+	# follow the label's length from one heading to the next.
 	label=$(printf '%s' "$prog_label" | cut -c1-"$lmax" 2>/dev/null)
+	label=$(printf "%-${lmax}s" "$label")
 	if [ "$prog_total" -gt 0 ]; then
-		width=$(( prog_cols - ${#text} - ${#label} - 3 ))
+		width=$(( prog_cols - ${#text} - lmax - 3 ))
 		[ "$width" -lt 10 ] && width=10
 		fill=$(( prog_done * width / prog_total ))
 		[ "$fill" -gt "$width" ] && fill=$width
