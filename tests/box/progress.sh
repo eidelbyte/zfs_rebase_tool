@@ -12,9 +12,12 @@
 # and the bar has the other, so neither is cut to make room for the
 # other and the bar's width depends on the terminal's alone.
 #
-# Nothing is drawn unless stdout is a terminal, so a run sent to a
-# file is plain text; ZR_PROGRESS=0 turns it off on a terminal and
-# ZR_PROGRESS=1 forces it on. POSIX sh. The sequences are DECSTBM
+# Nothing is drawn unless the harness was given --pretty and stdout
+# is a terminal: the plain run stays plain, with no terminal
+# sequences in it at all. --pretty is taken out of the script's
+# arguments here, so a harness need not know it exists. ZR_PROGRESS=1
+# forces the display on and ZR_PROGRESS=0 keeps it off. POSIX sh.
+# The sequences are DECSTBM
 # (the region), DECSC and DECRC (cursor save and restore), CUP and
 # EL, which the FreeBSD console and every xterm-class terminal take.
 # The size is read again at every draw, so a resized window is
@@ -27,6 +30,19 @@
 #   prog_step [LABEL]          one unit done; LABEL is what is on now
 #   prog_note [LABEL]          a new heading under the step's label
 #   prog_end                   clear both rows and give the region back
+
+# --pretty among the script's arguments, taken out of them: a
+# sourced file runs in the script's own context, so this set is the
+# script's, and the list is expanded once before the loop shifts it.
+prog_pretty=0
+for prog_a in "$@"; do
+	shift
+	if [ "$prog_a" = --pretty ]; then
+		prog_pretty=1
+		continue
+	fi
+	set -- "$@" "$prog_a"
+done
 
 prog_on=0
 prog_total=0
@@ -74,7 +90,7 @@ prog_start() {
 	case "${ZR_PROGRESS:-}" in
 	0) return 0 ;;
 	1) ;;
-	*) [ -t 1 ] || return 0 ;;
+	*) [ "$prog_pretty" = 1 ] && [ -t 1 ] || return 0 ;;
 	esac
 	case "${TERM:-dumb}" in dumb|'') return 0 ;; esac
 	prog_size

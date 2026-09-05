@@ -28,14 +28,19 @@ run-*.sh alike. The system attribute namespace is root's, so those
 fixtures are root's.
 
 The long harnesses (run-suite, run-replay, run-kills, run-strays,
-run-resolution) keep a progress display on the terminal's bottom
-two rows: the fixture and heading they are on above, and a bar the
-whole width less the count done of the total and the elapsed time
-below, drawn through a scroll region so that every line they print
-still scrolls above it and stays in the scrollback. It appears only
-when stdout is a terminal; ZR_PROGRESS=0 turns it off there and
-ZR_PROGRESS=1 forces it on. tests/box/progress.sh is the helper, and
-its four functions are safe to call whether or not it is drawing.
+run-resolution) take --pretty, which keeps a progress display on the
+terminal's bottom two rows: the fixture and heading they are on
+above, and a bar the whole width less the count done of the total
+and the elapsed time below, drawn through a scroll region so that
+every line they print still scrolls above it and stays in the
+scrollback. Without the flag the run is plain text with no terminal
+sequences in it, and so is a run sent to a file. ZR_PROGRESS=1
+forces the display on and ZR_PROGRESS=0 keeps it off.
+tests/box/progress.sh is the helper; it takes --pretty out of the
+script's arguments itself, and its four functions are safe to call
+whether or not it is drawing.
+
+    sudo sh tests/box/run-suite.sh --pretty
 
 make freebsd builds against the OpenZFS headers in the FreeBSD source
 tree, the way FreeBSD's own zfs(8) is built, because the installed
