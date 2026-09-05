@@ -23,9 +23,15 @@
 # The size is read again at every draw, so a resized window is
 # followed at the next step. Every function is safe to call when the
 # display is off, before prog_start, or twice. While the display is
-# on, SIGINT, SIGTERM and SIGHUP take it down and leave through exit,
-# so the harness's EXIT trap and its teardown run on a Ctrl-C too.
+# on, SIGINT, SIGTERM, SIGQUIT and SIGHUP take it down and leave
+# through exit, so the harness's EXIT trap and its teardown run on a
+# Ctrl-C too. A run that died badly (SIGKILL, a dropped connection)
+# leaves the region shrunk and the two rows behind it, so prog_start
+# begins by putting the terminal back into a known state, prog_reset
+# below, which is also the thing to call by hand for a terminal a
+# dead run left behind.
 #
+#   prog_reset                 the terminal put back into a known state
 #   prog_start TOTAL [UNITS]   begin: TOTAL units to come (0: count up)
 #   prog_step [LABEL]          one unit done; LABEL is what is on now
 #   prog_note [LABEL]          a new heading under the step's label
@@ -78,6 +84,24 @@ prog_clean() {
 	printf '%s' "$1" | tr -d '\000-\037\177' | cut -c1-"$prog_cols" 2>/dev/null
 }
 
+# The terminal put back into a known state, the screen's contents
+# kept: attributes normal, the ASCII character set selected and
+# shifted in, origin and insert modes off, autowrap on, the cursor
+# shown, cursor keys and keypad normal, mouse reporting and
+# bracketed paste off, and around a save and restore of the cursor
+# (DECSTBM homes it) the scroll region back to the whole screen.
+# Every mode is set by name rather than through DECSTR, the soft
+# reset, because the FreeBSD console does not take that one and
+# would print its final byte. Then the tty's line discipline made
+# sane again, the way reset(1) does. A terminal a dead run left
+# behind is healed from the tool's root with
+#
+#     sh -c '. tests/box/progress.sh; prog_reset'
+prog_reset() {
+	printf '\033[0m\033(B\017\033[?6l\033[4l\033[?7h\033[?25h\033[?1l\033>\033[?1000l\033[?1002l\033[?1003l\033[?1006l\033[?2004l\0337\033[r\0338'
+	( stty sane </dev/tty ) 2>/dev/null || :
+}
+
 prog_start() {
 	[ "$prog_on" = 1 ] && prog_end
 	prog_total=${1:-0}
@@ -102,9 +126,12 @@ prog_start() {
 	# leave through exit, which runs that trap.
 	trap 'prog_end; exit 130' INT
 	trap 'prog_end; exit 143' TERM
+	trap 'prog_end; exit 131' QUIT
 	trap 'prog_end; exit 129' HUP
-	# Two rows of room, the cursor kept, the region shrunk, the
-	# cursor put back and two rows up, so output goes on inside.
+	# A known state first, whatever the last run left; then two rows
+	# of room, the cursor kept, the region shrunk, the cursor put
+	# back and two rows up, so output goes on inside.
+	prog_reset
 	printf '\n\n\0337\033[1;%dr\0338\033[2A' $((prog_rows - 2))
 	prog_draw
 }
@@ -175,12 +202,12 @@ prog_note() {
 prog_end() {
 	[ "$prog_on" = 1 ] || return 0
 	prog_on=0
-	trap - INT TERM HUP
+	trap - INT TERM HUP QUIT
 	prog_size
 	if [ "$prog_rows" -ge 2 ]; then
-		printf '\0337\033[%d;1H\033[2K\033[%d;1H\033[2K\033[r\0338' \
+		printf '\033[0m\0337\033[%d;1H\033[2K\033[%d;1H\033[2K\033[r\0338' \
 		    $((prog_rows - 1)) "$prog_rows"
 	else
-		printf '\033[r'
+		printf '\033[0m\033[r'
 	fi
 }

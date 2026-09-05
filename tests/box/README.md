@@ -38,7 +38,14 @@ sequences in it, and so is a run sent to a file. ZR_PROGRESS=1
 forces the display on and ZR_PROGRESS=0 keeps it off.
 tests/box/progress.sh is the helper; it takes --pretty out of the
 script's arguments itself, and its four functions are safe to call
-whether or not it is drawing.
+whether or not it is drawing. The display starts by putting the
+terminal back into a known state (attributes, character set, modes,
+the scroll region, the tty's line discipline), since a run that
+died badly, by SIGKILL or a dropped connection, leaves its region
+and its two rows behind; the same reset by hand, for a terminal in
+that state, is
+
+    sh -c '. tests/box/progress.sh; prog_reset'
 
     sudo sh tests/box/run-suite.sh --pretty
 
