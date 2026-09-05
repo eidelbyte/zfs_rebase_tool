@@ -56,28 +56,40 @@ prog_draw() {
 	prog_size
 	[ "$prog_rows" -ge 4 ] || return 0
 	el=$(( $(date +%s) - prog_t0 ))
+	# The text first: counts, units and time, then the label cut to
+	# a third of the width at most; the bar takes what is left, so
+	# a wide terminal gives a fine bar and a long suite a step per
+	# fixture.
 	if [ "$prog_total" -gt 0 ]; then
-		fill=$(( prog_done * 20 / prog_total ))
-		[ "$fill" -gt 20 ] && fill=20
+		text=$(printf ' %d/%d %s %02d:%02d ' "$prog_done" "$prog_total" \
+		    "$prog_units" $((el / 60)) $((el % 60)))
+	else
+		text=$(printf ' %d %s %02d:%02d ' "$prog_done" "$prog_units" \
+		    $((el / 60)) $((el % 60)))
+	fi
+	lmax=$(( prog_cols / 3 ))
+	[ "$lmax" -lt 8 ] && lmax=8
+	label=$(printf '%s' "$prog_label" | cut -c1-"$lmax" 2>/dev/null)
+	if [ "$prog_total" -gt 0 ]; then
+		width=$(( prog_cols - ${#text} - ${#label} - 3 ))
+		[ "$width" -lt 10 ] && width=10
+		fill=$(( prog_done * width / prog_total ))
+		[ "$fill" -gt "$width" ] && fill=$width
 		bar=""
 		i=0
-		while [ $i -lt 20 ]; do
+		while [ $i -lt "$width" ]; do
 			if [ $i -lt "$fill" ]; then bar="$bar#"; else bar="$bar."; fi
 			i=$((i + 1))
 		done
-		head=$(printf '[%s] %d/%d %s %02d:%02d ' "$bar" "$prog_done" \
-		    "$prog_total" "$prog_units" $((el / 60)) $((el % 60)))
+		line="[$bar]$text$label"
 	else
-		head=$(printf '%d %s %02d:%02d ' "$prog_done" "$prog_units" \
-		    $((el / 60)) $((el % 60)))
+		line="$text$label"
 	fi
-	room=$(( prog_cols - ${#head} - 1 ))
-	[ "$room" -lt 0 ] && room=0
-	tail=$(printf '%s' "$prog_label" | cut -c1-"$room" 2>/dev/null)
+	line=$(printf '%s' "$line" | cut -c1-"$prog_cols" 2>/dev/null)
 	# Save the cursor, set the region (again: the window may have
 	# been resized), go to the last row, clear it, draw, restore.
-	printf '\0337\033[1;%dr\033[%d;1H\033[2K\033[7m%s%s\033[0m\0338' \
-	    $((prog_rows - 1)) "$prog_rows" "$head" "$tail"
+	printf '\0337\033[1;%dr\033[%d;1H\033[2K\033[7m%s\033[0m\0338' \
+	    $((prog_rows - 1)) "$prog_rows" "$line"
 }
 
 prog_step() {
