@@ -401,15 +401,17 @@ kill_case() {
 			hassnap "$snap" || \
 			    fail "$snap went away although the destroy failed"
 			# Where nothing is cloned from it the hold is
-			# the only thing in the way and the kernel says
-			# so; base always has the two sides cloned from
-			# it, and onto's snapshot has the result in the
-			# clone form, and there ZFS's own rule about a
-			# clone's origin answers first.
+			# the only thing in the way and libzfs says so:
+			# "it's being held" (libzfs_dataset.c, on EBUSY
+			# with holds), "dataset is busy" in older words.
+			# base always has the two sides cloned from it,
+			# and onto's snapshot has the result in the clone
+			# form, and there ZFS's own rule about a clone's
+			# origin answers first.
 			cl=$(zfs get -H -o value clones "$snap")
 			if [ "$cl" = "-" ] || [ -z "$cl" ]; then
-				grep -qi 'busy' "$tmp/destroy" || \
-				    { cat "$tmp/destroy"; fail "the destroy of the held $snap did not say busy"; }
+				grep -qi 'busy\|being held' "$tmp/destroy" || \
+				    { cat "$tmp/destroy"; fail "the destroy of the held $snap did not name the hold"; }
 			fi
 		done
 		echo "ok   the three held snapshots refuse zfs destroy"
