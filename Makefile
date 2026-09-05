@@ -178,8 +178,15 @@ install:
 	install -d $(DESTDIR)$(MANDIR)
 	install -m 0444 zfs_rebase.8 $(DESTDIR)$(MANDIR)/zfs_rebase.8
 
+# A box probe, not part of the tool: the dataset form's private mount
+# on its own, with libzfs's own words for what went wrong.
+probe-mount: build
+	$(CC) $(CFLAGS) -DZR_FREEBSD $(ZFS_CFLAGS) -o build/probe-mount \
+	    tools/probe-mount.c $(ZFS_LIBS)
+
 clean:
 	rm -rf build zfs_rebase
 
 .PHONY: all flavor freebsd check check-freebsd unit battery fixtures gate \
+	probe-mount \
 	install replay-expect replay-expect-check clean
