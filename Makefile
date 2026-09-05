@@ -24,6 +24,14 @@ ZFS_CFLAGS = -I$(ZFS_TOP)/lib/libspl/include/os/freebsd \
 ZFS_LIBS = -lzfs_core -lzfs -lnvpair
 ZFSOPS_CFLAGS =
 
+# Which flavor build/ holds: portable, or freebsd (the ZFS layer built
+# against the OpenZFS headers and linked against the libraries). The
+# two do not share objects and a timestamp cannot tell them apart, so
+# build/.flavor records which one is there: asking for the other
+# empties build/ first, instead of relinking a portable zfsops.o into
+# what was meant to be a FreeBSD binary.
+FLAVOR = portable
+
 # Library objects are everything but main.o; tests link against them.
 LIB_OBJS = build/vis.o build/name.o build/decide.o build/fixture.o \
 	build/manifest.o build/walk.o build/yellow.o build/verify.o \
@@ -34,14 +42,21 @@ TESTS = check_vis check_name check_fixture check_manifest check_walk \
 
 all: build zfs_rebase
 
-build:
+build: flavor
 	mkdir -p build
 
-zfs_rebase: $(CORE_OBJS)
+flavor:
+	@mkdir -p build; \
+	if [ "$$(cat build/.flavor 2>/dev/null)" != "$(FLAVOR)" ]; then \
+	    rm -f build/*.o zfs_rebase; \
+	    echo "$(FLAVOR)" > build/.flavor; \
+	fi
+
+zfs_rebase: build $(CORE_OBJS)
 	$(CC) $(CFLAGS) -o $@ $(CORE_OBJS) $(LDFLAGS)
 
-freebsd: build
-	$(MAKE) CFLAGS="$(CFLAGS) -DZR_FREEBSD" \
+freebsd:
+	$(MAKE) FLAVOR=freebsd CFLAGS="$(CFLAGS) -DZR_FREEBSD" \
 	    ZFSOPS_CFLAGS="$(ZFS_CFLAGS)" \
 	    LDFLAGS="$(LDFLAGS) $(ZFS_LIBS)" zfs_rebase
 
@@ -49,13 +64,11 @@ freebsd: build
 # relinks zfs_rebase against LIB_OBJS, which includes zfsops.o, so on
 # FreeBSD it needs the same flags the freebsd target uses: plain check
 # would compile zfsops.c without the OpenZFS headers and link without
-# the ZFS libraries. The rule for the two flavors is that they do not
-# share build/, because the objects differ; each flavor starts from
-# make clean. This target therefore has no prerequisite that could
-# build or reuse a portable object: it only recurses, and the inner
-# make builds what the FreeBSD flags demand.
+# the ZFS libraries. The two flavors do not share build/, because the
+# objects differ, and the flavor stamp is what keeps them apart: the
+# inner make finds a portable build/ and empties it first.
 check-freebsd:
-	$(MAKE) CFLAGS="$(CFLAGS) -DZR_FREEBSD" \
+	$(MAKE) FLAVOR=freebsd CFLAGS="$(CFLAGS) -DZR_FREEBSD" \
 	    ZFSOPS_CFLAGS="$(ZFS_CFLAGS)" \
 	    LDFLAGS="$(LDFLAGS) $(ZFS_LIBS)" check
 
@@ -168,5 +181,5 @@ install:
 clean:
 	rm -rf build zfs_rebase
 
-.PHONY: all freebsd check check-freebsd unit battery fixtures gate \
+.PHONY: all flavor freebsd check check-freebsd unit battery fixtures gate \
 	install replay-expect replay-expect-check clean
