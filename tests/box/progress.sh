@@ -22,6 +22,7 @@ prog_units=steps
 prog_label=""
 prog_t0=0
 prog_rows=0
+prog_lw=0
 
 prog_size() {
 	prog_rows=$(tput lines 2>/dev/null)
@@ -35,6 +36,7 @@ prog_start() {
 	prog_units=${2:-steps}
 	prog_done=0
 	prog_label=""
+	prog_lw=0
 	prog_t0=$(date +%s)
 	case "${ZR_PROGRESS:-}" in
 	0) return 0 ;;
@@ -67,14 +69,17 @@ prog_draw() {
 		text=$(printf ' %d %s %02d:%02d ' "$prog_done" "$prog_units" \
 		    $((el / 60)) $((el % 60)))
 	fi
-	lmax=$(( prog_cols / 3 ))
+	# The label's slot is the longest label seen so far, half the
+	# width at most: the bar is steady once the harness has shown
+	# its longest heading, and gives up no more room than that.
+	lmax=$(( prog_cols / 2 ))
 	[ "$lmax" -lt 8 ] && lmax=8
-	# Cut to the cap and padded to it, so the bar's width does not
-	# follow the label's length from one heading to the next.
 	label=$(printf '%s' "$prog_label" | cut -c1-"$lmax" 2>/dev/null)
-	label=$(printf "%-${lmax}s" "$label")
+	[ "${#label}" -gt "$prog_lw" ] && prog_lw=${#label}
+	[ "$prog_lw" -gt "$lmax" ] && prog_lw=$lmax
+	label=$(printf "%-${prog_lw}s" "$label")
 	if [ "$prog_total" -gt 0 ]; then
-		width=$(( prog_cols - ${#text} - lmax - 3 ))
+		width=$(( prog_cols - ${#text} - prog_lw - 3 ))
 		[ "$width" -lt 10 ] && width=10
 		fill=$(( prog_done * width / prog_total ))
 		[ "$fill" -gt "$width" ] && fill=$width
