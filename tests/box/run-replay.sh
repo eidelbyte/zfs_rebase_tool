@@ -76,6 +76,7 @@
 # manifest as well as a wrong count.
 set -u
 cd "$(dirname "$0")/../.." || exit 2
+. tests/box/progress.sh
 bin=./zfs_rebase
 EXPECT=tests/box/replay-expect.txt
 [ -x "$bin" ] || { echo "build first: make freebsd"; exit 2; }
@@ -99,7 +100,7 @@ suite=1
 fixtures=0
 pruned=0
 
-say() { printf '\n== %s\n' "$*"; }
+say() { printf '\n== %s\n' "$*"; prog_note "$*"; }
 fail() { echo "FAIL: $*"; exit 1; }
 
 teardown() {
@@ -122,6 +123,7 @@ teardown() {
 }
 
 cleanup() {
+	prog_end
 	if [ "${KEEP:-0}" = 1 ]; then
 		echo "KEEP=1: pool $POOL, $IMG and $tmp left in place"
 		return
@@ -146,6 +148,7 @@ one() {
 	oc=$3
 	want=$(($2 + $3))
 
+	prog_step "$(basename "$fixture")"
 	say "$fixture (from $fc, onto $oc, $want unchanged)"
 	[ -f "$fixture" ] || fail "no such fixture"
 	tmp=$(mktemp -d "${TMPDIR:-/tmp}/zr-replay.XXXXXX") || exit 2
@@ -265,6 +268,7 @@ fi
 
 # A here-document and not a pipe: a pipe would run the loop in a
 # subshell, where the counters die and a fail would not stop the run.
+prog_start "$(printf '%s\n' "$rows" | grep -c .)" fixtures
 while read -r f fc oc; do
 	[ -n "$f" ] || continue
 	one "$f" "$fc" "$oc"

@@ -5,8 +5,13 @@
 # root, after make freebsd.
 set -u
 cd "$(dirname "$0")/../.." || exit 2
+. tests/box/progress.sh
+trap prog_end EXIT
 rc=0; n=0
-for f in tests/fixtures/*.zrt tests/fixtures/freebsd/*.zrt; do
+set -- tests/fixtures/*.zrt tests/fixtures/freebsd/*.zrt
+prog_start $# fixtures
+for f in "$@"; do
+	prog_step "$(basename "$f")"
 	log=/tmp/zr-suite-$(basename "$f").log
 	if sh tests/box/run-fixture.sh "$f" > "$log" 2>&1; then
 		echo "ok   $f"; n=$((n + 1))

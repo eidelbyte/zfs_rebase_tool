@@ -82,6 +82,7 @@
 # run-fixture.sh and run-kills.sh take the dataset spelling.
 set -u
 cd "$(dirname "$0")/../.." || exit 2
+. tests/box/progress.sh
 bin=./zfs_rebase
 [ -x "$bin" ] || { echo "build first: make freebsd"; exit 2; }
 [ "$(id -u)" -eq 0 ] || { echo "run as root"; exit 2; }
@@ -105,6 +106,7 @@ case_id=setup
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/zr-stray.XXXXXX") || exit 2
 
 cleanup() {
+	prog_end
 	[ -n "$pid" ] && kill -KILL "$pid" 2>/dev/null
 	if [ "${KEEP:-0}" = 1 ]; then
 		echo "KEEP=1: pool $POOL, $IMG and $tmp left in place"
@@ -120,7 +122,7 @@ cleanup() {
 	rmdir "$MNT" 2>/dev/null
 }
 trap cleanup EXIT
-say() { printf '\n== %s\n' "$*"; }
+say() { printf '\n== %s\n' "$*"; prog_note "$*"; }
 fail() { echo "FAIL: $case_id: $*"; exit 1; }
 recval() { zfs get -H -o value "$1" "$2" 2>/dev/null; }
 statenow() {
@@ -597,6 +599,7 @@ stray_pass() {
 	fi
 	res=$rundir/resolution
 	log=$tmp/pass.log
+	prog_step "$(basename "$fixture" .zrt), the $form form"
 	say "$fixture, the $form form"
 	case_strays
 	case_delete
@@ -635,6 +638,9 @@ one_fixture() {
 	echo "ok   $fixture: strays reported, repaired or overwritten as the verb says"
 }
 
+nfx=0
+for f in $fixtures; do nfx=$((nfx + 1)); done
+prog_start $((nfx * 2)) "fixture forms"
 for f in $fixtures; do
 	one_fixture "$f"
 done

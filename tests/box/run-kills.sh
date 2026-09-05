@@ -98,6 +98,7 @@
 # before applying2 relies on.
 set -u
 cd "$(dirname "$0")/../.." || exit 2
+. tests/box/progress.sh
 bin=./zfs_rebase
 [ -x "$bin" ] || { echo "build first: make freebsd"; exit 2; }
 [ "$(id -u)" -eq 0 ] || { echo "run as root"; exit 2; }
@@ -121,6 +122,7 @@ case_id=setup
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/zr-kill.XXXXXX") || exit 2
 
 cleanup() {
+	prog_end
 	[ -n "$pid" ] && kill -KILL "$pid" 2>/dev/null
 	if [ "${KEEP:-0}" = 1 ]; then
 		echo "KEEP=1: pool $POOL, $IMG and $tmp left in place"
@@ -136,7 +138,7 @@ cleanup() {
 	rmdir "$MNT" 2>/dev/null
 }
 trap cleanup EXIT
-say() { printf '\n== %s\n' "$*"; }
+say() { printf '\n== %s\n' "$*"; prog_note "$*"; }
 fail() { echo "FAIL: $case_id: $*"; exit 1; }
 recval() { zfs get -H -o value "$1" "$2" 2>/dev/null; }
 # The state, with "" for a record that has passed no gate yet.
@@ -613,6 +615,7 @@ one_fixture() {
 
 	make_pool
 	for form in clone dataset; do
+		prog_step "$(basename "$fixture" .zrt), the $form form"
 		for gate in $gates; do
 			for sig in INT TERM KILL; do
 				kill_case "$form" "$gate" "$sig"
@@ -623,6 +626,9 @@ one_fixture() {
 	echo "ok   $fixture: every gate killed and continued"
 }
 
+nfx=0
+for f in $fixtures; do nfx=$((nfx + 1)); done
+prog_start $((nfx * 2)) "fixture forms"
 for f in $fixtures; do
 	one_fixture "$f"
 done

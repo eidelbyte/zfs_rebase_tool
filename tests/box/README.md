@@ -27,6 +27,15 @@ pointed at a directory on one, for make check-freebsd and for every
 run-*.sh alike. The system attribute namespace is root's, so those
 fixtures are root's.
 
+The long harnesses (run-suite, run-replay, run-kills, run-strays,
+run-resolution) keep a progress bar on the terminal's bottom row:
+units done of the total, the elapsed time, and the fixture and
+heading they are on, drawn through a scroll region so that every
+line they print still scrolls above it and stays in the scrollback.
+It appears only when stdout is a terminal; ZR_PROGRESS=0 turns it
+off there and ZR_PROGRESS=1 forces it on. tests/box/progress.sh is
+the helper.
+
 make freebsd builds against the OpenZFS headers in the FreeBSD source
 tree, the way FreeBSD's own zfs(8) is built, because the installed
 headers alone are incomplete (libzfs.h needs libspl's Solaris types
