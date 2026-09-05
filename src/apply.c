@@ -932,8 +932,14 @@ za_attrs(struct za_ctx *c, const struct zr_action *a,
 	 */
 	if (fstatat(c->zc_rootfd, rel, &st, AT_SYMLINK_NOFOLLOW) != 0)
 		return (za_fail(c, a, "re-stat"));
+	/*
+	 * What the filesystem keeps for itself stays as the filesystem
+	 * left it: a written object keeps the archive bit ZFS just set,
+	 * whether or not the source's word made this call.
+	 */
 	if (ZR_ST_FLAGS(&st) != at->za_flags &&
-	    za_setflags(full, at->za_flags) != 0)
+	    za_setflags(full, at->za_flags |
+	    ((uint32_t)st.st_flags & ZR_FLAGS_NOISE)) != 0)
 		return (za_fail(c, a, "flags"));
 #else
 	if (za_setflags(full, at->za_flags) != 0)
