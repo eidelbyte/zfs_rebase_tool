@@ -163,7 +163,9 @@ say "1a. the walk of a live tree refuses it"
     "$MNT/onto" > "$tmp/posix.out" 2> "$tmp/posix.err"
 st=$?
 [ $st -eq 2 ] || { cat "$tmp/posix.err"; fail "--posix over a nested mount exited $st, want 2"; }
-grep -q 'nested mount at /inner' "$tmp/posix.err" || \
+# The walk names the mount by its full path, the one a person can
+# act on: the tree's root and /inner under it.
+grep -q 'nested mount at .*/inner$' "$tmp/posix.err" || \
     { cat "$tmp/posix.err"; fail "the refusal did not name the nested mount at /inner"; }
 grep -q '^zfs_rebase: from:' "$tmp/posix.err" || \
     { cat "$tmp/posix.err"; fail "the refusal did not name the from tree"; }
