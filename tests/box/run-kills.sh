@@ -41,18 +41,19 @@
 #      on. The rebase is left standing at the gate it had reached:
 #      the record with that state (or no state at all before
 #      applying1), the three holds, the manifest from "decided" on,
-#      and the result. readonly is back on wherever the tool had the
-#      chance to put it back (every SIGINT and SIGTERM, and a SIGKILL
-#      at a gate where readonly was already on) and off after a
-#      SIGKILL inside an applying stage. In the dataset form a caught
-#      signal hands the dataset back to its own mount point and a
-#      SIGKILL leaves it at the run's private one, where the next
-#      verb takes it from. readonly reads differently in the two
-#      forms and says the same thing: the clone is the tool's and is
-#      read-only whenever it is not being written to, while the
-#      dataset is the user's and wears what the record says it wore
-#      the moment it is handed back home -- readonly=on belongs to
-#      the private mount, not to the dataset.
+#      and the result. In the clone form readonly is back on
+#      wherever the tool had the chance to put it back (every SIGINT
+#      and SIGTERM, and a SIGKILL at a gate where readonly was
+#      already on) and off after a SIGKILL inside an applying stage.
+#      In the dataset form a caught signal hands the dataset back to
+#      its own mount point and a SIGKILL leaves it at the run's
+#      private one, where the next verb takes it from; its readonly
+#      property is what the record says it was, at the private mount
+#      and at home alike, since the tool changes it only while the
+#      dataset is off its mountpoint (libzfs remounts at the
+#      mountpoint property on a readonly change, which cannot land
+#      while the dataset sits at the private mount) -- the private
+#      mount is root's alone and writable for its life.
 #
 #   finished -- SIGINT and SIGTERM at done. Nothing looks at the flag
 #      after that gate, so the run finishes: done, holds released,
@@ -343,12 +344,11 @@ kill_case() {
 		fail "no such gate" ;;
 	esac
 	# wro so far is the working value: on outside an applying
-	# stage and off inside one. That is the clone's own, and it is
-	# the dataset's while the run holds it at the private mount --
-	# but a dataset handed back home is the user's again and wears
-	# the readonly the record says it had, which is what the
-	# fixture built it with.
-	if [ "$form" = dataset ] && [ $wmnt = home ]; then
+	# stage and off inside one. That is the clone's own. The
+	# dataset wears what the record says it had -- what the fixture
+	# built it with -- at the private mount and at home alike: the
+	# tool touches its readonly only while it is off its mountpoint.
+	if [ "$form" = dataset ]; then
 		wro=off
 	fi
 
