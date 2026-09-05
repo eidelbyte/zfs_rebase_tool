@@ -326,6 +326,36 @@ imm_flag(const char *root)
 #endif
 }
 
+/*
+ * The flags a new object is born with here, probed under root: zero
+ * on the Mac and UFS, and on ZFS the archive bit (UF_ARCHIVE), which
+ * zfs_mknode gives every new object and getattr shows in st_flags.
+ * A flag-less entry of a fixture walks back as this, not as zero.
+ */
+static uint32_t
+born_flags(const char *root, int isdir)
+{
+	char full[PATHMAX];
+	struct stat st;
+	FILE *fp;
+
+	join(full, sizeof (full), root, isdir ? "/born-d" : "/born-f");
+	if (isdir) {
+		CHECK(mkdir(full, 0755) == 0);
+	} else {
+		fp = fopen(full, "w");
+		CHECK(fp != NULL);
+		CHECK(fclose(fp) == 0);
+	}
+	CHECK(lstat(full, &st) == 0);
+	CHECK((isdir ? rmdir(full) : unlink(full)) == 0);
+#ifdef HAVE_FFLAGS
+	return ((uint32_t)st.st_flags);
+#else
+	return (0);
+#endif
+}
+
 /* The number a probed flag name walks back as. */
 static uint32_t
 imm_value(const char *name)
@@ -688,8 +718,10 @@ check_attrs(const char *root)
 	struct zr_walk w;
 	struct zr_tree tr;
 	const char *imm = imm_flag(root);
-	uint32_t immval;
+	uint32_t immval, born_d, born_f;
 
+	born_d = born_flags(root, 1);
+	born_f = born_flags(root, 0);
 	/*
 	 * ZF10 wants the directory immutable. Without a flag for that,
 	 * the directory takes nodump and the ordering half is not
@@ -731,7 +763,7 @@ check_attrs(const char *root)
 	at = &w.zw_attrs[poolof(&w.zw_tree, ns, "/d")];
 	CHECK(at->za_flags == immval);
 	at = &w.zw_attrs[poolof(&w.zw_tree, ns, "/e")];
-	CHECK(at->za_flags == 0);
+	CHECK(at->za_flags == born_d);		/* what a new one gets */
 
 	/* the second name of a pool set the attribute on the file */
 	at = &w.zw_attrs[poolof(&w.zw_tree, ns, "/h1")];
@@ -744,7 +776,7 @@ check_attrs(const char *root)
 
 	at = &w.zw_attrs[poolof(&w.zw_tree, ns, "/plain")];
 	CHECK(at->za_nxattrs == 0);
-	CHECK(at->za_flags == 0);
+	CHECK(at->za_flags == born_f);
 	zr_walk_fini(&w);
 	zr_names_destroy(ns);
 
