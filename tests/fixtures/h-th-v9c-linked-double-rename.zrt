@@ -18,6 +18,7 @@ expect
 #actions 0
 #conflicts 1
 /
+    B conflict 1
     C conflict 1
     ..
 
@@ -26,5 +27,5 @@ expect
 conflict 1 orphaned-add
   why  /C was added to a pool the other side deleted
   base ()
-  from ({/C /B}x)
+  from ({/B /C}x)
   onto ()

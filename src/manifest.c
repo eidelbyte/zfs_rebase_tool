@@ -105,6 +105,7 @@ struct zm {
 	zr_name_t			*zm_anchor;	/* result pool */
 	zr_pool_t			*zm_keeps;	/* result pool */
 	uint32_t			*zm_ogroup;	/* onto pool -> group */
+	uint32_t			*zm_fgroup;	/* from pool -> group */
 	uint32_t			*zm_cnum;	/* group -> number */
 	uint32_t			*zm_corder;	/* number -> group */
 	uint32_t			*zm_letter;	/* one record's pools */
@@ -221,8 +222,9 @@ zm_kid_cmp(const void *a, const void *b)
 
 /*
  * The result namespace and the tree over it: every name that survives,
- * every name onto holds that does not, and every directory on the way
- * to one. The root is node 0 whether or not the table holds "/".
+ * every name onto holds that does not, every name a conflict is about
+ * that only from holds, and every directory on the way to one. The
+ * root is node 0 whether or not the table holds "/".
  */
 static int
 zm_build(struct zm *m)
@@ -243,6 +245,30 @@ zm_build(struct zm *m)
 		if ((m->zm_d->zd_state[n] &
 		    (ZR_NS_SURVIVES | ZR_NS_ONTO)) != 0)
 			mark[n] = 1;
+	}
+	/*
+	 * A conflict about a name only from holds -- deleted on onto's
+	 * side, changed on from's -- has that name to speak of too,
+	 * or the resolution has nothing to answer and a directory on
+	 * the way to it has nothing to hold its removal.
+	 */
+	for (i = 0; i < m->zm_d->zd_ngroups; i++) {
+		const struct zr_group *gp = &m->zm_d->zd_groups[i];
+		const struct zr_tree *ft = m->zm_t[ZM_FROM];
+		uint32_t j, l;
+
+		if (gp->zg_flags == 0)
+			continue;
+		for (j = 0; j < gp->zg_nfrom; j++) {
+			const struct zr_pool *fp;
+
+			if (gp->zg_from[j] >= ft->zt_npools)
+				continue;
+			fp = &ft->zt_pools[gp->zg_from[j]];
+			for (l = 0; l < fp->zp_nnames; l++)
+				if (fp->zp_names[l] < m->zm_nnames)
+					mark[fp->zp_names[l]] = 1;
+		}
 	}
 	for (n = 0; n < m->zm_nnames; n++) {
 		zr_name_t p = n;
@@ -426,6 +452,31 @@ zm_ogroups(struct zm *m)
 	return (0);
 }
 
+/*
+ * Which group each from pool sits in, for the names only from holds
+ * that a conflict is about: they are not in the result and not onto's,
+ * and still get a line.
+ */
+static int
+zm_fgroups(struct zm *m)
+{
+	uint32_t g, i, n = m->zm_t[ZM_FROM]->zt_npools;
+
+	m->zm_fgroup = malloc(((size_t)n + 1) * sizeof (uint32_t));
+	if (m->zm_fgroup == NULL)
+		return (-1);
+	for (i = 0; i < n; i++)
+		m->zm_fgroup[i] = ZM_NONE;
+	for (g = 0; g < m->zm_d->zd_ngroups; g++) {
+		const struct zr_group *gp = &m->zm_d->zd_groups[g];
+
+		for (i = 0; i < gp->zg_nfrom; i++)
+			if (gp->zg_from[i] < n)
+				m->zm_fgroup[gp->zg_from[i]] = g;
+	}
+	return (0);
+}
+
 /* The trailing slash follows onto's idea of the type, else from's. */
 static void
 zm_types(struct zm *m)
@@ -554,8 +605,16 @@ zm_action_of(struct zm *m, uint32_t k)
 	if (n == ZR_NAME_NONE || n >= m->zm_nnames)
 		return;
 	if ((d->zd_state[n] & ZR_NS_SURVIVES) == 0) {
-		if ((d->zd_state[n] & ZR_NS_ONTO) == 0)
+		if ((d->zd_state[n] & ZR_NS_ONTO) == 0) {
+			/* from's alone: a line when a conflict is about it */
+			q = zr_tree_pool(m->zm_t[ZM_FROM], n);
+			g = q != ZR_POOL_NONE ? m->zm_fgroup[q] : ZM_NONE;
+			if (g != ZM_NONE && d->zd_groups[g].zg_flags != 0) {
+				nd->zn_act = ZM_CONFLICT;
+				nd->zn_group = g;
+			}
 			return;
+		}
 		q = zr_tree_pool(m->zm_t[ZM_ONTO], n);
 		g = q != ZR_POOL_NONE ? m->zm_ogroup[q] : ZM_NONE;
 		if (g != ZM_NONE && d->zd_groups[g].zg_flags != 0) {
@@ -961,6 +1020,7 @@ zm_fini(struct zm *m)
 	free(m->zm_anchor);
 	free(m->zm_keeps);
 	free(m->zm_ogroup);
+	free(m->zm_fgroup);
 	free(m->zm_cnum);
 	free(m->zm_corder);
 	free(m->zm_letter);
@@ -1001,7 +1061,7 @@ zr_manifest_emit(FILE *out, const struct zr_manifest_hdr *hdr,
 	if (m.zm_order == NULL || m.zm_cnum == NULL || m.zm_corder == NULL)
 		goto done;
 	zm_walk_order(&m);
-	if (zm_ogroups(&m) != 0 || zm_anchors(&m) != 0 ||
+	if (zm_ogroups(&m) != 0 || zm_fgroups(&m) != 0 || zm_anchors(&m) != 0 ||
 	    zm_letters_alloc(&m) != 0)
 		goto done;
 	zm_types(&m);

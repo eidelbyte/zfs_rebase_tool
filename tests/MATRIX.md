@@ -437,6 +437,7 @@ default, add_drift}; parse rejections; round trip.
 | ZM81 | parse refuses a fifth field on a line | covered: check_manifest.c |
 | ZM82 | the skeleton beside the manifest, the record naming it, --restart putting it back | planned: box, tests/box/run-fixture.sh for the unanswered skeleton, tests/box/run-resolution.sh case 5 for the answered one a --take record puts back |
 | ZM83 | an unanswered skeleton stops at conflicts, an answered one goes on | planned: box, tests/box/run-fixture.sh and run-kills.sh, and run-resolution.sh cases 1 and 3, which add the count the stop names and a document answered in part |
+| ZM84 | a conflicted name only from holds is a conflict mark in the tree section, with the directories on the way opened; the skeleton then has it to answer, and an rm above it is blocked | covered: run-fixtures.sh over h-s2-trap-dead-vs-edit.zrt and the five fixtures regenerated with it (tools/regen-expect.sh); box: run-replay.sh case 2 |
 
 ## ZA -- apply (check_apply.c)
 

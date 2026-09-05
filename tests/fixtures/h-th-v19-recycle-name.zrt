@@ -20,6 +20,7 @@ expect
 #actions 0
 #conflicts 1
 /
+    A conflict 1
     W conflict 1
     Z conflict 1
     ..
@@ -29,5 +30,5 @@ expect
 conflict 1 changed-both
   why  /Z changed on both sides
   base ({/Z}x)
-  from ({/W /A}y,{/Z}z)
+  from ({/A /W}y,{/Z}z)
   onto ({/W /Z}y)

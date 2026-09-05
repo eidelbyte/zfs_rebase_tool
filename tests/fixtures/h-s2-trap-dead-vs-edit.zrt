@@ -16,6 +16,8 @@ expect
 #actions 0
 #conflicts 1
 /
+    A conflict 1
+    B conflict 1
     ..
 
 # a pool is one file and all its names: {names}letter; same
