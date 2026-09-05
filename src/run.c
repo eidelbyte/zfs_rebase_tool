@@ -4542,7 +4542,7 @@ zr_abort(const char *result, int verbose)
 	char state[64], form[16], made[ZR_SNAP_MAX], err[512];
 	struct zr_zfs *z = NULL;
 	struct stat sb;
-	int rc = EXIT_INTERNAL, hasdir, hasds, hasman = 0, i;
+	int rc = EXIT_INTERNAL, hasdir, hasds, hasman = 0, hasres = 0, i;
 
 	if (geteuid() != 0) {
 		(void) fprintf(stderr, "zfs_rebase: must run as root\n");
@@ -4587,6 +4587,20 @@ zr_abort(const char *result, int verbose)
 			if (hasman < 0) {
 				(void) fprintf(stderr, "zfs_rebase: %s: %s\n",
 				    ZR_PROP_MANIFEST, err);
+				rc = EXIT_PRECOND;
+				goto done;
+			}
+			/*
+			 * Read now, with the record still there to read:
+			 * the clone form destroys the dataset before the
+			 * documents come off. A record from before the
+			 * resolution had a property of its own names none.
+			 */
+			hasres = zr_zfs_get_user(z, result, ZR_PROP_RESOLUTION,
+			    resolution, sizeof (resolution), err, sizeof (err));
+			if (hasres < 0) {
+				(void) fprintf(stderr, "zfs_rebase: %s: %s\n",
+				    ZR_PROP_RESOLUTION, err);
 				rc = EXIT_PRECOND;
 				goto done;
 			}
@@ -4699,13 +4713,8 @@ zr_abort(const char *result, int verbose)
 		else if (errno != ENOENT)
 			(void) fprintf(stderr, "zfs_rebase: %s: %s\n",
 			    manifest, strerror(errno));
-		/*
-		 * And the resolution the run wrote beside it. A record
-		 * from before the resolution had a property of its own
-		 * names none, and there is nothing to remove.
-		 */
-		if (zr_zfs_get_user(z, result, ZR_PROP_RESOLUTION, resolution,
-		    sizeof (resolution), err, sizeof (err)) > 0) {
+		/* And the resolution the run wrote beside it. */
+		if (hasres > 0) {
 			if (unlink(resolution) == 0)
 				(void) fprintf(stderr, "zfs_rebase: removed "
 				    "the resolution %s\n", resolution);
