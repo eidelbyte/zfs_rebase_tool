@@ -327,10 +327,11 @@ imm_flag(const char *root)
 }
 
 /*
- * The flags a new object is born with here, probed under root: zero
- * on the Mac and UFS, and on ZFS the archive bit (UF_ARCHIVE), which
- * zfs_mknode gives every new object and getattr shows in st_flags.
- * A flag-less entry of a fixture walks back as this, not as zero.
+ * The flags a new object is born with here as the tool sees them,
+ * probed under root. ZFS gives every new object the archive bit,
+ * which walk.h masks out of every word the tool reads, so this is
+ * zero wherever the tool runs; the probe keeps the test honest
+ * about it rather than assuming.
  */
 static uint32_t
 born_flags(const char *root, int isdir)
@@ -350,7 +351,7 @@ born_flags(const char *root, int isdir)
 	CHECK(lstat(full, &st) == 0);
 	CHECK((isdir ? rmdir(full) : unlink(full)) == 0);
 #ifdef HAVE_FFLAGS
-	return ((uint32_t)st.st_flags);
+	return (ZR_ST_FLAGS(&st));
 #else
 	return (0);
 #endif

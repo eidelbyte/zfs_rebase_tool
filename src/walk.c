@@ -1246,7 +1246,7 @@ zw_capture(struct zw_ctx *c, zr_pool_t pool, zr_name_t nm,
 	at->za_uid = st->st_uid;
 	at->za_gid = st->st_gid;
 #ifdef ZW_HAVE_ST_FLAGS
-	at->za_flags = (uint32_t)st->st_flags;
+	at->za_flags = ZR_ST_FLAGS(st);
 #else
 	at->za_flags = 0;
 #endif

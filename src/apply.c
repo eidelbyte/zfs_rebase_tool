@@ -926,7 +926,13 @@ za_attrs(struct za_ctx *c, const struct zr_action *a,
 	if (utimensat(c->zc_rootfd, rel, ts, AT_SYMLINK_NOFOLLOW) != 0)
 		return (za_fail(c, a, "times"));
 #ifdef ZA_HAVE_ST_FLAGS
-	if ((uint32_t)st.st_flags != at->za_flags &&
+	/*
+	 * Read again: the steps above stamp the object, and what a
+	 * stamp sets is not in the word the first stat read.
+	 */
+	if (fstatat(c->zc_rootfd, rel, &st, AT_SYMLINK_NOFOLLOW) != 0)
+		return (za_fail(c, a, "re-stat"));
+	if (ZR_ST_FLAGS(&st) != at->za_flags &&
 	    za_setflags(full, at->za_flags) != 0)
 		return (za_fail(c, a, "flags"));
 #else
@@ -965,7 +971,7 @@ za_verify(struct za_ctx *c, const struct zr_action *a,
 	if (type == ZR_T_FILE && (uint64_t)st.st_size != size)
 		return (za_differs(c, a, step, "size"));
 #ifdef ZA_HAVE_ST_FLAGS
-	if ((uint32_t)st.st_flags != at->za_flags)
+	if (ZR_ST_FLAGS(&st) != at->za_flags)
 		return (za_differs(c, a, step, "flags"));
 #endif
 	return (0);

@@ -325,7 +325,7 @@ check_attr(const struct zr_walk *w, struct zr_names *ns, const char *root,
 	CHECK(at->za_size == (uint64_t)st.st_size);
 	CHECK(at->za_rdev == ((uint64_t)st.st_rdev & DEVMASK));
 #if defined(__FreeBSD__) || defined(__APPLE__)
-	CHECK(at->za_flags == (uint32_t)st.st_flags);
+	CHECK(at->za_flags == ZR_ST_FLAGS(&st));	/* the tool's word */
 #else
 	CHECK(at->za_flags == 0);
 #endif

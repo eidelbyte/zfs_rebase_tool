@@ -112,21 +112,6 @@
 #define	FX_HAVE_ACL	1
 #define	FX_PLATFORM	"freebsd"	/* what a platform line calls us */
 #endif
-/*
- * The flags a new object is born with on the target. FreeBSD ZFS
- * gives every new object ZFS_ARCHIVE (zfs_mknode), which getattr
- * shows as UF_ARCHIVE and every write sets again. An entry that says
- * no flags= means "as born": that bit is neither drift for the editor
- * to report nor something for it to clear, and an object the editor
- * has to make flag-less is given it. The Mac is born with nothing.
- * On a UFS TMPDIR this is one bit too many on that last kind of
- * object and nothing else; ZFS is the target.
- */
-#if defined(__FreeBSD__)
-#define	FX_BORN_FLAGS	((uint32_t)UF_ARCHIVE)
-#else
-#define	FX_BORN_FLAGS	((uint32_t)0)
-#endif
 #if defined(__FreeBSD__)
 #include <sys/acl.h>
 #include <sys/extattr.h>
@@ -206,18 +191,6 @@ fx_setacl(const char *full, const char *text)
 	errno = ENOTSUP;
 	return (-1);
 #endif
-}
-
-/*
- * Does an object's flag word satisfy an entry's? Declared flags are
- * exact; no flags= tolerates the born bits and nothing else.
- */
-static int
-fx_flags_ok(uint32_t want, uint32_t have)
-{
-	if (want != 0)
-		return (have == want);
-	return ((have & ~FX_BORN_FLAGS) == 0);
 }
 
 static int
@@ -2546,7 +2519,7 @@ fx_ed_needs(struct fx_ed *ed, char *err, size_t errlen)
 		}
 		if (!fx_ed_attr_same(&ed->ed_eff[i], at, o->fe_type))
 			ed->ed_need[i] |= FE_W_ATTR;
-		if (!fx_flags_ok(ed->ed_eff[i].ef_flags, at->za_flags))
+		if (ed->ed_eff[i].ef_flags != at->za_flags)
 			ed->ed_need[i] |= FE_W_FLAGS;
 	}
 	return (0);
@@ -2702,8 +2675,7 @@ fx_ed_clearflags(struct fx_ed *ed, char *err, size_t errlen)
 	uint32_t i;
 
 	for (i = 0; i < ed->ed_npools; i++) {
-		if (!ed->ed_clear[i] ||
-		    (ed->ed_w.zw_attrs[i].za_flags & ~FX_BORN_FLAGS) == 0)
+		if (!ed->ed_clear[i] || ed->ed_w.zw_attrs[i].za_flags == 0)
 			continue;
 		p = &ed->ed_w.zw_tree.zt_pools[i];
 		if (p->zp_nnames == 0)
@@ -2713,8 +2685,7 @@ fx_ed_clearflags(struct fx_ed *ed, char *err, size_t errlen)
 		full = fx_ed_namepath(ed, p->zp_names[0]);
 		if (full == NULL)
 			return (fx_ed_fail(err, errlen, NULL, "memory"));
-		if (fx_setflags(full, ed->ed_w.zw_attrs[i].za_flags &
-		    FX_BORN_FLAGS) != 0)
+		if (fx_setflags(full, 0) != 0)
 			return (fx_ed_fail(err, errlen, full, "chflags"));
 	}
 	return (0);
@@ -2946,17 +2917,10 @@ fx_ed_setflags(struct fx_ed *ed, char *err, size_t errlen)
 		owner = e->fe_pool;
 		if ((ed->ed_need[owner] & FE_W_DONE) != 0)
 			continue;
-		/*
-		 * What the object carries now: a new one, and one the
-		 * clearing pass took down to its born bits, carry those;
-		 * the rest carry what the walk saw.
-		 */
-		cur = FX_BORN_FLAGS;
-		if (ed->ed_claim[owner] != ZR_POOL_NONE) {
+		cur = 0;
+		if (ed->ed_claim[owner] != ZR_POOL_NONE &&
+		    !ed->ed_clear[ed->ed_claim[owner]])
 			cur = ed->ed_w.zw_attrs[ed->ed_claim[owner]].za_flags;
-			if (ed->ed_clear[ed->ed_claim[owner]])
-				cur &= FX_BORN_FLAGS;
-		}
 		ed->ed_need[owner] |= FE_W_DONE;
 		want = ed->ed_eff[owner].ef_flags;
 		full = fx_ed_entpath(ed, i - 1);
@@ -2964,23 +2928,20 @@ fx_ed_setflags(struct fx_ed *ed, char *err, size_t errlen)
 			return (fx_ed_fail(err, errlen, e->fe_path, "memory"));
 #ifdef FX_HAVE_FFLAGS
 		/*
-		 * Declared flags are exact, and the walk's word is stale
-		 * for an object the edit touched: ZFS puts the archive bit
-		 * back on every mtime or ctime update
-		 * (zfs_tstamp_update_setup) -- a write, a link, a chmod, a
-		 * child made under a directory. One lstat says what is
-		 * there now; the flag-less case tolerates the born bits
-		 * and needs no look.
+		 * Declared flags are exact, so for them the object is
+		 * read again here rather than trusted to the walk made
+		 * before the edit began; what the walk does not see
+		 * (walk.h, ZR_ST_FLAGS) an lstat does not see either.
 		 */
 		if (want != 0) {
 			if (lstat(full, &st) != 0)
 				return (fx_ed_fail(err, errlen, full, "lstat"));
-			cur = (uint32_t)st.st_flags;
+			cur = ZR_ST_FLAGS(&st);
 		}
 #endif
-		if (fx_flags_ok(want, cur))
+		if (want == cur)
 			continue;
-		if (fx_setflags(full, want != 0 ? want : FX_BORN_FLAGS) != 0)
+		if (fx_setflags(full, want) != 0)
 			return (fx_ed_fail(err, errlen, full, "chflags"));
 	}
 	if (ed->ed_rootflags == 0)

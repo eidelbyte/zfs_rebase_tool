@@ -164,6 +164,7 @@ order {readdir's, sorted}; faults.
 | ZW30 | zr_acl_equal: absent, alike, unlike, reordered, shorter | planned: check_walk.c |
 | ZW31 | za_gen is st_gen, and 0 where the platform has none | covered: check_walk.c |
 | ZW32 | za_ctime is st_ctim, seconds and nanoseconds | covered: check_walk.c |
+| ZW33 | the archive bit ZFS keeps for itself (UF_ARCHIVE, set on every new object and every write) is masked out of za_flags: on ZFS the walk's word lacks the bit st_flags shows, ZW20's lstat compare with the mask | planned: box (check_walk on a ZFS TMPDIR); the Mac has no such bit |
 
 ZW31 and ZW32 are the two fields the pruning of ZC26 below reads,
 and the walk pays nothing for them: it lstat'd every object

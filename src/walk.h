@@ -20,6 +20,28 @@
 #include "name.h"
 
 /*
+ * The file flags as the tool sees them. FreeBSD keeps the DOS
+ * archive bit, UF_ARCHIVE ("file needs to be archived"), for the
+ * filesystem's own bookkeeping: ZFS sets it on every new object
+ * (zfs_mknode) and again on every mtime or ctime update
+ * (zfs_tstamp_update_setup), and a backup tool clears it. That is
+ * ctime-like state, not the file's content, and carrying it would
+ * make the tool's own apply read as drift, so every flag word the
+ * tool reads is masked of it and it is never written. A deliberate
+ * chflags nouarch is the one thing this loses, and the next write
+ * would undo that anyway.
+ */
+#if defined(__FreeBSD__) || defined(__APPLE__)
+#include <sys/stat.h>
+#if defined(__FreeBSD__)
+#define	ZR_FLAGS_NOISE	((uint32_t)UF_ARCHIVE)
+#else
+#define	ZR_FLAGS_NOISE	((uint32_t)0)
+#endif
+#define	ZR_ST_FLAGS(stp)	((uint32_t)(stp)->st_flags & ~ZR_FLAGS_NOISE)
+#endif
+
+/*
  * One ACL, in the form the platform gives it. FreeBSD is the target,
  * and there an ACL is already a list of integers -- libc's acl_t --
  * so the walk keeps that and nothing is spelled out and read back.
