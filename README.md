@@ -5,7 +5,7 @@ given two sides that diverged from a common base, it replays the
 changes of one (from) onto the other (onto), or tells you exactly
 which files it could not decide and why.
 
-    zfs_rebase [-p] [-v] [--manifest FILE] [--verify] [--overwrite] \
+    zfs_rebase [-p] [-v] [-q] [--manifest FILE] [--verify] \
         [--allow-unrelated [--base SNAP]] \
         [--take-onto | --take-from] [--no-gui] [--no-merge] \
         --from SNAP|DATASET --onto SNAP|DATASET --result NAME
@@ -21,7 +21,7 @@ Every flag has a long form and a short form, and the two are the same
 flag: the table below gives both. --from may also be spelled --off-of
 and --onto --to, neither with a letter of its own. --dry-run (-n)
 writes the manifest, creates nothing and holds nothing. --verify at
-the start is recorded and honoured at the last gate.
+the start makes the final check at the last gate.
 
 ## Options
 
@@ -32,8 +32,9 @@ the start is recorded and honoured at the last gate.
 | `--result` | `-r` | the clone's name in one form and the pre-apply snapshot's in the other; for every verb, the dataset carrying the record |
 | `--permissive-merge` | `-p` | permissive merge; strict is the default, and the mode is recorded |
 | `--verbose` | `-v` | counts and steps on stderr |
-| `--manifest` | `-o` | where the manifest is written; the resolution goes beside it, and both paths are recorded |
+| `--manifest` | `-o` | where the manifest is written; the resolution goes beside it, and the record names the manifest |
 | `--verify` | `-V` | ask for the final check, or, alone on a result, report and write nothing; never a repair |
+| `--quiet` | `-q` | a start option: latched in the record for the whole run, to silence the final check's report. Nothing reads it yet |
 | `--take-onto` | `-O` | write the skeleton with every conflict answered onto |
 | `--take-from` | `-F` | write the skeleton with every conflict answered from; the two exclude each other |
 | `--no-gui` | `-G` | at the conflicts gate, go on without the picker when the resolution is complete and stop when it is not -- the only behavior while there is no picker |
@@ -42,7 +43,6 @@ the start is recorded and honoured at the last gate.
 | `--restart` | `-R` | the result back as onto was, the manifest applied again from the first gate, the resolution back to its skeleton |
 | `--abort` | `-a` | holds released, tool-made snapshots destroyed, the clone destroyed or the dataset rolled back, manifest, resolution and run directory removed |
 | `--dry-run` | `-n` | decide and write the manifest, then tear down: nothing held, nothing created, --result ignored |
-| `--overwrite` | `-w` | dataset form: replace a record whose rebase reached done |
 | `--allow-unrelated` | `-u` | no derivation of the base, and no pruning |
 | `--base` | `-b` | with --allow-unrelated only: the base, no newer than either side; without it, the empty tree |
 
@@ -87,7 +87,7 @@ waits. Only a hard kill leaves it privately mounted, and the next
 --continue, --verify or --abort takes it from there. The private
 mount is root's alone and writable for its whole life: a dataset that
 was read-only is made writable once, while it is off its mountpoint,
-and the record remembers what it was for the hand-back. (libzfs
+and the manifest's header remembers what it was for the hand-back. (libzfs
 answers a readonly change on a mounted dataset with a remount at the
 mountpoint property, which cannot be done while the dataset sits at
 the private mount, so the property is only ever touched unmounted.)
@@ -97,7 +97,8 @@ the private mount, so the property is only ever touched unmounted.)
 name is taken as its dataset, so both spellings find the same rebase.
 
 A dataset given as a side is snapshotted by the tool under a
-generated name, recorded as tool-made, and destroyed when the rebase
+generated name, named as tool-made in the manifest's header, and
+destroyed when the rebase
 ends, at done or at --abort. If you wanted that snapshot kept you
 would have passed one. A dataset onto never carries a tool-made
 snapshot: its before-image is the one you named.
@@ -130,9 +131,9 @@ never passed through -- and its dataset is read through
 .zfs/snapshot like the other two. Without --base there is no base
 snapshot at all: the base is the empty tree, every name of either
 side is an add on that side, and the decision is the union of the
-two with a conflict wherever they disagree. The record and the
-manifest header then carry "-" for the base and the guid 0, which
-every verb reads as "there was no base". --base without
+two with a conflict wherever they disagree. The manifest's header
+then carries "-" for the base and the guid 0, which every verb reads
+as "there was no base". --base without
 --allow-unrelated is a usage error: where the branch point is
 derived, a base given by hand could only agree with it or be wrong.
 
@@ -148,27 +149,26 @@ to the result clone, which it creates read-only and puts back that
 way. All ZFS operations go through libzfs_core and libzfs; nothing is
 exec'd.
 
-A rebase outlives the process that started it. The result carries a
-record, in user properties -- set by the create itself in the clone
-form, and on the dataset before anything is touched in the other --
-and read back as local values only:
+A rebase outlives the process that started it. While it is open the
+result carries a record of four user properties -- set by the create
+itself in the clone form, and on the dataset before anything is
+touched in the other -- read back as local values only:
 
-    zfs_rebase:base        the branch point, and :base_guid
-    zfs_rebase:from        the side replayed, and :from_guid
-    zfs_rebase:onto        the side replayed onto, and :onto_guid
-    zfs_rebase:made        which inputs the tool snapshotted itself
-    zfs_rebase:mode        strict or permissive
-    zfs_rebase:form        clone or dataset
-    zfs_rebase:tag         the tag its holds are filed under
-    zfs_rebase:verify      whether --verify was asked for
-    zfs_rebase:take        onto, from or "-": how the skeleton was
-                           answered when it was written
+    zfs_rebase:phase       the last gate the run passed: applying1,
+                           conflicts or applying2
     zfs_rebase:manifest    where the manifest was written
-    zfs_rebase:resolution  where the resolution was written
-    zfs_rebase:readonly    what readonly was before (dataset form)
-    zfs_rebase:state       the last gate the run passed
+    zfs_rebase:tag         the tag its holds are filed under
+    zfs_rebase:quiet       "yes", where the start was given --quiet
 
-and one persistent hold per input snapshot under that tag, so that
+Everything else about the rebase is in the header of that manifest:
+the three snapshots and their guids, the form, the mode, which side
+the tool snapshotted itself, how the skeleton was answered, and in
+the dataset form the pre-apply snapshot and the readonly and canmount
+values to give back. Either document names the run -- the property
+points at the manifest, the header names the result -- and nothing
+else is ever written to a dataset by this tool.
+
+There is one persistent hold per input snapshot under that tag, so that
 none of the three can be destroyed while the rebase is open: zfs
 holds shows the tag, and zfs destroy refuses with "dataset is busy".
 A stranded rebase holds on purpose, because it is meant to be
@@ -197,11 +197,15 @@ hands the result back and goes on to done in the same process, by
 the one code path a --continue uses. --no-merge holds it at the gate
 instead, and is refused once the gate is passed. --no-gui asks for
 what the gate does anyway while there is no picker.
-applying2 carries the choices out. done is
-written after the result verified and is read-only again, and before
-the holds are released. What a kill leaves is the last gate reached,
-there is no state at all until the first one, and a stop writes none:
---continue resumes from the gate, --abort takes the rebase away.
+applying2 carries the choices out. done is no phase and is never
+written: when the result has verified and is read-only again, the
+holds are given back and then every zfs_rebase: property is taken
+off, in that order, since the tag is the only handle on those holds.
+A result that carries any of them is therefore an open rebase, and
+one that carries none has no rebase, whatever its history. What a
+kill leaves is the last gate reached, there is no phase at all until
+the first one, and a stop writes none: --continue resumes from the
+gate, --abort takes the rebase away.
 
 Each run keeps its own directory, 0700 throughout:
 
@@ -210,8 +214,9 @@ Each run keeps its own directory, 0700 throughout:
     /var/db/zfs_rebase/<result as a path>/resolution   the choices
 
 With --manifest FILE (-o FILE) the manifest is FILE and the
-resolution is FILE.resolution, beside it. Either way the record names both, and
-every verb finds them there and never by guessing a path.
+resolution is FILE.resolution, beside it. Either way the record names
+the manifest and the resolution is beside it by that rule, so every
+verb finds both and never by guessing a path.
 
 Not /var/run: FreeBSD's cleanvar deletes every regular file there at
 boot, and a rebase stopped at conflicts can outlast one.
@@ -223,13 +228,14 @@ in it.
 
 Four verbs work on a rebase that already exists. Each takes --result
 and -v, --continue takes the flags of the gate as well, and nothing
-else is theirs; every one of them keys on the record and on nothing
-else: a dataset that carries none is refused untouched, and an
-inherited value is no record, since user properties inherit down the
-naming tree and only a local one is ours. Each also checks that every snapshot the record names is still
-the snapshot it named, by guid, since a snapshot destroyed and taken
-again under the same name is another snapshot and these answers do
-not describe it.
+else is theirs; every one of them keys on the record and on the
+manifest it names, and on nothing else: a dataset that carries no
+record is refused untouched, and an inherited value is no record,
+since user properties inherit down the naming tree and only a local
+one is ours. Each also checks that every snapshot the header names is
+still the snapshot it named, by guid, since a snapshot destroyed and
+taken again under the same name is another snapshot and these answers
+do not describe it.
 
     zfs_rebase --continue [--verify] [--no-gui] [--no-merge] \
         --result DATASET
@@ -252,11 +258,11 @@ already past the merge.
     zfs_rebase --restart --result DATASET
 
 puts the result back as onto was -- destroying the clone and making
-it again from the recorded onto snapshot with the same record, or
-rolling the dataset back to its pre-apply snapshot -- and then
-applies the recorded manifest from the first gate, with the
+it again from the onto snapshot the header names, with the same
+record, or rolling the dataset back to its pre-apply snapshot -- and
+then applies the recorded manifest from the first gate, with the
 resolution put back to its skeleton: the one the run wrote, which
-zfs_rebase:take says was answered onto, from or not at all. Nothing
+the header's #take line says was answered onto, from or not at all. Nothing
 is decided again: the manifest is the decision, a resolution's edits
 are discarded by definition, and the instruction the rebase was
 started with is not an edit.
@@ -271,7 +277,9 @@ is looked for by name and then by guid across the pool, which is
 what survives a rename or a promote, each one it finds is held for
 the length of the report and not a moment longer, and what it cannot
 find it names -- with every action that would have had to be read
-against that tree reported unchecked rather than guessed at.
+against that tree reported unchecked rather than guessed at. A
+result whose rebase reached done carries no record and no verb finds
+it; naming a settled result by its manifest is verify-settled's.
 
     zfs_rebase --abort --result DATASET
 
@@ -279,14 +287,24 @@ releases the holds, puts the result back -- destroying the clone, or
 rolling the dataset back to its pre-apply snapshot, destroying that
 snapshot, taking every zfs_rebase: property off it and mounting it
 where it belongs again -- destroys any snapshot the tool took for
-itself, unlinks the manifest the record names and removes the run
-directory: as if the run never happened.
+itself, unlinks the manifest the record names and the resolution
+beside it, and removes the run directory: as if the run never
+happened.
 
-A dataset that already carries a record is not rebased over. If its
-rebase reached done, --overwrite replaces the record with the new
-run's; without the flag the tool says so and exits 2. A record in
-any other state is an open rebase, and no flag overrides that:
---continue or --abort settles it first.
+Which of those it does is the manifest's to say. Where that file has
+been lost, --abort gives the holds back by walking the result's pool
+for the record's tag, undoes the private mount and takes the record
+off, and then says plainly what it cannot do without the manifest:
+it cannot tell the clone form from the dataset form, so it destroys
+nothing and rolls nothing back, and it cannot put readonly or
+canmount back. It prints the command for each form and leaves the
+choice to you.
+
+A dataset that carries any zfs_rebase: property of its own is an open
+rebase and is not rebased over: the tool says so and exits 2, and
+--continue or --abort settles it first. A dataset that carries none
+is free, whatever its history -- a rebase that reached done took its
+record off.
 
 Two build modes:
 

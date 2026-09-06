@@ -28,6 +28,7 @@ enum zr_optid {
 	ZO_VERBOSE,
 	ZO_MANIFEST,
 	ZO_VERIFY,
+	ZO_QUIET,
 	ZO_TAKEONTO,
 	ZO_TAKEFROM,
 	ZO_NOGUI,
@@ -36,7 +37,6 @@ enum zr_optid {
 	ZO_RESTART,
 	ZO_ABORT,
 	ZO_DRYRUN,
-	ZO_OVERWRITE,
 	ZO_UNRELATED,
 	ZO_BASE
 };
@@ -64,6 +64,7 @@ static const struct zr_opt zr_opts[] = {
 	{ "verbose",		'v', 0, ZO_VERBOSE },
 	{ "manifest",		'o', 1, ZO_MANIFEST },
 	{ "verify",		'V', 0, ZO_VERIFY },
+	{ "quiet",		'q', 0, ZO_QUIET },
 	{ "take-onto",		'O', 0, ZO_TAKEONTO },
 	{ "take-from",		'F', 0, ZO_TAKEFROM },
 	{ "no-gui",		'G', 0, ZO_NOGUI },
@@ -72,7 +73,6 @@ static const struct zr_opt zr_opts[] = {
 	{ "restart",		'R', 0, ZO_RESTART },
 	{ "abort",		'a', 0, ZO_ABORT },
 	{ "dry-run",		'n', 0, ZO_DRYRUN },
-	{ "overwrite",		'w', 0, ZO_OVERWRITE },
 	{ "allow-unrelated",	'u', 0, ZO_UNRELATED },
 	{ "base",		'b', 1, ZO_BASE }
 };
@@ -200,6 +200,9 @@ za_set(struct zr_args *out, const struct zr_opt *opt, const char *val,
 	case ZO_VERIFY:
 		out->za_verify = 1;
 		break;
+	case ZO_QUIET:
+		out->za_quiet = 1;
+		break;
 	case ZO_TAKEONTO:
 		out->za_takeonto = 1;
 		break;
@@ -223,9 +226,6 @@ za_set(struct zr_args *out, const struct zr_opt *opt, const char *val,
 		break;
 	case ZO_DRYRUN:
 		out->za_dryrun = 1;
-		break;
-	case ZO_OVERWRITE:
-		out->za_overwrite = 1;
 		break;
 	case ZO_UNRELATED:
 		out->za_unrelated = 1;
@@ -347,9 +347,9 @@ za_gate_flags(const struct zr_args *out, char *err, size_t errlen)
 /*
  * The verbs on a result. Each goes alone -- one --result, the gate
  * flags --continue is allowed, -v, and nothing else -- because there
- * is nothing for a flag of a fresh run to act on: --overwrite
- * replaces a record no verb is writing, and an open rebase is
- * settled by --continue or --abort whatever flags are given.
+ * is nothing for a flag of a fresh run to act on: a rebase is
+ * decided once, and an open one is settled by --continue or --abort
+ * whatever flags are given.
  */
 static int
 za_verb_flags(const struct zr_args *out, char *err, size_t errlen)
@@ -365,9 +365,16 @@ za_verb_flags(const struct zr_args *out, char *err, size_t errlen)
 	if (out->za_manifest != NULL)
 		return (za_no(err, errlen, "%s reads the manifest the record "
 		    "names; --manifest says nothing to it", word));
-	if (out->za_dryrun != 0 || out->za_overwrite != 0 ||
-	    out->za_unrelated != 0 || out->za_base != NULL ||
-	    out->za_mode != ZR_MODE_STRICT)
+	/*
+	 * --quiet is latched at the start, in the record, and is the
+	 * whole run's: a verb that arrives later reads it there and
+	 * has nothing to say about it.
+	 */
+	if (out->za_quiet != 0)
+		return (za_no(err, errlen, "%s reads --quiet from the record "
+		    "the start wrote; --quiet says nothing to it", word));
+	if (out->za_dryrun != 0 || out->za_unrelated != 0 ||
+	    out->za_base != NULL || out->za_mode != ZR_MODE_STRICT)
 		return (za_no(err, errlen, "%s takes --result and the flags "
 		    "of the gate; the rest belong to a fresh run", word));
 	/*
@@ -396,6 +403,15 @@ za_run_flags(const struct zr_args *out, char *err, size_t errlen)
 	if (out->za_result == NULL && out->za_dryrun == 0)
 		return (za_no(err, errlen, "a rebase needs --result, the "
 		    "name of what it makes"));
+	/*
+	 * --quiet silences the final check's report, and a dry run
+	 * makes no check: it writes a manifest and stops. There is
+	 * nothing for the flag to quieten and no record to latch it
+	 * in.
+	 */
+	if (out->za_quiet != 0 && out->za_dryrun != 0)
+		return (za_no(err, errlen, "--dry-run makes no check to "
+		    "report; --quiet says nothing to it"));
 	return (0);
 }
 

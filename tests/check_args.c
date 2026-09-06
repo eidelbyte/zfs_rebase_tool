@@ -6,7 +6,8 @@
  * which is what puts the whole of the driver's grammar within reach
  * of a machine with no ZFS in it.
  *
- * Matrix cells (tests/MATRIX.md, family ZX): ZX100 to ZX121.
+ * Matrix cells (tests/MATRIX.md, family ZX): ZX100 to ZX121, and
+ * ZX137 to ZX139 for --quiet and for the --overwrite that is gone.
  */
 
 #include <stdio.h>
@@ -57,7 +58,7 @@ static char w_continue[] = "--continue";
 static char w_restart[] = "--restart";
 static char w_abort[] = "--abort";
 static char w_dryrun[] = "--dry-run";
-static char w_overwrite[] = "--overwrite";
+static char w_quiet[] = "--quiet";
 static char w_unrelated[] = "--allow-unrelated";
 static char w_base[] = "--base";
 static char w_posix[] = "--posix";
@@ -79,7 +80,7 @@ static char s_continue[] = "-c";
 static char s_restart[] = "-R";
 static char s_abort[] = "-a";
 static char s_dryrun[] = "-n";
-static char s_overwrite[] = "-w";
+static char s_quiet[] = "-q";
 static char s_unrelated[] = "-u";
 static char s_base[] = "-b";
 
@@ -114,7 +115,7 @@ static const struct {
 	{ w_restart, s_restart },
 	{ w_abort, s_abort },
 	{ w_dryrun, s_dryrun },
-	{ w_overwrite, s_overwrite },
+	{ w_quiet, s_quiet },
 	{ w_unrelated, s_unrelated },
 	{ w_base, s_base }
 };
@@ -178,9 +179,9 @@ check_pair(char **argv, int argc)
 }
 
 /*
- * ZX100, ZX102, ZX103, ZX104, ZX105, ZX106: the fresh run's flags,
- * one command per flag added to the smallest run that is legal, each
- * written both ways and parsed to the same struct.
+ * ZX100, ZX102, ZX103, ZX104, ZX105, ZX106, ZX137: the fresh run's
+ * flags, one command per flag added to the smallest run that is
+ * legal, each written both ways and parsed to the same struct.
  */
 static void
 test_pairs_run(void)
@@ -189,7 +190,7 @@ test_pairs_run(void)
 	    w_result, v_result };
 	char *with[10];
 	char *one[] = { w_perm, w_verbose, w_verify, w_takeonto, w_takefrom,
-	    w_nogui, w_nomerge, w_overwrite, w_unrelated };
+	    w_nogui, w_nomerge, w_quiet, w_unrelated };
 	char *val[] = { w_manifest, w_base };
 	size_t i;
 	int n;
@@ -197,7 +198,7 @@ test_pairs_run(void)
 	/* ZX100: --from, --onto and --result themselves. */
 	check_pair(base, (int)NELEM(base));
 
-	/* ZX102, ZX103, ZX105, ZX106: one flag at a time, no value. */
+	/* ZX102, ZX103, ZX105, ZX106, ZX137: one flag, no value. */
 	for (i = 0; i < NELEM(one); i++) {
 		memcpy(with, base, sizeof (base));
 		n = (int)NELEM(base);
@@ -535,10 +536,11 @@ test_take_choice(void)
 }
 
 /*
- * ZX120: a verb takes --result, the gate flags --continue is allowed
- * and -v, and nothing of a fresh run's: there is nothing there for
- * --overwrite to replace or for --from to name, and two verbs at
- * once are two commands.
+ * ZX120, ZX138: a verb takes --result, the gate flags --continue is
+ * allowed and -v, and nothing of a fresh run's: there is nothing
+ * there for --from to name and nothing for --quiet to silence, since
+ * the start latched that in the record, and two verbs at once are
+ * two commands.
  */
 static void
 test_verb_flags(void)
@@ -548,8 +550,8 @@ test_verb_flags(void)
 	    w_from, v_from };
 	char *withman[] = { w_prog, w_continue, w_result, v_result,
 	    w_manifest, v_manifest };
-	char *withover[] = { w_prog, w_continue, w_result, v_result,
-	    w_overwrite };
+	char *withquiet[] = { w_prog, w_continue, w_result, v_result,
+	    w_quiet };
 	char *withmode[] = { w_prog, w_restart, w_result, v_result, w_perm };
 	char *withdry[] = { w_prog, w_abort, w_result, v_result, w_dryrun };
 	char *verifyrest[] = { w_prog, w_restart, w_verify, w_result,
@@ -563,7 +565,7 @@ test_verb_flags(void)
 	parse_bad(noresult, (int)NELEM(noresult));
 	parse_bad(withfrom, (int)NELEM(withfrom));
 	parse_bad(withman, (int)NELEM(withman));
-	parse_bad(withover, (int)NELEM(withover));
+	parse_bad(withquiet, (int)NELEM(withquiet));
 	parse_bad(withmode, (int)NELEM(withmode));
 	parse_bad(withdry, (int)NELEM(withdry));
 	parse_bad(verifyrest, (int)NELEM(verifyrest));
@@ -598,6 +600,70 @@ test_run_flags(void)
 	CHECK(a.za_dryrun == 1 && a.za_result == v_result);
 }
 
+/*
+ * ZX138: --quiet is a start option and nothing else. It is latched
+ * in the record for the whole run, so a verb that arrives later has
+ * nothing to say about it, and a dry run makes no check whose report
+ * there would be to silence.
+ *
+ * ZX139: --overwrite is gone, both spellings. A record that reached
+ * done is no record at all now -- done takes it off -- so there is
+ * nothing left for the flag to replace, and the word is refused the
+ * way any word of another tool's is.
+ */
+static void
+test_quiet_and_overwrite(void)
+{
+	static char w_over[] = "--overwrite";
+	static char s_over[] = "-w";
+	char *verb[] = { w_continue, w_restart, w_abort, w_verify };
+	char *dry[] = { w_prog, w_dryrun, w_from, v_from, w_onto, v_onto,
+	    w_quiet };
+	char *run[] = { w_prog, w_from, v_from, w_onto, v_onto, w_result,
+	    v_result };
+	char *cmd[9];
+	struct zr_args a;
+	size_t i;
+
+	/* --quiet on each of the four verbs, both spellings. */
+	for (i = 0; i < NELEM(verb); i++) {
+		cmd[0] = w_prog;
+		cmd[1] = verb[i];
+		cmd[2] = w_result;
+		cmd[3] = v_result;
+		cmd[4] = w_quiet;
+		parse_bad(cmd, 5);
+		cmd[4] = s_quiet;
+		parse_bad(cmd, 5);
+	}
+	/* and on a dry run, which has no check to report. */
+	parse_bad(dry, (int)NELEM(dry));
+	dry[6] = s_quiet;
+	parse_bad(dry, (int)NELEM(dry));
+	/* On a fresh run it is the flag it is. */
+	memcpy(cmd, run, sizeof (run));
+	cmd[7] = w_quiet;
+	a = parse_ok(cmd, 8);
+	CHECK(a.za_verb == ZR_VERB_RUN && a.za_quiet == 1);
+	cmd[7] = s_quiet;
+	a = parse_ok(cmd, 8);
+	CHECK(a.za_verb == ZR_VERB_RUN && a.za_quiet == 1);
+	a = parse_ok(run, (int)NELEM(run));
+	CHECK(a.za_quiet == 0);
+	/* And --overwrite is a word this tool does not know. */
+	memcpy(cmd, run, sizeof (run));
+	cmd[7] = w_over;
+	parse_bad(cmd, 8);
+	cmd[7] = s_over;
+	parse_bad(cmd, 8);
+	cmd[0] = w_prog;
+	cmd[1] = w_continue;
+	cmd[2] = w_result;
+	cmd[3] = v_result;
+	cmd[4] = w_over;
+	parse_bad(cmd, 5);
+}
+
 int
 main(void)
 {
@@ -614,6 +680,7 @@ main(void)
 	test_take_choice();
 	test_verb_flags();
 	test_run_flags();
+	test_quiet_and_overwrite();
 	printf("check_args: %lu checks passed\n", checks);
 	return (0);
 }

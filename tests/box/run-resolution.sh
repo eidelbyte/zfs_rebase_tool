@@ -19,25 +19,28 @@
 # 1. Headless to done. A fresh run given --take-onto --no-gui writes
 #    its skeleton answered, which makes it complete from the start,
 #    so the run passes its own conflicts gate and reaches done in one
-#    process (exit 0, not 1). The record then reads
-#    zfs_rebase:take onto, locally; the document has nothing left to
+#    process (exit 0, not 1). The manifest's header then reads
+#    #take onto; the document has nothing left to
 #    answer and every line reads onto; every conflicted name in the
 #    result is onto's object at that name -- type, mode, ownership,
 #    bytes or link target, the ACL and both namespaces of extended
 #    attributes -- or is gone where onto has no such name; the names
 #    of one group that onto pools together are one object here too;
 #    the clean names are untouched, which a second --posix rebase
-#    declaring no action says; and --verify afterwards reports every
-#    line of the resolution done. Then the same with --take-from.
-#    Cells: ZX122, ZX125, ZA56, ZA57 (on an acl fixture), ZM83.
+#    declaring no action says; and the run's own final check, which
+#    --verify asks for, reports every line of the resolution done.
+#    Then the same with --take-from.
+#    Cells: ZX122, ZX125, ZX143, ZA56, ZA57 (on an acl fixture), ZM83.
 #
 # 2. --no-merge. The same run given --no-merge stops at the gate with
 #    the document complete, since the flag is the command saying not
 #    yet; a --continue --no-merge stops there again and moves
 #    nothing; a --continue --no-gui then passes the gate and reaches
-#    done; and --no-merge on a --continue whose record is at done is
-#    refused before any stage runs -- exit 2, "past the merge", the
-#    state and readonly unmoved. Cells: ZX123, ZX126.
+#    done; and a --continue on the result afterwards is refused
+#    before any stage runs -- exit 2, "not a zfs_rebase result",
+#    readonly unmoved -- because done took the record off. ("past
+#    the merge" is what a record at applying2 is told, which case 7
+#    shows.) Cells: ZX123, ZX126, ZX143, ZX144.
 #
 # 3. An incomplete skeleton stops. A plain fresh run says how many
 #    names are unanswered and exits 1; a --continue over the
@@ -102,9 +105,11 @@
 #    one -- answered on the platform whose za_setacl strips.
 #    Cells: ZX136, ZA57.
 #
-# Every case ends in --abort, and the pool is proved to be the
-# fixture again before the next one starts. One pool per fixture,
-# built and destroyed here, so the script runs alone.
+# Every case ends by taking the rebase away -- --abort where one is
+# still open, and by hand where it reached done, since done takes the
+# record off and leaves --abort nothing to find -- and the pool is
+# proved to be the fixture again before the next one starts. One pool
+# per fixture, built and destroyed here, so the script runs alone.
 #
 # Both sides are given as snapshots, in both forms, so that from's
 # tree is still there to compare against after done: a rebase that
@@ -164,10 +169,20 @@ say() { printf '\n== %s\n' "$*"; prog_note "$*"; }
 fail() { echo "FAIL: $case_id: $*"; exit 1; }
 recval() { zfs get -H -o value "$1" "$2" 2>/dev/null; }
 recsrc() { zfs get -H -o source "$1" "$2" 2>/dev/null; }
-statenow() {
-	v=$(zfs get -H -o value zfs_rebase:state "$1" 2>/dev/null)
+phasenow() {
+	v=$(zfs get -H -o value zfs_rebase:phase "$1" 2>/dev/null)
 	[ "$v" = - ] && v=""
 	printf '%s' "$v"
+}
+# One line of a manifest's header, which is where the rebase's
+# identity lives: #take above all here, which says how the skeleton
+# was answered when it was written and which --restart reads back.
+hdr() { sed -n "s/^#$1 //p" "$2"; }
+# Nothing of a rebase left on the result, which is what done leaves
+# and the only thing that says a rebase reached it.
+at_done() {
+	[ -z "$(localprops "$1")" ] || \
+	    fail "the rebase reached done and left $(localprops "$1")"
 }
 localprops() {
 	zfs get -H -o property,source all "$1" 2>/dev/null | \
@@ -419,12 +434,11 @@ make_pool() {
 	# The inheritance trap. A user property set on the pool root
 	# shows up on every dataset under it, so every property this
 	# script reads back off a record must be that dataset's own
-	# local value: zfs_rebase:take above all, which decides what
-	# skeleton a --restart writes.
+	# local value, and a dataset that only inherits them is no
+	# result of ours.
 	zfs set zfs_rebase:tag=bogus "$POOL" || exit 2
 	zfs set zfs_rebase:manifest=/nonexistent/manifest "$POOL" || exit 2
-	zfs set zfs_rebase:resolution=/nonexistent/resolution "$POOL" || exit 2
-	zfs set zfs_rebase:take=bogus "$POOL" || exit 2
+	zfs set zfs_rebase:phase=bogus "$POOL" || exit 2
 }
 
 drop_pool() {
@@ -435,13 +449,33 @@ drop_pool() {
 	rmdir "$MNT" 2>/dev/null
 }
 
-# --abort, and the proof that the pool is the fixture again with no
-# rebase left in it.
+# The end of a case: --abort where a rebase is still open, and by
+# hand where it reached done, since done takes the record off and
+# leaves --abort nothing to find. Then the proof that the pool is the
+# fixture again with no rebase left in it.
 end_case() {
-	"$bin" --abort --result "$rds" > "$tmp/abort" 2>&1
-	st=$?
-	[ $st -eq 0 ] || { cat "$tmp/abort"; fail "--abort exited $st"; }
-	[ "$(holdcount)" = 0 ] || fail "--abort left holds behind"
+	if [ -n "$(localprops "$rds")" ]; then
+		"$bin" --abort --result "$rds" > "$tmp/abort" 2>&1
+		st=$?
+		[ $st -eq 0 ] || { cat "$tmp/abort"; fail "--abort exited $st"; }
+	else
+		"$bin" --abort --result "$rds" > "$tmp/abort" 2>&1
+		st=$?
+		[ $st -eq 2 ] || \
+		    { cat "$tmp/abort"; fail "--abort on a settled result exited $st, want 2"; }
+		if [ "$form" = clone ]; then
+			zfs destroy "$POOL/result" || \
+			    fail "cannot destroy the settled result"
+		else
+			zfs rollback -r "$POOL/onto@pre" || \
+			    fail "cannot roll onto back to @pre"
+			zfs destroy "$POOL/onto@pre" || \
+			    fail "cannot destroy @pre"
+		fi
+		rmdir "$rundir/mnt" "$rundir" 2>/dev/null
+		rmdir "/var/db/zfs_rebase/$POOL" 2>/dev/null
+	fi
+	[ "$(holdcount)" = 0 ] || fail "the end of the case left holds behind"
 	zfs list -H -o name "$POOL/result" >/dev/null 2>&1 && \
 	    fail "--abort left $POOL/result behind"
 	left=$(localprops "$POOL/onto")
@@ -506,8 +540,8 @@ at_conflicts() {
 	fresh "$@"
 	st=$?
 	[ $st -eq 1 ] || { cat "$log"; fail "the run exited $st, want 1"; }
-	[ "$(statenow "$rds")" = conflicts ] || \
-	    fail "the run is at '$(statenow "$rds")', want conflicts"
+	[ "$(phasenow "$rds")" = conflicts ] || \
+	    fail "the run is at '$(phasenow "$rds")', want conflicts"
 	[ -f "$res" ] || fail "the run wrote no resolution at $res"
 	return 0
 }
@@ -531,23 +565,28 @@ sidedir() {
 case_headless() {
 	side=$1
 	case_id="$fixture $form headless --take-$side"
-	fresh "--take-$side" --no-gui
+	# --verify goes on the run itself: the final check is made by
+	# the invocation that reaches the done gate, and this run is
+	# it. Afterwards there is no record to ask anything of.
+	fresh "--take-$side" --no-gui --verify
 	st=$?
 	[ $st -eq 0 ] || \
-	    { cat "$log"; fail "--take-$side --no-gui exited $st, want 0"; }
+	    { cat "$log"; fail "--take-$side --no-gui --verify exited $st, want 0"; }
 	# One process: the gate said the document was complete and
 	# went on rather than waiting for a --continue.
 	grep -q "the resolution $res is answered in full; going on" "$log" || \
 	    { cat "$log"; fail "the run did not pass its own conflicts gate"; }
-	[ "$(statenow "$rds")" = done ] || \
-	    fail "the state is '$(statenow "$rds")', want done"
+	at_done "$rds"
 	[ "$(holdcount)" = 0 ] || fail "done left holds behind"
-	[ "$(recval zfs_rebase:take "$rds")" = "$side" ] || \
-	    fail "zfs_rebase:take is $(recval zfs_rebase:take "$rds"), want $side"
-	[ "$(recsrc zfs_rebase:take "$rds")" = local ] || \
-	    fail "zfs_rebase:take is not the result's own value"
-	[ "$(recval zfs_rebase:resolution "$rds")" = "$res" ] || \
-	    fail "zfs_rebase:resolution is $(recval zfs_rebase:resolution "$rds"), want $res"
+	# How the skeleton was answered when it was written is the
+	# header's #take line now, and it is what --restart reads back.
+	[ "$(hdr take "$man")" = "$side" ] || \
+	    fail "#take is $(hdr take "$man"), want $side"
+	# The resolution is beside the manifest by rule and by no
+	# property: with no -o that is <rundir>/resolution.
+	[ "$res" = "$rundir/resolution" ] || \
+	    fail "the resolution is not beside the manifest"
+	[ -f "$res" ] || fail "the run wrote no resolution at $res"
 	answered_all_as "$res" "$side" "$nconf"
 	# The tree: every conflicted name is that side's object, or
 	# gone where that side has no such name, and pooled as that
@@ -568,16 +607,14 @@ case_headless() {
 		wconf=$want_conf
 	fi
 	again "$tmp/again" "$hmnt" "$wconf"
-	# And the verb says the same of the document: every onto or
-	# from line held against that side and found done.
-	"$bin" --verify --result "$rds" > "$tmp/verify" 2>&1
-	st=$?
-	[ $st -eq 0 ] || { cat "$tmp/verify"; fail "--verify exited $st, want 0"; }
-	grep -q "the resolution: done $nconf, first " "$tmp/verify" || \
-	    { cat "$tmp/verify"; fail "--verify does not call every choice done"; }
+	# And the run's own final check says the same of the document:
+	# every onto or from line held against that side and found
+	# done, reported at the done gate before anything was released.
+	grep -q "the resolution: done $nconf, first " "$log" || \
+	    { cat "$log"; fail "the final check does not call every choice done"; }
 	for k in pending blocked drifted unchecked; do
-		grep -q "the resolution: $k 0\$" "$tmp/verify" || \
-		    { cat "$tmp/verify"; fail "--verify reports a $k choice"; }
+		grep -q "the resolution: $k 0\$" "$log" || \
+		    { cat "$log"; fail "the final check reports a $k choice"; }
 	done
 	echo "ok   $case_id: done in one process, $nconf name$(sfx "$nconf") ${side}'s"
 	end_case
@@ -592,8 +629,8 @@ case_nomerge() {
 	    { cat "$log"; fail "--take-onto --no-merge exited $st, want 1"; }
 	grep -q "the resolution $res is answered in full, and --no-merge leaves the merge to you" "$log" || \
 	    { cat "$log"; fail "the run did not say why it stopped"; }
-	[ "$(statenow "$rds")" = conflicts ] || \
-	    fail "the run is at '$(statenow "$rds")', want conflicts"
+	[ "$(phasenow "$rds")" = conflicts ] || \
+	    fail "the run is at '$(phasenow "$rds")', want conflicts"
 	answered_all_as "$res" onto "$nconf"
 	[ "$(holdcount)" = 3 ] || fail "$(holdcount) holds at the gate, want 3"
 	# The flag says not yet as often as it is given, and leaves
@@ -604,32 +641,35 @@ case_nomerge() {
 	    { cat "$tmp/nm2"; fail "--continue --no-merge exited $st, want 1"; }
 	grep -q "$rds: the resolution is answered in full, and --no-merge leaves the merge to you" "$tmp/nm2" || \
 	    { cat "$tmp/nm2"; fail "the verb did not say why it stopped"; }
-	[ "$(statenow "$rds")" = conflicts ] || \
+	[ "$(phasenow "$rds")" = conflicts ] || \
 	    fail "--continue --no-merge moved the gate"
 	# And without it the same document takes the same rebase on.
 	"$bin" --continue --no-gui --result "$rds" > "$tmp/nm3" 2>&1
 	st=$?
 	[ $st -eq 0 ] || \
 	    { cat "$tmp/nm3"; fail "--continue --no-gui exited $st, want 0"; }
-	[ "$(statenow "$rds")" = done ] || \
-	    fail "the state is '$(statenow "$rds")', want done"
+	at_done "$rds"
 	[ "$(holdcount)" = 0 ] || fail "done left holds behind"
 	for p in $names; do
 		same_as "$ontodir" "$hmnt" "$p"
 	done
-	# Past the merge there is no gate left for the flag to hold,
-	# and it is refused before any stage runs: nothing moves.
+	# And a rebase that reached done is past every gate: its record
+	# is off, so a --continue -- with the flag or without it --
+	# finds no rebase at all and is refused before any stage runs.
+	# ("past the merge" is what a record at applying2 is told, and
+	# case 7 is where that is shown.)
 	ro0=$(recval readonly "$rds")
 	"$bin" --continue --no-merge --result "$rds" > "$tmp/nm4" 2>&1
 	st=$?
 	[ $st -eq 2 ] || \
 	    { cat "$tmp/nm4"; fail "--no-merge at done exited $st, want 2"; }
-	grep -q 'past the merge' "$tmp/nm4" || \
-	    { cat "$tmp/nm4"; fail "the refusal does not say past the merge"; }
-	[ "$(statenow "$rds")" = done ] || fail "the refusal moved the state"
+	grep -q 'not a zfs_rebase result' "$tmp/nm4" || \
+	    { cat "$tmp/nm4"; fail "the refusal does not say there is no record"; }
+	at_done "$rds"
 	[ "$(recval readonly "$rds")" = "$ro0" ] || \
 	    fail "the refusal flipped readonly"
-	echo "ok   $case_id: held at the gate twice, passed once, refused at done"
+	echo "ok   $case_id: held at the gate twice, passed once, and a"
+	echo "     settled rebase is no rebase to continue"
 	end_case
 }
 
@@ -651,7 +691,7 @@ case_incomplete() {
 	    { cat "$tmp/inc1"; fail "--continue did not say conflicts unresolved"; }
 	grep -q "^zfs_rebase: $nconf of $nconf name$(sfx "$nconf") unanswered in the resolution $res\$" "$tmp/inc1" || \
 	    { cat "$tmp/inc1"; fail "--continue did not name the count and the file"; }
-	[ "$(statenow "$rds")" = conflicts ] || \
+	[ "$(phasenow "$rds")" = conflicts ] || \
 	    fail "the refused --continue moved the state"
 	# And answering some of it is not answering it.
 	if [ "$nconf" -gt 1 ]; then
@@ -702,12 +742,17 @@ case_hand() {
 	    { head -8 "$res"; fail "the document is not answered"; }
 	[ "$(res_names "$res")" = "$nconf" ] || \
 	    { head -8 "$res"; fail "answering changed the count of names"; }
-	"$bin" --continue --no-gui --result "$rds" > "$tmp/hand" 2>&1
+	# --verify goes on the --continue that reaches done, and its
+	# report is the done gate's own: the check is made after the
+	# choices were carried out and before the holds and the record
+	# go. There is no asking afterwards -- a settled result carries
+	# no record -- until verify-settled names it by its manifest.
+	"$bin" --continue --verify -v --no-gui --result "$rds" \
+	    > "$tmp/handv" 2>&1
 	st=$?
 	[ $st -eq 0 ] || \
-	    { cat "$tmp/hand"; fail "--continue over $kind exited $st, want 0"; }
-	[ "$(statenow "$rds")" = done ] || \
-	    fail "the state is '$(statenow "$rds")', want done"
+	    { cat "$tmp/handv"; fail "--continue over $kind exited $st, want 0"; }
+	at_done "$rds"
 	[ "$(holdcount)" = 0 ] || fail "done left holds behind"
 	case "$kind" in
 	keep)
@@ -717,17 +762,13 @@ case_hand() {
 		# document with the choice the person made, it is no
 		# drift, and it is in no list of names outside the
 		# manifest.
-		"$bin" --verify -v --result "$rds" > "$tmp/handv" 2>&1
-		st=$?
-		[ $st -eq 0 ] || \
-		    { cat "$tmp/handv"; fail "--verify exited $st, want 0"; }
 		grep -q "^zfs_rebase:     $edited keep done\$" "$tmp/handv" || \
 		    { cat "$tmp/handv"; fail "$edited is not under the resolution as keep"; }
 		grep -q "the resolution: drifted 0\$" "$tmp/handv" || \
 		    { cat "$tmp/handv"; fail "a kept name is reported as drift"; }
 		no_outside "$tmp/handv" || \
 		    { cat "$tmp/handv"; fail "a kept name reached the name list"; }
-		grep -q mine "$hmnt$edited" || fail "--verify wrote over the merge"
+		grep -q mine "$hmnt$edited" || fail "the check wrote over the merge"
 		echo "ok   $case_id: $edited stands, and is the resolution's"
 		;;
 	*)
@@ -737,12 +778,8 @@ case_hand() {
 			same_as "$sdir" "$hmnt" "$p"
 		done
 		pooled_like "$sdir" "$hmnt"
-		"$bin" --verify --result "$rds" > "$tmp/handv" 2>&1
-		st=$?
-		[ $st -eq 0 ] || \
-		    { cat "$tmp/handv"; fail "--verify exited $st, want 0"; }
 		grep -q "the resolution: done $nconf, first " "$tmp/handv" || \
-		    { cat "$tmp/handv"; fail "--verify does not call every choice done"; }
+		    { cat "$tmp/handv"; fail "the check does not call every choice done"; }
 		echo "ok   $case_id: $nconf name$(sfx "$nconf") ${kind}'s, verified by that side"
 		;;
 	esac
@@ -771,8 +808,7 @@ case_restart() {
 	# and a command that says to go on is the whole of the signal,
 	# so the restart went through the gate to done by itself.
 	answered_all_as "$res" onto "$nconf"
-	[ "$(statenow "$rds")" = done ] || \
-	    fail "the state is '$(statenow "$rds")', want done"
+	at_done "$rds"
 	[ "$(holdcount)" = 0 ] || fail "done left holds behind"
 	for p in $names; do
 		same_as "$ontodir" "$hmnt" "$p"
@@ -813,7 +849,7 @@ drift_line() {			# leaves $kept edited and its line written
 	# the conflicts and nothing else, and the gate is still shut.
 	[ "$(res_left "$res")" = "$nconf" ] || \
 	    { head -8 "$res"; fail "a drift keep line changed what is unanswered"; }
-	[ "$(statenow "$rds")" = conflicts ] || \
+	[ "$(phasenow "$rds")" = conflicts ] || \
 	    fail "the gate moved on an unanswered document"
 	return 0
 }
@@ -823,18 +859,17 @@ case_driftkeep() {
 	at_conflicts
 	drift_line
 	answer_all "$res" keep
-	"$bin" --continue --result "$rds" > "$tmp/dr2" 2>&1
+	# The check goes on this --continue, which is the invocation
+	# that reaches done: its report is the done gate's own, made
+	# after the choices and before the record goes.
+	"$bin" --continue --verify -v --result "$rds" > "$tmp/dr3" 2>&1
 	st=$?
 	[ $st -eq 0 ] || \
-	    { cat "$tmp/dr2"; fail "--continue over the answered document exited $st, want 0"; }
-	[ "$(statenow "$rds")" = done ] || \
-	    fail "the state is '$(statenow "$rds")', want done"
+	    { cat "$tmp/dr3"; fail "--continue over the answered document exited $st, want 0"; }
+	at_done "$rds"
 	grep -q drift "$hmnt$kept" || fail "a verb wrote over the edit to $kept"
 	# The name is the resolution's now, so it is in no list of
 	# names outside the manifest and a keep is never compared.
-	"$bin" --verify -v --result "$rds" > "$tmp/dr3" 2>&1
-	st=$?
-	[ $st -eq 0 ] || { cat "$tmp/dr3"; fail "--verify exited $st, want 0"; }
 	no_outside "$tmp/dr3" || \
 	    { cat "$tmp/dr3"; fail "the drift is still outside the manifest"; }
 	grep -q "^zfs_rebase:     $kept keep done\$" "$tmp/dr3" || \
@@ -854,18 +889,14 @@ case_driftflip() {
 	grep -q "^ *$leaf drift onto\$" "$res" || \
 	    { cat "$res"; fail "the flip to onto did not take"; }
 	answer_all "$res" keep
-	"$bin" --continue --result "$rds" > "$tmp/df2" 2>&1
+	"$bin" --continue --verify -v --result "$rds" > "$tmp/df3" 2>&1
 	st=$?
 	[ $st -eq 0 ] || \
-	    { cat "$tmp/df2"; fail "--continue over the flipped document exited $st, want 0"; }
-	[ "$(statenow "$rds")" = done ] || \
-	    fail "the state is '$(statenow "$rds")', want done"
+	    { cat "$tmp/df3"; fail "--continue over the flipped document exited $st, want 0"; }
+	at_done "$rds"
 	grep -q drift "$hmnt$kept" && \
 	    fail "the choice onto left the edit to $kept standing"
 	same_as "$ontodir" "$hmnt" "$kept"
-	"$bin" --verify -v --result "$rds" > "$tmp/df3" 2>&1
-	st=$?
-	[ $st -eq 0 ] || { cat "$tmp/df3"; fail "--verify exited $st, want 0"; }
 	grep -q "^zfs_rebase:     $kept onto done\$" "$tmp/df3" || \
 	    { cat "$tmp/df3"; fail "$kept is not under the resolution as onto done"; }
 	echo "ok   $case_id: $kept is onto's again"
@@ -886,15 +917,15 @@ case_killwindow() {
 	[ "$st" -eq 137 ] || { cat "$log"; fail "the kill left exit $st, want 137"; }
 	[ -f "$man" ] || fail "no manifest at $man"
 	[ -e "$res" ] && fail "a resolution at $res before the skeleton was written"
-	[ -z "$(statenow "$rds")" ] || \
-	    fail "the state is '$(statenow "$rds")', want none"
+	[ -z "$(phasenow "$rds")" ] || \
+	    fail "the phase is '$(phasenow "$rds")', want none"
 	[ "$(holdcount)" = 3 ] || fail "$(holdcount) holds after the kill, want 3"
-	# The record has named the resolution's place since the result
-	# was made, the way it names the manifest's: the plan, not the
-	# file. What the kill leaves is the plan without the file, and
-	# --abort takes a file that is not there in its stride.
-	[ "$(recsrc zfs_rebase:resolution "$rds")" = local ] || \
-	    fail "the record does not name the resolution's place"
+	# The record is the manifest's path and the tag, and the
+	# resolution is beside the manifest by rule: what the kill
+	# leaves is the rule without the file, and --abort takes a
+	# file that is not there in its stride.
+	[ "$(recval zfs_rebase:manifest "$rds")" = "$man" ] || \
+	    fail "the record does not name the manifest"
 	if [ "$form" = dataset ]; then
 		mounted_at "$rundir/mnt" || \
 		    fail "onto is not at the private mount $rundir/mnt"
@@ -910,13 +941,9 @@ case_killwindow() {
 		[ -f "$res" ] || fail "--restart wrote no resolution at $res"
 		[ "$(res_left "$res")" = "$nconf" ] || \
 		    { head -8 "$res"; fail "--restart did not write a whole skeleton"; }
-		[ "$(statenow "$rds")" = conflicts ] || \
-		    fail "the restart is at '$(statenow "$rds")', want conflicts"
+		[ "$(phasenow "$rds")" = conflicts ] || \
+		    fail "the restart is at '$(phasenow "$rds")', want conflicts"
 		echo "ok   $case_id: the skeleton was written again and the gate is shut"
-		# The record named the place all along, so the --abort
-		# that ends the case takes the skeleton with the rest.
-		[ "$(recsrc zfs_rebase:resolution "$rds")" = local ] || \
-		    fail "the record lost the resolution's place"
 	else
 		echo "ok   $case_id: manifest yes, resolution no, three holds"
 	fi
@@ -936,8 +963,8 @@ case_killchoice() {
 	st=$?
 	pid=
 	[ "$st" -eq 137 ] || { cat "$log"; fail "the kill left exit $st, want 137"; }
-	[ "$(statenow "$rds")" = applying2 ] || \
-	    fail "the state is '$(statenow "$rds")', want applying2"
+	[ "$(phasenow "$rds")" = applying2 ] || \
+	    fail "the state is '$(phasenow "$rds")', want applying2"
 	[ "$(holdcount)" = 3 ] || fail "$(holdcount) holds after the kill, want 3"
 	[ "$(recval readonly "$rds")" = off ] || \
 	    fail "readonly is on after a kill inside an applying stage"
@@ -952,7 +979,7 @@ case_killchoice() {
 	    { cat "$tmp/kc0"; fail "--no-merge at applying2 exited $st, want 2"; }
 	grep -q 'past the merge' "$tmp/kc0" || \
 	    { cat "$tmp/kc0"; fail "the refusal does not say past the merge"; }
-	[ "$(statenow "$rds")" = applying2 ] || \
+	[ "$(phasenow "$rds")" = applying2 ] || \
 	    fail "the refusal moved the state"
 	# The stage begins again over the whole document, which is
 	# idempotent, and its own second pass must find nothing left:
@@ -961,8 +988,7 @@ case_killchoice() {
 	st=$?
 	[ $st -eq 0 ] || \
 	    { cat "$tmp/kc1"; fail "--continue after the kill exited $st, want 0"; }
-	[ "$(statenow "$rds")" = done ] || \
-	    fail "the state is '$(statenow "$rds")', want done"
+	at_done "$rds"
 	[ "$(holdcount)" = 0 ] || fail "done left holds behind"
 	for p in $names; do
 		same_as "$fromdir" "$hmnt" "$p"
@@ -1019,8 +1045,7 @@ case_aclstrip() {
 	st=$?
 	[ $st -eq 0 ] || \
 	    { cat "$tmp/ac2"; fail "--continue over the flipped document exited $st, want 0"; }
-	[ "$(statenow "$rds")" = done ] || \
-	    fail "the state is '$(statenow "$rds")', want done"
+	at_done "$rds"
 	same_as "$ontodir" "$hmnt" "$kdir"
 	echo "ok   $case_id: $kdir is stripped back to onto's, and the second pass saw nothing"
 	end_case

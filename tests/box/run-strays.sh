@@ -73,8 +73,17 @@
 #    the resolution's now. Conflicted fixtures only: a clean rebase
 #    never stops at that gate.
 #
-# Every case ends in --abort, and the pool is proved to be the
+# Every case ends by taking the rebase away -- --abort where one is
+# still open, and by hand where it reached done, which leaves no
+# record for --abort to find -- and the pool is proved to be the
 # fixture again before the next one starts.
+#
+# A clean fixture reaches done inside the run itself, and done takes
+# the record off, so from that moment there is no rebase on the
+# result for --verify or --continue to be asked about: the cases
+# assert what the tree holds instead, and that every verb exits 2.
+# Asking for the report on a settled result comes back with
+# verify-settled, which names it by its manifest.
 #
 # The dataset form is given from as a snapshot here rather than as a
 # dataset, so that the from tree is still there after done: a rebase
@@ -126,8 +135,8 @@ trap cleanup EXIT
 say() { printf '\n== %s\n' "$*"; prog_note "$*"; }
 fail() { echo "FAIL: $case_id: $*"; exit 1; }
 recval() { zfs get -H -o value "$1" "$2" 2>/dev/null; }
-statenow() {
-	v=$(zfs get -H -o value zfs_rebase:state "$1" 2>/dev/null)
+phasenow() {
+	v=$(zfs get -H -o value zfs_rebase:phase "$1" 2>/dev/null)
 	[ "$v" = - ] && v=""
 	printf '%s' "$v"
 }
@@ -262,22 +271,87 @@ drop_pool() {
 	rmdir "$MNT" 2>/dev/null
 }
 
-# --abort, and the proof that the pool is the fixture again with no
+# Where the branch ends, as an assertion: a conflicted rebase waits
+# at the conflicts gate with its record on the result, and a clean one
+# reached done, which took every zfs_rebase: property off it.
+at_end() {
+	if [ $clean -eq 1 ]; then
+		[ -z "$(localprops "$rds")" ] || \
+		    fail "the rebase reached done and left $(localprops "$rds")"
+	else
+		[ "$(phasenow "$rds")" = conflicts ] || \
+		    fail "the phase is $(phasenow "$rds"), want conflicts"
+	fi
+}
+
+# --verify on the result, where there is still a rebase to ask about.
+# Returns 0 with the report in $1 when there was, and 1 after
+# checking that a settled result refuses every verb, which is all
+# there is to ask of one until verify-settled lands.
+verify_open() {			# OUT WANTEXIT
+	"$bin" --verify --result "$rds" > "$1" 2>&1
+	st=$?
+	if [ $clean -eq 1 ]; then
+		[ $st -eq 2 ] || \
+		    { cat "$1"; fail "--verify on a settled result exited $st, want 2"; }
+		return 1
+	fi
+	[ $st -eq "$2" ] || \
+	    { cat "$1"; fail "--verify exited $st, want $2"; }
+	return 0
+}
+
+# The same for a --continue: on a settled result it is refused, and
+# there is nothing left for it to do in any case.
+continue_open() {		# OUT WANTEXIT
+	"$bin" --continue --verify --result "$rds" > "$1" 2>&1
+	st=$?
+	if [ $clean -eq 1 ]; then
+		[ $st -eq 2 ] || \
+		    { cat "$1"; fail "--continue on a settled result exited $st, want 2"; }
+		return 1
+	fi
+	[ $st -eq "$2" ] || \
+	    { cat "$1"; fail "--continue --verify exited $st, want $2"; }
+	return 0
+}
+
+# The end of a case: --abort where a rebase is still open, and by
+# hand where it reached done, since done left no record for --abort
+# to find. Then the proof that the pool is the fixture again with no
 # rebase left in it.
 end_case() {
-	"$bin" --abort --result "$rds" > "$tmp/abort" 2>&1
-	st=$?
-	[ $st -eq 0 ] || { cat "$tmp/abort"; fail "--abort exited $st"; }
-	[ "$(holdcount)" = 0 ] || fail "--abort left holds behind"
+	if [ -n "$(localprops "$rds")" ]; then
+		"$bin" --abort --result "$rds" > "$tmp/abort" 2>&1
+		st=$?
+		[ $st -eq 0 ] || { cat "$tmp/abort"; fail "--abort exited $st"; }
+	else
+		"$bin" --abort --result "$rds" > "$tmp/abort" 2>&1
+		st=$?
+		[ $st -eq 2 ] || \
+		    { cat "$tmp/abort"; fail "--abort on a settled result exited $st, want 2"; }
+		if [ "$form" = clone ]; then
+			zfs destroy "$POOL/result" || \
+			    fail "cannot destroy the settled result"
+		else
+			zfs rollback -r "$POOL/onto@pre" || \
+			    fail "cannot roll onto back to @pre"
+			zfs destroy "$POOL/onto@pre" || \
+			    fail "cannot destroy @pre"
+		fi
+		rmdir "$rundir/mnt" "$rundir" 2>/dev/null
+		rmdir "/var/db/zfs_rebase/$POOL" 2>/dev/null
+	fi
+	[ "$(holdcount)" = 0 ] || fail "the end of the case left holds behind"
 	zfs list -H -o name "$POOL/result" >/dev/null 2>&1 && \
-	    fail "--abort left $POOL/result behind"
+	    fail "the end of the case left $POOL/result behind"
 	left=$(localprops "$POOL/onto")
-	[ -z "$left" ] || fail "--abort left $left on $POOL/onto"
+	[ -z "$left" ] || fail "the end of the case left $left on $POOL/onto"
 	[ -e "/var/db/zfs_rebase/$POOL" ] && \
-	    fail "--abort left /var/db/zfs_rebase/$POOL behind"
+	    fail "the end of the case left /var/db/zfs_rebase/$POOL behind"
 	n=$(allsnaps | grep -c .)
 	[ "$n" -eq 3 ] || { allsnaps; fail "the pool has $n snapshots, want 3"; }
-	mounted_at "$MNT/onto" || fail "--abort left onto unmounted"
+	mounted_at "$MNT/onto" || fail "the end of the case left onto unmounted"
 	cases=$((cases + 1))
 }
 
@@ -331,15 +405,14 @@ case_strays() {
 	# is onto's bytes again, the name no tree had is gone, and the
 	# name the manifest wrote is done, since the action ran after
 	# the edit and the apply is what the name holds.
-	"$bin" --verify --result "$rds" > "$tmp/verify" 2>&1
-	st=$?
-	[ $st -eq 0 ] || { cat "$tmp/verify"; fail "--verify exited $st, want 0"; }
-	grep -q 'drifted 0' "$tmp/verify" || \
-	    { cat "$tmp/verify"; fail "--verify found drift"; }
-	grep -q 'pending 0' "$tmp/verify" || \
-	    { cat "$tmp/verify"; fail "--verify found pending actions"; }
-	no_outside "$tmp/verify" || \
-	    { cat "$tmp/verify"; fail "--verify still names the strays"; }
+	if verify_open "$tmp/verify" 0; then
+		grep -q 'drifted 0' "$tmp/verify" || \
+		    { cat "$tmp/verify"; fail "--verify found drift"; }
+		grep -q 'pending 0' "$tmp/verify" || \
+		    { cat "$tmp/verify"; fail "--verify found pending actions"; }
+		no_outside "$tmp/verify" || \
+		    { cat "$tmp/verify"; fail "--verify still names the strays"; }
+	fi
 	[ -f "$hmnt$wtgt" ] || fail "$wtgt is not there after the apply"
 	grep -q stray "$hmnt$wtgt" && \
 	    fail "the apply did not overwrite the stray edit to $wtgt"
@@ -349,15 +422,12 @@ case_strays() {
 
 	# And there is nothing left for a --continue to do: it reports
 	# the same clean report and writes nothing.
-	"$bin" --continue --verify --result "$rds" > "$tmp/cont" 2>&1
-	st=$?
-	[ $st -eq $wrun ] || \
-	    { cat "$tmp/cont"; fail "--continue --verify exited $st, want $wrun"; }
-	"$bin" --verify --result "$rds" > "$tmp/verify2" 2>&1
-	st=$?
-	[ $st -eq 0 ] || { cat "$tmp/verify2"; fail "--verify after it exited $st"; }
-	no_outside "$tmp/verify2" || \
-	    { cat "$tmp/verify2"; fail "--continue --verify made a difference"; }
+	if continue_open "$tmp/cont" $wrun; then
+		if verify_open "$tmp/verify2" 0; then
+			no_outside "$tmp/verify2" || \
+			    { cat "$tmp/verify2"; fail "--continue --verify made a difference"; }
+		fi
+	fi
 	grep -q stray "$hmnt$kept" && fail "$kept is the stray's again"
 	echo "ok   $case_id: $wtgt done, $kept put back, /zr-new taken away"
 	end_case
@@ -375,19 +445,17 @@ case_delete() {
 	# had that the result has lost is gone, and gone is restored:
 	# the run reaches its branch's gate as if nothing had happened.
 	finish
-	[ "$(statenow "$rds")" = "$wend" ] || \
-	    fail "the state is $(statenow "$rds"), want $wend"
+	at_end
 	[ -e "$hmnt$kept" ] || fail "the self-check did not put $kept back"
 	cmp -s "$tmp/kept.before" "$hmnt$kept" || \
 	    fail "$kept came back with other bytes than onto's"
 
-	"$bin" --verify --result "$rds" > "$tmp/verify" 2>&1
-	st=$?
-	[ $st -eq 0 ] || { cat "$tmp/verify"; fail "--verify exited $st, want 0"; }
-	grep -q 'drifted 0' "$tmp/verify" || \
-	    { cat "$tmp/verify"; fail "--verify found drift"; }
-	no_outside "$tmp/verify" || \
-	    { cat "$tmp/verify"; fail "--verify still sees the deletion"; }
+	if verify_open "$tmp/verify" 0; then
+		grep -q 'drifted 0' "$tmp/verify" || \
+		    { cat "$tmp/verify"; fail "--verify found drift"; }
+		no_outside "$tmp/verify" || \
+		    { cat "$tmp/verify"; fail "--verify still sees the deletion"; }
+	fi
 	echo "ok   $case_id: restored by the self-check, the run went on to $wend"
 	end_case
 }
@@ -398,38 +466,32 @@ case_drift() {
 	run_fg
 	st=$?
 	[ $st -eq $wrun ] || { cat "$log"; fail "the run exited $st, want $wrun"; }
-	state=$(statenow "$rds")
+	at_end
 	tgt=$(write_target "$man" "$hmnt")
 	[ -n "$tgt" ] || fail "the manifest writes or copies nothing"
 	ro0=$(recval readonly "$rds")
 	zfs set readonly=off "$rds" || fail "readonly=off"
 	printf 'drift\n' >> "$hmnt$tgt" || fail "cannot edit $tgt"
 	zfs set "readonly=$ro0" "$rds" || fail "readonly=$ro0"
-	"$bin" --verify --result "$rds" > "$tmp/verify" 2>&1
-	st=$?
-	[ $st -eq 3 ] || { cat "$tmp/verify"; fail "--verify over drift exited $st, want 3"; }
-	grep -q "drifted 1, first $tgt" "$tmp/verify" || \
-	    { cat "$tmp/verify"; fail "--verify did not name the drifted $tgt"; }
-	grep -q drift "$hmnt$tgt" || fail "--verify wrote to the result"
-	[ "$(statenow "$rds")" = "$state" ] || fail "--verify moved the state"
+	if verify_open "$tmp/verify" 3; then
+		grep -q "drifted 1, first $tgt" "$tmp/verify" || \
+		    { cat "$tmp/verify"; fail "--verify did not name the drifted $tgt"; }
+		grep -q drift "$hmnt$tgt" || fail "--verify wrote to the result"
+		at_end
+	fi
 	# And neither does a --continue --verify: past applying1 an
 	# edit cannot be told from a stray, so the gate reports it and
 	# passes rather than mending it or blocking on it.
-	"$bin" --continue --verify --result "$rds" > "$tmp/cont" 2>&1
-	st=$?
-	[ $st -eq $wrun ] || \
-	    { cat "$tmp/cont"; fail "--continue --verify exited $st, want $wrun"; }
-	grep -q "drifted 1, first $tgt" "$tmp/cont" || \
-	    { cat "$tmp/cont"; fail "--continue --verify did not report the drift"; }
-	grep -q drift "$hmnt$tgt" || fail "--continue --verify wrote to the result"
-	[ "$(statenow "$rds")" = "$wend" ] || \
-	    fail "the state is $(statenow "$rds"), want $wend"
-	"$bin" --verify --result "$rds" > "$tmp/verify2" 2>&1
-	st=$?
-	[ $st -eq 3 ] || \
-	    { cat "$tmp/verify2"; fail "--verify after it exited $st, want 3"; }
-	grep -q "drifted 1, first $tgt" "$tmp/verify2" || \
-	    { cat "$tmp/verify2"; fail "the drift is not reported any more"; }
+	if continue_open "$tmp/cont" $wrun; then
+		grep -q "drifted 1, first $tgt" "$tmp/cont" || \
+		    { cat "$tmp/cont"; fail "--continue --verify did not report the drift"; }
+		at_end
+	fi
+	grep -q drift "$hmnt$tgt" || fail "a verb wrote over the drift in $tgt"
+	if verify_open "$tmp/verify2" 3; then
+		grep -q "drifted 1, first $tgt" "$tmp/verify2" || \
+		    { cat "$tmp/verify2"; fail "the drift is not reported any more"; }
+	fi
 	[ "$(recval readonly "$rds")" = "$ro0" ] || \
 	    fail "the verb left readonly $(recval readonly "$rds"), want $ro0"
 	echo "ok   $case_id: $tgt drifted 1, reported at every gate, never mended"
@@ -489,13 +551,12 @@ case_live() {
 	cmp -s "$tmp/expect.body" "$tmp/got.body" || \
 	    { diff "$tmp/expect.body" "$tmp/got.body" | head -20; \
 	      fail "a live write changed the manifest"; }
-	"$bin" --verify --result "$rds" > "$tmp/verify" 2>&1
-	st=$?
-	[ $st -eq 0 ] || { cat "$tmp/verify"; fail "--verify exited $st, want 0"; }
-	grep -q 'drifted 0' "$tmp/verify" || \
-	    { cat "$tmp/verify"; fail "--verify found drift"; }
-	no_outside "$tmp/verify" || \
-	    { cat "$tmp/verify"; fail "a live write reached the result"; }
+	if verify_open "$tmp/verify" 0; then
+		grep -q 'drifted 0' "$tmp/verify" || \
+		    { cat "$tmp/verify"; fail "--verify found drift"; }
+		no_outside "$tmp/verify" || \
+		    { cat "$tmp/verify"; fail "a live write reached the result"; }
+	fi
 	if [ "$form" = dataset ]; then
 		[ -e "$MNT/onto/zr-live" ] && \
 		    fail "the write at onto's mount point is visible in onto"
@@ -530,8 +591,8 @@ case_driftline() {
 	run_fg
 	st=$?
 	[ $st -eq $wrun ] || { cat "$log"; fail "the run exited $st, want $wrun"; }
-	[ "$(statenow "$rds")" = conflicts ] || \
-	    fail "the run is at $(statenow "$rds"), want conflicts"
+	[ "$(phasenow "$rds")" = conflicts ] || \
+	    fail "the run is at $(phasenow "$rds"), want conflicts"
 	kept=$(kept_name "$man" "$hmnt")
 	[ -n "$kept" ] || fail "the fixture has no untouched file to edit"
 	names0=$(sed -n 's/^#names //p' "$res")
@@ -565,21 +626,21 @@ case_driftline() {
 	[ "$(sed -n 's/^#unanswered //p' "$res")" = 0 ] || \
 	    { head -8 "$res"; fail "a drift keep line is not answered"; }
 	# And the tree is untouched: keep means the result stands, so
-	# the rebase went on to done with the edit still in it.
-	[ "$(statenow "$rds")" = done ] || \
-	    fail "the state is $(statenow "$rds"), want done"
+	# the rebase went on to done with the edit still in it. done
+	# is no phase: what says it got there is the record being off.
+	[ -z "$(localprops "$rds")" ] || \
+	    fail "the rebase reached done and left $(localprops "$rds")"
 	grep -q drift "$hmnt$kept" || fail "a verb wrote over the edit to $kept"
 
-	# A verify afterwards has nothing outside the manifest to say:
-	# the name is the resolution's now, and a keep is never
-	# compared.
+	# A verify afterwards would have nothing outside the manifest
+	# to say -- the name is the resolution's now, and a keep is
+	# never compared -- but the rebase is settled and carries no
+	# record, so there is nothing left to ask until verify-settled
+	# lands and names it by its manifest.
 	"$bin" --verify --result "$rds" > "$tmp/driftv" 2>&1
 	st=$?
-	[ $st -eq 0 ] || { cat "$tmp/driftv"; fail "--verify exited $st, want 0"; }
-	no_outside "$tmp/driftv" || \
-	    { cat "$tmp/driftv"; fail "the drift is still outside the manifest"; }
-	grep -q 'the resolution: drifted 0' "$tmp/driftv" || \
-	    { cat "$tmp/driftv"; fail "--verify did not report the resolution"; }
+	[ $st -eq 2 ] || \
+	    { cat "$tmp/driftv"; fail "--verify on a settled result exited $st, want 2"; }
 	grep -q drift "$hmnt$kept" || fail "--verify wrote over the edit"
 	echo "ok   $case_id: $kept is a drift keep line, the edit stands"
 	end_case

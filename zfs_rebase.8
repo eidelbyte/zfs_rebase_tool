@@ -8,7 +8,7 @@
 .\" BSD 3-Clause License, reproduced in the LICENSE file of this
 .\" distribution, are met.
 .\"
-.Dd September 4, 2026
+.Dd September 6, 2026
 .Dt ZFS_REBASE 8
 .Os
 .Sh NAME
@@ -20,7 +20,7 @@
 .Op Fl v | Fl -verbose
 .Op Fl o | Fl -manifest Ar file
 .Op Fl V | Fl -verify
-.Op Fl w | Fl -overwrite
+.Op Fl q | Fl -quiet
 .Oo Fl u | Fl -allow-unrelated Oo Fl b | Fl -base Ar snapshot Oc Oc
 .Oo Fl O | Fl -take-onto | Fl F | Fl -take-from Oc
 .Op Fl G | Fl -no-gui
@@ -254,15 +254,6 @@ the tree to treat as the branch point.
 Its
 .Sy createtxg
 must be at or below that of both inputs.
-.It Fl w , Fl -overwrite
-In the dataset form, replace a record whose rebase reached done.
-An open rebase is never overwritten by any flag:
-.Fl -continue
-or
-.Fl -abort
-settles it first.
-The clone form never overwrites anything, since every result is a fresh
-dataset with a fresh record.
 .El
 .Pp
 The flags:
@@ -293,7 +284,7 @@ Write the manifest to
 rather than into the run directory, and the resolution to
 .Ar file Ns .resolution
 beside it.
-Both paths are recorded.
+The record names the manifest, and the resolution is beside it by rule.
 The files are yours: the tool records them and does not remove them, where
 its own two go with the run.
 .It Fl O , Fl -take-onto
@@ -346,10 +337,17 @@ refused rather than run.
 Asked for at the start of a run, or with
 .Fl -continue ,
 this is the flag: the final check is made once, after the last stage
-verified and before anything is released, and the request is written into
-the record so a kill and a
+verified and before anything is released, by the invocation that reaches
+that gate.
+There is no recorded request: a run stopped at
+.Sy conflicts
+and finished by a later
 .Fl -continue
-still honour it.
+is checked if that
+.Fl -continue
+asks for it.
+(Making the check standard, so that no flag is needed at all, is
+verify-schedule's work.)
 On a
 .Fl -continue
 from the
@@ -372,6 +370,17 @@ a drift line with the choice
 so that the person answering the conflicts sees it and can leave it, put it
 back as onto had it or have the manifest's own action made again.
 Alone on a result it is a verb, and writes nothing anywhere; see below.
+.It Fl q , Fl -quiet
+Silence the final check's report.
+It is a start option and is latched in
+.Sy zfs_rebase:quiet
+for the whole run, so that whichever invocation reaches
+.Sy done
+finds it there; on any other verb, and on
+.Fl -dry-run ,
+it is a usage error.
+Nothing reads the property yet: making the check standard and silencing
+its report with this is verify-schedule's work.
 .El
 .Pp
 The verbs work on a rebase that already exists.
@@ -381,9 +390,9 @@ and
 .Fl v ,
 .Fl -continue
 takes the flags of the gate as well, and nothing else is theirs: no two of
-them go together, and every one keys on the record and on nothing else, so
-that a dataset that carries none is refused untouched.
-Each also checks that every snapshot the record names is still the snapshot
+them go together, and every one keys on the record and on the manifest it
+names, so that a dataset carrying no record is refused untouched.
+Each also checks that every snapshot the header names is still the snapshot
 it named, by guid, since a snapshot destroyed and taken again under the
 same name is another snapshot.
 .Bl -tag -width indent
@@ -410,9 +419,10 @@ puts back the names no action speaks for, with or without the flag;
 conflicted names are never touched, because no action names one.
 .It Fl R , Fl -restart
 Put the result back as onto was \(em the clone destroyed and made again from
-the recorded onto snapshot with the same record, or the dataset rolled back
-to its pre-apply snapshot \(em and apply the recorded manifest from the first
-gate, with the resolution put back to its skeleton.
+the onto snapshot the header names, with the same record, or the dataset
+rolled back to the pre-apply snapshot it names \(em and apply the recorded
+manifest from the first gate, with the resolution put back to its
+skeleton.
 Nothing is decided again: the manifest is the decision.
 A resolution's edits are discarded by definition.
 .It Fl a , Fl -abort
@@ -421,12 +431,27 @@ dataset rolled back to its pre-apply snapshot, that snapshot destroyed,
 every one of its
 .Sy zfs_rebase
 properties taken off it and the dataset mounted where it belongs again \(em
-destroy any snapshot the tool took for itself, unlink the manifest and the
-resolution the record names, and remove the run directory.
+destroy any snapshot the tool took for itself, unlink the manifest the
+record names and the resolution beside it, and remove the run directory.
 As if the run never happened.
+Which of those it does is the manifest's to say.
+Where that file has been lost,
+.Fl -abort
+gives the holds back by walking the result's pool for the record's tag,
+undoes the private mount and takes the record off, and then says what it
+cannot do without the manifest: it cannot tell the clone form from the
+dataset form, so it destroys nothing and rolls nothing back, and it cannot
+put
+.Sy readonly
+or
+.Sy canmount
+back.
+It prints the command for each form and leaves the choice to you.
 .It Fl V , Fl -verify
 Alone on a result, report and write nothing at all, so that a deliberate
 edit to a rebased file is shown and never overwritten.
+It reports on a rebase that is open; a result whose rebase reached done
+carries no record and is refused like any other dataset that has none.
 Every action of the manifest is classified as
 .Sy done ,
 .Sy pending
@@ -474,69 +499,57 @@ turns a directory already holding one of those trees into another of them
 by the smallest set of edits, so that everything the two agree on keeps its
 inode and its ctime.
 .Sh THE RECORD
-The result carries the rebase as user properties, written by the create
-itself in the clone form and set on the dataset before anything is touched
-in the other.
+While a rebase is open the result carries four user properties, written by
+the create itself in the clone form and set on the dataset before anything
+is touched in the other.
 User properties inherit down the naming tree, so every one of them is set
 locally and read back as a local value only: an inherited value is no
 record of ours.
 .Bl -tag -width "zfs_rebase:manifest" -compact
-.It Sy zfs_rebase:base
-the branch point, with
-.Sy :base_guid
-.It Sy zfs_rebase:from
-the side replayed, with
-.Sy :from_guid
-.It Sy zfs_rebase:onto
-the side replayed onto, with
-.Sy :onto_guid
-.It Sy zfs_rebase:made
-which inputs the tool snapshotted itself
-.It Sy zfs_rebase:mode
-strict or permissive
-.It Sy zfs_rebase:form
-clone or dataset
-.It Sy zfs_rebase:tag
-the tag its holds are filed under
-.It Sy zfs_rebase:verify
-whether
-.Fl -verify
-was asked for
-.It Sy zfs_rebase:take
-the answer the run gave the skeleton before anybody looked at it:
-.Sy onto
-for
-.Fl -take-onto ,
-.Sy from
-for
-.Fl -take-from
-and
-.Sy \&-
-for neither
+.It Sy zfs_rebase:phase
+the last gate the run passed:
+.Sy applying1 ,
+.Sy conflicts
+or
+.Sy applying2
 .It Sy zfs_rebase:manifest
 the absolute path the manifest was written to
-.It Sy zfs_rebase:readonly
-what
-.Sy readonly
-was before the run took the dataset over (dataset form only)
-.It Sy zfs_rebase:state
-the last gate the run passed
+.It Sy zfs_rebase:tag
+the tag its holds are filed under
+.It Sy zfs_rebase:quiet
+.Sy yes ,
+where the start was given
+.Fl -quiet
 .El
 .Pp
-.Fl -restart
-reads
-.Sy zfs_rebase:take
-back when it writes the resolution's skeleton again, so what comes back is
-the document the run wrote and not a different one; a record made before
-the property existed carries none, which reads as
-.Sy \&- .
+Everything else about the rebase is in the header of the manifest that
+path names: the three snapshots with their guids, the form, the mode,
+which side the tool snapshotted itself, how the skeleton was answered, and
+in the dataset form the pre-apply snapshot and the
+.Sy readonly
+and
+.Sy canmount
+values to give back.
+Either document names the run \(em the property points at the manifest and
+the header names the result \(em and nothing else is ever written to a
+dataset by this tool.
 .Pp
-There is no state property at birth, and every verb keys on the record and
-nothing else.
+.Fl -restart
+reads the header's
+.Sy #take
+line when it writes the resolution's skeleton again, so what comes back is
+the document the run wrote and not a different one.
+.Pp
+There is no phase property at birth, and no
+.Sy done
+value at all: at done every one of these properties is taken off, so a
+result carrying any of them is an open rebase and one carrying none has no
+rebase, whatever its history.
+Every verb keys on the record and on the manifest it names.
 A dataset carrying neither
-.Sy zfs_rebase:tag
-nor
 .Sy zfs_rebase:manifest
+nor
+.Sy zfs_rebase:tag
 locally is not a result of this tool and is never touched: the verbs refuse
 it and exit 2.
 .Sh HOLDS
@@ -561,7 +574,7 @@ which is ZFS's own rule about a clone's origin and not something this tool
 arranges.
 .Sh THE GATES
 A rebase's progress is a sequence of gates, written to
-.Sy zfs_rebase:state
+.Sy zfs_rebase:phase
 and nowhere else:
 .Bd -literal -offset indent
 applying1 -> conflicts -> applying2 -> done
@@ -625,14 +638,20 @@ changes nothing today.
 .Sy applying2
 carries the choices out.
 .Sy done
-is written after the result verified and is read-only again, and before the
-holds are released, so that a kill in between leaves a record that says the
-rebase finished and holds that
+is no phase and is never written: once the result has verified and is
+read-only again the holds are given back and then every
+.Sy zfs_rebase
+property is taken off, in that order, since the tag is the only handle on
+those holds.
+A kill between the two leaves a record whose holds are already released,
+which
+.Fl -continue
+and
 .Fl -abort
-can still find.
+both take in their stride.
 .Pp
 What a kill leaves is the last gate reached and nothing else.
-There is no state at all until the first gate, and a stop writes none:
+There is no phase at all until the first gate, and a stop writes none:
 .Dv SIGINT ,
 .Dv SIGTERM
 and
@@ -643,6 +662,10 @@ gate;
 leaves the same gate with readonly off, which
 .Fl -continue
 restores.
+A stop at the last gate leaves the phase of the stage that ran before it,
+and the
+.Fl -continue
+that follows redoes that stage, which is idempotent, and reaches done.
 .Fl -continue
 resumes from the gate its record names, and does the same thing whichever
 kind of stop left it:
@@ -663,15 +686,13 @@ write the drift found into the resolution first; with
 stop there whatever it says
 .It Sy applying2
 carry the choices out again and go on
-.It Sy done
-do the cleanup a kill between the done gate and the release would have
-skipped; with
-.Fl -verify ,
-report
 .El
 .Pp
 .Fl -no-merge
-is refused at the last two: they are past the merge.
+is refused at
+.Sy applying2 :
+it is past the merge.
+A rebase that reached done has no record, so no verb resumes it.
 .Sh FILES
 Each run keeps its own directory, 0700 throughout, named for the dataset
 carrying the record with its slashes kept as directories:
@@ -693,7 +714,8 @@ the manifest is
 and the resolution is
 .Ar FILE Ns .resolution ,
 beside it.
-The record names both, and every verb finds them by the record.
+The record names the manifest and the resolution is beside it by that
+rule, so every verb finds both and never by guessing a path.
 .Pp
 Not
 .Pa /var/run :
@@ -745,7 +767,7 @@ zfs_rebase -v --from tank/topic --onto tank/main --result pre
 A run that was killed part way is a rebase, not a leftover.
 Look at the gate it left and take it on from there:
 .Bd -literal -offset indent
-zfs get -s local -H -o value zfs_rebase:state tank/rebased
+zfs get -s local -H -o value zfs_rebase:phase tank/rebased
 zfs_rebase --continue --result tank/rebased
 .Ed
 .Pp

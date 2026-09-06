@@ -8,8 +8,8 @@
  * A snapshot the user gives is the user's, and the tool holds it for
  * the life of the rebase rather than the life of the process. A
  * dataset the user gives is snapshotted by the tool, and that
- * snapshot lives exactly as long as the rebase: the record says
- * which of them the tool made. The one dataset the tool creates is
+ * snapshot lives exactly as long as the rebase: the manifest's
+ * header says which of them the tool made. The one dataset it creates is
  * the result clone of the clone form, which the user names; in the
  * dataset form it creates none and the record lives on the onto
  * dataset itself.
@@ -33,73 +33,50 @@
 #include <stdint.h>
 
 /*
- * The record: the user properties a result carries, every one of
- * them set by the create itself so that the record exists from the
- * result's first instant and no kill can leave a result without one.
- * The tag and the manifest together are what says "a zfs_rebase
- * result": --abort refuses to touch a dataset that is missing either
- * of them, and a later --continue reads the rest of the record to
- * pick the rebase up in another process.
+ * The record: the four user properties a result carries while a
+ * rebase is open, and nothing else this tool ever writes to a
+ * dataset. Three of them are set by the create itself, so that the
+ * record exists from the result's first instant and no kill can
+ * leave a result without one.
  *
- * There is no state property at birth. The state is written at the
- * gates the run passes -- applying1, conflicts, done -- so that what
- * a kill leaves is the last gate reached and nothing else.
+ *	zfs_rebase:phase	applying1, conflicts or applying2
+ *	zfs_rebase:manifest	the manifest's absolute path
+ *	zfs_rebase:tag		the hold tag of this rebase
+ *	zfs_rebase:quiet	"yes", where --quiet was given at start
+ *
+ * The tag and the manifest together are what says "a zfs_rebase
+ * result": --abort refuses to touch a dataset that is missing
+ * either of them, and every other verb opens the manifest the
+ * record names and reads the rebase's identity out of its header --
+ * the three snapshots and their guids, the form, the mode, what the
+ * tool snapshotted itself, the pre-apply snapshot and the
+ * properties to give back (sprints/sprint-5/documents-design.md,
+ * sections 2 and 3). None of that is on the dataset.
+ *
+ * There is no phase property at birth. The phase is written at the
+ * gates the run passes, so that what a kill leaves is the last gate
+ * reached and nothing else; done is no value at all, because at
+ * done every zfs_rebase: property is cleared and a result that
+ * carries any of them is therefore always an open rebase.
  */
-#define	ZR_PROP_BASE		"zfs_rebase:base"
-#define	ZR_PROP_BASE_GUID	"zfs_rebase:base_guid"
-#define	ZR_PROP_FROM		"zfs_rebase:from"
-#define	ZR_PROP_FROM_GUID	"zfs_rebase:from_guid"
-#define	ZR_PROP_ONTO		"zfs_rebase:onto"
-#define	ZR_PROP_ONTO_GUID	"zfs_rebase:onto_guid"
-#define	ZR_PROP_MADE		"zfs_rebase:made"
-#define	ZR_PROP_MODE		"zfs_rebase:mode"
-#define	ZR_PROP_FORM		"zfs_rebase:form"
-#define	ZR_PROP_TAG		"zfs_rebase:tag"
-#define	ZR_PROP_VERIFY		"zfs_rebase:verify"
-#define	ZR_PROP_TAKE		"zfs_rebase:take"
+#define	ZR_PROP_PHASE		"zfs_rebase:phase"
 #define	ZR_PROP_MANIFEST	"zfs_rebase:manifest"
-#define	ZR_PROP_RESOLUTION	"zfs_rebase:resolution"
-#define	ZR_PROP_READONLY	"zfs_rebase:readonly"
-#define	ZR_PROP_STATE		"zfs_rebase:state"
+#define	ZR_PROP_TAG		"zfs_rebase:tag"
+#define	ZR_PROP_QUIET		"zfs_rebase:quiet"
 
 /*
  * The record as the run hands it to the create. Every field is
- * written as a string, guids as unsigned decimal, because a user
- * property has no other type: zfs_set_prop_nvlist (module/zfs/
- * zfs_ioctl.c) returns EINVAL for a user property that is not a
- * string. made names the inputs the tool snapshotted itself and is
- * "" when both were given as snapshots; mode is "strict" or
- * "permissive"; form is "clone" or "dataset"; verify is "yes" or
- * "no". take is the answer the run gave every conflict of the
- * skeleton before anybody looked at it -- "onto" for --take-onto,
- * "from" for --take-from and "-" for neither -- so that --restart
- * writes the document the run wrote and not a different one.
- * manifest and resolution are the two documents of the run, written
- * together and found by every verb through these two properties and
- * never by guessing a path.
- *
- * readonly is the dataset form's own: the value the onto dataset's
- * readonly property had before the run took the dataset over, so
- * that handing it back restores it. The clone form leaves it NULL
- * and the property is not written at all -- a clone is created
- * read-only and stays that way, and there is nothing to put back.
+ * written as a string, because a user property has no other type:
+ * zfs_set_prop_nvlist (module/zfs/zfs_ioctl.c) returns EINVAL for a
+ * user property that is not a string. quiet is NULL unless --quiet
+ * was given, and the property is then not written at all: it is the
+ * run's own state, latched at the start and read by whichever
+ * invocation reaches done.
  */
 struct zr_rebase_record {
-	const char	*base;		/* pool/fs@snap */
-	const char	*from;
-	const char	*onto;
-	uint64_t	base_guid;
-	uint64_t	from_guid;
-	uint64_t	onto_guid;
-	const char	*made;
-	const char	*mode;
-	const char	*form;
-	const char	*tag;		/* the hold tag, "zr-<12 hex>" */
-	const char	*verify;
-	const char	*take;		/* "onto", "from" or "-" */
 	const char	*manifest;	/* absolute path */
-	const char	*resolution;	/* absolute path, beside it */
-	const char	*readonly;	/* "on", "off", or NULL */
+	const char	*tag;		/* the hold tag, "zr-<12 hex>" */
+	const char	*quiet;		/* "yes", or NULL */
 };
 
 struct zr_zfs;
@@ -130,20 +107,20 @@ int zr_zfs_release(struct zr_zfs *z, const char *snapshot, const char *tag,
 
 /*
  * Clone snapshot as clone with readonly=on, the given mountpoint and
- * the whole record, then mount it there. The record is set by the
- * create itself, so it exists from the clone's first instant and no
- * kill can leave a result dataset the tool cannot recognize.
+ * the record, then mount it there. The record is set by the create
+ * itself, so it exists from the clone's first instant and no kill
+ * can leave a result dataset the tool cannot recognize.
  */
 int zr_zfs_clone(struct zr_zfs *z, const char *snapshot, const char *clone,
     const char *mountpoint, const struct zr_rebase_record *rec, char *err,
     size_t errlen);
 
 /*
- * Write the whole record on a dataset that already exists, which is
- * what the dataset form does: there is no create to carry the
+ * Write the record on a dataset that already exists, which is what
+ * the dataset form does: there is no create to carry the
  * properties, so each of them is set on onto itself. Every one is
- * set locally, which is what a set does, and the state is not among
- * them -- the state is written at the gates.
+ * set locally, which is what a set does, and the phase is not among
+ * them -- the phase is written at the gates.
  */
 int zr_zfs_write_record(struct zr_zfs *z, const char *dataset,
     const struct zr_rebase_record *rec, char *err, size_t errlen);
@@ -186,6 +163,22 @@ int zr_zfs_destroy_snap(struct zr_zfs *z, const char *snapshot, char *err,
  */
 int zr_zfs_rollback(struct zr_zfs *z, const char *dataset,
     const char *snapshot, char *err, size_t errlen);
+
+/*
+ * Give tag back on every snapshot of pool that is held under it,
+ * and count them in *nfound when nfound is not NULL. Every
+ * filesystem of the pool is walked, depth first from its root
+ * dataset, and each snapshot's holds are read with lzc_get_holds
+ * (lib/libzfs_core/libzfs_core.c), whose keys are the tags.
+ *
+ * This is --abort's way out when the manifest the record names is
+ * gone: the record still carries the tag, and the holds filed under
+ * it are the one thing that must not be left behind. Every other
+ * verb releases by name, because the manifest names the three
+ * snapshots and a walk of the pool is a walk of the pool.
+ */
+int zr_zfs_release_tag(struct zr_zfs *z, const char *pool, const char *tag,
+    unsigned *nfound, char *err, size_t errlen);
 
 /*
  * Hold snapshot under tag against a cleanup descriptor of this

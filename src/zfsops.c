@@ -314,12 +314,12 @@ zr_zfs_release(struct zr_zfs *z, const char *snapshot, const char *tag,
  * The record as name and value pairs, which is how both of the ways
  * of writing it want it: the clone form adds them to the create's
  * property list, and the dataset form sets each one on the dataset
- * it was given. The guids are spelled out into the struct's own
- * buffers, because a user property is a string and nothing else, and
- * every other value points into the caller's record. readonly is
- * left out when the record has none, which is every clone-form run.
+ * it was given. Every value points into the caller's record. quiet
+ * is left out when the record has none, which is every run that was
+ * not given --quiet, and there is no phase here at all: the phase is
+ * written at the gates.
  */
-#define	ZZ_RECORD_MAX	15
+#define	ZZ_RECORD_MAX	3
 
 struct zz_record {
 	struct {
@@ -327,9 +327,6 @@ struct zz_record {
 		const char	*zp_val;
 	}	zr_p[ZZ_RECORD_MAX];
 	size_t	zr_n;
-	char	zr_bg[24];
-	char	zr_fg[24];
-	char	zr_og[24];
 };
 
 static void
@@ -338,43 +335,13 @@ zz_record_fill(struct zz_record *rp, const struct zr_rebase_record *rec)
 	size_t i = 0;
 
 	(void) memset(rp, 0, sizeof (*rp));
-	(void) snprintf(rp->zr_bg, sizeof (rp->zr_bg), "%llu",
-	    (unsigned long long)rec->base_guid);
-	(void) snprintf(rp->zr_fg, sizeof (rp->zr_fg), "%llu",
-	    (unsigned long long)rec->from_guid);
-	(void) snprintf(rp->zr_og, sizeof (rp->zr_og), "%llu",
-	    (unsigned long long)rec->onto_guid);
-	rp->zr_p[i].zp_name = ZR_PROP_BASE;
-	rp->zr_p[i++].zp_val = rec->base;
-	rp->zr_p[i].zp_name = ZR_PROP_BASE_GUID;
-	rp->zr_p[i++].zp_val = rp->zr_bg;
-	rp->zr_p[i].zp_name = ZR_PROP_FROM;
-	rp->zr_p[i++].zp_val = rec->from;
-	rp->zr_p[i].zp_name = ZR_PROP_FROM_GUID;
-	rp->zr_p[i++].zp_val = rp->zr_fg;
-	rp->zr_p[i].zp_name = ZR_PROP_ONTO;
-	rp->zr_p[i++].zp_val = rec->onto;
-	rp->zr_p[i].zp_name = ZR_PROP_ONTO_GUID;
-	rp->zr_p[i++].zp_val = rp->zr_og;
-	rp->zr_p[i].zp_name = ZR_PROP_MADE;
-	rp->zr_p[i++].zp_val = rec->made;
-	rp->zr_p[i].zp_name = ZR_PROP_MODE;
-	rp->zr_p[i++].zp_val = rec->mode;
-	rp->zr_p[i].zp_name = ZR_PROP_FORM;
-	rp->zr_p[i++].zp_val = rec->form;
-	rp->zr_p[i].zp_name = ZR_PROP_TAG;
-	rp->zr_p[i++].zp_val = rec->tag;
-	rp->zr_p[i].zp_name = ZR_PROP_VERIFY;
-	rp->zr_p[i++].zp_val = rec->verify;
-	rp->zr_p[i].zp_name = ZR_PROP_TAKE;
-	rp->zr_p[i++].zp_val = rec->take;
 	rp->zr_p[i].zp_name = ZR_PROP_MANIFEST;
 	rp->zr_p[i++].zp_val = rec->manifest;
-	rp->zr_p[i].zp_name = ZR_PROP_RESOLUTION;
-	rp->zr_p[i++].zp_val = rec->resolution;
-	if (rec->readonly != NULL && rec->readonly[0] != '\0') {
-		rp->zr_p[i].zp_name = ZR_PROP_READONLY;
-		rp->zr_p[i++].zp_val = rec->readonly;
+	rp->zr_p[i].zp_name = ZR_PROP_TAG;
+	rp->zr_p[i++].zp_val = rec->tag;
+	if (rec->quiet != NULL && rec->quiet[0] != '\0') {
+		rp->zr_p[i].zp_name = ZR_PROP_QUIET;
+		rp->zr_p[i++].zp_val = rec->quiet;
 	}
 	rp->zr_n = i;
 }
@@ -383,11 +350,7 @@ zz_record_fill(struct zz_record *rp, const struct zr_rebase_record *rec)
 static int
 zz_record_ok(const struct zr_rebase_record *rec)
 {
-	return (rec != NULL && rec->base != NULL && rec->from != NULL &&
-	    rec->onto != NULL && rec->made != NULL && rec->mode != NULL &&
-	    rec->form != NULL && rec->tag != NULL && rec->verify != NULL &&
-	    rec->take != NULL && rec->manifest != NULL &&
-	    rec->resolution != NULL);
+	return (rec != NULL && rec->manifest != NULL && rec->tag != NULL);
 }
 
 int
@@ -446,8 +409,8 @@ zr_zfs_clone(struct zr_zfs *z, const char *snapshot, const char *clone,
 	 * ZPROP_SRC_LOCAL, and destroys the head again if that fails,
 	 * so a create that half-worked leaves nothing behind and the
 	 * source of every one of them is the dataset itself, which is
-	 * what zr_zfs_get_user demands of a record. There is no state
-	 * among them: the state is written at the gates the run
+	 * what zr_zfs_get_user demands of a record. There is no phase
+	 * among them: the phase is written at the gates the run
 	 * passes.
 	 */
 	if (rc == 0) {
@@ -506,11 +469,11 @@ zr_zfs_write_record(struct zr_zfs *z, const char *dataset,
 	 * property straight down and the kernel applies it with
 	 * ZPROP_SRC_LOCAL), which is what zr_zfs_get_user demands of a
 	 * record. There is no create here to carry them all at once,
-	 * so a failure part way leaves a partial record: the tag goes
-	 * last but one and the manifest last, and read_record takes
-	 * those two together as the sign of a record, so a record that
-	 * is missing either is no record and the run that wrote it
-	 * takes the rest away.
+	 * so a failure part way leaves a partial record: the manifest
+	 * goes first and the tag after it, and read_record takes those
+	 * two together as the sign of a record, so a record that is
+	 * missing either is no record and the run that wrote it takes
+	 * the rest away.
 	 */
 	for (i = 0; rc == 0 && i < rp.zr_n; i++)
 		rc = zfs_prop_set(zhp, rp.zr_p[i].zp_name, rp.zr_p[i].zp_val);
@@ -845,6 +808,91 @@ zr_zfs_find_guid(struct zr_zfs *z, const char *pool, uint64_t guid, char *buf,
 	if (g.zg_toolong != 0)
 		return (zz_err(err, errlen, "guid", ENAMETOOLONG));
 	return (1);
+}
+
+/* What the release walk gives back, and what it met on the way. */
+struct zz_reltag {
+	struct zr_zfs	*zt_z;
+	const char	*zt_tag;
+	unsigned	zt_found;
+	int		zt_failed;
+};
+
+/*
+ * One snapshot, given the tag back where it is held under it.
+ * lzc_get_holds (lib/libzfs_core/libzfs_core.c) answers with an
+ * nvlist whose keys are the tags, so nvlist_exists is the whole
+ * question, and asking first is what keeps a walk of a pool from
+ * making a sync task per snapshot. Holds that cannot be read are
+ * nothing to release: the snapshot may have gone between the
+ * iteration and this. A release that fails is remembered and the
+ * walk goes on, because the point of the walk is to leave nothing
+ * of this rebase's held anywhere.
+ */
+static int
+zz_rel_snap(zfs_handle_t *zhp, void *arg)
+{
+	struct zz_reltag *t = arg;
+	nvlist_t *holds = NULL;
+	char e[512];
+
+	if (lzc_get_holds(zfs_get_name(zhp), &holds) == 0 && holds != NULL &&
+	    nvlist_exists(holds, t->zt_tag)) {
+		if (zr_zfs_release(t->zt_z, zfs_get_name(zhp), t->zt_tag, e,
+		    sizeof (e)) != 0)
+			t->zt_failed = 1;
+		else
+			t->zt_found++;
+	}
+	nvlist_free(holds);
+	zfs_close(zhp);
+	return (0);
+}
+
+/* Its own snapshots first, then the filesystems under it. */
+static int
+zz_rel_fs(zfs_handle_t *zhp, void *arg)
+{
+	int rc;
+
+	rc = zfs_iter_snapshots(zhp, B_TRUE, zz_rel_snap, arg, 0, 0);
+	if (rc == 0)
+		rc = zfs_iter_filesystems(zhp, zz_rel_fs, arg);
+	zfs_close(zhp);
+	return (rc);
+}
+
+int
+zr_zfs_release_tag(struct zr_zfs *z, const char *pool, const char *tag,
+    unsigned *nfound, char *err, size_t errlen)
+{
+	struct zz_reltag t;
+	zfs_handle_t *zhp;
+	int rc;
+
+	if (err != NULL && errlen > 0)
+		err[0] = '\0';
+	if (nfound != NULL)
+		*nfound = 0;
+	if (z == NULL || pool == NULL || tag == NULL || tag[0] == '\0')
+		return (zz_err(err, errlen, "release", EINVAL));
+	(void) memset(&t, 0, sizeof (t));
+	t.zt_z = z;
+	t.zt_tag = tag;
+	zhp = zfs_open(z->zz_hdl, pool, ZFS_TYPE_FILESYSTEM);
+	if (zhp == NULL)
+		return (zz_hdl_err(z, err, errlen, pool));
+	rc = zfs_iter_snapshots(zhp, B_TRUE, zz_rel_snap, &t, 0, 0);
+	if (rc == 0)
+		rc = zfs_iter_filesystems(zhp, zz_rel_fs, &t);
+	zfs_close(zhp);
+	if (nfound != NULL)
+		*nfound = t.zt_found;
+	if (rc < 0)
+		return (zz_hdl_err(z, err, errlen, pool));
+	if (t.zt_failed != 0)
+		return (zz_err(err, errlen, tag, EBUSY));
+	return (0);
 }
 
 int
@@ -1240,6 +1288,18 @@ zr_zfs_release(struct zr_zfs *z, const char *snapshot, const char *tag,
 	(void) z;
 	(void) snapshot;
 	(void) tag;
+	return (zz_unbuilt(err, errlen));
+}
+
+int
+zr_zfs_release_tag(struct zr_zfs *z, const char *pool, const char *tag,
+    unsigned *nfound, char *err, size_t errlen)
+{
+	(void) z;
+	(void) pool;
+	(void) tag;
+	if (nfound != NULL)
+		*nfound = 0;
 	return (zz_unbuilt(err, errlen));
 }
 

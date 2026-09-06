@@ -33,8 +33,7 @@
 #define	EXIT_INTERNAL	3
 
 static const char usage[] =
-	"usage: zfs_rebase [-p] [-v] [--manifest FILE] [--verify] "
-	    "[--overwrite]\n"
+	"usage: zfs_rebase [-p] [-v] [-q] [--manifest FILE] [--verify]\n"
 	"                  [--allow-unrelated [--base SNAP]]\n"
 	"                  [--take-onto | --take-from] [--no-gui] "
 	    "[--no-merge]\n"
@@ -61,6 +60,8 @@ static const char usage[] =
 	"  -o, --manifest FILE     where the manifest goes, resolution beside "
 	    "it\n"
 	"  -V, --verify            report the final check; it never repairs\n"
+	"  -q, --quiet             silence that report; a start option, kept\n"
+	"                          in the record for the whole run\n"
 	"  -O, --take-onto         answer every conflict of the skeleton onto\n"
 	"  -F, --take-from         answer every conflict of the skeleton from\n"
 	"  -G, --no-gui            go on at the conflicts gate when the\n"
@@ -73,8 +74,6 @@ static const char usage[] =
 	"  -R, --restart           the result back as onto was, applied again\n"
 	"  -a, --abort             the rebase undone, as if it never happened\n"
 	"  -n, --dry-run           the manifest only; --result is ignored\n"
-	"  -w, --overwrite         in-place form: replace a record that is "
-	    "done\n"
 	"  -u, --allow-unrelated   no derivation of the base, and no pruning\n"
 	"  -b, --base SNAP         with --allow-unrelated only: the base\n"
 	"--posix, --build-fixture and --edit-fixture are the project's own\n"
@@ -351,7 +350,7 @@ main(int argc, char **argv)
 	ro.base = a.za_base;
 	ro.mode = a.za_mode;
 	ro.dryrun = a.za_dryrun;
-	ro.overwrite = a.za_overwrite;
+	ro.quiet = a.za_quiet;
 	ro.unrelated = a.za_unrelated;
 	ro.verify = a.za_verify;
 	ro.takeonto = a.za_takeonto;

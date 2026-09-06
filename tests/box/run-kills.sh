@@ -39,9 +39,10 @@
 #
 #   kept   -- every SIGKILL, and SIGINT and SIGTERM from applying1
 #      on. The rebase is left standing at the gate it had reached:
-#      the record with that state (or no state at all before
-#      applying1), the three holds, the manifest from "decided" on,
-#      and the result. In the clone form readonly is back on
+#      the record with that phase (or no phase at all before
+#      applying1, when the record is the manifest's path and the tag
+#      alone), the three holds, the manifest from "decided" on, and
+#      the result. In the clone form readonly is back on
 #      wherever the tool had the chance to put it back (every SIGINT
 #      and SIGTERM, and a SIGKILL at a gate where readonly was
 #      already on) and off after a SIGKILL inside an applying stage.
@@ -56,8 +57,15 @@
 #      mount is root's alone and writable for its life.
 #
 #   finished -- SIGINT and SIGTERM at done. Nothing looks at the flag
-#      after that gate, so the run finishes: done, holds released,
-#      exit 0.
+#      after that gate, so the run finishes: the holds released, the
+#      record taken off -- in that order, since the tag is the only
+#      handle on those holds -- and exit 0. done is no phase: what
+#      says a rebase reached it is that the result carries no
+#      zfs_rebase: property at all. A SIGKILL at that gate stops
+#      before either, so what it leaves is the phase of the stage
+#      that ran before it and the three holds, and the --continue
+#      after it redoes that stage, which is idempotent, and
+#      finishes.
 #
 # Then, in every case that left a rebase behind:
 #
@@ -70,10 +78,9 @@
 #   the exception: there is nothing to continue from and --continue
 #   exits 2 naming the file it wanted.
 #
-#   A --continue given --verify from before or inside applying1
-#   records zfs_rebase:verify on the result as a fresh run with the
-#   flag would have, since that is all the flag means at that gate;
-#   the done gate of the same rebase makes the check.
+#   A --continue given --verify makes the final check itself if it
+#   reaches the done gate: there is no recorded request any more, and
+#   the flag belongs to the invocation that gets there.
 #
 #   Before that, --verify says what the kill left without touching
 #   it: an action is pending until the stage that makes it has run,
@@ -142,11 +149,23 @@ trap cleanup EXIT
 say() { printf '\n== %s\n' "$*"; prog_note "$*"; }
 fail() { echo "FAIL: $case_id: $*"; exit 1; }
 recval() { zfs get -H -o value "$1" "$2" 2>/dev/null; }
-# The state, with "" for a record that has passed no gate yet.
-statenow() {
-	v=$(zfs get -H -o value zfs_rebase:state "$1" 2>/dev/null)
+# The phase, with "" for a record that has passed no gate yet and for
+# a result with no record at all, which is what done leaves.
+phasenow() {
+	v=$(zfs get -H -o value zfs_rebase:phase "$1" 2>/dev/null)
 	[ "$v" = - ] && v=""
 	printf '%s' "$v"
+}
+# One line of a manifest's header: the rebase's identity lives there
+# now, and the harness reads what it needs from the file the record
+# names rather than from a property.
+hdr() { sed -n "s/^#$1 //p" "$2"; }
+# Every snapshot of the pool that is held, one line each.
+heldsnaps() {
+	for hs in $(allsnaps); do
+		[ -n "$(zfs holds -H "$hs" | cut -f2)" ] && printf '%s\n' "$hs"
+	done
+	return 0
 }
 # Every zfs_rebase: property that is this dataset's own. A record is
 # read as local values only, so an inherited one is no record.
@@ -233,9 +252,29 @@ drop_pool() {
 
 # Between two cases: take away whatever the last one left, and prove
 # the pool is back to the fixture with no rebase anywhere in it.
+#
+# A rebase that reached done took its record off, so --abort finds
+# nothing to undo and says so: what it left is the result itself, the
+# pre-apply snapshot and (until done-cleanup lands) the run
+# directory, and the reset takes those away by hand.
 reset_pool() {
 	"$bin" --abort --result "$POOL/result" >/dev/null 2>&1
 	"$bin" --abort --result "$POOL/onto" >/dev/null 2>&1
+	if zfs list -H -o name "$POOL/result" >/dev/null 2>&1; then
+		zfs destroy "$POOL/result" || \
+		    fail "the reset cannot destroy the settled $POOL/result"
+	fi
+	if hassnap "$POOL/onto@pre"; then
+		zfs rollback -r "$POOL/onto@pre" || \
+		    fail "the reset cannot roll onto back to @pre"
+		zfs destroy "$POOL/onto@pre" || \
+		    fail "the reset cannot destroy @pre"
+	fi
+	for d in result onto; do
+		rmdir "/var/db/zfs_rebase/$POOL/$d/mnt" 2>/dev/null
+		rmdir "/var/db/zfs_rebase/$POOL/$d" 2>/dev/null
+	done
+	rmdir "/var/db/zfs_rebase/$POOL" 2>/dev/null
 	[ "$(holdcount)" = 0 ] || fail "the reset left holds behind"
 	zfs list -H -o name "$POOL/result" >/dev/null 2>&1 && \
 	    fail "the reset left $POOL/result behind"
@@ -333,12 +372,22 @@ kill_case() {
 			wexit=3; wro=on; wmnt=home
 		fi ;;
 	done)
-		wstate=done; wman=yes; wro=on
-		[ $clean -eq 1 ] || resumed=yes
+		# done is no phase: a SIGKILL at that gate stops before
+		# the release and the clearing, so what it leaves is
+		# the phase of the stage that ran before it, and a
+		# caught signal lets the run finish, which leaves no
+		# record at all.
+		if [ $clean -eq 1 ]; then
+			wstate=applying1
+		else
+			wstate=applying2
+			resumed=yes
+		fi
+		wman=yes; wro=on
 		if [ "$sig" = KILL ]; then
 			out=kept; wexit=137; wmnt=priv
 		else
-			out=finished; wexit=0; wmnt=home
+			out=finished; wstate=""; wexit=0; wmnt=home
 		fi ;;
 	*)
 		fail "no such gate" ;;
@@ -366,7 +415,7 @@ kill_case() {
 		fi
 		st=$?
 		[ $st -eq 1 ] || { cat "$log"; fail "the run before the resolution exited $st, want 1"; }
-		[ "$(statenow "$rds")" = conflicts ] || \
+		[ "$(phasenow "$rds")" = conflicts ] || \
 		    fail "that run did not stop at conflicts"
 		answer_resolution "$res"
 		ZFS_REBASE_PAUSE=$gate "$bin" --continue --result "$rds" \
@@ -389,10 +438,14 @@ kill_case() {
 	# are there its inputs cannot be destroyed. Checked at the
 	# first gate that has them, which is where they were taken.
 	if [ "$gate" = held ]; then
+		# The record names the manifest and the tag, and at
+		# this gate the manifest is not written yet: what is
+		# held is read off the pool instead, which is the only
+		# question here anyway.
 		tag=$(recval zfs_rebase:tag "$rds")
-		for which in base from onto; do
-			snap=$(recval "zfs_rebase:$which" "$rds")
-			[ -n "$snap" ] || fail "the record names no $which"
+		[ "$(holdcount)" = 3 ] || \
+		    fail "$(holdcount) holds at the held gate, want 3"
+		for snap in $(heldsnaps); do
 			[ "$(holdtags "$snap")" = "$tag" ] || \
 			    fail "$snap is not held under $tag"
 			if zfs destroy "$snap" > "$tmp/destroy" 2>&1; then
@@ -452,22 +505,23 @@ kill_case() {
 		return 0
 	fi
 
-	# A rebase is still there: the record, the state it reached,
+	# A rebase is still there: the record, the phase it reached,
 	# the three holds unless it reached done, and the manifest
 	# from the decision on.
-	[ "$(statenow "$rds")" = "$wstate" ] || \
-	    fail "the state is '$(statenow "$rds")', want '$wstate'"
+	[ "$(phasenow "$rds")" = "$wstate" ] || \
+	    fail "the phase is '$(phasenow "$rds")', want '$wstate'"
 	if [ $out = finished ]; then
 		whold_now=0
 		[ "$(holdcount)" = 0 ] || \
 		    fail "a run that reached done kept its holds"
+		[ -z "$(localprops "$rds")" ] || \
+		    fail "a run that reached done left $(localprops "$rds")"
 	else
 		whold_now=3
 		[ "$(holdcount)" = 3 ] || \
 		    fail "$(holdcount) holds in the pool, want 3"
 		tag=$(recval zfs_rebase:tag "$rds")
-		for which in base from onto; do
-			snap=$(recval "zfs_rebase:$which" "$rds")
+		for snap in $(heldsnaps); do
 			[ "$(holdtags "$snap")" = "$tag" ] || \
 			    fail "$snap is not held under $tag after the stop"
 		done
@@ -490,6 +544,25 @@ kill_case() {
 			    fail "onto is not at the private mount $rundir/mnt"
 		fi
 	fi
+	if [ $out = finished ]; then
+		# It reached done, so there is no rebase left: every
+		# verb says so and the tree is the rebased tree.
+		for verb in --verify --continue --abort; do
+			"$bin" $verb --result "$rds" > "$tmp/cont" 2>&1
+			st=$?
+			[ $st -eq 2 ] || \
+			    { cat "$tmp/cont"; fail "$verb on a settled result exited $st, want 2"; }
+		done
+		if [ "$form" = dataset ]; then
+			cmnt=$MNT/onto
+		else
+			cmnt=$rundir/mnt
+		fi
+		again "$tmp/again" "$cmnt"
+		echo "ok   $case_id: finished, the record off, the holds released"
+		reset_pool
+		return 0
+	fi
 
 	# --- and then --continue ---
 	if [ $wman = no ]; then
@@ -502,8 +575,8 @@ kill_case() {
 		    { cat "$tmp/cont"; fail "--continue without a manifest exited $st, want 2"; }
 		grep -q "$man" "$tmp/cont" || \
 		    { cat "$tmp/cont"; fail "--continue did not name the manifest"; }
-		[ "$(statenow "$rds")" = "$wstate" ] || \
-		    fail "the failed --continue moved the state"
+		[ "$(phasenow "$rds")" = "$wstate" ] || \
+		    fail "the failed --continue moved the phase"
 		[ "$form" = dataset ] && { mounted_at "$MNT/onto" || \
 		    fail "the failed --continue did not hand onto back"; }
 		echo "ok   $case_id: at ${wstate:-no gate}, readonly $wro, 3 holds; no manifest to continue from"
@@ -520,6 +593,9 @@ kill_case() {
 	""|applying1) wrep=3 ;;
 	*) wrep=0 ;;
 	esac
+	# Except at the done gate itself, where every action has been
+	# made and the phase is only the stage that made them.
+	[ "$gate" = done ] && wrep=0
 	# A caught signal at action:2 comes in at the pause before that
 	# action, which is then performed, and the apply stops at the
 	# next one: a manifest of exactly two actions has none, so the
@@ -536,19 +612,20 @@ kill_case() {
 	    { cat "$tmp/verify"; fail "--verify after the stop exited $st, want $wrep"; }
 	grep -q 'drifted 0' "$tmp/verify" || \
 	    { cat "$tmp/verify"; fail "--verify found drift after a kill"; }
-	[ "$(statenow "$rds")" = "$wstate" ] || \
-	    fail "--verify moved the state"
+	[ "$(phasenow "$rds")" = "$wstate" ] || \
+	    fail "--verify moved the phase"
 	[ "$(holdcount)" = "$whold_now" ] || \
 	    fail "--verify changed the holds"
 
 	# Where the --continue lands: at done when there is nothing to
 	# answer or the answers are in, and back at conflicts while the
 	# skeleton the run wrote is still unanswered. The file being
-	# there is not the signal; its being complete is.
+	# there is not the signal; its being complete is. done leaves
+	# no record, so what it lands in is an empty property list.
 	if [ $clean -eq 1 ] || [ $resumed = yes ]; then
-		wcont=0; wend=done; whold=0
+		wcont=0; wend=""; whold=0; wsettled=1
 	else
-		wcont=1; wend=conflicts; whold=3
+		wcont=1; wend=conflicts; whold=3; wsettled=0
 	fi
 	# A SIGKILL is where a repair earns its keep, so those cases
 	# continue with --verify and the caught-signal ones without:
@@ -560,21 +637,16 @@ kill_case() {
 	st=$?
 	[ $st -eq $wcont ] || \
 	    { cat "$tmp/cont"; fail "--continue $vflag exited $st, want $wcont"; }
-	[ "$(statenow "$rds")" = "$wend" ] || \
-	    fail "--continue landed at '$(statenow "$rds")', want $wend"
-	# --verify on a --continue that starts at applying1 has no
-	# other meaning at that gate: the fix there is the stage's own
-	# self-check and is no flag's, so what the flag does is ask
-	# for the final check, which it does by writing the record's
-	# own property. The done gate of this same rebase then makes
-	# the check, whoever runs the --continue that reaches it.
-	case "$wstate" in
-	""|applying1)
-		if [ -n "$vflag" ]; then
-			[ "$(recval zfs_rebase:verify "$rds")" = yes ] || \
-			    fail "--continue --verify did not record zfs_rebase:verify"
-		fi ;;
-	esac
+	[ "$(phasenow "$rds")" = "$wend" ] || \
+	    fail "--continue landed at '$(phasenow "$rds")', want ${wend:-done}"
+	# --verify on a --continue records nothing at all: the check is
+	# the invocation's own, made if this same --continue reaches
+	# the done gate. What it leaves at done is what any done
+	# leaves, which is no record.
+	if [ $wsettled -eq 1 ]; then
+		[ -z "$(localprops "$rds")" ] || \
+		    fail "--continue reached done and left $(localprops "$rds")"
+	fi
 	[ "$(holdcount)" = $whold ] || \
 	    fail "$(holdcount) holds after --continue, want $whold"
 	if [ "$form" = clone ]; then
@@ -592,7 +664,7 @@ kill_case() {
 		cmnt=$rundir/mnt
 	fi
 	again "$tmp/again" "$cmnt"
-	echo "ok   $case_id: at $wstate, readonly $wro; --continue -> $wend (exit $st), stage 1 idempotent"
+	echo "ok   $case_id: at ${wstate:-no gate}, readonly $wro; --continue -> ${wend:-done} (exit $st), stage 1 idempotent"
 	reset_pool
 }
 

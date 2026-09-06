@@ -48,7 +48,7 @@ struct zr_args {
 	int		za_dryrun;	/* -n, --dry-run */
 	int		za_verbose;	/* -v, --verbose */
 	int		za_verify;	/* -V, --verify */
-	int		za_overwrite;	/* -w, --overwrite */
+	int		za_quiet;	/* -q, --quiet */
 	int		za_unrelated;	/* -u, --allow-unrelated */
 	int		za_takeonto;	/* -O, --take-onto */
 	int		za_takefrom;	/* -F, --take-from */

@@ -25,9 +25,10 @@
  * The base is not given either way: it is the branch point, and the
  * run works it out from the origin chains of the two sides. result
  * may be NULL only for a dry run, which creates nothing and ignores
- * it. overwrite replaces a record whose rebase reached done, and is
- * the dataset form's alone: a clone-form result is a fresh dataset
- * with a fresh record and there is nothing there to overwrite.
+ * it. A dataset that carries any zfs_rebase: property of its own is
+ * an open rebase and is refused: a rebase that reached done cleared
+ * its record, so there is nothing to overwrite and no flag that
+ * would.
  *
  * unrelated is the one exception to all of that. Two sides that
  * share no origin have no branch point to work out, so the
@@ -47,9 +48,9 @@ struct zr_run_opts {
 	const char	*base;		/* --base SNAP, or NULL */
 	zr_mode_t	mode;
 	int		dryrun;		/* manifest only, nothing created */
-	int		overwrite;	/* replace a record that is done */
 	int		unrelated;	/* --allow-unrelated: no derivation */
 	int		verify;		/* the demand for a final check */
+	int		quiet;		/* latched in the record at start */
 	/*
 	 * The three flags of the conflicts gate. takeonto and
 	 * takefrom write the skeleton answered onto or from instead
@@ -79,7 +80,9 @@ int zr_run(const struct zr_run_opts *);
  * The verbs on a rebase that already exists. result for all three is
  * the dataset carrying the record -- a snapshot name is taken as its
  * dataset, so both spellings find the same rebase -- and a dataset
- * with no record of ours is refused untouched.
+ * with no record of ours is refused untouched. The record is the
+ * four properties; everything else each verb needs is in the header
+ * of the manifest the record names.
  *
  * zr_continue takes the rebase on from the gate its record names,
  * through the gates that are left, in one process: the recorded
@@ -96,7 +99,7 @@ int zr_run(const struct zr_run_opts *);
  *
  * zr_restart puts the result back as onto was and applies again from
  * the first gate: the clone form destroys the clone and makes it
- * again from the recorded onto snapshot with the same record, and
+ * again from the header's onto snapshot with the same record, and
  * the dataset form rolls the dataset back to it. Nothing is decided
  * again: the recorded manifest is the decision, and the resolution
  * goes back to its skeleton, which is what discarding its edits
@@ -112,16 +115,24 @@ int zr_restart(const char *result, int verbose);
 int zr_report(const char *result, int verbose);
 
 /*
- * Undo one rebase: release the holds its record names, put the
- * result back -- destroying the clone in the clone form, and in the
- * dataset form rolling the dataset back to its pre-apply snapshot,
- * destroying that snapshot, taking the record off and mounting the
- * dataset where it belongs again -- destroy any snapshot the tool
- * took for itself, remove the manifest the record names, and take
- * the run directory away. Only a dataset carrying the record -- the
- * hold tag and the manifest path, both as local values -- is
- * touched, and nothing is ever removed recursively. It can be run
- * again over a half-aborted rebase.
+ * Undo one rebase: release the holds the manifest's header names,
+ * put the result back -- destroying the clone in the clone form, and
+ * in the dataset form rolling the dataset back to its pre-apply
+ * snapshot, destroying that snapshot, taking the record off and
+ * mounting the dataset where it belongs again -- destroy any
+ * snapshot the tool took for itself, remove the manifest the record
+ * names and the resolution beside it, and take the run directory
+ * away. Only a dataset carrying the record -- the hold tag and the
+ * manifest path, both as local values -- is touched, and nothing is
+ * ever removed recursively. It can be run again over a half-aborted
+ * rebase.
+ *
+ * Where the manifest is gone there is no header to read, and what
+ * is left is the tag: the holds are given back by walking the
+ * result's pool for them, the private mount is undone, the record
+ * is cleared, and nothing is destroyed or rolled back at all, since
+ * the form of the run is one of the things the manifest was
+ * carrying. It says so, and says what to run for each form.
  */
 int zr_abort(const char *result, int verbose);
 
