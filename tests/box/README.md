@@ -535,6 +535,7 @@ the harness.
     sudo sh tests/box/run-strays.sh         # edits the tool did not make
     sudo sh tests/box/run-precond.sh        # the cells no fixture states
     sudo sh tests/box/run-resolution.sh     # the choices carried out
+    sudo sh tests/box/run-probe.sh          # the mount questions, on a pool of its own
 
 run-fixture.sh on probe.zrt first, because it is the shortest way to
 find out that the box, the build and the pool are working at all;

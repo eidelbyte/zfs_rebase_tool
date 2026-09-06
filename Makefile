@@ -178,9 +178,12 @@ install:
 	install -d $(DESTDIR)$(MANDIR)
 	install -m 0444 zfs_rebase.8 $(DESTDIR)$(MANDIR)/zfs_rebase.8
 
-# A box probe, not part of the tool: the dataset form's private mount
-# on its own, with libzfs's own words for what went wrong.
-probe-mount: build
+# A box probe, not part of the tool: the four questions the private
+# mount raises, with libzfs's own words for what went wrong. It does
+# not go through the flavor stamp, so it leaves a freebsd build/ as
+# it found it; tests/box/run-probe.sh makes a pool and runs it.
+probe-mount:
+	@mkdir -p build
 	$(CC) $(CFLAGS) -DZR_FREEBSD $(ZFS_CFLAGS) -o build/probe-mount \
 	    tools/probe-mount.c $(ZFS_LIBS)
 
