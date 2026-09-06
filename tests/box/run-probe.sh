@@ -20,7 +20,10 @@ if [ "$(uname)" != FreeBSD ]; then
 	echo "run-probe: FreeBSD only"
 	exit 2
 fi
-[ -x build/probe-mount ] || make probe-mount || exit 2
+# Always rebuilt: the target has no prerequisites and the file is
+# small, and a build/probe-mount left by an earlier trip is the old
+# probe with the old questions.
+make probe-mount || exit 2
 
 POOL=zrtprobe
 IMG=${TMPDIR:-/tmp}/${POOL}.img
