@@ -218,9 +218,10 @@ static const char *zr_record_props[] = {
 #define	ZR_NRECORD	(sizeof (zr_record_props) / sizeof (zr_record_props[0]))
 
 /*
- * What the record and the manifest header carry for the base of a
- * run that had none -- --allow-unrelated without --base, which reads
- * the two sides against the empty tree. "-" is how zfs(8) itself
+ * What a header line carries where the run had no such thing: a dry
+ * run's result and tag, a run that snapshotted neither side, a clone
+ * form's pre-apply snapshot, and the base of a document written
+ * before --allow-unrelated needed --base. "-" is how zfs(8) itself
  * spells a property with no value, and it is no snapshot name, since
  * every one of those has a pool and an '@' in it. An empty value
  * would say the same thing and cannot be written: the manifest's
@@ -674,10 +675,12 @@ static int is_snapshot(const char *arg);
  * that it names as they do is checked with theirs below, since its
  * tree is read exactly the way theirs is.
  *
- * Without --base there is no base snapshot at all: the base is the
- * empty tree, every name of either side is an add on that side, and
- * the decision is the union of the two with a conflict wherever they
- * disagree.
+ * --base is not optional here (ruled 2026-09-06): with no branch
+ * point to derive and no base given there is nothing to read the two
+ * sides against, and the empty tree in its place made every name of
+ * either side an add, which is a decision about two trees that were
+ * never compared. The driver refuses the flag without it as a usage
+ * error, and this is the same refusal for a caller of its own.
  */
 static int
 unrelated_base(struct run *r)
@@ -699,12 +702,10 @@ unrelated_base(struct run *r)
 		return (-1);
 	}
 	if (r->o.base == NULL) {
-		r->base[0] = '\0';
-		if (r->o.verbose)
-			(void) fprintf(stderr, "zfs_rebase: there is no "
-			    "base: the two sides are read against the empty "
-			    "tree\n");
-		return (0);
+		(void) snprintf(r->err, sizeof (r->err),
+		    "--allow-unrelated needs --base: there is no branch point "
+		    "to derive and none to fall back on");
+		return (-1);
 	}
 	if (!is_snapshot(r->o.base)) {
 		(void) snprintf(r->err, sizeof (r->err),
@@ -795,9 +796,9 @@ result_ok(struct run *r, const char *ontods)
 /*
  * The base is worked out first, since the rest of the checks are
  * about its dataset as much as the two sides'. Then every dataset
- * must be mounted, and they must agree on names. Under
- * --allow-unrelated there may be no base dataset to check at all,
- * and then it is the two sides alone that are looked at.
+ * must be mounted, and they must agree on names. There are always
+ * three: --allow-unrelated skips the derivation and takes the base
+ * from --base, which it needs.
  *
  * All three of those are read as the numbers they are: mounted is a
  * boolean and the other two are index properties, so the words zfs(8)
@@ -816,7 +817,7 @@ preconditions(struct run *r)
 	static const char *const wantword[] = { "sensitive", "none" };
 	char ds[3][ZR_NAME_MAX];
 	uint64_t v;
-	int i, p, first;
+	int i, p;
 
 	if (r->o.unrelated) {
 		if (unrelated_base(r) != 0)
@@ -836,16 +837,11 @@ preconditions(struct run *r)
 		 */
 		r->prune = 1;
 	}
-	/*
-	 * The three datasets, or the two of them a run with no base
-	 * has: first is where the checks start, and the base is what
-	 * it leaves out.
-	 */
+	/* The three datasets: the base, derived or given, and the two sides. */
 	dataset_of(r->base, ds[0], sizeof (ds[0]));
 	dataset_of(r->fromsnap, ds[1], sizeof (ds[1]));
 	dataset_of(r->ontosnap, ds[2], sizeof (ds[2]));
-	first = r->base[0] != '\0' ? 0 : 1;
-	for (i = first; i < 3; i++) {
+	for (i = 0; i < 3; i++) {
 		if (zr_zfs_get_int(r->zfs, ds[i], "mounted", &v, r->err,
 		    sizeof (r->err)) != 0)
 			return (-1);
@@ -868,13 +864,12 @@ preconditions(struct run *r)
 		}
 	}
 	/* one pool: the name before the first slash must agree */
-	for (i = first + 1; i < 3; i++) {
-		size_t a = strcspn(ds[first], "/"), b = strcspn(ds[i], "/");
+	for (i = 1; i < 3; i++) {
+		size_t a = strcspn(ds[0], "/"), b = strcspn(ds[i], "/");
 
-		if (a != b || strncmp(ds[first], ds[i], a) != 0) {
+		if (a != b || strncmp(ds[0], ds[i], a) != 0) {
 			(void) snprintf(r->err, sizeof (r->err),
-			    "%s and %s are not in one pool", ds[first],
-			    ds[i]);
+			    "%s and %s are not in one pool", ds[0], ds[i]);
 			return (-1);
 		}
 	}
@@ -885,8 +880,7 @@ preconditions(struct run *r)
 	 */
 	if (!r->o.dryrun && !in_dataset_form(r) && result_ok(r, ds[2]) != 0)
 		return (-1);
-	if (r->base[0] != '\0' &&
-	    zr_zfs_get(r->zfs, ds[0], "mountpoint", r->basemnt,
+	if (zr_zfs_get(r->zfs, ds[0], "mountpoint", r->basemnt,
 	    sizeof (r->basemnt), r->err, sizeof (r->err)) != 0)
 		return (-1);
 	if (zr_zfs_get(r->zfs, ds[1], "mountpoint", r->frommnt,
@@ -1766,7 +1760,7 @@ fill_header(struct run *r, struct zr_manifest_hdr *h, char *stamp,
 	memset(h, 0, sizeof (*h));
 	h->result = r->o.dryrun ? ZR_NO_BASE : r->o.result;
 	h->form = in_dataset_form(r) ? ZR_HFORM_DATASET : ZR_HFORM_CLONE;
-	h->base = r->base[0] != '\0' ? r->base : ZR_NO_BASE;
+	h->base = r->base;
 	h->base_guid = r->baseguid;
 	h->from = r->fromsnap;
 	h->from_guid = r->fromguid;
@@ -1909,9 +1903,9 @@ snapdir(char *buf, size_t len, const char *mountpoint, const char *snap)
 /*
  * A tree that was never there, as the empty tree: no names, no
  * pools, sealed, and no root descriptor to open a name against. It
- * is the base of a run made with --allow-unrelated and no --base,
- * and it is what a verb puts in the place of a side it cannot read
- * (empty_walk, below). Returns 0, or -1 out of memory.
+ * is what a verb puts in the place of a side it cannot read
+ * (empty_walk, below); no run reads a tree against it, since every
+ * run has a base. Returns 0, or -1 out of memory.
  */
 static int
 empty_tree(struct zr_walk *w, struct zr_names *names)
@@ -1934,20 +1928,13 @@ read_trees(struct run *r)
 	if (r->names == NULL)
 		return (-1);
 	/*
-	 * The base, through its own .zfs/snapshot -- or the empty
-	 * tree in its place, when --allow-unrelated was given no
-	 * base: no third snapshot is read, every name of either side
-	 * is an add on that side, and the decision is their union.
+	 * The base, through its own .zfs/snapshot. Every run has one:
+	 * it is derived from the two sides, or given with
+	 * --allow-unrelated, which needs it.
 	 */
-	if (r->base[0] != '\0') {
-		snapdir(path, sizeof (path), r->basemnt, r->base);
-		if (zr_walk(path, r->names, &r->wb, r->err,
-		    sizeof (r->err)) != 0)
-			return (-1);
-	} else if (empty_tree(&r->wb, r->names) != 0) {
-		(void) snprintf(r->err, sizeof (r->err), "out of memory");
+	snapdir(path, sizeof (path), r->basemnt, r->base);
+	if (zr_walk(path, r->names, &r->wb, r->err, sizeof (r->err)) != 0)
 		return (-1);
-	}
 	r->walked = 1;
 	if (stopped(r) != 0)
 		return (-1);
@@ -2726,8 +2713,15 @@ done:
 	 * --no-merge cannot be set here: it is what would have
 	 * stopped the run at the gate.
 	 */
-	if (gocont)
-		rc = zr_continue(cont, o->verify, 0, o->verbose);
+	if (gocont) {
+		struct zr_verb_opts vo;
+
+		memset(&vo, 0, sizeof (vo));
+		vo.result = cont;
+		vo.verify = o->verify;
+		vo.verbose = o->verbose;
+		rc = zr_continue(&vo);
+	}
 	return (rc);
 }
 
@@ -2802,6 +2796,7 @@ struct resume {
 	char			rundir[ZR_NAME_MAX];
 	char			workmnt[ZR_NAME_MAX];	/* <rundir>/mnt */
 	char			respath[ZR_NAME_MAX];	/* the resolution */
+	char			given[ZR_NAME_MAX];	/* MANIFEST, resolved */
 	char			tmptag[ZR_TAG_MAX];	/* the report's hold */
 	char			found[3][ZR_SNAP_MAX];	/* by ZI_ */
 	int			gone[3];
@@ -2901,6 +2896,149 @@ static void
 hdr_str(char *buf, size_t buflen, const char *val)
 {
 	(void) snprintf(buf, buflen, "%s", val != NULL ? val : "");
+}
+
+/*
+ * The dataset that carries the record of the run a manifest
+ * describes. The header names its run, and the two forms name it
+ * differently (documents-design.md, section 6):
+ *
+ *	the clone form -- #result is the clone the run made, and the
+ *	clone is the dataset that carries the record;
+ *
+ *	the dataset form -- #result is the pre-apply snapshot as
+ *	--result spelled it, which may be the short name after the
+ *	'@' and is no dataset at all. The rebase was made in the
+ *	dataset #onto names, that dataset carries the record, and
+ *	#onto is that snapshot's full name, so its dataset part is
+ *	the answer. (#presnap is the same snapshot and says the same
+ *	thing.)
+ *
+ * A --posix document describes no rebase and a header with no result
+ * -- a dry run's, which writes "-" there -- describes one that was
+ * never made. Returns 0 with buf filled, or -1 with one line in err.
+ */
+int
+zr_run_dataset(const struct zr_parsed *p, char *buf, size_t buflen,
+    char *err, size_t errlen)
+{
+	const char *name;
+
+	buf[0] = '\0';
+	if (p->zp_form == ZR_HFORM_POSIX) {
+		(void) snprintf(err, errlen, "this is a --posix document and "
+		    "names no rebase");
+		return (-1);
+	}
+	if (p->zp_result == NULL || p->zp_result[0] == '\0' ||
+	    strcmp(p->zp_result, ZR_NO_BASE) == 0) {
+		(void) snprintf(err, errlen, "this names no result: a dry run "
+		    "wrote it and no rebase was made");
+		return (-1);
+	}
+	name = p->zp_form == ZR_HFORM_DATASET ? p->zp_onto : p->zp_result;
+	if (name == NULL || name[0] == '\0') {
+		(void) snprintf(err, errlen, "this names no onto snapshot, "
+		    "and the dataset form's rebase is in that snapshot's "
+		    "dataset");
+		return (-1);
+	}
+	if (strlen(name) >= buflen) {
+		(void) snprintf(err, errlen, "%s: %s", name,
+		    strerror(ENAMETOOLONG));
+		return (-1);
+	}
+	dataset_of(name, buf, buflen);
+	if (buf[0] == '\0') {
+		(void) snprintf(err, errlen, "%s names no dataset", name);
+		return (-1);
+	}
+	return (0);
+}
+
+/*
+ * The run a verb was given, as the dataset that carries its record.
+ * --result names that dataset outright, a snapshot name taken as its
+ * dataset; a manifest names it through its header, which is
+ * zr_run_dataset's rule; given both, they must agree, and the
+ * refusal says both sides, since two documents that do not name each
+ * other are not one rebase.
+ *
+ * The path is resolved with realpath first, because that is what the
+ * start recorded (record_path) and what the record is compared with
+ * afterwards: a manifest named through a symlink, or from another
+ * directory, is the same manifest.
+ *
+ * Nothing here opens a pool. Returns 0 with ds and path filled --
+ * path empty where no manifest was given -- or -1 with the reason
+ * already printed.
+ */
+static int
+run_named(const struct zr_verb_opts *o, char *ds, size_t dslen, char *path,
+    size_t pathlen)
+{
+	struct zr_parsed p;
+	char hds[ZR_NAME_MAX], err[512];
+	char *real;
+	FILE *fp;
+	int rc = -1;
+
+	ds[0] = '\0';
+	path[0] = '\0';
+	if (o->path == NULL) {
+		if (o->result == NULL) {
+			(void) fprintf(stderr, "zfs_rebase: no rebase was "
+			    "named\n");
+			return (-1);
+		}
+		dataset_of(o->result, ds, dslen);
+		return (0);
+	}
+	real = realpath(o->path, NULL);
+	if (real == NULL) {
+		(void) fprintf(stderr, "zfs_rebase: %s: %s\n", o->path,
+		    strerror(errno));
+		return (-1);
+	}
+	if ((size_t)snprintf(path, pathlen, "%s", real) >= pathlen) {
+		(void) fprintf(stderr, "zfs_rebase: %s: %s\n", real,
+		    strerror(ENAMETOOLONG));
+		free(real);
+		return (-1);
+	}
+	free(real);
+	memset(&p, 0, sizeof (p));
+	fp = fopen(path, "r");
+	if (fp == NULL) {
+		(void) fprintf(stderr, "zfs_rebase: %s: %s\n", path,
+		    strerror(errno));
+		return (-1);
+	}
+	if (zr_manifest_parse(fp, &p, err, sizeof (err)) != 0) {
+		(void) fclose(fp);
+		(void) fprintf(stderr, "zfs_rebase: %s: %s\n", path, err);
+		goto out;
+	}
+	(void) fclose(fp);
+	if (zr_run_dataset(&p, hds, sizeof (hds), err, sizeof (err)) != 0) {
+		(void) fprintf(stderr, "zfs_rebase: %s: %s\n", path, err);
+		goto out;
+	}
+	if (o->result == NULL) {
+		(void) snprintf(ds, dslen, "%s", hds);
+	} else {
+		dataset_of(o->result, ds, dslen);
+		if (strcmp(ds, hds) != 0) {
+			(void) fprintf(stderr, "zfs_rebase: %s is the "
+			    "manifest of %s and --result names %s: they are "
+			    "two rebases\n", path, hds, ds);
+			goto out;
+		}
+	}
+	rc = 0;
+out:
+	zr_parsed_fini(&p);
+	return (rc);
 }
 
 /*
@@ -3036,12 +3174,13 @@ resume_paths(struct resume *s)
 }
 
 /*
- * Whether the header's base is the base of a run that had none:
- * --allow-unrelated without --base read the two sides against the
- * empty tree and wrote ZR_NO_BASE with the guid 0 in the header's
- * place for it. Nothing is there to find, to hold or to release, and
- * no verb walks the base in any case. The empty string is taken the
- * same way, for a document written by hand.
+ * Whether the header names no base at all. No run writes such a
+ * document any more -- --allow-unrelated needs --base, ruled
+ * 2026-09-06 -- but one written before that, or by hand, carries
+ * ZR_NO_BASE with the guid 0 in the base's place, and a verb reading
+ * it must not go looking for a snapshot that was never there.
+ * Nothing is there to find, to hold or to release, and no verb walks
+ * the base in any case. The empty string is taken the same way.
  */
 static int
 no_base(const char *snap)
@@ -3076,9 +3215,9 @@ find_inputs(struct resume *s, int byguid)
 		const char *want = rec_snap(&s->rb, i);
 
 		/*
-		 * A rebase made against the empty tree. Its base is
-		 * not missing: there was none, and a verb asks
-		 * nothing of it.
+		 * A rebase whose header names no base. It is not
+		 * missing: there was none, and a verb asks nothing of
+		 * it.
 		 */
 		if (i == ZI_BASE && no_base(want)) {
 			s->gone[i] = 1;
@@ -3139,6 +3278,82 @@ find_inputs(struct resume *s, int byguid)
 		s->miss |= ZR_MISS_FROM;
 	if (s->gone[ZI_ONTO] != 0)
 		s->miss |= ZR_MISS_ONTO;
+	return (0);
+}
+
+/*
+ * One side as the command named it, against the header the record
+ * names. A verb reads the two sides from that header and needs
+ * neither, so what --from and --onto do here is say which rebase the
+ * person thinks this is: the name must be the name the header kept,
+ * and the snapshot wearing it now must be the snapshot the header
+ * kept, which is the guid. That is res_input's shape, for res_input's
+ * reason -- a name is what a snapshot is called and the guid is what
+ * it is -- and the refusal prints both numbers.
+ *
+ * z NULL asks for the name alone: it is what the caller passes for
+ * an input find_inputs could not find under its own name, which it
+ * has already reported.
+ */
+static int
+given_input(struct zr_zfs *z, const char *given, const char *want,
+    uint64_t guid, int i, char *err, size_t errlen)
+{
+	uint64_t have;
+
+	if (given == NULL)
+		return (0);
+	if (want == NULL || want[0] == '\0' || strcmp(given, want) != 0) {
+		(void) snprintf(err, errlen, "the command names %s as the %s "
+		    "and the rebase's %s is %s", given, input_word(i),
+		    input_word(i), want != NULL && want[0] != '\0' ? want :
+		    "nothing");
+		return (-1);
+	}
+	if (z == NULL)
+		return (0);
+	if (zr_zfs_get_int(z, given, "guid", &have, err, errlen) != 0)
+		return (-1);
+	if (have != guid) {
+		(void) snprintf(err, errlen, "%s has the guid %llu and the "
+		    "rebase kept %llu: a different snapshot wears that name "
+		    "now", given, (unsigned long long)have,
+		    (unsigned long long)guid);
+		return (-1);
+	}
+	return (0);
+}
+
+/*
+ * What the command said about the rebase it named, against the
+ * record and the header that were found. A manifest given as the
+ * argument must be the manifest this record names -- the header
+ * named the dataset, and the record has to name the file back --
+ * and the two sides, where they were given, must be the header's.
+ * Nothing here changes what the verb acts on; it only refuses to act
+ * on a rebase the command described wrongly.
+ */
+static int
+check_given(struct resume *s, const struct zr_verb_opts *o)
+{
+	const char *given[3];
+	int i;
+
+	if (s->given[0] != '\0' && strcmp(s->given, s->rb.manifest) != 0) {
+		(void) snprintf(s->err, sizeof (s->err), "%s carries the "
+		    "manifest %s and the manifest given is %s: they are two "
+		    "rebases", s->result, s->rb.manifest, s->given);
+		return (-1);
+	}
+	given[ZI_BASE] = NULL;
+	given[ZI_FROM] = o->from;
+	given[ZI_ONTO] = o->onto;
+	for (i = ZI_FROM; i <= ZI_ONTO; i++) {
+		if (given_input(s->gone[i] != 0 ? NULL : s->zfs, given[i],
+		    rec_snap(&s->rb, i), rec_guid(&s->rb, i), i, s->err,
+		    sizeof (s->err)) != 0)
+			return (-1);
+	}
 	return (0);
 }
 
@@ -4218,23 +4433,33 @@ continue_from(struct resume *s)
 }
 
 /*
- * What every verb does first: it must be root, libzfs must open, the
- * result must carry a record, the manifest that record names must
- * parse, and every input its header names must still be the snapshot
- * it named. Returns EXIT_CLEAN, or the status to give up with.
+ * What every verb does first: it must be root, the command must name
+ * a rebase, libzfs must open, the result must carry a record, the
+ * manifest that record names must parse, every input its header
+ * names must still be the snapshot it named, and what the command
+ * said about the rebase beyond its name must agree with all of that.
+ * Returns EXIT_CLEAN, or the status to give up with.
  */
 static int
-resume_open(struct resume *s, const char *result, int byguid)
+resume_open(struct resume *s, const struct zr_verb_opts *o, int byguid)
 {
-	dataset_of(result, s->result, sizeof (s->result));
 	if (geteuid() != 0) {
 		(void) fprintf(stderr, "zfs_rebase: must run as root\n");
 		return (EXIT_PRECOND);
 	}
+	/*
+	 * Which rebase this is, before any pool is opened: --result
+	 * names its dataset, and a manifest names it through the
+	 * header. What the command said about it beyond that is
+	 * checked against the record once the record is read.
+	 */
+	if (run_named(o, s->result, sizeof (s->result), s->given,
+	    sizeof (s->given)) != 0)
+		return (EXIT_PRECOND);
 	if (zr_zfs_open(&s->zfs, s->err, sizeof (s->err)) != 0)
 		return (vfail(s, EXIT_PRECOND, "libzfs"));
 	if (read_record(s) != 0 || resume_paths(s) != 0 ||
-	    find_inputs(s, byguid) != 0)
+	    find_inputs(s, byguid) != 0 || check_given(s, o) != 0)
 		return (vfail(s, EXIT_PRECOND, NULL));
 	/*
 	 * The resolution, read once and kept: every gate from
@@ -4348,19 +4573,19 @@ resume_close(struct resume *s)
 }
 
 int
-zr_continue(const char *result, int verify, int nomerge, int verbose)
+zr_continue(const struct zr_verb_opts *o)
 {
 	struct sigaction saved[ZR_NSIG];
 	struct resume s;
 	int rc;
 
 	memset(&s, 0, sizeof (s));
-	s.verify = verify;
-	s.nomerge = nomerge;
-	s.verbose = verbose;
+	s.verify = o->verify;
+	s.nomerge = o->nomerge;
+	s.verbose = o->verbose;
 	zr_pause_open();
 	signals_install(saved);
-	rc = resume_open(&s, result, 0);
+	rc = resume_open(&s, o, 0);
 	if (rc == EXIT_CLEAN) {
 		rc = resume_trees(&s) != 0 ?
 		    vfail(&s, EXIT_PRECOND, s.result) : continue_from(&s);
@@ -4446,17 +4671,17 @@ restart_from(struct resume *s)
 }
 
 int
-zr_restart(const char *result, int verbose)
+zr_restart(const struct zr_verb_opts *o)
 {
 	struct sigaction saved[ZR_NSIG];
 	struct resume s;
 	int rc;
 
 	memset(&s, 0, sizeof (s));
-	s.verbose = verbose;
+	s.verbose = o->verbose;
 	zr_pause_open();
 	signals_install(saved);
-	rc = resume_open(&s, result, 0);
+	rc = resume_open(&s, o, 0);
 	if (rc != EXIT_CLEAN)
 		goto done;
 	/*
@@ -4495,7 +4720,7 @@ zr_restart(const char *result, int verbose)
 		    sizeof (s.err)) != 0)
 			(void) fprintf(stderr, "zfs_rebase: %s on %s: %s\n",
 			    ZR_PROP_PHASE, s.result, s.err);
-		if (verbose)
+		if (s.verbose)
 			(void) fprintf(stderr, "zfs_rebase: %s is %s again\n",
 			    s.result, s.rb.presnap);
 		rc = restart_from(&s);
@@ -4543,7 +4768,7 @@ zr_restart(const char *result, int verbose)
 		goto done;
 	}
 	s.rb.phase[0] = '\0';
-	if (verbose)
+	if (s.verbose)
 		(void) fprintf(stderr, "zfs_rebase: %s is a fresh clone of "
 		    "%s again\n", s.result, s.rb.onto);
 	rc = restart_from(&s);
@@ -4567,9 +4792,8 @@ explain_gone(const struct resume *s)
 		if (s->gone[i] == 0)
 			continue;
 		if (i == ZI_BASE && no_base(rec_snap(&s->rb, i))) {
-			(void) fprintf(stderr, "zfs_rebase: this rebase had "
-			    "no base: the two sides were read against the "
-			    "empty tree\n");
+			(void) fprintf(stderr, "zfs_rebase: this rebase's "
+			    "manifest names no base; nothing is missing\n");
 			continue;
 		}
 		if (made_says(&s->rb, input_word(i)))
@@ -4610,7 +4834,7 @@ out:
 }
 
 int
-zr_report(const char *result, int verbose)
+zr_report(const struct zr_verb_opts *o)
 {
 	struct resume s;
 	int code;
@@ -4618,9 +4842,9 @@ zr_report(const char *result, int verbose)
 	memset(&s, 0, sizeof (s));
 	s.verify = 1;			/* the report is the whole verb */
 	s.report = 1;
-	s.verbose = verbose;
+	s.verbose = o->verbose;
 	tag_make(s.tmptag, sizeof (s.tmptag), "zrv-");
-	code = resume_open(&s, result, 1);
+	code = resume_open(&s, o, 1);
 	if (code != EXIT_CLEAN)
 		goto done;
 	hold_for_report(&s);
@@ -4664,13 +4888,17 @@ done:
 static int
 final_verify(struct run *r)
 {
+	struct zr_verb_opts o;
 	struct resume s;
 	int rc;
 
+	memset(&o, 0, sizeof (o));
+	o.result = r->rds;
+	o.verbose = r->o.verbose;
 	memset(&s, 0, sizeof (s));
 	s.verify = 1;
 	s.verbose = r->o.verbose;
-	rc = resume_open(&s, r->rds, 0);
+	rc = resume_open(&s, &o, 0);
 	if (rc == EXIT_CLEAN) {
 		rc = resume_trees(&s) != 0 ?
 		    vfail(&s, EXIT_INTERNAL, "verify") : done_gate(&s);
@@ -4890,10 +5118,12 @@ abort_lost(struct zr_zfs *z, const char *result, const char *tag,
  * goes by rmdir, which will not touch one that is not empty.
  */
 int
-zr_abort(const char *result, int verbose)
+zr_abort(const struct zr_verb_opts *o)
 {
 	char manifest[ZR_NAME_MAX], resolution[ZR_NAME_MAX];
+	char result[ZR_NAME_MAX], given[ZR_NAME_MAX];
 	char dir[ZR_NAME_MAX], phase[64], tag[ZR_TAG_MAX], err[512];
+	const int verbose = o->verbose;
 	const char *snap;
 	struct zr_parsed p;
 	struct zr_zfs *z = NULL;
@@ -4905,6 +5135,16 @@ zr_abort(const char *result, int verbose)
 		(void) fprintf(stderr, "zfs_rebase: must run as root\n");
 		return (EXIT_PRECOND);
 	}
+	/*
+	 * Which rebase this is: --result names its dataset and a
+	 * manifest names it through the header, exactly as for the
+	 * verbs that go through resume_open. --abort keeps its own
+	 * path from here because it has to work where there is no
+	 * manifest left to read at all.
+	 */
+	if (run_named(o, result, sizeof (result), given,
+	    sizeof (given)) != 0)
+		return (EXIT_PRECOND);
 	if ((size_t)snprintf(dir, sizeof (dir), "%s/%s", WORKDIR, result) >=
 	    sizeof (dir)) {
 		(void) fprintf(stderr, "zfs_rebase: %s: %s\n", result,
@@ -4955,6 +5195,18 @@ zr_abort(const char *result, int verbose)
 			rc = EXIT_PRECOND;
 			goto done;
 		}
+		/*
+		 * And the other half of the cross-check: the header
+		 * named this dataset, so this dataset's record has to
+		 * name that file back.
+		 */
+		if (given[0] != '\0' && strcmp(given, manifest) != 0) {
+			(void) fprintf(stderr, "zfs_rebase: %s carries the "
+			    "manifest %s and the manifest given is %s: they "
+			    "are two rebases\n", result, manifest, given);
+			rc = EXIT_PRECOND;
+			goto done;
+		}
 		if (verbose) {
 			if (zr_zfs_get_user(z, result, ZR_PROP_PHASE, phase,
 			    sizeof (phase), err, sizeof (err)) > 0)
@@ -4983,6 +5235,20 @@ zr_abort(const char *result, int verbose)
 			(void) fclose(fp);
 		}
 		if (parsed == 0) {
+			/*
+			 * The two sides are checked against the
+			 * header, and there is no header: a check
+			 * that was asked for and cannot be made stops
+			 * the abort rather than passing silently.
+			 */
+			if (o->from != NULL || o->onto != NULL) {
+				(void) fprintf(stderr, "zfs_rebase: %s cannot "
+				    "be read, so --from and --onto cannot be "
+				    "checked against it; give neither to "
+				    "abort what is left\n", manifest);
+				rc = EXIT_PRECOND;
+				goto done;
+			}
 			rc = abort_lost(z, result, tag, dir, verbose) == 0 ?
 			    EXIT_CLEAN : EXIT_INTERNAL;
 			/*
@@ -4998,6 +5264,20 @@ zr_abort(const char *result, int verbose)
 					(void) fprintf(stderr, "zfs_rebase: "
 					    "removed %s\n", dir);
 			}
+			goto done;
+		}
+		/*
+		 * The two sides as the command named them, against
+		 * the header, before one thing is undone: a verb that
+		 * was told which rebase this is and disagrees with
+		 * the header acts on nothing.
+		 */
+		if (given_input(z, o->from, p.zp_from, p.zp_from_guid,
+		    ZI_FROM, err, sizeof (err)) != 0 ||
+		    given_input(z, o->onto, p.zp_onto, p.zp_onto_guid,
+		    ZI_ONTO, err, sizeof (err)) != 0) {
+			(void) fprintf(stderr, "zfs_rebase: %s\n", err);
+			rc = EXIT_PRECOND;
 			goto done;
 		}
 		/*

@@ -6,33 +6,40 @@ changes of one (from) onto the other (onto), or tells you exactly
 which files it could not decide and why.
 
     zfs_rebase [-p] [-v] [-q] [--manifest FILE] [--verify] \
-        [--allow-unrelated [--base SNAP]] \
+        [--allow-unrelated --base SNAP] \
         [--take-onto | --take-from] [--no-gui] [--no-merge] \
         --from SNAP|DATASET --onto SNAP|DATASET --result NAME
     zfs_rebase --dry-run [-p] [--manifest FILE] \
         --from SNAP|DATASET --onto SNAP|DATASET
     zfs_rebase --continue [--verify] [--no-gui] [--no-merge] \
-        --result DATASET
-    zfs_rebase --restart --result DATASET
-    zfs_rebase --abort --result DATASET
-    zfs_rebase --verify --result DATASET
+        [--from SNAP] [--onto SNAP] (--result DATASET | MANIFEST)
+    zfs_rebase --restart (--result DATASET | MANIFEST)
+    zfs_rebase --abort (--result DATASET | MANIFEST)
+    zfs_rebase --verify (--result DATASET | MANIFEST)
 
 Every flag has a long form and a short form, and the two are the same
 flag: the table below gives both. --from may also be spelled --off-of
 and --onto --to, neither with a letter of its own. --dry-run (-n)
-writes the manifest, creates nothing and holds nothing. --verify at
+writes the manifest, creates nothing and holds nothing: to the file
+-o names, or to standard output when there is none. --verify at
 the start makes the final check at the last gate.
+
+A verb names the rebase it acts on by --result, the dataset carrying
+the record, or by MANIFEST, the path of that rebase's manifest, which
+is the one thing a command line of this tool takes that is not a
+flag. A start writes a manifest and reads none, so it takes no
+MANIFEST at all.
 
 ## Options
 
 | long form | short | what it does |
 |-----------|-------|--------------|
-| `--from`, `--off-of` | `-f` | the side whose changes are replayed: a snapshot, or a dataset the tool snapshots itself and destroys at done or --abort |
+| `--from`, `--off-of` | `-f` | the side whose changes are replayed: a snapshot, or a dataset the tool snapshots itself and destroys at done or --abort. On a verb it is optional and names no rebase: it is checked against the header, by name and by guid |
 | `--onto`, `--to` | `-t` | the side they are replayed onto, and the form of the run: a snapshot is cloned as --result, a dataset is rebased in place |
-| `--result` | `-r` | the clone's name in one form and the pre-apply snapshot's in the other; for every verb, the dataset carrying the record |
+| `--result` | `-r` | the clone's name in one form and the pre-apply snapshot's in the other; for every verb, the dataset carrying the record, which MANIFEST names instead |
 | `--permissive-merge` | `-p` | permissive merge; strict is the default, and the mode is recorded |
 | `--verbose` | `-v` | counts and steps on stderr |
-| `--manifest` | `-o` | where the manifest is written; the resolution goes beside it, and the record names the manifest |
+| `--manifest` | `-o` | where the manifest is written; the resolution goes beside it, and the record names the manifest. A start option, and a dry run's: the record names the path from then on, and done acts on it, so no later verb can choose |
 | `--verify` | `-V` | ask for the final check, or, alone on a result, report and write nothing; never a repair |
 | `--quiet` | `-q` | a start option: latched in the record for the whole run, to silence the final check's report. Nothing reads it yet |
 | `--take-onto` | `-O` | write the skeleton with every conflict answered onto |
@@ -43,8 +50,8 @@ the start makes the final check at the last gate.
 | `--restart` | `-R` | the result back as onto was, the manifest applied again from the first gate, the resolution back to its skeleton |
 | `--abort` | `-a` | holds released, tool-made snapshots destroyed, the clone destroyed or the dataset rolled back, the run directory and the documents in it removed (a `-o` pair stays) |
 | `--dry-run` | `-n` | decide and write the manifest, then tear down: nothing held, nothing created, --result ignored |
-| `--allow-unrelated` | `-u` | no derivation of the base, and no pruning |
-| `--base` | `-b` | with --allow-unrelated only: the base, no newer than either side; without it, the empty tree |
+| `--allow-unrelated` | `-u` | no derivation of the base, and no pruning; it needs --base |
+| `--base` | `-b` | with --allow-unrelated only, and it needs one: the base, no newer than either side |
 
 A long form takes its value as `--from SNAP` or as `--from=SNAP`; a
 short form takes the argument after it, and short flags do not bundle
@@ -124,6 +131,14 @@ next --continue or --abort mounts it privately again from there.
 --result for every verb is the dataset carrying the rebase's record
 -- the clone in one form, onto itself in the other -- and a snapshot
 name is taken as its dataset, so both spellings find the same rebase.
+MANIFEST names the same rebase the other way about: the header names
+its run, which is #result in the clone form and the dataset of #onto
+in the dataset form, where #result is the pre-apply snapshot as
+--result spelled it. Given both, the two must name each other -- the
+record's `zfs_rebase:manifest` must be that file, and the header must
+name that dataset -- and a mismatch is refused with exit 2, saying
+both sides. A manifest whose result has no record is "not a
+zfs_rebase result", as a --result naming that dataset would be.
 
 A dataset given as a side is snapshotted by the tool under a
 generated name, named as tool-made in the manifest's header, and
@@ -157,14 +172,15 @@ an object number in one lineage means nothing in another. --base
 names the base to rebase from, a snapshot no newer than either side
 by createtxg -- a base taken after a side describes a state that side
 never passed through -- and its dataset is read through
-.zfs/snapshot like the other two. Without --base there is no base
-snapshot at all: the base is the empty tree, every name of either
-side is an add on that side, and the decision is the union of the
-two with a conflict wherever they disagree. The manifest's header
-then carries "-" for the base and the guid 0, which every verb reads
-as "there was no base". --base without
---allow-unrelated is a usage error: where the branch point is
-derived, a base given by hand could only agree with it or be wrong.
+.zfs/snapshot like the other two. The two flags go together: --base
+without --allow-unrelated is a usage error, because where the branch
+point is derived a base given by hand could only agree with it or be
+wrong, and --allow-unrelated without --base is one too, because with
+nothing to derive and nothing given there is no third tree to read
+the two sides against. (Reading them against the empty tree instead
+made every name of either side an add and every disagreement a
+conflict, which is a decision about two trees that were never
+compared; that is gone, ruled 2026-09-06.)
 
 It is not a zfs(8) verb. It destroys no snapshot of yours and takes
 one only where you gave it a dataset instead. It reads the three
@@ -284,19 +300,28 @@ clone unmounted with no mountpoint of its own. The dataset form's
 result is the dataset you already had, back at its own mountpoint
 with the rebase in it, its `readonly` and `canmount` as they were.
 
-Four verbs work on a rebase that already exists. Each takes --result
-and -v, --continue takes the flags of the gate as well, and nothing
-else is theirs; every one of them keys on the record and on the
-manifest it names, and on nothing else: a dataset that carries no
-record is refused untouched, and an inherited value is no record,
-since user properties inherit down the naming tree and only a local
-one is ours. Each also checks that every snapshot the header names is
-still the snapshot it named, by guid, since a snapshot destroyed and
-taken again under the same name is another snapshot and these answers
-do not describe it.
+Four verbs work on a rebase that already exists. Each names its run
+-- --result, or MANIFEST, or both -- and takes -v and the two sides;
+--continue takes the flags of the gate as well, and nothing else is
+theirs. -o is not theirs: the start chose where the manifest goes,
+the record names it from then on and done acts on it, so there is no
+later moment at which the choice could be made. Every one of them
+keys on the record and on the manifest it names, and on nothing else:
+a dataset that carries no record is refused untouched, and an
+inherited value is no record, since user properties inherit down the
+naming tree and only a local one is ours. Each also checks that every
+snapshot the header names is still the snapshot it named, by guid,
+since a snapshot destroyed and taken again under the same name is
+another snapshot and these answers do not describe it.
+
+--from and --onto are optional on all four and change nothing: a verb
+reads the two sides out of the header. What they do is say which
+rebase the person thinks this is, and each is checked against the
+header by name and by guid, both numbers printed on a mismatch. A
+side that does not match is exit 2 with nothing touched.
 
     zfs_rebase --continue [--verify] [--no-gui] [--no-merge] \
-        --result DATASET
+        [--from SNAP] [--onto SNAP] (--result DATASET | MANIFEST)
 
 takes the rebase on from the gate its record names, through the
 gates that are left, in one process. Applying is idempotent -- every
@@ -313,7 +338,7 @@ choice keep for the person to answer. --no-merge stops it at that
 gate however the resolution reads, and is refused from a record
 already past the merge.
 
-    zfs_rebase --restart --result DATASET
+    zfs_rebase --restart (--result DATASET | MANIFEST)
 
 puts the result back as onto was -- destroying the clone and making
 it again from the onto snapshot the header names, with the same
@@ -325,7 +350,7 @@ is decided again: the manifest is the decision, a resolution's edits
 are discarded by definition, and the instruction the rebase was
 started with is not an edit.
 
-    zfs_rebase --verify --result DATASET
+    zfs_rebase --verify (--result DATASET | MANIFEST)
 
 reports and writes nothing at all, so a deliberate edit to a rebased
 file is shown and never overwritten. It exits 0 when nothing is
@@ -339,7 +364,7 @@ against that tree reported unchecked rather than guessed at. A
 result whose rebase reached done carries no record and no verb finds
 it; naming a settled result by its manifest is verify-settled's.
 
-    zfs_rebase --abort --result DATASET
+    zfs_rebase --abort (--result DATASET | MANIFEST)
 
 releases the holds, puts the result back -- destroying the clone, or
 rolling the dataset back to its pre-apply snapshot, destroying that

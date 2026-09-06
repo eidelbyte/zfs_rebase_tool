@@ -33,11 +33,11 @@
 #      no origin at all -- both exit 2 -- and --base without
 #      --allow-unrelated is a usage error, since a derived base is
 #      not open to a second opinion;
-#  0a. for probe.zrt, --allow-unrelated: that same unrelated pair
-#      goes through with no base at all, its manifest saying
-#      "#base - 0"; it goes through with --base given, whose snapshot
-#      is walked like the other two; and a --base newer than a side
-#      is refused with exit 2;
+#  0a. for probe.zrt, --allow-unrelated: it is a usage error without
+#      --base, which it needs, and with --base given that same
+#      unrelated pair goes through, the base's snapshot walked like
+#      the other two; a --base newer than a side is refused with
+#      exit 2;
 #   1. -n: the manifest equals the fixture's expect block from the
 #      #mode line on, which is where the decision starts -- above it
 #      the header is this run's own and the fixture's is --posix's
@@ -94,7 +94,15 @@
 #      properties, with exit 2 and no harm to it; and --result
 #      spelled as a snapshot of the result, one that does not even
 #      exist, finds the same rebase, since the name is taken as its
-#      dataset;
+#      dataset. On a conflicted fixture the other way of naming a run
+#      is taken too: --continue and --verify given the manifest as
+#      the one operand do what they did with --result, --from and
+#      --onto given beside it are checked against the header (a side
+#      that is not this rebase's is exit 2), and the cross-check
+#      refuses both mismatches with exit 2 and both sides named --
+#      a manifest whose header names another run beside --result,
+#      and a copy of this rebase's own manifest, which its header
+#      names but its record does not;
 #  3b. for probe.zrt, drift and its repair: /n, which the manifest
 #      copied, is edited behind the tool's back with readonly off
 #      and on again, --verify then exits 3 naming "drifted 1, first
@@ -106,7 +114,9 @@
 #      record, the manifest is applied from the first gate, and the
 #      run lands at the same phase under the same tag with the same
 #      three holds and the same tree;
-#   4. the end of the rebase. Where one is still open, --abort:
+#   4. the end of the rebase. Where one is still open, --abort by
+#      its manifest -- the second verb named that way, and the one
+#      that acts:
 #      exit 0, every hold released, the dataset gone, the -o manifest
 #      and its resolution still there because they are the user's,
 #      the run directory gone down to /var/db/zfs_rebase, and a
@@ -383,20 +393,17 @@ echo "ok   --base without --allow-unrelated refused (exit 2)"
 case "$fixture" in
 */probe.zrt|probe.zrt)
 	say "0a. --allow-unrelated"
-	# The same unrelated pair the derivation just refused, taken
-	# with the flag: no derivation, no pruning, and no base at
-	# all, so the manifest's header says so with a "-" -- every
-	# name of either side is an add and the decision is their
-	# union. $POOL/other is an empty dataset, so onto's whole
-	# tree is added on onto's side alone: 0 or 1, never 2.
+	# The flag needs --base (ruled 2026-09-06): with no branch
+	# point to derive and none given there is no third tree to
+	# read the two sides against, and the empty tree that used to
+	# stand there is gone. It is a usage error, so nothing is
+	# read and nothing is made.
 	"$bin" --allow-unrelated -n -o "$tmp/got-u" \
-	    --from "$POOL/other@x" --onto "$POOL/onto@work"
+	    --from "$POOL/other@x" --onto "$POOL/onto@work" > /dev/null 2>&1
 	st=$?
-	[ $st -eq 0 ] || [ $st -eq 1 ] || \
-	    fail "--allow-unrelated with no base exited $st, want 0 or 1"
-	grep -q '^#base - 0$' "$tmp/got-u" || \
-	    { head -5 "$tmp/got-u"; fail "the empty base is not '#base - 0'"; }
-	echo "ok   --allow-unrelated with no base (exit $st), #base - 0"
+	[ $st -eq 2 ] || fail "--allow-unrelated with no base exited $st, want 2"
+	[ -e "$tmp/got-u" ] && fail "the refused run wrote $tmp/got-u"
+	echo "ok   --allow-unrelated without --base refused (exit 2)"
 	# A base given by hand: older than both sides, in one pool
 	# with them, and its dataset mounted, so its tree is walked
 	# like the other two.
@@ -693,6 +700,68 @@ else
 	[ $st -eq 0 ] || \
 	    fail "--verify on a snapshot spelling exited $st, want 0"
 	echo "ok   --result $POOL/result@nosuch is the same rebase"
+
+	# And the other way of naming the same rebase: the manifest
+	# as the one operand. Its header names the result, the
+	# result's record names it back, and the verb does exactly
+	# what it did with --result -- waits at its unanswered
+	# skeleton, exit 1, the phase and the tree unmoved.
+	"$bin" --continue "$tmp/got" > "$tmp/cont1m" 2>&1
+	st=$?
+	[ $st -eq 1 ] || \
+	    { cat "$tmp/cont1m"; fail "--continue MANIFEST exited $st, want 1"; }
+	grep -q "$RES" "$tmp/cont1m" || \
+	    { cat "$tmp/cont1m"; fail "--continue MANIFEST named no resolution"; }
+	[ "$(recval zfs_rebase:phase "$POOL/result")" = "$phase" ] || \
+	    fail "--continue MANIFEST moved the phase"
+	echo "ok   --continue $tmp/got: the same rebase by its manifest"
+
+	# --verify by manifest, and the two sides given with it: they
+	# name no rebase and change nothing, and each must be the
+	# snapshot the header kept, by name and by guid.
+	"$bin" --verify --from "$POOL/from@work" --onto "$POOL/onto@work" \
+	    "$tmp/got" > "$tmp/verify1m" 2>&1
+	st=$?
+	[ $st -eq 0 ] || \
+	    { cat "$tmp/verify1m"; fail "--verify MANIFEST --from --onto exited $st, want 0"; }
+	echo "ok   --verify MANIFEST with --from and --onto: exit 0"
+	# A side that is not this rebase's is exit 2, nothing touched.
+	"$bin" --verify --from "$POOL/other@x" "$tmp/got" > "$tmp/verify1x" 2>&1
+	st=$?
+	[ $st -eq 2 ] || \
+	    { cat "$tmp/verify1x"; fail "--verify with a wrong --from exited $st, want 2"; }
+	[ "$(recval zfs_rebase:phase "$POOL/result")" = "$phase" ] || \
+	    fail "a refused --from moved the phase"
+	echo "ok   a --from that is not this rebase's: exit 2"
+
+	# The cross-check, both halves. A manifest of another run
+	# beside --result: the header names $POOL/plain and --result
+	# names $POOL/result, and two documents that do not name each
+	# other are not one rebase.
+	sed "s|^#result $POOL/result\$|#result $POOL/plain|" "$tmp/got" \
+	    > "$tmp/other-manifest"
+	grep -q "^#result $POOL/plain\$" "$tmp/other-manifest" || \
+	    fail "the harness could not write a manifest of another run"
+	"$bin" --continue --result "$POOL/result" "$tmp/other-manifest" \
+	    > "$tmp/x1" 2>&1
+	st=$?
+	[ $st -eq 2 ] || \
+	    { cat "$tmp/x1"; fail "a manifest of another run exited $st, want 2"; }
+	grep -q "$POOL/plain" "$tmp/x1" && grep -q "$POOL/result" "$tmp/x1" || \
+	    { cat "$tmp/x1"; fail "the refusal did not say both sides"; }
+	# And a copy of this rebase's own manifest, which its header
+	# does name but its record does not: the record names the
+	# path the start recorded, and this is another file.
+	cp "$tmp/got" "$tmp/copy-manifest"
+	"$bin" --continue "$tmp/copy-manifest" > "$tmp/x2" 2>&1
+	st=$?
+	[ $st -eq 2 ] || \
+	    { cat "$tmp/x2"; fail "a copy of the manifest exited $st, want 2"; }
+	grep -q "$tmp/copy-manifest" "$tmp/x2" && grep -q "$tmp/got" "$tmp/x2" || \
+	    { cat "$tmp/x2"; fail "the refusal did not name both documents"; }
+	[ "$(recval zfs_rebase:phase "$POOL/result")" = "$phase" ] || \
+	    fail "a refused cross-check moved the phase"
+	echo "ok   the cross-check refuses both mismatches (exit 2)"
 fi
 
 # A dataset that only inherits the record's properties is no result
@@ -842,7 +911,10 @@ if [ $settled -eq 1 ]; then
 	echo "ok   settled: --abort exits 2, and the result was the"
 	echo "     harness's to take away"
 else
-	"$bin" --abort --result "$POOL/result" || fail "abort exited $?"
+	# By its manifest, which names this rebase as --result does:
+	# the header names $POOL/result and the record names this
+	# file back, so the abort that follows is the same abort.
+	"$bin" --abort "$tmp/got" || fail "abort exited $?"
 	for s in "$POOL/base@base" "$POOL/from@work" "$POOL/onto@work"; do
 		held=$(zfs holds -H "$s") || fail "zfs holds $s"
 		[ -z "$held" ] || \

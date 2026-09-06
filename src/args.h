@@ -11,7 +11,8 @@
  * What the command asks for. The fresh run is the default and the
  * one with no word of its own; --continue, --restart and --abort are
  * verbs on a rebase that already exists, and --verify is a verb when
- * it stands alone on a --result and a flag otherwise. The last three
+ * it names one -- alone on a --result, or on a manifest, which no
+ * start takes -- and a flag otherwise. The last three
  * are the project's own harness aids: they take the first argument
  * position, they have no short form, and they are no part of
  * ordinary use.
@@ -33,6 +34,11 @@ enum zr_verb {
  * every refusal below is reachable on a machine with no ZFS in it.
  * Every string points into argv, which outlives the run.
  *
+ * za_path is the one operand of ordinary use: the path of a
+ * manifest, which names a rebase to a verb exactly as --result does.
+ * A start writes a manifest and reads none, so it takes no operand
+ * at all, and a second one is a refusal rather than a second run.
+ *
  * za_arg holds the operands of the harness verbs, in the order they
  * were given: two for --build-fixture and three for the other two.
  */
@@ -43,6 +49,7 @@ struct zr_args {
 	const char	*za_result;	/* -r, --result */
 	const char	*za_manifest;	/* -o, --manifest */
 	const char	*za_base;	/* -b, --base */
+	const char	*za_path;	/* MANIFEST, the one operand */
 	const char	*za_arg[3];
 	zr_mode_t	za_mode;	/* -p, --permissive-merge */
 	int		za_dryrun;	/* -n, --dry-run */

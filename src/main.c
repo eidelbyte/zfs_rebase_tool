@@ -34,7 +34,7 @@
 
 static const char usage[] =
 	"usage: zfs_rebase [-p] [-v] [-q] [--manifest FILE] [--verify]\n"
-	"                  [--allow-unrelated [--base SNAP]]\n"
+	"                  [--allow-unrelated --base SNAP]\n"
 	"                  [--take-onto | --take-from] [--no-gui] "
 	    "[--no-merge]\n"
 	"                  --from SNAP|DATASET --onto SNAP|DATASET --result "
@@ -42,23 +42,31 @@ static const char usage[] =
 	"       zfs_rebase --dry-run [-p] [--manifest FILE]\n"
 	"                  --from SNAP|DATASET --onto SNAP|DATASET\n"
 	"       zfs_rebase --continue [--verify] [--no-gui] [--no-merge]\n"
-	"                  --result NAME\n"
-	"       zfs_rebase --restart --result NAME\n"
-	"       zfs_rebase --abort --result NAME\n"
-	"       zfs_rebase --verify --result NAME\n"
+	"                  [--from SNAP] [--onto SNAP]\n"
+	"                  (--result NAME | MANIFEST)\n"
+	"       zfs_rebase --restart (--result NAME | MANIFEST)\n"
+	"       zfs_rebase --abort   (--result NAME | MANIFEST)\n"
+	"       zfs_rebase --verify  (--result NAME | MANIFEST)\n"
 	"       zfs_rebase --posix [-p] [-o FILE] BASEDIR FROMDIR ONTODIR\n"
 	"       zfs_rebase --build-fixture FIXTURE DIR\n"
 	"       zfs_rebase --edit-fixture FIXTURE TREE DIR\n"
+	"a verb names its rebase by --result, the dataset carrying the\n"
+	"record, or by MANIFEST, the path of that rebase's manifest; given\n"
+	"both, the two must name each other. A start takes no MANIFEST.\n"
 	"every flag has both forms, and the two parse to the same run:\n"
 	"  -f, --from SNAP|DS      the side whose changes are replayed "
 	    "(--off-of)\n"
+	"                          on a verb: checked against the header, "
+	    "never\n"
+	"                          the thing that says which rebase it is\n"
 	"  -t, --onto SNAP|DS      the side they go onto (--to); it sets the "
 	    "form\n"
 	"  -r, --result NAME       the name the run makes; a verb's rebase\n"
 	"  -p, --permissive-merge  permissive merge; strict is the default\n"
 	"  -v, --verbose           counts and steps on stderr\n"
 	"  -o, --manifest FILE     where the manifest goes, resolution beside "
-	    "it\n"
+	    "it;\n"
+	"                          a start option, and a dry run's\n"
 	"  -V, --verify            report the final check; it never repairs\n"
 	"  -q, --quiet             silence that report; a start option, kept\n"
 	"                          in the record for the whole run\n"
@@ -73,8 +81,11 @@ static const char usage[] =
 	"  -c, --continue          take the rebase on from the gate it left\n"
 	"  -R, --restart           the result back as onto was, applied again\n"
 	"  -a, --abort             the rebase undone, as if it never happened\n"
-	"  -n, --dry-run           the manifest only; --result is ignored\n"
-	"  -u, --allow-unrelated   no derivation of the base, and no pruning\n"
+	"  -n, --dry-run           the manifest only, to stdout without -o;\n"
+	"                          --result is ignored\n"
+	"  -u, --allow-unrelated   no derivation of the base, and no pruning;\n"
+	"                          it needs --base, since there is none to "
+	    "derive\n"
 	"  -b, --base SNAP         with --allow-unrelated only: the base\n"
 	"--posix, --build-fixture and --edit-fixture are the project's own\n"
 	"test aids: they are long only and take the first argument position.\n"
@@ -311,10 +322,24 @@ main(int argc, char **argv)
 {
 	struct zr_args a;
 	struct zr_run_opts ro;
+	struct zr_verb_opts vo;
 	char err[512];
 
 	if (zr_args_parse(argc, argv, &a, err, sizeof (err)) != 0)
 		return (die_usage(err));
+	/*
+	 * What a verb was given: the run it acts on, named by
+	 * --result or by its manifest or by both, and the two sides,
+	 * which it checks against the header and does not need.
+	 */
+	memset(&vo, 0, sizeof (vo));
+	vo.result = a.za_result;
+	vo.path = a.za_path;
+	vo.from = a.za_from;
+	vo.onto = a.za_onto;
+	vo.verify = a.za_verify;
+	vo.nomerge = a.za_nomerge;
+	vo.verbose = a.za_verbose;
 	switch (a.za_verb) {
 	case ZR_VERB_BUILD_FIXTURE:
 		return (build_fixture(a.za_arg[0], a.za_arg[1]));
@@ -324,14 +349,13 @@ main(int argc, char **argv)
 		return (run_posix(a.za_arg[0], a.za_arg[1], a.za_arg[2],
 		    a.za_mode, a.za_manifest));
 	case ZR_VERB_CONTINUE:
-		return (zr_continue(a.za_result, a.za_verify, a.za_nomerge,
-		    a.za_verbose));
+		return (zr_continue(&vo));
 	case ZR_VERB_RESTART:
-		return (zr_restart(a.za_result, a.za_verbose));
+		return (zr_restart(&vo));
 	case ZR_VERB_ABORT:
-		return (zr_abort(a.za_result, a.za_verbose));
+		return (zr_abort(&vo));
 	case ZR_VERB_REPORT:
-		return (zr_report(a.za_result, a.za_verbose));
+		return (zr_report(&vo));
 	case ZR_VERB_RUN:
 	default:
 		break;

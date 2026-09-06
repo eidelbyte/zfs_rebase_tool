@@ -469,7 +469,7 @@ the box, by the verbs that read a header back.
 | ZH6 | #base NAME GUID | covered: check_manifest.c |
 | ZH7 | #from NAME GUID | covered: check_manifest.c |
 | ZH8 | #onto NAME GUID | covered: check_manifest.c |
-| ZH9 | #base - 0, the run with no base | covered: check_manifest.c; box: run-fixture.sh case 0a |
+| ZH9 | #base - 0, a header naming no base | covered: check_manifest.c; the box half is retired: -u requires -b, ruled 2026-09-06, so no run writes such a header any more -- the parse still reads one, for a document written before the ruling or by hand |
 | ZH10 | #made from, and #made - | covered: check_manifest.c |
 | ZH11 | #tag zr- and hex digits, and #tag - | covered: check_manifest.c |
 | ZH12 | #take onto, from, - | covered: check_manifest.c |
@@ -584,7 +584,9 @@ guards {securelevel, private mountpoint, readonly flip, the
 self-check after an apply}; the run directory {made at start, held
 through every gate, gone at done, gone at --abort} crossed with
 where the documents live {inside it, or where -o put them};
-driver {flags, preconditions, exit status}; and, from ZX122 on, the
+driver {flags, preconditions, exit status}; how a run is named to a
+verb {--result, the manifest as the one operand, both, neither};
+and, from ZX122 on, the
 resolution as the driver carries it {the --take flag given or not,
 the gate flag given or not, the document complete or not, the choice
 answered by a flag or by hand, the verb that meets it}. Every row up
@@ -592,8 +594,9 @@ to ZX95 is box only; the command line's own dimensions -- spelling
 {long, short, alias}, value form {separate, joined by =}, command
 {fresh run, the four verbs, the three harness aids}, and refusal
 {both --take flags, a gate flag on a verb, --base without
---allow-unrelated, an unknown word, a missing value, a missing
-operand} -- are ZX100 to ZX121 and are read off struct zr_args on any
+--allow-unrelated, --allow-unrelated without --base, an unknown word,
+a missing value, a missing operand, a second one} -- are ZX100 to
+ZX121 and ZX180 to ZX187, and are read off struct zr_args on any
 machine, since the parse opens nothing. ZX122 onward are box rows
 again.
 
@@ -754,6 +757,14 @@ again.
 | ZX177 | a second rebase of the same result after done finds no run directory: the dataset form goes through, and the clone form is refused before make_rundir because the clone is still there | planned: box, box/run-fixture.sh D2 for the dataset form; the clone form's refusal is ZX16's result_ok and is asserted in step 3 |
 | ZX178 | make_rundir still refuses an EEXIST leaf: the directory is the lock for as long as a run is open | deferred: with done removing it, the only way to a leftover directory is to make one by hand; by hand on the box |
 | ZX179 | the two documents a run wrote into its own directory are unlinked at done, in the no--o form, before the directory goes | planned: box, box/run-kills.sh, whose caught signal at the done gate lets the run finish, and which then asserts no manifest, no resolution and no run directory |
+| ZX180 | each of the four verbs names its run by --result, by MANIFEST, by both, and by neither, which is refused | covered: check_args.c; box, box/run-fixture.sh 3a for --continue and --verify by manifest and step 4 for --abort by manifest |
+| ZX181 | the operand stands anywhere among the flags, and a second one is refused: one manifest names one rebase | covered: check_args.c |
+| ZX182 | the cross-check, both halves: the header must name the dataset the command names, and that dataset's record must name the file given, and either mismatch is exit 2 with both sides in the message | covered: run_named and check_given in src/run.c; box, box/run-fixture.sh 3a, which gives a manifest whose header names another run and then a copy of this rebase's own |
+| ZX183 | -o on each of the four verbs is refused, both spellings, beside --result and beside a manifest alike; on a start and on a dry run it is the flag it is | covered: check_args.c |
+| ZX184 | --allow-unrelated without --base is refused, both spellings, on a start and on a dry run | covered: check_args.c; box, box/run-fixture.sh 0a, which also asserts that the refused run wrote no manifest |
+| ZX185 | a start takes no operand, and neither does a dry run, wherever it is written | covered: check_args.c |
+| ZX186 | --from and --onto are accepted on a verb and name no rebase: each is checked against the header by name and by guid, and a side that is not this rebase's is exit 2 with nothing touched | covered: check_args.c for the parse; box, box/run-fixture.sh 3a for the check and its refusal |
+| ZX187 | the rule that reads a run's dataset out of a header: #result in the clone form, the dataset of #onto in the dataset form with --result spelled short and spelled full, and a refusal for a --posix document and for a dry run's "-" | covered: check_args.c, over a parsed header zr_run_dataset takes and nothing else |
 | ZX146 | zfs_rebase:base and :base_guid are written by nothing: the branch point is #base in the header | covered: the grep over src, tests and the docs; box, the empty property list after a run |
 | ZX147 | zfs_rebase:from and :from_guid likewise: #from | covered: the same |
 | ZX148 | zfs_rebase:onto and :onto_guid likewise: #onto | covered: the same |
@@ -814,6 +825,22 @@ expect block, the header's #take, and the resolution's drift line --
 and box/run-kills.sh keeps the no--o placement whole: it asserts
 <rundir>/manifest and <rundir>/resolution at every gate from
 "decided" on and their absence at done, which is ZX179.
+
+ZX180 to ZX187 are cli-shape's: a run named to a verb by its
+manifest as well as by --result, the two cross-checked where both
+are given, --from and --onto taken on a verb and checked against the
+header, -o at the start alone, and --allow-unrelated needing --base.
+All but two are read off the parse. The two that are not are ZX182,
+the cross-check, which wants a record on a real dataset and a
+manifest the record names, and the box half of ZX180 and ZX186; and
+ZX187, the rule that turns a header into the dataset that carries
+its record, is on the Mac because it is a function over a parsed
+header -- zr_run_dataset, exported for exactly that -- and opens no
+file and no pool. The empty-tree base went with ZX184: the box case
+that read the two sides against it is gone from
+box/run-fixture.sh 0a, and the half of ZH9 that said a run writes
+"#base - 0" is retired with it, the parse's half standing, since a
+document written before the ruling still has to be readable.
 
 ZX137 to ZX157 are record-slim's: the command line's two changes
 (--quiet added, --overwrite gone), the four properties the record

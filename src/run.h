@@ -3,7 +3,10 @@
 #ifndef ZR_RUN_H
 #define	ZR_RUN_H
 
+#include <stddef.h>
+
 #include "decide.h"
+#include "manifest.h"
 
 #define	ZR_NAME_MAX	1024	/* dataset names and mountpoints */
 
@@ -33,12 +36,11 @@
  * unrelated is the one exception to all of that. Two sides that
  * share no origin have no branch point to work out, so the
  * derivation is skipped, the pruning is off -- an object number
- * means nothing across two lineages -- and the base is base when the
- * user gave one, a snapshot neither side is older than, or the empty
- * tree when they did not, which makes every name an add on its side
- * and the decision the union of the two with a conflict wherever
- * they disagree. base is NULL without unrelated, which the driver
- * refuses as a usage error.
+ * means nothing across two lineages -- and the base is base, a
+ * snapshot neither side is older than. The two go together: base is
+ * NULL without unrelated and unrelated is nothing without base, and
+ * the driver refuses either alone as a usage error (ruled
+ * 2026-09-06; there is no empty-tree base any more).
  */
 struct zr_run_opts {
 	const char	*from;		/* pool/fs@snap or pool/fs */
@@ -77,12 +79,50 @@ struct zr_run_opts {
 int zr_run(const struct zr_run_opts *);
 
 /*
- * The verbs on a rebase that already exists. result for all three is
- * the dataset carrying the record -- a snapshot name is taken as its
- * dataset, so both spellings find the same rebase -- and a dataset
- * with no record of ours is refused untouched. The record is the
- * four properties; everything else each verb needs is in the header
- * of the manifest the record names.
+ * What a verb was given (documents-design.md, section 6). A run is
+ * named by result, the dataset carrying the record -- a snapshot
+ * name is taken as its dataset, so both spellings of the dataset
+ * form's --result find the same rebase -- or by path, the manifest
+ * of that run, whose header names the dataset: zp_result in the
+ * clone form, and the dataset of zp_onto in the dataset form, where
+ * zp_result is the pre-apply snapshot as --result spelled it. Given
+ * both, the two must name each other: the record's manifest property
+ * must be that file and the header must name that dataset, and a
+ * mismatch is a refusal that says both sides.
+ *
+ * from and onto are optional and change nothing: a verb reads the
+ * two sides from the header, and a person who names them is saying
+ * which rebase they think this is, which is checked against the
+ * header by name and by guid.
+ *
+ * verify and nomerge are --continue's alone; the others read neither.
+ */
+struct zr_verb_opts {
+	const char	*result;	/* -r, or NULL */
+	const char	*path;		/* MANIFEST, or NULL */
+	const char	*from;		/* -f, or NULL */
+	const char	*onto;		/* -t, or NULL */
+	int		verify;
+	int		nomerge;
+	int		verbose;
+};
+
+/*
+ * The dataset that carries the record of the run a manifest
+ * describes, by the rule above: 0 with buf filled, or -1 with one
+ * line in err. It reads a parsed header and nothing else -- no file,
+ * no pool -- which is what puts the rule within reach of a machine
+ * with no ZFS in it.
+ */
+int zr_run_dataset(const struct zr_parsed *p, char *buf, size_t buflen,
+    char *err, size_t errlen);
+
+/*
+ * The verbs on a rebase that already exists. Each finds its run as
+ * struct zr_verb_opts says, and a dataset with no record of ours is
+ * refused untouched. The record is the four properties; everything
+ * else each verb needs is in the header of the manifest the record
+ * names.
  *
  * zr_continue takes the rebase on from the gate its record names,
  * through the gates that are left, in one process: the recorded
@@ -110,9 +150,9 @@ int zr_run(const struct zr_run_opts *);
  * saying which actions it could not check and why. Exit 0 when
  * nothing is pending or drifted, 3 when something is.
  */
-int zr_continue(const char *result, int verify, int nomerge, int verbose);
-int zr_restart(const char *result, int verbose);
-int zr_report(const char *result, int verbose);
+int zr_continue(const struct zr_verb_opts *);
+int zr_restart(const struct zr_verb_opts *);
+int zr_report(const struct zr_verb_opts *);
 
 /*
  * Undo one rebase: release the holds the manifest's header names,
@@ -134,6 +174,6 @@ int zr_report(const char *result, int verbose);
  * the form of the run is one of the things the manifest was
  * carrying. It says so, and says what to run for each form.
  */
-int zr_abort(const char *result, int verbose);
+int zr_abort(const struct zr_verb_opts *);
 
 #endif	/* ZR_RUN_H */

@@ -119,10 +119,12 @@ za_verb_word(enum zr_verb v)
 }
 
 /*
- * One argument of the command, matched against the table. Every
- * argument in the flag section is a flag -- the tool takes no
- * operands there -- so anything else is a refusal rather than the
- * end of the options. *i is advanced over a value the flag took.
+ * One argument of the command, matched against the table. The caller
+ * has already taken the one operand of ordinary use -- a manifest's
+ * path, which begins with no dash -- so everything that reaches here
+ * is meant as a flag, and a word that is not one is a refusal rather
+ * than the end of the options. *i is advanced over a value the flag
+ * took.
  */
 static int
 za_one(int argc, char **argv, int *i, const struct zr_opt **opt,
@@ -286,8 +288,17 @@ za_fixture(int argc, char **argv, struct zr_args *out, int n, char *err,
 /*
  * Which command this is. --continue, --restart and --abort each name
  * themselves and no two of them go together; --verify names the
- * report only when it stands alone on a result, since with a rebase
- * or a --continue it is the flag asking for the final check.
+ * report only where it names a rebase that already exists, since
+ * with a fresh run or a --continue it is the flag asking for the
+ * final check.
+ *
+ * It names one two ways: standing alone on a result, which is the
+ * older of the two and is what tells the verb from the flag on a
+ * command that gives the sides, and standing on a manifest, which no
+ * fresh run takes and which therefore says the same thing whatever
+ * else is given. (Making --verify a verb and only a verb, refused
+ * beside a motional one, is verify-schedule's; nothing here changes
+ * what a command written today means.)
  */
 static int
 za_verb(struct zr_args *out, int cont, int rest, int abrt, char *err,
@@ -302,8 +313,8 @@ za_verb(struct zr_args *out, int cont, int rest, int abrt, char *err,
 		out->za_verb = ZR_VERB_RESTART;
 	else if (abrt != 0)
 		out->za_verb = ZR_VERB_ABORT;
-	else if (out->za_verify != 0 && out->za_from == NULL &&
-	    out->za_onto == NULL)
+	else if (out->za_verify != 0 && (out->za_path != NULL ||
+	    (out->za_from == NULL && out->za_onto == NULL)))
 		out->za_verb = ZR_VERB_REPORT;
 	else
 		out->za_verb = ZR_VERB_RUN;
@@ -345,26 +356,39 @@ za_gate_flags(const struct zr_args *out, char *err, size_t errlen)
 }
 
 /*
- * The verbs on a result. Each goes alone -- one --result, the gate
- * flags --continue is allowed, -v, and nothing else -- because there
- * is nothing for a flag of a fresh run to act on: a rebase is
- * decided once, and an open one is settled by --continue or --abort
- * whatever flags are given.
+ * The verbs on a rebase that already exists. Each names the run it
+ * acts on -- --result, the dataset carrying the record, or the
+ * manifest of that run as the one operand, or both, which the driver
+ * cross-checks -- and takes the two sides, the gate flags --continue
+ * is allowed and -v, and nothing else, because there is nothing for
+ * a flag of a fresh run to act on: a rebase is decided once, and an
+ * open one is settled by --continue or --abort whatever flags are
+ * given.
+ *
+ * --from and --onto are the exception among those. A verb reads the
+ * two sides from the header and needs neither, but a person who
+ * names them is saying which rebase they think this is, and the
+ * driver checks them against the header by name and by guid. What
+ * they can never do is change what a verb acts on.
  */
 static int
 za_verb_flags(const struct zr_args *out, char *err, size_t errlen)
 {
 	const char *word = za_verb_word(out->za_verb);
 
-	if (out->za_result == NULL)
-		return (za_no(err, errlen, "%s needs --result, the dataset "
-		    "carrying the record", word));
-	if (out->za_from != NULL || out->za_onto != NULL)
-		return (za_no(err, errlen, "%s reads the two sides from the "
-		    "record; --from and --onto say nothing to it", word));
+	if (out->za_result == NULL && out->za_path == NULL)
+		return (za_no(err, errlen, "%s needs the run it acts on: "
+		    "--result, the dataset carrying the record, or the "
+		    "manifest of that run", word));
+	/*
+	 * -o chooses where a manifest is written, and the start is
+	 * the only command that writes one: the record names the path
+	 * from then on and done acts on it, so there is no later
+	 * moment at which the choice could be made.
+	 */
 	if (out->za_manifest != NULL)
-		return (za_no(err, errlen, "%s reads the manifest the record "
-		    "names; --manifest says nothing to it", word));
+		return (za_no(err, errlen, "%s reads the manifest from the "
+		    "record the start wrote; -o says nothing to it", word));
 	/*
 	 * --quiet is latched at the start, in the record, and is the
 	 * whole run's: a verb that arrives later reads it there and
@@ -396,6 +420,30 @@ za_run_flags(const struct zr_args *out, char *err, size_t errlen)
 	if (out->za_from == NULL || out->za_onto == NULL)
 		return (za_no(err, errlen, "a rebase needs --from and --onto, "
 		    "the two sides"));
+	/*
+	 * A manifest names a rebase that exists, and this command
+	 * makes one: what a start has to say about where its own
+	 * manifest goes it says with -o.
+	 */
+	if (out->za_path != NULL)
+		return (za_no(err, errlen, "\"%s\": a manifest names a rebase "
+		    "to a verb, and this command starts one", out->za_path));
+	/*
+	 * A base is given only where there is none to work out: with
+	 * a shared origin the branch point is what it is, and a
+	 * second opinion about it is not something the tool could act
+	 * on. Where there is no shared origin there is nothing to
+	 * derive and nothing to fall back on either, so the flag that
+	 * says the two sides are unrelated needs the base with it.
+	 */
+	if (out->za_base != NULL && out->za_unrelated == 0)
+		return (za_no(err, errlen, "--base is given with "
+		    "--allow-unrelated, where there is no branch point to "
+		    "derive"));
+	if (out->za_unrelated != 0 && out->za_base == NULL)
+		return (za_no(err, errlen, "--allow-unrelated needs --base: "
+		    "two sides that share no origin have no branch point to "
+		    "derive, and the tool invents none"));
 	/*
 	 * A dry run creates nothing that would need a name, so it
 	 * ignores --result rather than demanding one.
@@ -441,6 +489,24 @@ zr_args_parse(int argc, char **argv, struct zr_args *out, char *err,
 		return (za_fixture(argc, argv, out, 3, err, errlen));
 	}
 	for (i = 1; i < argc; i++) {
+		/*
+		 * The one operand of ordinary use, wherever it stands
+		 * among the flags: a manifest, which names the rebase
+		 * a verb acts on. A word beginning with a dash is a
+		 * flag or nothing, so a path that begins with one is
+		 * spelled ./-name, as it is for every other tool.
+		 */
+		if (argv[i][0] != '-') {
+			if (argv[i][0] == '\0')
+				return (za_no(err, errlen, "an empty "
+				    "argument names no manifest"));
+			if (out->za_path != NULL)
+				return (za_no(err, errlen, "one manifest "
+				    "names one rebase; \"%s\" is a second",
+				    argv[i]));
+			out->za_path = argv[i];
+			continue;
+		}
 		if (za_one(argc, argv, &i, &opt, &val, err, errlen) != 0)
 			return (-1);
 		za_set(out, opt, val, &cont, &rest, &abrt);
@@ -449,16 +515,6 @@ zr_args_parse(int argc, char **argv, struct zr_args *out, char *err,
 		return (-1);
 	if (za_gate_flags(out, err, errlen) != 0)
 		return (-1);
-	/*
-	 * A base is given only where there is none to work out: with
-	 * a shared origin the branch point is what it is, and a
-	 * second opinion about it is not something the tool could act
-	 * on.
-	 */
-	if (out->za_base != NULL && out->za_unrelated == 0)
-		return (za_no(err, errlen, "--base is given with "
-		    "--allow-unrelated, where there is no branch point to "
-		    "derive"));
 	if (out->za_verb != ZR_VERB_RUN)
 		return (za_verb_flags(out, err, errlen));
 	return (za_run_flags(out, err, errlen));
