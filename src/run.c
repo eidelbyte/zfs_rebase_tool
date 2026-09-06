@@ -1210,8 +1210,14 @@ make_rundir(struct run *r)
  * WORKDIR for as long as rmdir keeps succeeding. Nothing is ever
  * removed recursively, so a directory another run shares simply
  * refuses to go and the walk stops there.
+ *
+ * What comes back is the run directory's own errno, or 0 where it
+ * went or was gone already: that one is the caller's to report,
+ * since a directory that will not go is a rebase's leavings. A
+ * parent that will not go is not, so the walk swallows those and
+ * stops.
  */
-static void
+static int
 rmdir_run(const char *result)
 {
 	size_t top = sizeof (WORKDIR) - 1;
@@ -1220,15 +1226,19 @@ rmdir_run(const char *result)
 
 	if ((size_t)snprintf(dir, sizeof (dir), "%s/%s/mnt", WORKDIR,
 	    result) >= sizeof (dir))
-		return;
+		return (ENAMETOOLONG);
 	(void) rmdir(dir);
 	slash = strrchr(dir, '/');
 	*slash = '\0';
-	while (rmdir(dir) == 0) {
+	if (rmdir(dir) != 0 && errno != ENOENT)
+		return (errno);
+	for (;;) {
 		slash = strrchr(dir, '/');
 		if (slash == NULL || (size_t)(slash - dir) <= top)
-			break;
+			return (0);
 		*slash = '\0';
+		if (rmdir(dir) != 0)
+			return (0);
 	}
 }
 
@@ -1258,6 +1268,32 @@ resolution_beside(char *buf, size_t len, const char *manifest)
 }
 
 /*
+ * Is the manifest the record names inside this result's run
+ * directory? That is one string compare against the directory's path
+ * and no parse of either side: the recorded path went through
+ * realpath when it was written, so both are resolved and a prefix
+ * means what it says. Everything the tool removes turns on this. The
+ * run's own two documents live in the directory and go with it; a -o
+ * manifest and the resolution beside it are the user's, wherever
+ * they asked for them, and the tool removes no file outside the run
+ * directory -- at done and at --abort alike (documents-design.md,
+ * section 4).
+ */
+static int
+in_rundir(const char *result, const char *manifest)
+{
+	char dir[ZR_NAME_MAX];
+	size_t n;
+
+	if (manifest == NULL || manifest[0] == '\0')
+		return (0);
+	n = (size_t)snprintf(dir, sizeof (dir), "%s/%s/", WORKDIR, result);
+	if (n >= sizeof (dir))
+		return (0);
+	return (strncmp(manifest, dir, n) == 0);
+}
+
+/*
  * And the rule itself, which is the only thing that says where a
  * resolution is: beside the manifest the record names, which means
  * <rundir>/resolution when the manifest is in the run directory and
@@ -1268,15 +1304,61 @@ resolution_beside(char *buf, size_t len, const char *manifest)
 static void
 resolution_of(char *buf, size_t len, const char *result, const char *manifest)
 {
-	char dir[ZR_NAME_MAX];
-	size_t n;
-
-	n = (size_t)snprintf(dir, sizeof (dir), "%s/%s/", WORKDIR, result);
 	if (manifest != NULL && manifest[0] != '\0' &&
-	    (n >= sizeof (dir) || strncmp(manifest, dir, n) != 0))
+	    !in_rundir(result, manifest))
 		resolution_beside(buf, len, manifest);
 	else
 		resolution_path(buf, len, result);
+}
+
+/*
+ * One document of a run, taken away. A file already gone is not a
+ * failure -- an --abort can follow an --abort, and a person may have
+ * tidied -- and one that will not go is said and nothing more: it is
+ * a file, and the rebase it belonged to is over either way.
+ */
+static void
+unlink_doc(const char *path)
+{
+	if (unlink(path) != 0 && errno != ENOENT)
+		(void) fprintf(stderr, "zfs_rebase: %s: %s\n", path,
+		    strerror(errno));
+}
+
+/*
+ * The run directory at done, which is where a rebase's traces end:
+ * the two documents the run wrote there are unlinked -- and only
+ * those, since a -o pair is the user's and stays -- and then mnt,
+ * the directory and every empty parent up to WORKDIR go by rmdir,
+ * never recursively. The settle came first, so mnt is empty: the
+ * clone was handed to the void and the dataset home, both after the
+ * walks were closed.
+ *
+ * Nothing here can change what the invocation returns. The rebase is
+ * done -- the record is off the result and the holds are given back
+ * -- and a directory that will not go costs the next run of this
+ * result the EEXIST make_rundir raises and nothing else. So every
+ * failure is reported and none is passed up.
+ */
+static void
+rundir_done(const char *result, const char *manifest, int verbose)
+{
+	char resolution[ZR_NAME_MAX];
+	int e;
+
+	if (in_rundir(result, manifest)) {
+		unlink_doc(manifest);
+		resolution_of(resolution, sizeof (resolution), result,
+		    manifest);
+		unlink_doc(resolution);
+	}
+	e = rmdir_run(result);
+	if (e != 0)
+		(void) fprintf(stderr, "zfs_rebase: %s/%s: %s\n", WORKDIR,
+		    result, strerror(e));
+	else if (verbose)
+		(void) fprintf(stderr, "zfs_rebase: removed %s/%s\n", WORKDIR,
+		    result);
 }
 
 /*
@@ -2172,7 +2254,7 @@ teardown(struct run *r, int keep)
 			(void) fprintf(stderr, "zfs_rebase: destroy %s: %s\n",
 			    r->fromsnap, e);
 		if (r->dirmade)
-			rmdir_run(r->rds);
+			(void) rmdir_run(r->rds);
 	} else if (r->dropfrom) {
 		/*
 		 * done, and the from side was the tool's own
@@ -2188,6 +2270,18 @@ teardown(struct run *r, int keep)
 			(void) fprintf(stderr, "zfs_rebase: %s was the tool's "
 			    "own and is destroyed\n", r->fromsnap);
 	}
+	/*
+	 * And done takes the run directory with it, which is the last
+	 * thing a rebase leaves anywhere. It goes here and not before
+	 * the settle above, because mnt is only empty once the result
+	 * is off the private mount; and after zr_run cleared the
+	 * record, so that nothing names a manifest this is about to
+	 * unlink. A run discarded before it recorded took its own
+	 * directory away in the branch above, and a run kept at a
+	 * gate keeps its directory: the rebase lives in it.
+	 */
+	if (r->settled && r->dirmade)
+		rundir_done(r->rds, r->manpath, r->o.verbose);
 	/*
 	 * A kept run keeps its holds: they are the rebase, and its
 	 * record names the tag that gives them back.
@@ -2605,7 +2699,16 @@ zr_run(const struct zr_run_opts *o)
 			    "tree, and %s is what it was before\n", r.rds,
 			    r.ontosnap);
 	}
-	manifest_note(&r);
+	/*
+	 * And the manifest, where there is still one to name. The two
+	 * documents a run wrote into its own directory go with that
+	 * directory at done, so only a -o pair outlives the rebase and
+	 * pointing at a path about to be unlinked would be a lie. The
+	 * same holds on the --verify branch above, whose nested verb
+	 * has already been through done and taken the directory.
+	 */
+	if (!in_rundir(r.rds, r.manpath))
+		manifest_note(&r);
 	rc = EXIT_CLEAN;
 done:
 	teardown(&r, keep);
@@ -4230,6 +4333,16 @@ resume_close(struct resume *s)
 			(void) fprintf(stderr, "zfs_rebase: %s was the tool's "
 			    "own and is destroyed\n", s->rb.from);
 	}
+	/*
+	 * And the run directory, where this verb was the one that
+	 * reached done: the documents the run wrote into it and then
+	 * the directory itself, after the settle above has taken the
+	 * result off mnt. A verb that stopped short of done leaves
+	 * every bit of it, since that is where the next verb reads
+	 * the rebase from.
+	 */
+	if (s->settled)
+		rundir_done(s->result, s->rb.manifest, s->verbose);
 	if (s->zfs != NULL)
 		zr_zfs_close(s->zfs);
 }
@@ -4742,8 +4855,10 @@ abort_lost(struct zr_zfs *z, const char *result, const char *tag,
  * the clone destroyed, or the dataset rolled back to its pre-apply
  * snapshot, stripped of the record and mounted where it belongs
  * again -- the snapshots the tool took for itself are destroyed, the
- * manifest the record names and the resolution beside it are
- * unlinked and the run directories go.
+ * two documents the run wrote into its own directory are unlinked
+ * and the run directories go. A -o manifest and the resolution
+ * beside it are the user's and stay: the tool removes no file
+ * outside the run directory (documents-design.md, section 4).
  *
  * The record is the key, and the refusal is the point of it. A
  * dataset that does not carry both zfs_rebase:manifest and
@@ -4771,7 +4886,7 @@ abort_lost(struct zr_zfs *z, const char *result, const char *tag,
  * directory is not is finished by removing the directory. Only when
  * there is nothing at all left does --abort say "no such run".
  * Nothing is removed recursively: the only files this unlinks are
- * the manifest and the resolution beside it, and every directory
+ * the two the run wrote into its own directory, and every directory
  * goes by rmdir, which will not touch one that is not empty.
  */
 int
@@ -4784,7 +4899,7 @@ zr_abort(const char *result, int verbose)
 	struct zr_zfs *z = NULL;
 	struct stat sb;
 	FILE *fp;
-	int rc = EXIT_INTERNAL, hasdir, hasds, got, parsed = 0, i;
+	int rc = EXIT_INTERNAL, hasdir, hasds, got, parsed = 0, i, rmerr;
 
 	if (geteuid() != 0) {
 		(void) fprintf(stderr, "zfs_rebase: must run as root\n");
@@ -4878,7 +4993,7 @@ zr_abort(const char *result, int verbose)
 			 * holds one.
 			 */
 			if (rc == EXIT_CLEAN && hasdir) {
-				rmdir_run(result);
+				(void) rmdir_run(result);
 				if (stat(dir, &sb) != 0)
 					(void) fprintf(stderr, "zfs_rebase: "
 					    "removed %s\n", dir);
@@ -4962,25 +5077,44 @@ zr_abort(const char *result, int verbose)
 				(void) fprintf(stderr, "zfs_rebase: destroyed "
 				    "%s, which the tool took itself\n", snap);
 		}
-		if (unlink(manifest) == 0)
-			(void) fprintf(stderr, "zfs_rebase: removed the "
-			    "manifest %s\n", manifest);
-		else if (errno != ENOENT)
-			(void) fprintf(stderr, "zfs_rebase: %s: %s\n",
-			    manifest, strerror(errno));
-		/* And the resolution the run wrote beside it. */
-		resolution_of(resolution, sizeof (resolution), result,
-		    manifest);
-		if (unlink(resolution) == 0)
-			(void) fprintf(stderr, "zfs_rebase: removed the "
-			    "resolution %s\n", resolution);
-		else if (errno != ENOENT)
-			(void) fprintf(stderr, "zfs_rebase: %s: %s\n",
-			    resolution, strerror(errno));
+		/*
+		 * And the two documents, but only the two this run
+		 * wrote into its own directory. Where -o named the
+		 * manifest, that file and the resolution beside it
+		 * are the user's, here exactly as at done, and stay
+		 * where they were asked for: an --abort takes the
+		 * rebase away and not the record of what it was.
+		 */
+		if (in_rundir(result, manifest)) {
+			if (unlink(manifest) == 0)
+				(void) fprintf(stderr, "zfs_rebase: removed "
+				    "the manifest %s\n", manifest);
+			else if (errno != ENOENT)
+				(void) fprintf(stderr, "zfs_rebase: %s: %s\n",
+				    manifest, strerror(errno));
+			/* And the resolution the run wrote beside it. */
+			resolution_of(resolution, sizeof (resolution), result,
+			    manifest);
+			if (unlink(resolution) == 0)
+				(void) fprintf(stderr, "zfs_rebase: removed "
+				    "the resolution %s\n", resolution);
+			else if (errno != ENOENT)
+				(void) fprintf(stderr, "zfs_rebase: %s: %s\n",
+				    resolution, strerror(errno));
+		} else {
+			(void) fprintf(stderr, "zfs_rebase: the manifest %s "
+			    "and the resolution beside it are yours and "
+			    "stay\n", manifest);
+		}
 	}
 	if (hasdir) {
-		rmdir_run(result);
-		(void) fprintf(stderr, "zfs_rebase: removed %s\n", dir);
+		rmerr = rmdir_run(result);
+		if (rmerr == 0)
+			(void) fprintf(stderr, "zfs_rebase: removed %s\n",
+			    dir);
+		else
+			(void) fprintf(stderr, "zfs_rebase: %s: %s\n", dir,
+			    strerror(rmerr));
 	}
 	rc = EXIT_CLEAN;
 done:

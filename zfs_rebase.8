@@ -475,9 +475,13 @@ dataset rolled back to its pre-apply snapshot, that snapshot destroyed,
 every one of its
 .Sy zfs_rebase
 properties taken off it and the dataset mounted where it belongs again \(em
-destroy any snapshot the tool took for itself, unlink the manifest the
-record names and the resolution beside it, and remove the run directory.
+destroy any snapshot the tool took for itself, unlink the two documents
+the run wrote into its own directory, and remove that directory.
 As if the run never happened.
+A pair
+.Fl o
+named is the exception and stays where it was asked for, here exactly as
+at done: the tool removes no file outside the run directory.
 Which of those it does is the manifest's to say.
 Where that file has been lost,
 .Fl -abort
@@ -748,7 +752,8 @@ it is past the merge.
 A rebase that reached done has no record, so no verb resumes it.
 .Sh FILES
 Each run keeps its own directory, 0700 throughout, named for the dataset
-carrying the record with its slashes kept as directories:
+carrying the record with its slashes kept as directories.
+It is born at the start of the run and gone at done:
 .Bl -tag -width "/var/db/zfs_rebase/<result>/resolution" -compact
 .It Pa /var/db/zfs_rebase/<result>/mnt
 the private mount: where the result lives for the whole of the rebase, in
@@ -765,6 +770,28 @@ named somewhere else
 the resolution, beside the manifest
 .El
 .Pp
+Making the directory is the lock: a leaf that is there already is another
+run of the same result, and the run is refused.
+Removing it at done is what frees the name again.
+At done the run unlinks the two documents it wrote into that directory,
+and then
+.Pa mnt ,
+the directory and every empty parent up to
+.Pa /var/db/zfs_rebase
+are removed by rmdir, never recursively, so a directory another run shares
+simply stays.
+This is the same in both forms and whichever invocation reaches done, the
+fresh run's own or a
+.Fl -continue Ns 's .
+A failure to remove is printed and changes nothing else: the rebase is
+done.
+What a rebase that reached done leaves is the result \(em the clone,
+unmounted, to be placed, or the dataset back at home with its
+before-image beside it \(em and a
+.Fl o
+pair if one was asked for.
+Nothing else.
+.Pp
 With
 .Fl o Ar FILE
 the manifest is
@@ -774,6 +801,10 @@ and the resolution is
 beside it.
 The record names the manifest and the resolution is beside it by that
 rule, so every verb finds both and never by guessing a path.
+A pair named that way is the user's: the tool records it and never
+removes it, at done or at
+.Fl -abort ,
+where its own two go with the run directory.
 .Pp
 Not
 .Pa /var/run :

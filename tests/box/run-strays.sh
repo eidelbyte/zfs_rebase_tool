@@ -375,8 +375,9 @@ continue_open() {		# OUT WANTEXIT
 
 # The end of a case: --abort where a rebase is still open, and by
 # hand where it reached done, since done left no record for --abort
-# to find. Then the proof that the pool is the fixture again with no
-# rebase left in it.
+# to find. What done leaves by hand is the result alone: the run
+# directory went with it, and the case asserts that. Then the proof
+# that the pool is the fixture again with no rebase left in it.
 end_case() {
 	if [ -n "$(localprops "$rds")" ]; then
 		"$bin" --abort --result "$rds" > "$tmp/abort" 2>&1
@@ -397,8 +398,8 @@ end_case() {
 			zfs destroy "$POOL/onto@pre" || \
 			    fail "cannot destroy @pre"
 		fi
-		rmdir "$rundir/mnt" "$rundir" 2>/dev/null
-		rmdir "/var/db/zfs_rebase/$POOL" 2>/dev/null
+		[ ! -d "$rundir" ] || \
+		    fail "done left the run directory $rundir"
 	fi
 	[ "$(holdcount)" = 0 ] || fail "the end of the case left holds behind"
 	zfs list -H -o name "$POOL/result" >/dev/null 2>&1 && \
@@ -410,17 +411,22 @@ end_case() {
 	n=$(allsnaps | grep -c .)
 	[ "$n" -eq 3 ] || { allsnaps; fail "the pool has $n snapshots, want 3"; }
 	mounted_at "$MNT/onto" || fail "the end of the case left onto unmounted"
+	# The -o pair is the user's and neither done nor --abort takes
+	# it away, so the harness does: the next case asserts what its
+	# own run wrote and not what the last one left.
+	[ -f "$man" ] || fail "the end of the case has no -o manifest at $man"
+	rm -f "$man" "$res"
 	cases=$((cases + 1))
 }
 
 # The run this pass makes: paused at a gate, or straight through.
 run_bg() {
 	if [ "$form" = clone ]; then
-		ZFS_REBASE_PAUSE=$1 "$bin" $flag -v \
+		ZFS_REBASE_PAUSE=$1 "$bin" $flag -v -o "$man" \
 		    --off-of "$POOL/from@work" --onto "$POOL/onto@work" \
 		    --result "$POOL/result" > "$log" 2>&1 &
 	else
-		ZFS_REBASE_PAUSE=$1 "$bin" $flag -v \
+		ZFS_REBASE_PAUSE=$1 "$bin" $flag -v -o "$man" \
 		    --from "$POOL/from@work" --onto "$POOL/onto" \
 		    --result pre > "$log" 2>&1 &
 	fi
@@ -429,11 +435,11 @@ run_bg() {
 }
 run_fg() {
 	if [ "$form" = clone ]; then
-		"$bin" $flag -v --off-of "$POOL/from@work" \
+		"$bin" $flag -v -o "$man" --off-of "$POOL/from@work" \
 		    --onto "$POOL/onto@work" --result "$POOL/result" \
 		    > "$log" 2>&1
 	else
-		"$bin" $flag -v --from "$POOL/from@work" \
+		"$bin" $flag -v -o "$man" --from "$POOL/from@work" \
 		    --onto "$POOL/onto" --result pre > "$log" 2>&1
 	fi
 }
@@ -740,10 +746,19 @@ stray_pass() {
 		rds=$POOL/onto
 	fi
 	rundir=/var/db/zfs_rebase/$rds
-	man=$rundir/manifest
 	wmnt=$rundir/mnt		# where the tree is while the run has it
 	hmnt=$wmnt			# and where it is between commands
-	res=$rundir/resolution
+	# The two documents go where -o says. This harness reads them
+	# after the rebase has reached done -- the manifest against
+	# the expect block, the resolution for its drift line -- and
+	# done unlinks the two a run wrote into its own directory,
+	# taking that directory with them. A -o pair is the user's and
+	# stays, at done and at --abort alike (documents-design.md,
+	# section 4). The no--o placement, <rundir>/manifest and
+	# <rundir>/resolution, is box/run-kills.sh's: it asserts both
+	# at every gate and their absence at done.
+	man=$tmp/manifest
+	res=$man.resolution
 	log=$tmp/pass.log
 	prog_step "$fixture, the $form form"
 	say "$fixture, the $form form"

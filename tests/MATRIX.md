@@ -581,7 +581,9 @@ snapshot or a dataset, --result as a clone name or as a snapshot
 name, short and full}; the dataset form's own {the unmount, the
 private mount, the readonly flips, the hand-back, the rollback};
 guards {securelevel, private mountpoint, readonly flip, the
-self-check after an apply};
+self-check after an apply}; the run directory {made at start, held
+through every gate, gone at done, gone at --abort} crossed with
+where the documents live {inside it, or where -o put them};
 driver {flags, preconditions, exit status}; and, from ZX122 on, the
 resolution as the driver carries it {the --take flag given or not,
 the gate flag given or not, the document complete or not, the choice
@@ -728,7 +730,7 @@ again.
 | ZX141 | zfs_rebase:phase reads applying1, conflicts and applying2 at those gates and is absent before the first | planned: box, box/run-kills.sh, which stops at every gate, and box/run-fixture.sh at conflicts |
 | ZX142 | zfs_rebase:quiet is absent from a record no --quiet asked for | planned: box, box/run-fixture.sh step 3; the -q run that writes it is verify-schedule's, which is what reads the property |
 | ZX143 | at done no zfs_rebase: property is left on the result, in either form and by either path (the run's own done and a --continue's) | planned: box, box/run-fixture.sh, box/run-kills.sh and box/run-resolution.sh, each of which now asserts the empty list where it asserted state=done |
-| ZX144 | a settled result is free: a second run over that dataset is taken with no flag, and --continue, --restart, --abort and --verify on it exit 2 as on any dataset with no record | planned: box, box/run-fixture.sh D2 and step 3a |
+| ZX144 | a settled result is free: a second run over that dataset is taken with no flag, and --continue, --restart, --abort and --verify on it exit 2 as on any dataset with no record | planned: box, box/run-fixture.sh D2 and step 3a; done-cleanup took away the run directory that used to stand in D2's way |
 | ZX145 | --abort with the manifest gone: the holds are released by walking the pool for the tag, the private mount is undone, the record is cleared, nothing is destroyed or rolled back, and the two commands are printed | planned: box, box/run-fixture.sh (the manifest unlinked by hand at the conflicts gate); nothing on the Mac reaches zr_zfs_release_tag |
 | ZX158 | the mountpoint property of the result is never a path in the clone form: none at the create, none at every gate, none at done and none after --abort without a manifest | planned: box, box/run-fixture.sh steps 3, 3c and 5a |
 | ZX159 | the clone stays at the private mount through every gate, the conflicts gate included, since it has no home to be handed to | planned: box, box/run-fixture.sh step 3b and box/run-kills.sh |
@@ -745,6 +747,13 @@ again.
 | ZX170 | a dataset form onto whose canmount is off is refused at precondition, exit 2, with nothing taken and nothing written; the property is read before the mounted question so the message names it | planned: box, box/run-precond.sh 1c |
 | ZX171 | --abort with the manifest gone tells the forms apart by the mountpoint property alone: a path is mounted home, none is left unmounted, and neither readonly nor canmount is guessed at | planned: box, box/run-fixture.sh 5a |
 | ZX172 | an edit made at the conflicts gate in the dataset form is made at the private mount, where only root can reach it | planned: box, box/run-strays.sh and box/run-resolution.sh, whose gate cases now edit there |
+| ZX173 | done removes the run directory: the two documents the run wrote there unlinked, then mnt, the directory and every empty parent up to /var/db/zfs_rebase by rmdir and never recursively, in both forms | planned: box, box/run-fixture.sh (clone_placed, settled_clone and the dataset pass), box/run-replay.sh step 3 |
+| ZX174 | a --continue that reaches done removes it exactly as the fresh run's own done does, and a verb that stops short of done leaves every bit of it, since that is where the next verb reads the rebase from | planned: box, box/run-fixture.sh 3d through clone_placed, box/run-kills.sh reset_pool and box/run-strays.sh and box/run-resolution.sh end_case, each of which now asserts the directory rather than removing it |
+| ZX175 | a -o manifest and the resolution beside it survive done: only documents inside the run directory are unlinked, and the decision is that directory's path as a prefix of the recorded one | planned: box, box/run-fixture.sh step 3 and the dataset pass, both of which run with -o; the no--o half is ZX173, where the directory could not go if the two were still in it |
+| ZX176 | a -o manifest and its resolution survive --abort too, which still removes the run directory and the two documents the run wrote into it | planned: box, box/run-fixture.sh step 4 and the dataset pass's --abort |
+| ZX177 | a second rebase of the same result after done finds no run directory: the dataset form goes through, and the clone form is refused before make_rundir because the clone is still there | planned: box, box/run-fixture.sh D2 for the dataset form; the clone form's refusal is ZX16's result_ok and is asserted in step 3 |
+| ZX178 | make_rundir still refuses an EEXIST leaf: the directory is the lock for as long as a run is open | deferred: with done removing it, the only way to a leftover directory is to make one by hand; by hand on the box |
+| ZX179 | the two documents a run wrote into its own directory are unlinked at done, in the no--o form, before the directory goes | planned: box, box/run-kills.sh, whose caught signal at the done gate lets the run finish, and which then asserts no manifest, no resolution and no run directory |
 | ZX146 | zfs_rebase:base and :base_guid are written by nothing: the branch point is #base in the header | covered: the grep over src, tests and the docs; box, the empty property list after a run |
 | ZX147 | zfs_rebase:from and :from_guid likewise: #from | covered: the same |
 | ZX148 | zfs_rebase:onto and :onto_guid likewise: #onto | covered: the same |
@@ -753,7 +762,7 @@ again.
 | ZX151 | zfs_rebase:form likewise: #form | covered: the same |
 | ZX152 | zfs_rebase:take likewise: #take, which --restart reads for the skeleton | covered: the same; box, box/run-resolution.sh case 5 |
 | ZX153 | zfs_rebase:readonly likewise: #readonly, which the hand-back reads | covered: the same; box, box/run-fixture.sh dataset pass |
-| ZX154 | zfs_rebase:resolution is written by nothing: the resolution is beside the manifest by rule, FILE.resolution beside a -o FILE and <rundir>/resolution beside the run directory's | covered: resolution_of in src/run.c, read by every verb; box, both -o and no -o passes |
+| ZX154 | zfs_rebase:resolution is written by nothing: the resolution is beside the manifest by rule, FILE.resolution beside a -o FILE and <rundir>/resolution beside the run directory's | covered: resolution_of in src/run.c, read by every verb; box, both -o and no -o passes -- box/run-kills.sh is the no--o one, since done-cleanup gave the three harnesses that read a document after done a -o pair, which is the only kind that survives done |
 | ZX155 | zfs_rebase:verify is written by nothing and there is no recorded request: the invocation that reaches done makes the check if it was given --verify | covered: the grep; box, box/run-fixture.sh step 5 and box/run-kills.sh |
 | ZX156 | zfs_rebase:state is written by nothing: zfs_rebase:phase replaces it and never takes the value done | covered: the grep; box, every harness |
 | ZX157 | the pre-apply snapshot a --restart or an --abort rolls back to is the header's #presnap and no property | covered: src/run.c; box, box/run-fixture.sh dataset pass |
@@ -784,6 +793,27 @@ which is ZX163, and that row is deferred with ZX69 because both want
 a mount held open by hand. Nothing here is reachable on the Mac: the
 portable build answers every one of these calls with "not built with
 ZR_FREEBSD".
+
+ZX173 to ZX179 are done-cleanup's: the run directory is born at the
+start of a run and gone at done, so what a finished rebase leaves is
+the result and, where -o asked for it, a manifest and a resolution
+of the user's. Every one of them is box only. The decision the whole
+family turns on -- is this manifest inside the run directory? -- is
+one strncmp against WORKDIR/<result>/ (in_rundir in src/run.c), the
+same prefix compare resolution_of has always made under ZX154, and
+it stays static in run.c rather than being exported for a Mac unit
+test: the paths it compares only mean anything against a real
+WORKDIR and a real record, and both -o and no--o passes cross it on
+the box every trip.
+
+That split moved with this issue. A harness that reads a document
+after the rebase has reached done can only read a -o one from now
+on, so box/run-strays.sh and box/run-resolution.sh give -o where
+they gave none -- their post-done reads are the manifest against the
+expect block, the header's #take, and the resolution's drift line --
+and box/run-kills.sh keeps the no--o placement whole: it asserts
+<rundir>/manifest and <rundir>/resolution at every gate from
+"decided" on and their absence at done, which is ZX179.
 
 ZX137 to ZX157 are record-slim's: the command line's two changes
 (--quiet added, --overwrite gone), the four properties the record

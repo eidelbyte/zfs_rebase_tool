@@ -41,7 +41,7 @@ the start makes the final check at the last gate.
 | `--no-merge` | `-M` | stop at the conflicts gate however the resolution reads; an error once the gate is passed |
 | `--continue` | `-c` | take the rebase on from the gate its record names |
 | `--restart` | `-R` | the result back as onto was, the manifest applied again from the first gate, the resolution back to its skeleton |
-| `--abort` | `-a` | holds released, tool-made snapshots destroyed, the clone destroyed or the dataset rolled back, manifest, resolution and run directory removed |
+| `--abort` | `-a` | holds released, tool-made snapshots destroyed, the clone destroyed or the dataset rolled back, the run directory and the documents in it removed (a `-o` pair stays) |
 | `--dry-run` | `-n` | decide and write the manifest, then tear down: nothing held, nothing created, --result ignored |
 | `--allow-unrelated` | `-u` | no derivation of the base, and no pruning |
 | `--base` | `-b` | with --allow-unrelated only: the base, no newer than either side; without it, the empty tree |
@@ -236,7 +236,8 @@ kill leaves is the last gate reached, there is no phase at all until
 the first one, and a stop writes none: --continue resumes from the
 gate, --abort takes the rebase away.
 
-Each run keeps its own directory, 0700 throughout:
+Each run keeps its own directory, 0700 throughout: born at start,
+gone at done.
 
     /var/db/zfs_rebase/<result as a path>/mnt          the private mount
     /var/db/zfs_rebase/<result as a path>/manifest     unless --manifest
@@ -249,10 +250,30 @@ which is what lets that property stay `none` in one form and stay
 where it always pointed in the other. The rebase ends by undoing that
 mount.
 
+Making the directory is the lock: a leaf that is already there is
+another run of the same result, and the run is refused with "a run
+for X is in place". Removing it at done is what frees the name again.
+
+At done the run unlinks the two documents it wrote into that
+directory, and then `mnt`, the directory and every empty parent up
+to /var/db/zfs_rebase go by rmdir -- never recursively, so a
+directory another run shares simply stays. This is the same in both
+forms and whichever invocation reaches done, the fresh run's own or a
+--continue's. A failure to remove is printed and changes nothing
+else: the rebase is done.
+
+What a rebase that reached done leaves is the result -- the clone,
+unmounted, for you to place, or the dataset back at home with its
+before-image beside it -- and a --manifest pair if you asked for one.
+Nothing else.
+
 With --manifest FILE (-o FILE) the manifest is FILE and the
 resolution is FILE.resolution, beside it. Either way the record names
 the manifest and the resolution is beside it by that rule, so every
-verb finds both and never by guessing a path.
+verb finds both and never by guessing a path. A pair you named that
+way is yours: the tool records it and never removes it, at done or at
+--abort, where its own two go with the run directory. The tool
+removes no file outside that directory.
 
 Not /var/run: FreeBSD's cleanvar deletes every regular file there at
 boot, and a rebase stopped at conflicts can outlast one.
@@ -324,9 +345,10 @@ releases the holds, puts the result back -- destroying the clone, or
 rolling the dataset back to its pre-apply snapshot, destroying that
 snapshot, taking every zfs_rebase: property off it and mounting it
 where it belongs again -- destroys any snapshot the tool took for
-itself, unlinks the manifest the record names and the resolution
-beside it, and removes the run directory: as if the run never
-happened.
+itself, unlinks the two documents the run wrote into its own
+directory, and removes that directory: as if the run never happened.
+A --manifest pair is the exception, and is left where you asked for
+it, here exactly as at done.
 
 Which of those it does is the manifest's to say. Where that file has
 been lost, --abort gives the holds back by walking the result's pool

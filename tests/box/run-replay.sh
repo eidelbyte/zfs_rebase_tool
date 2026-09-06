@@ -240,9 +240,9 @@ one() {
 	# took the record off: --abort has nothing to find and says so.
 	# What done left is the clone -- unmounted, read-only, its
 	# mountpoint property none, which is the void the tool hands it
-	# to -- and, until done-cleanup lands, the run directory; both
-	# are the harness's to take away. A conflicted fixture is still
-	# open and --abort settles it.
+	# to -- and that is the harness's to take away. The run
+	# directory is not: done took it, and this asserts so. A
+	# conflicted fixture is still open and --abort settles it.
 	if [ -n "$(localprops "$POOL/result")" ]; then
 		"$bin" --abort --result "$POOL/result" || fail "abort exited $?"
 		echo "ok   aborted, holds released"
@@ -258,11 +258,11 @@ one() {
 		    fail "the settled clone is still mounted"
 		zfs destroy "$POOL/result" || \
 		    fail "cannot destroy the settled result"
-		rmdir "$RUNDIR/mnt" "$RUNDIR" || \
-		    fail "cannot remove the run directory of a settled rebase"
-		rmdir "/var/db/zfs_rebase/$POOL" 2>/dev/null
-		echo "ok   done: the record off, the holds released, the clone"
-		echo "     unmounted and the harness's to take away"
+		[ ! -d "$RUNDIR" ] || \
+		    fail "done left the run directory $RUNDIR"
+		echo "ok   done: the record off, the holds released, the run"
+		echo "     directory gone, the clone unmounted and the"
+		echo "     harness's to take away"
 	fi
 	for s in "$POOL/base@base" "$POOL/from@work" "$POOL/onto@work"; do
 		held=$(zfs holds -H "$s") || fail "zfs holds $s"

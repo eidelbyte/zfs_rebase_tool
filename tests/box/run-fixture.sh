@@ -107,14 +107,15 @@
 #      run lands at the same phase under the same tag with the same
 #      three holds and the same tree;
 #   4. the end of the rebase. Where one is still open, --abort:
-#      exit 0, every hold released, the dataset gone, the recorded
-#      manifest unlinked, the run directory gone down to
-#      /var/db/zfs_rebase, and a second --abort exit 2 because there
-#      is no such run. Where it reached done there is nothing to
-#      abort -- the record is off, so --abort exits 2 and touches
-#      nothing -- and the result is the user's, unmounted and
-#      unplaced: the harness destroys it and removes the run
-#      directory itself, which is what done-cleanup will do at done;
+#      exit 0, every hold released, the dataset gone, the -o manifest
+#      and its resolution still there because they are the user's,
+#      the run directory gone down to /var/db/zfs_rebase, and a
+#      second --abort exit 2 because there is no such run. Where it
+#      reached done there is nothing to abort -- the record is off,
+#      so --abort exits 2 and touches nothing -- and what done left
+#      is the result alone, unmounted and unplaced, with the run
+#      directory already gone: the harness destroys the result and
+#      asserts the directory went;
 #   5. a second real run given --verify -- every clean fixture, and
 #      probe.zrt as the conflicted one: its tag is a new one, and on
 #      a clean fixture the final check runs at the done gate (its
@@ -160,13 +161,11 @@
 #      it mounted at home with canmount and readonly as they were,
 #      holding the tree the fixture built;
 #  D2. for a clean fixture, a settled dataset: the rebase that
-#      reached done took its record off, so a second run over that
-#      same dataset is taken with no flag at all, and the
+#      reached done took its record off and took its run directory
+#      with it, so a second run over that same dataset is taken with
+#      no flag at all and nothing is in its way, and the
 #      before-image of the first is still there afterwards, because a
-#      rebase that finished keeps it. (Its run directory is still
-#      there too, which is what blocks a second run until
-#      done-cleanup removes it at done; the harness removes it here
-#      and says so.);
+#      rebase that finished keeps it;
 #  D3. the whole pass again with --result spelled as
 #      $POOL/onto@pre, which must be the same rebase of the same
 #      snapshot;
@@ -256,6 +255,10 @@ clone_open() {
 	cmnt=$RUNDIR/mnt
 }
 clone_placed() {
+	# done takes the run directory with it -- the documents the
+	# run wrote there, then mnt, the directory and every empty
+	# parent -- whichever invocation reached the gate.
+	[ ! -d "$RUNDIR" ] || fail "done left the run directory $RUNDIR"
 	mp=$(zfs get -H -o value mountpoint "$POOL/result")
 	[ "$mp" = none ] || \
 	    fail "a settled clone's mountpoint is $mp, want none"
@@ -277,8 +280,8 @@ placement_line() {		# LOGFILE
 }
 
 # A rebase that reached done left no record, so --abort has nothing to
-# find and says so; what is left is the result itself and, until
-# done-cleanup lands, the run directory. The harness takes both away.
+# find and says so; what is left is the result itself, which is the
+# harness's to take away. The run directory went at done.
 settled_clone() {
 	"$bin" --abort --result "$POOL/result" > "$tmp/settled" 2>&1
 	st=$?
@@ -287,10 +290,11 @@ settled_clone() {
 	[ "$(zfs list -H -o name "$POOL/result" 2>/dev/null)" = "$POOL/result" ] || \
 	    fail "the refused --abort took $POOL/result away"
 	zfs destroy "$POOL/result" || fail "cannot destroy the settled result"
+	# The harness's own placement, and not the tool's.
 	rmdir "$MNT/result" 2>/dev/null
-	rmdir "$RUNDIR/mnt" "$RUNDIR" || \
-	    fail "cannot remove the run directory of a settled rebase"
-	rmdir "/var/db/zfs_rebase/$POOL" 2>/dev/null
+	[ ! -d "$RUNDIR" ] || fail "done left the run directory $RUNDIR"
+	[ ! -d "/var/db/zfs_rebase/$POOL" ] || \
+	    fail "done left /var/db/zfs_rebase/$POOL, an empty parent"
 	rm -f "$tmp/got" "$RES"
 }
 # every hold on a snapshot, as "tag" lines
@@ -519,7 +523,13 @@ if [ $settled -eq 1 ]; then
 	left=$(localprops "$POOL/result")
 	[ -z "$left" ] || \
 	    fail "a rebase that reached done left $left on $POOL/result"
-	echo "ok   record: none at all, the rebase reached done"
+	# What -o asked for is the user's: done unlinks only the two
+	# documents a run wrote into its own directory, and this run
+	# wrote neither there.
+	[ -f "$tmp/got" ] || fail "done removed the -o manifest $tmp/got"
+	[ -f "$RES" ] || fail "done removed the -o resolution $RES"
+	echo "ok   record: none at all, the rebase reached done, and the"
+	echo "     -o manifest and resolution are where -o put them"
 else
 	for prop in manifest tag phase; do
 		src=$(recsrc "zfs_rebase:$prop" "$POOL/result")
@@ -841,11 +851,14 @@ else
 	if zfs list -H -o name "$POOL/result" > /dev/null 2>&1; then
 		fail "$POOL/result survived the abort"
 	fi
-	if [ -e "$tmp/got" ]; then
-		fail "the recorded manifest $tmp/got survived the abort"
+	# The pair -o named is the user's, at --abort exactly as at
+	# done: the tool removes no file outside its own run directory,
+	# and this run's manifest and resolution are both outside it.
+	if [ ! -f "$tmp/got" ]; then
+		fail "--abort removed the -o manifest $tmp/got"
 	fi
-	if [ -e "$RES" ]; then
-		fail "the resolution $RES survived the abort"
+	if [ ! -f "$RES" ]; then
+		fail "--abort removed the -o resolution $RES"
 	fi
 	if [ -e "/var/db/zfs_rebase/$POOL" ]; then
 		fail "/var/db/zfs_rebase/$POOL survived the abort"
@@ -853,8 +866,8 @@ else
 	"$bin" --abort --result "$POOL/result" 2>/dev/null
 	st=$?
 	[ $st -eq 2 ] || fail "a second abort exited $st, want 2"
-	echo "ok   abort: the holds, the result, its manifest and its"
-	echo "     directory are all gone"
+	echo "ok   abort: the holds, the result and the run directory are"
+	echo "     gone, and the -o manifest and resolution stayed"
 fi
 
 # A second run, given --verify: nothing is recorded -- the flag
@@ -964,8 +977,10 @@ case "$fixture" in
 	# And the result is ours to take away, which is what the
 	# message says.
 	zfs destroy "$POOL/result" || fail "cannot destroy the result of 5a"
-	rmdir "$RUNDIR/mnt" "$RUNDIR" 2>/dev/null
-	rmdir "/var/db/zfs_rebase/$POOL" 2>/dev/null
+	# The directory is the tool's even here: abort_lost undid the
+	# private mount, and an empty run directory goes by rmdir.
+	[ ! -d "$RUNDIR" ] || \
+	    fail "--abort without the manifest left the run directory $RUNDIR"
 	echo "ok   --abort without the manifest: the tag released by a"
 	echo "     walk of the pool, the record cleared, nothing destroyed"
 	;;
@@ -1134,7 +1149,13 @@ dataset_pass() {
 		echo "ok   at conflicts: held at $DRUN/mnt, canmount noauto,"
 		echo "     readonly off, the mountpoint property untouched"
 	fi
-	[ -d "$DRUN/mnt" ] || dfail "no run directory at $DRUN"
+	# The run directory is born with the run and gone at done, so
+	# which of the two to ask for depends on where this pass is.
+	if [ $dsettled -eq 1 ]; then
+		[ ! -d "$DRUN" ] || dfail "done left the run directory $DRUN"
+	else
+		[ -d "$DRUN/mnt" ] || dfail "no run directory at $DRUN"
+	fi
 
 	dphase=$(recval zfs_rebase:phase "$POOL/onto")
 	if [ $clean -eq 1 ]; then
@@ -1233,16 +1254,20 @@ dataset_pass() {
 	dsay "the end of the rebase"
 	if [ $dsettled -eq 1 ]; then
 		# Nothing to abort: the record is off. What done left
-		# is the rebased tree, the pre-apply snapshot and the
-		# run directory, and the harness puts the dataset back
-		# itself, which is what --abort would have done.
+		# is the rebased tree and the pre-apply snapshot, and
+		# the harness puts the dataset back itself, which is
+		# what --abort would have done. The run directory is
+		# the tool's and went at done; the -o pair is the
+		# user's and stayed.
+		[ ! -d "$DRUN" ] || dfail "done left the run directory $DRUN"
+		[ -f "$tmp/got-d" ] || \
+		    dfail "done removed the -o manifest $tmp/got-d"
+		[ -f "$DRES" ] || \
+		    dfail "done removed the -o resolution $DRES"
 		zfs rollback "$POOL/onto@$dname" || \
 		    dfail "cannot roll onto back to @$dname"
 		zfs destroy "$POOL/onto@$dname" || \
 		    dfail "cannot destroy @$dname"
-		rmdir "$DRUN/mnt" "$DRUN" || \
-		    dfail "cannot remove the run directory $DRUN"
-		rmdir "/var/db/zfs_rebase/$POOL" 2>/dev/null
 		rm -f "$tmp/got-d" "$DRES"
 	else
 		"$bin" --abort --result "$POOL/onto" > "$tmp/d-abort" 2>&1
@@ -1252,8 +1277,11 @@ dataset_pass() {
 		hassnap "$POOL/onto@$dname" && \
 		    dfail "the pre-apply snapshot survived the abort"
 		hassnap "$dfrom" && dfail "$dfrom survived the abort"
-		[ -e "$DRES" ] && \
-		    dfail "the resolution $DRES survived the abort"
+		# The -o pair is the user's here too.
+		[ -f "$tmp/got-d" ] || \
+		    dfail "--abort removed the -o manifest $tmp/got-d"
+		[ -f "$DRES" ] || \
+		    dfail "--abort removed the -o resolution $DRES"
 		[ -e "$DRUN" ] && dfail "$DRUN survived the abort"
 	fi
 	left=$(localprops "$POOL/onto")
@@ -1364,13 +1392,10 @@ if [ $clean -eq 1 ]; then
 	    { cat "$tmp/o1"; fail "the first run exited $st"; }
 	left=$(localprops "$POOL/onto")
 	[ -z "$left" ] || fail "that run reached done and left $left"
-	# The run directory is what done-cleanup will take away at
-	# done; until it lands it is still here and would refuse the
-	# second run ("a run for ... is in place"), so the harness
-	# removes it, which is exactly what that issue automates.
-	rmdir /var/db/zfs_rebase/"$POOL"/onto/mnt \
-	    /var/db/zfs_rebase/"$POOL"/onto || \
-	    fail "cannot remove the run directory the first run left"
+	# done took the run directory with it, so nothing is in the
+	# second run's way: an open one would refuse it here with
+	# "a run for ... is in place".
+	[ ! -d "$DRUN" ] || fail "the first run's directory $DRUN is still there"
 	"$bin" $flag -o "$tmp/got-o2" --from "$POOL/from" \
 	    --onto "$POOL/onto" --result second > "$tmp/o2" 2>&1
 	st=$?
@@ -1389,10 +1414,9 @@ if [ $clean -eq 1 ]; then
 	    fail "@pre did not survive a rebase that reached done"
 	zfs rollback -r "$POOL/onto@pre" || fail "cannot roll back to @pre"
 	zfs destroy "$POOL/onto@pre" || fail "cannot destroy @pre"
-	rmdir /var/db/zfs_rebase/"$POOL"/onto/mnt \
-	    /var/db/zfs_rebase/"$POOL"/onto || \
-	    fail "cannot remove the second run's directory"
-	rmdir "/var/db/zfs_rebase/$POOL" 2>/dev/null
+	[ ! -d "$DRUN" ] || fail "the second run's directory $DRUN is still there"
+	[ ! -d "/var/db/zfs_rebase/$POOL" ] || \
+	    fail "done left /var/db/zfs_rebase/$POOL, an empty parent"
 	dspec=pre
 	onto_is_the_fixture "$tmp/o-after"
 	echo "ok   a settled dataset is free: the second run was taken"

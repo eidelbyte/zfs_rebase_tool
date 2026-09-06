@@ -500,8 +500,10 @@ drop_pool() {
 
 # The end of a case: --abort where a rebase is still open, and by
 # hand where it reached done, since done takes the record off and
-# leaves --abort nothing to find. Then the proof that the pool is the
-# fixture again with no rebase left in it.
+# leaves --abort nothing to find. What done leaves by hand is the
+# result alone: the run directory went with it, and the case asserts
+# that. Then the proof that the pool is the fixture again with no
+# rebase left in it.
 end_case() {
 	if [ -n "$(localprops "$rds")" ]; then
 		"$bin" --abort --result "$rds" > "$tmp/abort" 2>&1
@@ -522,8 +524,8 @@ end_case() {
 			zfs destroy "$POOL/onto@pre" || \
 			    fail "cannot destroy @pre"
 		fi
-		rmdir "$rundir/mnt" "$rundir" 2>/dev/null
-		rmdir "/var/db/zfs_rebase/$POOL" 2>/dev/null
+		[ ! -d "$rundir" ] || \
+		    fail "done left the run directory $rundir"
 	fi
 	[ "$(holdcount)" = 0 ] || fail "the end of the case left holds behind"
 	zfs list -H -o name "$POOL/result" >/dev/null 2>&1 && \
@@ -539,6 +541,12 @@ end_case() {
 	    fail "--abort left onto read-only"
 	[ "$(recval canmount "$POOL/onto")" = on ] || \
 	    fail "--abort left onto at canmount noauto"
+	# The -o pair is the user's and neither done nor --abort takes
+	# it away, so the harness does: the next case asserts what its
+	# own run wrote and not what the last one left. case 7 asks
+	# outright that there be no resolution before the skeleton.
+	[ -f "$man" ] || fail "the end of the case has no -o manifest at $man"
+	rm -f "$man" "$res"
 	cases=$((cases + 1))
 	return 0
 }
@@ -563,11 +571,11 @@ again() {			# OUT RESULTMNT WANTCONFLICTS
 # same one stopped at a gate.
 fresh() {
 	if [ "$form" = clone ]; then
-		"$bin" $flag -v "$@" --off-of "$POOL/from@work" \
+		"$bin" $flag -v -o "$man" "$@" --off-of "$POOL/from@work" \
 		    --onto "$POOL/onto@work" --result "$POOL/result" \
 		    > "$log" 2>&1
 	else
-		"$bin" $flag -v "$@" --from "$POOL/from@work" \
+		"$bin" $flag -v -o "$man" "$@" --from "$POOL/from@work" \
 		    --onto "$POOL/onto" --result pre > "$log" 2>&1
 	fi
 }
@@ -575,11 +583,11 @@ fresh_bg() {
 	gate=$1
 	shift
 	if [ "$form" = clone ]; then
-		ZFS_REBASE_PAUSE=$gate "$bin" $flag -v "$@" \
+		ZFS_REBASE_PAUSE=$gate "$bin" $flag -v -o "$man" "$@" \
 		    --off-of "$POOL/from@work" --onto "$POOL/onto@work" \
 		    --result "$POOL/result" > "$log" 2>&1 &
 	else
-		ZFS_REBASE_PAUSE=$gate "$bin" $flag -v "$@" \
+		ZFS_REBASE_PAUSE=$gate "$bin" $flag -v -o "$man" "$@" \
 		    --from "$POOL/from@work" --onto "$POOL/onto" \
 		    --result pre > "$log" 2>&1 &
 	fi
@@ -636,9 +644,13 @@ case_headless() {
 	[ "$(hdr take "$man")" = "$side" ] || \
 	    fail "#take is $(hdr take "$man"), want $side"
 	# The resolution is beside the manifest by rule and by no
-	# property: with no -o that is <rundir>/resolution.
-	[ "$res" = "$rundir/resolution" ] || \
+	# property: beside a -o FILE that is FILE.resolution, which is
+	# the path the run named in its own message above.
+	[ "$res" = "$man.resolution" ] || \
 	    fail "the resolution is not beside the manifest"
+	# And the pair is the user's: done unlinked neither, because
+	# neither was in the run directory it took away.
+	[ -f "$man" ] || fail "done removed the -o manifest $man"
 	[ -f "$res" ] || fail "the run wrote no resolution at $res"
 	answered_all_as "$res" "$side" "$nconf"
 	# The tree: every conflicted name is that side's object, or
@@ -1128,8 +1140,17 @@ res_pass() {
 		ontodir=$hmnt/.zfs/snapshot/pre
 	fi
 	fromdir=$MNT/from/.zfs/snapshot/work
-	man=$rundir/manifest
-	res=$rundir/resolution
+	# The two documents go where -o says. This harness reads them
+	# after the rebase has reached done -- the header's #take, the
+	# answered skeleton -- and done unlinks the two a run wrote
+	# into its own directory, taking that directory with them. A -o
+	# pair is the user's and stays, at done and at --abort alike
+	# (documents-design.md, section 4). The no--o placement,
+	# <rundir>/manifest and <rundir>/resolution, is
+	# box/run-kills.sh's: it asserts both at every gate and their
+	# absence at done.
+	man=$tmp/manifest
+	res=$man.resolution
 	log=$tmp/pass.log
 	prog_step "$fixture, the $form form"
 	say "$fixture, the $form form"

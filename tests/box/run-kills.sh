@@ -313,9 +313,10 @@ drop_pool() {
 # the pool is back to the fixture with no rebase anywhere in it.
 #
 # A rebase that reached done took its record off, so --abort finds
-# nothing to undo and says so: what it left is the result itself, the
-# pre-apply snapshot and (until done-cleanup lands) the run
-# directory, and the reset takes those away by hand.
+# nothing to undo and says so: what it left is the result itself and
+# the pre-apply snapshot, and the reset takes those away by hand. The
+# run directory is not among them -- done took it -- so the reset
+# asserts it is gone instead of removing it.
 reset_pool() {
 	"$bin" --abort --result "$POOL/result" >/dev/null 2>&1
 	"$bin" --abort --result "$POOL/onto" >/dev/null 2>&1
@@ -331,10 +332,9 @@ reset_pool() {
 		    fail "the reset cannot destroy @pre"
 	fi
 	for d in result onto; do
-		rmdir "/var/db/zfs_rebase/$POOL/$d/mnt" 2>/dev/null
-		rmdir "/var/db/zfs_rebase/$POOL/$d" 2>/dev/null
+		[ ! -d "/var/db/zfs_rebase/$POOL/$d" ] || \
+		    fail "a rebase that ended left /var/db/zfs_rebase/$POOL/$d"
 	done
-	rmdir "/var/db/zfs_rebase/$POOL" 2>/dev/null
 	[ "$(holdcount)" = 0 ] || fail "the reset left holds behind"
 	zfs list -H -o name "$POOL/result" >/dev/null 2>&1 && \
 	    fail "the reset left $POOL/result behind"
@@ -598,7 +598,15 @@ kill_case() {
 	fi
 	[ "$(recval readonly "$rds")" = "$wro" ] || \
 	    fail "readonly is $(recval readonly "$rds"), want $wro"
-	if [ $wman = yes ]; then
+	if [ $out = finished ]; then
+		# This harness gives no -o, so the two documents are
+		# the run's own, in its own directory: done unlinks
+		# them and takes the directory with them. What a rebase
+		# that finished leaves is the result and nothing else.
+		[ -e "$man" ] && fail "done left the manifest at $man"
+		[ -e "$res" ] && fail "done left the resolution at $res"
+		[ ! -d "$rundir" ] || fail "done left the run directory $rundir"
+	elif [ $wman = yes ]; then
 		[ -f "$man" ] || fail "no manifest at $man"
 		[ -f "$res" ] || fail "no resolution at $res"
 	else
