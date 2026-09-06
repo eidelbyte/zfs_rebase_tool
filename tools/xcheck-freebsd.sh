@@ -1,10 +1,11 @@
 #!/bin/sh
-# Cross syntax check of every source as the freebsd target compiles
-# it, on a machine that is not FreeBSD: clang targeting FreeBSD, with
-# a FreeBSD source tree's headers standing in for /usr/include and
-# the OpenZFS include set applied to zfsops.c alone, exactly as the
-# Makefile does. Catches type and declaration errors in the blind
-# FreeBSD sections before the box sees them; it is not a build.
+# Cross syntax check of every source, and of the box probe, as the
+# freebsd target compiles them, on a machine that is not FreeBSD:
+# clang targeting FreeBSD, with a FreeBSD source tree's headers
+# standing in for /usr/include and the OpenZFS include set applied to
+# zfsops.c and probe-mount.c alone, exactly as the Makefile does.
+# Catches type and declaration errors in the blind FreeBSD sections
+# before the box sees them; it is not a build.
 # usage: FREEBSD_SRC=/path/to/freebsd tools/xcheck-freebsd.sh
 set -u
 cd "$(dirname "$0")/.." || exit 2
@@ -27,9 +28,11 @@ ZFS="-I$ZT/lib/libspl/include/os/freebsd -I$ZT/lib/libspl/include \
 -include $F/sys/modules/zfs/zfs_config.h \
 -DNEED_SOLARIS_BOOLEAN -DHAVE_ISSETUGID -DHAVE_STRLCAT -DHAVE_STRLCPY"
 rc=0
-for f in src/*.c; do
+for f in src/*.c tools/probe-mount.c; do
 	extra=""
-	[ "$f" = src/zfsops.c ] && extra="$ZFS"
+	case "$f" in
+	src/zfsops.c|tools/probe-mount.c) extra="$ZFS" ;;
+	esac
 	if cc -fsyntax-only -target x86_64-unknown-freebsd14.0 -nostdinc \
 	    -std=c99 -Wall -Wextra -Wcast-qual -Werror -DZR_FREEBSD -Isrc \
 	    $extra $SYS "$f" > "$T/log" 2>&1; then
@@ -38,5 +41,5 @@ for f in src/*.c; do
 		echo "FAIL $f"; grep -v "^In file included" "$T/log" | head -8; rc=1
 	fi
 done
-[ $rc -eq 0 ] && echo "xcheck-freebsd: every source passes"
+[ $rc -eq 0 ] && echo "xcheck-freebsd: every source and the probe pass"
 exit $rc
