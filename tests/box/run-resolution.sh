@@ -28,7 +28,8 @@
 #    of one group that onto pools together are one object here too;
 #    the clean names are untouched, which a second --posix rebase
 #    declaring no action says; and the run's own final check, which
-#    --verify asks for, reports every line of the resolution done.
+#    is standard and asks for no flag, reports every line of the
+#    resolution done.
 #    Then the same with --take-from.
 #    Cells: ZX122, ZX125, ZX143, ZA56, ZA57 (on an acl fixture), ZM83.
 #
@@ -51,9 +52,9 @@
 # 4. A hand-edited choice of each kind, on a fixture with more than
 #    one conflicted name. keep: the conflicted file is merged by hand
 #    in the result while the rebase waits, the choice keep is written
-#    into the document, and at done the hand merge stands and
-#    --verify reports the name under the resolution as keep and never
-#    as drift. onto and from: the name is that side's object at done,
+#    into the document, and at done the hand merge stands and the
+#    final check reports the name under the resolution as keep and
+#    never as drift. onto and from: the name is that side's object at done,
 #    pooled as that side pools it. Answering by hand is one field per
 #    line and the header's count with them, since the parser refuses
 #    a count that does not match its lines. Cells: ZX130.
@@ -68,15 +69,15 @@
 #    Cells: ZX124, ZM82.
 #
 # 6. Drift lines. A clean file is edited while the rebase waits at
-#    the gate; --continue --verify writes it into the resolution as a
-#    drift line with the choice keep and then stops, because the
-#    conflicts are still unanswered and a document written to is not
-#    a document answered. Answering them takes the rebase to done
+#    the gate; the --continue checks there under no flag, writes it
+#    into the resolution as a drift line with the choice keep and
+#    then stops, because the conflicts are still unanswered and a
+#    document written to is not a document answered. Answering them takes the rebase to done
 #    with the edit intact and the name the resolution's. The second
 #    half is the same up to the drift line and then flips its choice
 #    to onto: at done the name is back as onto had it. run-strays.sh
 #    case 5 is the neighbouring case -- there the conflicts are
-#    answered before the --continue --verify, so the gate writes the
+#    answered before the --continue, so the gate writes the
 #    line and passes in one command; here it writes and waits.
 #    Cells: ZX132, ZX133 (ZY94 is run-strays.sh's).
 #
@@ -626,13 +627,13 @@ sidedir() {
 case_headless() {
 	side=$1
 	case_id="$fixture $form headless --take-$side"
-	# --verify goes on the run itself: the final check is made by
-	# the invocation that reaches the done gate, and this run is
-	# it. Afterwards there is no record to ask anything of.
-	fresh "--take-$side" --no-gui --verify
+	# The final check is made by the invocation that reaches the
+	# done gate, under no flag, and this run is it. Afterwards
+	# there is no record to ask anything of.
+	fresh "--take-$side" --no-gui
 	st=$?
 	[ $st -eq 0 ] || \
-	    { cat "$log"; fail "--take-$side --no-gui --verify exited $st, want 0"; }
+	    { cat "$log"; fail "--take-$side --no-gui exited $st, want 0"; }
 	# One process: the gate said the document was complete and
 	# went on rather than waiting for a --continue.
 	grep -q "the resolution $res is answered in full; going on" "$log" || \
@@ -807,12 +808,13 @@ case_hand() {
 	    { head -8 "$res"; fail "the document is not answered"; }
 	[ "$(res_names "$res")" = "$nconf" ] || \
 	    { head -8 "$res"; fail "answering changed the count of names"; }
-	# --verify goes on the --continue that reaches done, and its
-	# report is the done gate's own: the check is made after the
-	# choices were carried out and before the holds and the record
-	# go. There is no asking afterwards -- a settled result carries
-	# no record -- until verify-settled names it by its manifest.
-	"$bin" --continue --verify -v --no-gui --result "$rds" \
+	# The report is the done gate's own, made by the --continue
+	# that reaches it: the check comes after the choices were
+	# carried out and before the holds and the record go, under no
+	# flag, and -v is what adds the per-line list to it. There is
+	# no asking afterwards -- a settled result carries no record --
+	# until verify-settled names it by its manifest.
+	"$bin" --continue -v --no-gui --result "$rds" \
 	    > "$tmp/handv" 2>&1
 	st=$?
 	[ $st -eq 0 ] || \
@@ -899,10 +901,10 @@ drift_line() {			# leaves $kept edited and its line written
 	# The conflicts are still unanswered, so the gate writes the
 	# line and waits: a document written to is not a document
 	# answered.
-	"$bin" --continue --verify --result "$rds" > "$tmp/dr1" 2>&1
+	"$bin" --continue --result "$rds" > "$tmp/dr1" 2>&1
 	st=$?
 	[ $st -eq 1 ] || \
-	    { cat "$tmp/dr1"; fail "--continue --verify at the gate exited $st, want 1"; }
+	    { cat "$tmp/dr1"; fail "--continue at the gate exited $st, want 1"; }
 	grep -q '1 drift line added to the resolution' "$tmp/dr1" || \
 	    { cat "$tmp/dr1"; fail "the gate added no drift line"; }
 	leaf=$(basename "$kept")
@@ -927,7 +929,7 @@ case_driftkeep() {
 	# The check goes on this --continue, which is the invocation
 	# that reaches done: its report is the done gate's own, made
 	# after the choices and before the record goes.
-	"$bin" --continue --verify -v --result "$rds" > "$tmp/dr3" 2>&1
+	"$bin" --continue -v --result "$rds" > "$tmp/dr3" 2>&1
 	st=$?
 	[ $st -eq 0 ] || \
 	    { cat "$tmp/dr3"; fail "--continue over the answered document exited $st, want 0"; }
@@ -954,7 +956,7 @@ case_driftflip() {
 	grep -q "^ *$leaf drift onto\$" "$res" || \
 	    { cat "$res"; fail "the flip to onto did not take"; }
 	answer_all "$res" keep
-	"$bin" --continue --verify -v --result "$rds" > "$tmp/df3" 2>&1
+	"$bin" --continue -v --result "$rds" > "$tmp/df3" 2>&1
 	st=$?
 	[ $st -eq 0 ] || \
 	    { cat "$tmp/df3"; fail "--continue over the flipped document exited $st, want 0"; }
@@ -1061,7 +1063,7 @@ case_killchoice() {
 	pooled_like "$fromdir" "$hmnt"
 	# And nothing at all is left to do: the same call again reads
 	# every line of the document done.
-	"$bin" --continue --verify --result "$rds" > "$tmp/kc2" 2>&1
+	"$bin" --continue --result "$rds" > "$tmp/kc2" 2>&1
 	st=$?
 	[ $st -eq 0 ] || \
 	    { cat "$tmp/kc2"; fail "--continue at done exited $st, want 0"; }
@@ -1097,10 +1099,10 @@ case_aclstrip() {
 	ro_back
 	[ "$(aclof "$hmnt$kdir")" = "$(aclof "$ontodir$kdir")" ] && \
 	    fail "the ACL on $kdir did not change anything"
-	"$bin" --continue --verify --result "$rds" > "$tmp/ac1" 2>&1
+	"$bin" --continue --result "$rds" > "$tmp/ac1" 2>&1
 	st=$?
 	[ $st -eq 1 ] || \
-	    { cat "$tmp/ac1"; fail "--continue --verify at the gate exited $st, want 1"; }
+	    { cat "$tmp/ac1"; fail "--continue at the gate exited $st, want 1"; }
 	leaf=$(basename "$kdir")
 	grep -q "^ *$leaf/ drift keep\$" "$res" || \
 	    { cat "$res"; fail "$res has no drift line for the directory $kdir"; }

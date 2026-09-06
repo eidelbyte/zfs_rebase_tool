@@ -10,9 +10,9 @@
 /*
  * What the command asks for. The fresh run is the default and the
  * one with no word of its own; --continue, --restart and --abort are
- * verbs on a rebase that already exists, and --verify is a verb when
- * it names one -- alone on a --result, or on a manifest, which no
- * start takes -- and a flag otherwise. The last three
+ * verbs on a rebase that already exists, and so is --verify, which
+ * is a verb and nothing else: the checks run on their own schedule
+ * now and no flag asks for one. The last three
  * are the project's own harness aids: they take the first argument
  * position, they have no short form, and they are no part of
  * ordinary use.
@@ -22,7 +22,7 @@ enum zr_verb {
 	ZR_VERB_CONTINUE,
 	ZR_VERB_RESTART,
 	ZR_VERB_ABORT,
-	ZR_VERB_REPORT,			/* --verify alone on a result */
+	ZR_VERB_REPORT,			/* --verify, the report */
 	ZR_VERB_POSIX,
 	ZR_VERB_BUILD_FIXTURE,
 	ZR_VERB_EDIT_FIXTURE
@@ -54,7 +54,7 @@ struct zr_args {
 	zr_mode_t	za_mode;	/* -p, --permissive-merge */
 	int		za_dryrun;	/* -n, --dry-run */
 	int		za_verbose;	/* -v, --verbose */
-	int		za_verify;	/* -V, --verify */
+	int		za_verify;	/* -V, --verify: the verb */
 	int		za_quiet;	/* -q, --quiet */
 	int		za_unrelated;	/* -u, --allow-unrelated */
 	int		za_takeonto;	/* -O, --take-onto */

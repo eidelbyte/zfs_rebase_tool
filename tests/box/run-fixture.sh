@@ -38,14 +38,20 @@
 #      unrelated pair goes through, the base's snapshot walked like
 #      the other two; a --base newer than a side is refused with
 #      exit 2;
+#  0b. for probe.zrt, --verify as a verb and only a verb: beside a
+#      start, beside --dry-run and beside each of --continue,
+#      --restart and --abort it is a usage error, exit 2, with the
+#      refusal naming the flag and nothing read, created or held.
+#      The checks run on a schedule no flag changes, so there is no
+#      request form left for the word to be;
 #   1. -n: the manifest equals the fixture's expect block from the
 #      #mode line on, which is where the decision starts -- above it
 #      the header is this run's own and the fixture's is --posix's
 #      (v4-manifest.md, section 6) -- and its #base line names the
 #      snapshot the two sides were cloned from, with that snapshot's
 #      guid beside it; and for
-#      probe.zrt, that -n --verify still creates nothing, holds
-#      nothing and leaves no run directory;
+#      probe.zrt, that -n creates nothing under the --result it
+#      ignores, holds nothing and leaves no run directory;
 #   2. the real run, with --off-of for --from: exit 0 for a clean
 #      fixture, 1 for a conflicted one, the manifest again equal and
 #      the same #base derived; then the holds -- none at all for a
@@ -103,12 +109,13 @@
 #      a manifest whose header names another run beside --result,
 #      and a copy of this rebase's own manifest, which its header
 #      names but its record does not;
-#  3b. for probe.zrt, drift and its repair: /n, which the manifest
-#      copied, is edited behind the tool's back with readonly off
-#      and on again, --verify then exits 3 naming "drifted 1, first
-#      /n" and fixes nothing, --continue --verify puts it back and
-#      exits per the branch, and --verify is clean again with the
-#      result read-only;
+#  3b. for probe.zrt, drift and what nothing repairs: /n, which the
+#      manifest copied, is edited behind the tool's back with
+#      readonly off and on again, --verify then exits 3 naming
+#      "drifted 1, first /n" and fixes nothing, a plain --continue
+#      checks at the gate under no flag, reports the same drift,
+#      writes nothing into the tree and exits per the branch, and
+#      --verify still reports it with the result read-only;
 #  3c. for probe.zrt, --restart: the clone is destroyed and made
 #      again from the onto snapshot the header names, with the same
 #      record, the manifest is applied from the first gate, and the
@@ -126,13 +133,15 @@
 #      is the result alone, unmounted and unplaced, with the run
 #      directory already gone: the harness destroys the result and
 #      asserts the directory went;
-#   5. a second real run given --verify -- every clean fixture, and
-#      probe.zrt as the conflicted one: its tag is a new one, and on
-#      a clean fixture the final check runs at the done gate (its
-#      report is printed, the record is cleared and the holds are
-#      released), which is where --verify is due. Nothing is
-#      recorded: the flag belongs to the invocation that reaches the
-#      gate;
+#   5. a second real run, plain -- every clean fixture, and probe.zrt
+#      as the conflicted one: its tag is a new one, and on a clean
+#      fixture the final check runs at the done gate under no flag
+#      at all (its report is printed, the record is cleared and the
+#      holds are released), which is where the last check is due.
+#      Then the same run under -q: the check still runs, the exit
+#      status is the same and done is the same, and the report is
+#      not printed. A conflicted fixture stops at the conflicts gate
+#      before the final check is due;
 #
 # and then, in the dataset form:
 #  D0. for probe.zrt, exclusivity: a file held open under onto makes
@@ -425,6 +434,47 @@ case "$fixture" in
 	st=$?
 	[ $st -eq 2 ] || fail "a base newer than from exited $st, want 2"
 	echo "ok   a base newer than from refused (exit 2)"
+
+	say "0b. --verify is a verb and only a verb"
+	# The checks run on a schedule no flag changes (ruled
+	# 2026-09-06, documents-design.md section 7), so the word is
+	# a verb and nothing else: beside anything that starts or
+	# moves a rebase it is a usage error, exit 2, before anything
+	# is read or made. The couplings are asserted here, in one
+	# place, because each of them is a command somebody may have
+	# written for the older meaning.
+	for coupling in -n --continue --restart --abort; do
+		"$bin" --verify "$coupling" --result "$POOL/vresult" \
+		    --from "$POOL/from@work" --onto "$POOL/onto@work" \
+		    > "$tmp/vcouple" 2>&1
+		st=$?
+		[ $st -eq 2 ] || \
+		    { cat "$tmp/vcouple"; fail "--verify $coupling exited $st, want 2"; }
+		grep -q -- "--verify" "$tmp/vcouple" || \
+		    { cat "$tmp/vcouple"; fail "--verify $coupling was refused for another reason"; }
+	done
+	# And the shape of a start, which is the two sides and a name
+	# for what they make.
+	"$bin" --verify -o "$tmp/got-v0" --from "$POOL/from@work" \
+	    --onto "$POOL/onto@work" --result "$POOL/vresult" \
+	    > "$tmp/vcouple" 2>&1
+	st=$?
+	[ $st -eq 2 ] || \
+	    { cat "$tmp/vcouple"; fail "--verify on a start exited $st, want 2"; }
+	grep -q -- "--verify" "$tmp/vcouple" || \
+	    { cat "$tmp/vcouple"; fail "--verify on a start was refused for another reason"; }
+	[ -e "$tmp/got-v0" ] && fail "a refused --verify wrote $tmp/got-v0"
+	if zfs list -H -o name "$POOL/vresult" > /dev/null 2>&1; then
+		fail "a refused --verify created $POOL/vresult"
+	fi
+	[ -e "/var/db/zfs_rebase/$POOL/vresult" ] && \
+	    fail "a refused --verify left a run directory"
+	for s in "$POOL/base@base" "$POOL/from@work" "$POOL/onto@work"; do
+		held=$(zfs holds -H "$s") || fail "zfs holds $s"
+		[ -z "$held" ] || fail "a refused --verify held $s: $held"
+	done
+	echo "ok   --verify beside a start, -n, --continue, --restart or"
+	echo "     --abort: exit 2, nothing read, nothing made"
 	;;
 esac
 
@@ -439,20 +489,21 @@ grep -q "^#base $POOL/base@base [0-9][0-9]*\$" "$tmp/got-n" || { head -5 "$tmp/g
 echo "ok   dry run (exit $st), base derived"
 case "$fixture" in
 */probe.zrt|probe.zrt)
-	# -n ignores --result and --verify has nothing to record yet:
-	# together they must still create nothing and hold nothing.
-	"$bin" -n --verify $flag --from "$POOL/from@work" \
+	# -n ignores --result and creates nothing under it, holds
+	# nothing and leaves no run directory. (The dry run that used
+	# to carry --verify here is 0b's refusal now.)
+	"$bin" -n $flag --from "$POOL/from@work" \
 	    --onto "$POOL/onto@work" --result "$POOL/vresult" >/dev/null 2>&1
 	if zfs list -H -o name "$POOL/vresult" > /dev/null 2>&1; then
-		fail "-n --verify created $POOL/vresult"
+		fail "-n created $POOL/vresult"
 	fi
 	[ -e "/var/db/zfs_rebase/$POOL/vresult" ] && \
-	    fail "-n --verify left a run directory"
+	    fail "-n left a run directory"
 	for s in "$POOL/base@base" "$POOL/from@work" "$POOL/onto@work"; do
 		held=$(zfs holds -H "$s") || fail "zfs holds $s"
-		[ -z "$held" ] || fail "-n --verify held $s: $held"
+		[ -z "$held" ] || fail "-n held $s: $held"
 	done
-	echo "ok   -n --verify creates nothing and holds nothing"
+	echo "ok   -n creates nothing and holds nothing"
 	;;
 esac
 
@@ -795,18 +846,19 @@ case "$fixture" in
 	grep -q 'drifted 1, first /n' "$tmp/verify2" || \
 	    { cat "$tmp/verify2"; fail "--verify did not name the drifted /n"; }
 	echo "ok   --verify: exit 3, drifted 1 first /n, nothing written"
-	# And --continue --verify does not mend it either: the rebase
+	# And a plain --continue does not mend it either: the rebase
 	# is at the conflicts gate, where the tree is being edited by
-	# hand and an edit cannot be told from a stray. It reports and
-	# passes; --restart below is what puts the result back.
-	"$bin" --continue --verify --result "$POOL/result" > "$tmp/cont2" 2>&1
+	# hand and an edit cannot be told from a stray. The gate
+	# checks under no flag, reports and passes; --restart below is
+	# what puts the result back.
+	"$bin" --continue --result "$POOL/result" > "$tmp/cont2" 2>&1
 	st=$?
 	want=1
 	[ $clean -eq 1 ] && want=0
 	[ $st -eq $want ] || \
-	    { cat "$tmp/cont2"; fail "--continue --verify exited $st, want $want"; }
+	    { cat "$tmp/cont2"; fail "--continue exited $st, want $want"; }
 	grep -q 'drifted 1, first /n' "$tmp/cont2" || \
-	    { cat "$tmp/cont2"; fail "--continue --verify did not report the drift"; }
+	    { cat "$tmp/cont2"; fail "--continue did not report the drift"; }
 	"$bin" --verify --result "$POOL/result" > "$tmp/verify3" 2>&1
 	st=$?
 	[ $st -eq 3 ] || \
@@ -815,7 +867,7 @@ case "$fixture" in
 	    { cat "$tmp/verify3"; fail "the drift is not reported any more"; }
 	[ "$(zfs get -H -o value readonly "$POOL/result")" = on ] || \
 	    fail "a verb left the result writable"
-	echo "ok   --continue --verify reported it and wrote nothing"
+	echo "ok   --continue reported it and wrote nothing"
 
 	say "3c. restart (probe.zrt)"
 	# The clone goes and is made again from the recorded onto
@@ -942,44 +994,69 @@ else
 	echo "     gone, and the -o manifest and resolution stayed"
 fi
 
-# A second run, given --verify: nothing is recorded -- the flag
-# belongs to the invocation that reaches the gate -- and on a clean
-# fixture the check is carried out at the done gate, which is where
-# the final check belongs: after the last apply verified and before
-# anything is released. Every clean fixture takes this, and probe.zrt
+# A second run, plain: no flag asks for a check any more, and on a
+# clean fixture the final check is carried out at the done gate all
+# the same -- after the last apply verified and before anything is
+# released -- and its report is printed. Then the same run under -q,
+# which silences that report and changes nothing else: the same exit
+# status, the same done. Every clean fixture takes this, and probe.zrt
 # takes it as the conflicted one, where the run stops at conflicts
 # before the check is due.
 do5=$clean
 case "$fixture" in */probe.zrt|probe.zrt) do5=1 ;; esac
 if [ $do5 -eq 1 ]; then
-	say "5. a run given --verify"
-	"$bin" --verify $flag -o "$tmp/got-v" --from "$POOL/from@work" \
+	say "5. the final check at the done gate, and -q"
+	"$bin" $flag -o "$tmp/got-v" --from "$POOL/from@work" \
 	    --onto "$POOL/onto@work" --result "$POOL/result" \
 	    2> "$tmp/verify5"
 	st=$?
 	cat "$tmp/verify5"
-	[ $st -eq 0 ] || [ $st -eq 1 ] || fail "the --verify run exited $st"
+	[ $st -eq 0 ] || [ $st -eq 1 ] || fail "the second run exited $st"
 	if [ $clean -eq 1 ]; then
-		[ $st -eq 0 ] || fail "the clean --verify run exited $st"
+		[ $st -eq 0 ] || fail "the clean second run exited $st"
 		# It reached done, so the record is off: the check ran
 		# before the release and the clearing, which is the
 		# order the done gate has.
 		left=$(localprops "$POOL/result")
 		[ -z "$left" ] || \
-		    fail "the --verify run reached done and left $left"
+		    fail "the second run reached done and left $left"
 		grep -q 'drifted 0' "$tmp/verify5" || \
-		    fail "the --verify run printed no final check"
+		    fail "the run printed no final check"
+		grep -q 'outside the manifest' "$tmp/verify5" || \
+		    fail "the final check's report is not the whole report"
 		for s in "$POOL/base@base" "$POOL/from@work" \
 		    "$POOL/onto@work"; do
 			held=$(zfs holds -H "$s") || fail "zfs holds $s"
 			[ -z "$held" ] || \
-			    fail "$s is held after a --verify run reached done"
+			    fail "$s is held after the run reached done"
 		done
 		placement_line "$tmp/verify5"
-		echo "ok   --verify: the check at the done gate, then the"
-		echo "     holds and then the record, the clone unmounted"
-		echo "     with its placement line, and nothing recorded"
+		echo "ok   the final check at the done gate under no flag,"
+		echo "     then the holds and then the record, the clone"
+		echo "     unmounted with its placement line"
 		settled_clone
+
+		# And again under -q. The check still runs and its
+		# exit status still stands; what the flag takes away
+		# is the report and nothing else. It is latched in
+		# zfs_rebase:quiet at the start, which is where the
+		# invocation that reaches done reads it.
+		"$bin" -q $flag -o "$tmp/got-q" --from "$POOL/from@work" \
+		    --onto "$POOL/onto@work" --result "$POOL/result" \
+		    2> "$tmp/quiet5"
+		qst=$?
+		[ $qst -eq $st ] || \
+		    { cat "$tmp/quiet5"; fail "the -q run exited $qst, want $st"; }
+		grep -q 'outside the manifest' "$tmp/quiet5" && \
+		    { cat "$tmp/quiet5"; fail "-q printed the final check's report"; }
+		grep -q 'drifted' "$tmp/quiet5" && \
+		    { cat "$tmp/quiet5"; fail "-q printed the outcome counts"; }
+		[ -z "$(localprops "$POOL/result")" ] || \
+		    fail "the -q run reached done and left a record"
+		placement_line "$tmp/quiet5"
+		echo "ok   -q: the same exit and the same done, and no report"
+		settled_clone
+		rm -f "$tmp/got-q" "$tmp/got-q.resolution"
 	else
 		# It stopped at conflicts, so the rebase is open and
 		# its record is there under a tag of its own.
@@ -993,8 +1070,8 @@ if [ $do5 -eq 1 ]; then
 		[ "$(recsrc zfs_rebase:quiet "$POOL/result")" != local ] || \
 		    fail "zfs_rebase:quiet is set although no --quiet was given"
 		"$bin" --abort --result "$POOL/result" || fail "abort exited $?"
-		echo "ok   --verify: a conflicted run stops before the check"
-		echo "     is due, under its own tag $vtag"
+		echo "ok   a conflicted run stops at the gate, before the"
+		echo "     final check is due, under its own tag $vtag"
 	fi
 	for s in "$POOL/base@base" "$POOL/from@work" "$POOL/onto@work"; do
 		held=$(zfs holds -H "$s") || fail "zfs holds $s"

@@ -5,13 +5,13 @@ given two sides that diverged from a common base, it replays the
 changes of one (from) onto the other (onto), or tells you exactly
 which files it could not decide and why.
 
-    zfs_rebase [-p] [-v] [-q] [--manifest FILE] [--verify] \
+    zfs_rebase [-p] [-v] [-q] [--manifest FILE] \
         [--allow-unrelated --base SNAP] \
         [--take-onto | --take-from] [--no-gui] [--no-merge] \
         --from SNAP|DATASET --onto SNAP|DATASET --result NAME
     zfs_rebase --dry-run [-p] [--manifest FILE] \
         --from SNAP|DATASET --onto SNAP|DATASET
-    zfs_rebase --continue [--verify] [--no-gui] [--no-merge] \
+    zfs_rebase --continue [--no-gui] [--no-merge] \
         [--from SNAP] [--onto SNAP] (--result DATASET | MANIFEST)
     zfs_rebase --restart (--result DATASET | MANIFEST)
     zfs_rebase --abort (--result DATASET | MANIFEST)
@@ -21,8 +21,10 @@ Every flag has a long form and a short form, and the two are the same
 flag: the table below gives both. --from may also be spelled --off-of
 and --onto --to, neither with a letter of its own. --dry-run (-n)
 writes the manifest, creates nothing and holds nothing: to the file
--o names, or to standard output when there is none. --verify at
-the start makes the final check at the last gate.
+-o names, or to standard output when there is none. --verify is a
+verb and only a verb: the checks run on a schedule of their own, no
+flag asks for one, and beside anything that starts or moves a rebase
+the word is a usage error.
 
 A verb names the rebase it acts on by --result, the dataset carrying
 the record, or by MANIFEST, the path of that rebase's manifest, which
@@ -40,8 +42,8 @@ MANIFEST at all.
 | `--permissive-merge` | `-p` | permissive merge; strict is the default, and the mode is recorded |
 | `--verbose` | `-v` | counts and steps on stderr |
 | `--manifest` | `-o` | where the manifest is written; the resolution goes beside it, and the record names the manifest. A start option, and a dry run's: the record names the path from then on, and done acts on it, so no later verb can choose |
-| `--verify` | `-V` | ask for the final check, or, alone on a result, report and write nothing; never a repair |
-| `--quiet` | `-q` | a start option: latched in the record for the whole run, to silence the final check's report. Nothing reads it yet |
+| `--verify` | `-V` | a verb: report one rebase and write nothing anywhere; never a repair. It goes with no flag that starts or moves a rebase, since the checks are standard |
+| `--quiet` | `-q` | a start option: latched in the record for the whole run, and it silences the final check's report and nothing else -- not the check, not its verdict, not the exit status |
 | `--take-onto` | `-O` | write the skeleton with every conflict answered onto |
 | `--take-from` | `-F` | write the skeleton with every conflict answered from; the two exclude each other |
 | `--no-gui` | `-G` | at the conflicts gate, go on without the picker when the resolution is complete and stop when it is not -- the only behavior while there is no picker |
@@ -149,7 +151,10 @@ snapshot: its before-image is the one you named.
 
 The exit status is 0 when the rebase is done, 1 when it stopped at
 conflicts, 2 when it was refused before anything was touched, and 3
-when something failed part way.
+when something failed part way or when the final check found drift.
+Those last two are told apart by what is left behind: a rebase whose
+final check found drift has reached done all the same, and carries
+no record any more.
 
 You name the two sides and not the base. The base is the branch
 point, and the tool works it out: it walks each side's origin chain
@@ -252,6 +257,25 @@ kill leaves is the last gate reached, there is no phase at all until
 the first one, and a stop writes none: --continue resumes from the
 gate, --abort takes the rebase away.
 
+**The checks.** One verify at every gate, on a schedule no flag
+changes and none can skip:
+
+| when | what becomes of the drift |
+|------|---------------------------|
+| end of applying1 | fixed, by the stage's own self-check: up to the conflicts gate the result is the run's own, so a name that is not what the expected tree says is a stray |
+| entering conflicts, and every --continue that arrives at that gate | written into the resolution as lines with the choice keep, printed, and never fixed: from this gate on the tree is being edited by hand, and nothing can tell that work from a stray |
+| end of applying2, before done is written | reported, exit 3, and done written all the same; --quiet prints nothing and the exit status stands |
+| a settled result, --verify MANIFEST | reported, exit 3 (verify-settled's work; today a settled result has no record and every verb on it exits 2) |
+
+done never blocks on drift. What the last check finds is said and
+carried out in the exit status, and the gate is passed regardless:
+the record cleared, the result settled and the run directory taken
+away, exactly as on a clean pass. A rebase that could not be closed
+because somebody edited a file in it would be a rebase nothing could
+ever end. A check that cannot be made at all is the other thing --
+that is the tool failing, not the tree drifting -- and the gate is
+not passed, so a --continue can try again.
+
 Each run keeps its own directory, 0700 throughout: born at start,
 gone at done.
 
@@ -320,23 +344,23 @@ rebase the person thinks this is, and each is checked against the
 header by name and by guid, both numbers printed on a mismatch. A
 side that does not match is exit 2 with nothing touched.
 
-    zfs_rebase --continue [--verify] [--no-gui] [--no-merge] \
+    zfs_rebase --continue [--no-gui] [--no-merge] \
         [--from SNAP] [--onto SNAP] (--result DATASET | MANIFEST)
 
 takes the rebase on from the gate its record names, through the
 gates that are left, in one process. Applying is idempotent -- every
 action means "make this true" -- so what is already true is left
 alone and what is not is made, which is why a fresh run and a resumed
-one are one code path. With --verify it prints how every action of
-the manifest and every answered name of the resolution stands --
-done, pending, blocked, drifted or unchecked -- and what the result
-holds outside them both. It repairs nothing: the one fix in the tool
-is the applying1 stage's own self-check, which is always on and is no
-flag's. The one document it writes is the resolution, at the
-conflicts gate, where the drift it found becomes lines with the
-choice keep for the person to answer. --no-merge stops it at that
-gate however the resolution reads, and is refused from a record
-already past the merge.
+one are one code path. It checks at every gate it passes, under no
+flag, by the schedule below, and it prints what it found: how every
+action of the manifest and every answered name of the resolution
+stands -- done, pending, blocked, drifted or unchecked -- and what
+the result holds outside them both. It repairs nothing: the one fix
+in the tool is the applying1 stage's own self-check. The one
+document it writes is the resolution, at the conflicts gate, where
+the drift it found becomes lines with the choice keep for the person
+to answer. --no-merge stops it at that gate however the resolution
+reads, and is refused from a record already past the merge.
 
     zfs_rebase --restart (--result DATASET | MANIFEST)
 
@@ -353,9 +377,14 @@ started with is not an edit.
     zfs_rebase --verify (--result DATASET | MANIFEST)
 
 reports and writes nothing at all, so a deliberate edit to a rebased
-file is shown and never overwritten. It exits 0 when nothing is
-pending or drifted and 3 when something is; blocked and unchecked
-are states and not faults. After done it is best effort: each input
+file is shown and never overwritten. It is a verb and only a verb:
+beside a start, beside --dry-run and beside --continue, --restart or
+--abort it is a usage error, because the checks are standard and
+there is nothing left for the word to ask for. It exits 0 when
+nothing has drifted and 3 when something has -- an action pending or
+drifted, or a name the manifest never spoke for that the result no
+longer holds as onto had it; blocked and unchecked are states and
+not faults. After done it is best effort: each input
 is looked for by name and then by guid across the pool, which is
 what survives a rename or a promote, each one it finds is held for
 the length of the report and not a moment longer, and what it cannot

@@ -15,7 +15,7 @@
 # the applying1 stage makes on itself: the document held against the
 # result, every action redone that did not land, and every name no
 # action spoke for put back as onto had it. It is no flag's, and
-# nothing after that gate writes at all. Four cases per fixture and
+# nothing after that gate writes at all. The cases, per fixture and
 # form:
 #
 # 1. Strays into the result while the tool has it open, at action:1,
@@ -31,8 +31,8 @@
 #      came after the edit and the apply is what the name holds.
 #
 #    --verify afterwards reports no drift, no pending action and
-#    nothing outside the manifest, and a --continue --verify changes
-#    nothing, because there is nothing left to change.
+#    nothing outside the manifest, and a --continue changes nothing,
+#    because there is nothing left to change.
 #
 # 2. A stray delete, which the same self-check catches: the name list
 #    is over the shared name table and not over what the result
@@ -41,11 +41,11 @@
 #    for it -- it goes on to its branch's gate as if the delete had
 #    never happened -- and --verify afterwards has nothing to say.
 #
-# 3. Drift after the stage, which is what --verify is for and what
+# 3. Drift after the stage, which is what a check is for and what
 #    nothing repairs: an edit to a file a clean action made, with
 #    readonly off and back on behind the tool's back, is drifted 1
-#    naming that file. --verify fixes nothing and neither does
-#    --continue --verify: from the conflicts gate on the tree is
+#    naming that file. --verify fixes nothing and neither does a
+#    --continue: from the conflicts gate on the tree is
 #    being edited by hand, an edit cannot be told from a stray, and
 #    the gate reports and passes rather than blocking done for good.
 #    Then the same edit to a conflicted name, which is never
@@ -63,8 +63,10 @@
 #    a write there lands in the pool's root dataset and is hidden the
 #    moment the dataset comes home at done or at --abort.
 #
-# 5. A stray edit at the conflicts gate, which --continue --verify
-#    writes into the resolution rather than into the tree. The edit
+# 5. A stray edit at the conflicts gate, which a plain --continue
+#    writes into the resolution rather than into the tree. Every
+#    --continue that arrives at that gate checks first, under no flag
+#    (documents-design.md, section 7). The edit
 #    is to a file the manifest says nothing about, so it is one entry
 #    of the name list; the gate turns every such entry into a drift
 #    line with the choice keep, writes the document back and goes on.
@@ -73,6 +75,17 @@
 #    outside the manifest to say about the name, because the name is
 #    the resolution's now. Conflicted fixtures only: a clean rebase
 #    never stops at that gate.
+#
+# 6. A stray between the last two gates, which the final check
+#    reports and done does not block on. The conflicts are answered,
+#    a --continue is stopped at the applying2 gate -- past the
+#    conflicts gate's own check, with readonly already off -- and a
+#    file a clean action made is edited there. The check at the done
+#    gate finds it: the report says drifted 1 naming that file, the
+#    exit status is 3, and done is reached all the same -- the record
+#    off, the run directory gone, the result settled and the edit
+#    still standing, because nothing past applying1 mends anything.
+#    Conflicted fixtures only, for the gate it stops at.
 #
 # Every case ends by taking the rebase away -- --abort where one is
 # still open, and by hand where it reached done, which leaves no
@@ -358,10 +371,11 @@ verify_open() {			# OUT WANTEXIT
 	return 0
 }
 
-# The same for a --continue: on a settled result it is refused, and
-# there is nothing left for it to do in any case.
+# The same for a --continue, which checks at the gate it arrives at
+# under no flag: on a settled result it is refused, and there is
+# nothing left for it to do in any case.
 continue_open() {		# OUT WANTEXIT
-	"$bin" --continue --verify --result "$rds" > "$1" 2>&1
+	"$bin" --continue --result "$rds" > "$1" 2>&1
 	st=$?
 	if [ $clean -eq 1 ]; then
 		[ $st -eq 2 ] || \
@@ -369,7 +383,7 @@ continue_open() {		# OUT WANTEXIT
 		return 1
 	fi
 	[ $st -eq "$2" ] || \
-	    { cat "$1"; fail "--continue --verify exited $st, want $2"; }
+	    { cat "$1"; fail "--continue exited $st, want $2"; }
 	return 0
 }
 
@@ -490,7 +504,7 @@ case_strays() {
 	if continue_open "$tmp/cont" $wrun; then
 		if verify_open "$tmp/verify2" 0; then
 			no_outside "$tmp/verify2" || \
-			    { cat "$tmp/verify2"; fail "--continue --verify made a difference"; }
+			    { cat "$tmp/verify2"; fail "--continue made a difference"; }
 		fi
 	fi
 	grep -q stray "$hmnt$kept" && fail "$kept is the stray's again"
@@ -544,12 +558,12 @@ case_drift() {
 		grep -q drift "$hmnt$tgt" || fail "--verify wrote to the result"
 		at_end
 	fi
-	# And neither does a --continue --verify: past applying1 an
-	# edit cannot be told from a stray, so the gate reports it and
-	# passes rather than mending it or blocking on it.
+	# And neither does a --continue: past applying1 an edit cannot
+	# be told from a stray, so the gate reports it and passes
+	# rather than mending it or blocking on it.
 	if continue_open "$tmp/cont" $wrun; then
 		grep -q "drifted 1, first $tgt" "$tmp/cont" || \
-		    { cat "$tmp/cont"; fail "--continue --verify did not report the drift"; }
+		    { cat "$tmp/cont"; fail "--continue did not report the drift"; }
 		at_end
 	fi
 	grep -q drift "$hmnt$tgt" || fail "a verb wrote over the drift in $tgt"
@@ -582,10 +596,10 @@ case_drift() {
 		    { cat "$tmp/verify3"; fail "the edit to the conflicted name changed the drift report"; }
 		no_outside "$tmp/verify3" || \
 		    { cat "$tmp/verify3"; fail "a conflicted name reached the name list"; }
-		"$bin" --continue --verify --result "$rds" > "$tmp/cont2" 2>&1
+		"$bin" --continue --result "$rds" > "$tmp/cont2" 2>&1
 		st=$?
 		[ $st -eq $wrun ] || \
-		    { cat "$tmp/cont2"; fail "--continue --verify exited $st, want $wrun"; }
+		    { cat "$tmp/cont2"; fail "--continue exited $st, want $wrun"; }
 		grep -q mine "$hmnt$cname" || \
 		    fail "a verb overwrote the conflicted $cname"
 		echo "ok   $case_id: $cname neither classified nor touched"
@@ -694,10 +708,10 @@ case_driftline() {
 	sed -e 's/ -$/ keep/' -e 's/^#unanswered .*$/#unanswered 0/' \
 	    "$res" > "$res.answered" || fail "cannot answer $res"
 	mv "$res.answered" "$res" || fail "cannot answer $res"
-	"$bin" --continue --verify --result "$rds" > "$tmp/drift" 2>&1
+	"$bin" --continue --result "$rds" > "$tmp/drift" 2>&1
 	st=$?
 	[ $st -eq 0 ] || \
-	    { cat "$tmp/drift"; fail "--continue --verify exited $st, want 0"; }
+	    { cat "$tmp/drift"; fail "--continue exited $st, want 0"; }
 	grep -q '1 drift line added to the resolution' "$tmp/drift" || \
 	    { cat "$tmp/drift"; fail "the gate added no drift line"; }
 	# The document says so, in the tree grammar: the leaf of the
@@ -734,9 +748,56 @@ case_driftline() {
 	end_case
 }
 
+# --- 6. a stray between the last two gates: reported at done,
+#        which is reached all the same ---
+case_donedrift() {
+	case_id="$fixture $form a stray before the done gate"
+	run_fg
+	st=$?
+	[ $st -eq $wrun ] || { cat "$log"; fail "the run exited $st, want $wrun"; }
+	[ "$(phasenow "$rds")" = conflicts ] || \
+	    fail "the run is at $(phasenow "$rds"), want conflicts"
+	sethere
+	tgt=$(write_target "$man" "$hmnt")
+	[ -n "$tgt" ] || fail "the manifest writes or copies nothing"
+	# Answered in full, so this --continue passes the gate and
+	# goes on to applying2, where the pause hook stops it.
+	sed -e 's/ -$/ keep/' -e 's/^#unanswered .*$/#unanswered 0/' \
+	    "$res" > "$res.answered" || fail "cannot answer $res"
+	mv "$res.answered" "$res" || fail "cannot answer $res"
+	ZFS_REBASE_PAUSE=applying2 "$bin" --continue -v --result "$rds" \
+	    > "$tmp/late" 2>&1 &
+	pid=$!
+	wait_stop "$pid" || { cat "$tmp/late"; fail "never stopped at applying2"; }
+	# The gate is written and readonly is off, so the edit goes in
+	# without touching a property behind the tool's back; and the
+	# conflicts gate's own check has already been made, so this is
+	# a stray no check but the last one can see.
+	printf 'late\n' >> "$wmnt$tgt" || fail "cannot edit $tgt"
+	kill -CONT "$pid" || fail "cannot continue the stopped tool"
+	wait "$pid"
+	st=$?
+	pid=
+	[ $st -eq 3 ] || \
+	    { cat "$tmp/late"; fail "the --continue exited $st, want 3"; }
+	grep -q "drifted 1, first $tgt" "$tmp/late" || \
+	    { cat "$tmp/late"; fail "the final check did not name the drifted $tgt"; }
+	grep -q 'done does not block on' "$tmp/late" || \
+	    { cat "$tmp/late"; fail "the run did not say done was reached all the same"; }
+	# And done was reached: no record, no run directory, and the
+	# result settled where its form puts it.
+	[ -z "$(localprops "$rds")" ] || \
+	    fail "the exit 3 left $(localprops "$rds") on $rds"
+	[ ! -d "$rundir" ] || fail "the exit 3 left the run directory $rundir"
+	sethere
+	grep -q late "$hmnt$tgt" || fail "something mended the stray in $tgt"
+	echo "ok   $case_id: drifted 1 at done, exit 3, done all the same"
+	end_case
+}
+
 # ---------------------------------------------------------------
 # One fixture in one form: the cases above, each ending in --abort.
-# The last of them is the conflicted fixtures' alone.
+# The last two of them are the conflicted fixtures' alone.
 # ---------------------------------------------------------------
 stray_pass() {
 	form=$1
@@ -767,8 +828,12 @@ stray_pass() {
 	case_drift
 	case_live
 	# The conflicts gate is the only place a drift line is written,
-	# and a clean rebase never stops there.
-	[ $clean -eq 0 ] && case_driftline
+	# and a clean rebase never stops there; the applying2 gate case
+	# 6 stops at is the conflicted fixtures' too.
+	if [ $clean -eq 0 ]; then
+		case_driftline
+		case_donedrift
+	fi
 	return 0
 }
 

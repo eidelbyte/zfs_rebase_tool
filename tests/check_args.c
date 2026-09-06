@@ -8,6 +8,7 @@
  *
  * Matrix cells (tests/MATRIX.md, family ZX): ZX100 to ZX121,
  * ZX137 to ZX139 for --quiet and for the --overwrite that is gone,
+ * ZX188 and ZX189 for --verify as a verb and only a verb,
  * and ZX180 to ZX187 for the manifest as the one operand, -o at the
  * start alone, --allow-unrelated needing --base, and the two sides on
  * a verb. The last of those, ZX187, is src/run.c's rule for reading
@@ -197,7 +198,7 @@ test_pairs_run(void)
 	char *base[] = { w_prog, w_from, v_from, w_onto, v_onto,
 	    w_result, v_result };
 	char *with[10];
-	char *one[] = { w_perm, w_verbose, w_verify, w_takeonto, w_takefrom,
+	char *one[] = { w_perm, w_verbose, w_takeonto, w_takefrom,
 	    w_nogui, w_nomerge, w_quiet };
 	char *val[] = { w_manifest, w_base };
 	size_t i;
@@ -241,7 +242,7 @@ static void
 test_pairs_verbs(void)
 {
 	char *cont[] = { w_prog, w_continue, w_result, v_result };
-	char *contv[] = { w_prog, w_continue, w_verify, w_nogui, w_nomerge,
+	char *contv[] = { w_prog, w_continue, w_nogui, w_nomerge,
 	    w_verbose, w_result, v_result };
 	char *rest[] = { w_prog, w_restart, w_result, v_result };
 	char *abrt[] = { w_prog, w_abort, w_verbose, w_result, v_result };
@@ -259,25 +260,35 @@ test_pairs_verbs(void)
 	CHECK(a.za_result == v_result);
 	a = parse_ok(contv, (int)NELEM(contv));
 	CHECK(a.za_verb == ZR_VERB_CONTINUE);
-	CHECK(a.za_verify == 1 && a.za_nogui == 1 && a.za_nomerge == 1);
+	CHECK(a.za_verify == 0 && a.za_nogui == 1 && a.za_nomerge == 1);
 	CHECK(a.za_verbose == 1);
 	a = parse_ok(rest, (int)NELEM(rest));
 	CHECK(a.za_verb == ZR_VERB_RESTART);
 	a = parse_ok(abrt, (int)NELEM(abrt));
 	CHECK(a.za_verb == ZR_VERB_ABORT && a.za_verbose == 1);
 	/*
-	 * ZX110: --verify alone on a result is the verb, and with a
-	 * rebase it is the flag; one word, and the two sides told
-	 * apart by whether the command names the sides.
+	 * ZX110: --verify is the verb, always. One word and one
+	 * meaning: the command that used to be a start with the flag
+	 * is a refusal now (ZX189), and nothing the word stands
+	 * beside makes it anything but the report.
 	 */
 	a = parse_ok(rep, (int)NELEM(rep));
 	CHECK(a.za_verb == ZR_VERB_REPORT && a.za_verify == 1);
 	{
-		char *run[] = { w_prog, w_verify, w_from, v_from, w_onto,
-		    v_onto, w_result, v_result };
+		char *sole[] = { w_prog, w_verify, v_manifest };
+		char *side[] = { w_prog, w_verify, w_result, v_result,
+		    w_from, v_from };
+		char *loud[] = { w_prog, w_verify, w_verbose, w_result,
+		    v_result };
 
-		a = parse_ok(run, (int)NELEM(run));
-		CHECK(a.za_verb == ZR_VERB_RUN && a.za_verify == 1);
+		a = parse_ok(sole, (int)NELEM(sole));
+		CHECK(a.za_verb == ZR_VERB_REPORT && a.za_path == v_manifest);
+		a = parse_ok(side, (int)NELEM(side));
+		CHECK(a.za_verb == ZR_VERB_REPORT && a.za_from == v_from);
+		a = parse_ok(loud, (int)NELEM(loud));
+		CHECK(a.za_verb == ZR_VERB_REPORT && a.za_verbose == 1);
+		check_pair(sole, (int)NELEM(sole));
+		check_pair(side, (int)NELEM(side));
 	}
 }
 
@@ -559,12 +570,13 @@ test_take_choice(void)
 }
 
 /*
- * ZX120, ZX138: a verb names its run and takes the gate flags
+ * ZX120, ZX138, ZX188: a verb names its run and takes the gate flags
  * --continue is allowed, the two sides and -v, and nothing of a
  * fresh run's: there is nothing there for --quiet to silence, since
  * the start latched that in the record, nothing for -o to choose,
  * since the start chose it and the record names it, and two verbs at
- * once are two commands.
+ * once are two commands. --verify is a verb of its own now, so it is
+ * a second one beside each of the three that move a rebase.
  */
 static void
 test_verb_flags(void)
@@ -576,6 +588,8 @@ test_verb_flags(void)
 	    w_quiet };
 	char *withmode[] = { w_prog, w_restart, w_result, v_result, w_perm };
 	char *withdry[] = { w_prog, w_abort, w_result, v_result, w_dryrun };
+	char *verifycont[] = { w_prog, w_continue, w_verify, w_result,
+	    v_result };
 	char *verifyrest[] = { w_prog, w_restart, w_verify, w_result,
 	    v_result };
 	char *verifyabrt[] = { w_prog, w_abort, w_verify, w_result,
@@ -589,6 +603,7 @@ test_verb_flags(void)
 	parse_bad(withquiet, (int)NELEM(withquiet));
 	parse_bad(withmode, (int)NELEM(withmode));
 	parse_bad(withdry, (int)NELEM(withdry));
+	parse_bad(verifycont, (int)NELEM(verifycont));
 	parse_bad(verifyrest, (int)NELEM(verifyrest));
 	parse_bad(verifyabrt, (int)NELEM(verifyabrt));
 	parse_bad(two, (int)NELEM(two));
@@ -808,12 +823,12 @@ test_operand_on_a_start(void)
 }
 
 /*
- * ZX186: --from and --onto are accepted on a verb, where they name
- * no rebase and change nothing: the driver checks them against the
- * header by name and by guid. On the --verify verb they are taken
- * where the manifest says which command this is, since --verify with
- * the two sides and no manifest is still the flag on a fresh run
- * (that coupling is verify-schedule's).
+ * ZX186, ZX189: --from and --onto are accepted on a verb, where they
+ * name no rebase and change nothing: the driver checks them against
+ * the header by name and by guid. The --verify verb takes them like
+ * the other three -- beside a manifest, and beside --result where
+ * only one side is given -- but --from, --onto and --result together
+ * are the shape of a start, and a verb starts nothing.
  */
 static void
 test_sides_on_verbs(void)
@@ -860,15 +875,69 @@ test_sides_on_verbs(void)
 	a = parse_ok(cmd, 7);
 	CHECK(a.za_verb == ZR_VERB_REPORT && a.za_verify == 1);
 	CHECK(a.za_path == v_manifest && a.za_from == v_from);
-	/* and with the two sides and no manifest it is the flag. */
-	cmd[2] = w_from;
-	cmd[3] = v_from;
+	/* and beside --result, where one side is a side and not a start */
+	cmd[2] = w_result;
+	cmd[3] = v_result;
 	cmd[4] = w_onto;
 	cmd[5] = v_onto;
-	cmd[6] = w_result;
-	cmd[7] = v_result;
-	a = parse_ok(cmd, 8);
-	CHECK(a.za_verb == ZR_VERB_RUN && a.za_verify == 1);
+	a = parse_ok(cmd, 6);
+	CHECK(a.za_verb == ZR_VERB_REPORT && a.za_onto == v_onto);
+	CHECK(a.za_result == v_result && a.za_path == NULL);
+	/*
+	 * ZX189: the two sides and --result together are the command
+	 * that used to be a start with the flag, and it is refused
+	 * rather than read as the report: a person who wrote it meant
+	 * to rebase, and the checks they were asking for are standard
+	 * now.
+	 */
+	cmd[6] = w_from;
+	cmd[7] = v_from;
+	parse_bad(cmd, 8);
+	cmd[1] = s_verify;
+	parse_bad(cmd, 8);
+}
+
+/*
+ * ZX189: --verify is a verb and only a verb, so nothing that starts
+ * a rebase goes with it. --dry-run is the other spelling of a start
+ * and is refused by name; the flags only a start takes are refused
+ * by the rule that refuses them on every verb, which the --verify
+ * verb is now one of.
+ */
+static void
+test_verify_is_a_verb(void)
+{
+	char *start[] = { w_manifest, w_quiet, w_perm, w_takeonto,
+	    w_takefrom };
+	char *cmd[8];
+	size_t i;
+
+	for (i = 0; i < NELEM(start); i++) {
+		cmd[0] = w_prog;
+		cmd[1] = w_verify;
+		cmd[2] = w_result;
+		cmd[3] = v_result;
+		cmd[4] = start[i];
+		cmd[5] = v_manifest;	/* only -o reads it */
+		parse_bad(cmd, start[i] == w_manifest ? 6 : 5);
+	}
+	/* --dry-run, with the sides it needs and without them */
+	{
+		char *dry[] = { w_prog, w_verify, w_dryrun, w_result,
+		    v_result };
+		char *dryf[] = { w_prog, w_verify, w_dryrun, w_from, v_from,
+		    w_onto, v_onto };
+
+		parse_bad(dry, (int)NELEM(dry));
+		parse_bad(dryf, (int)NELEM(dryf));
+	}
+	/* and --allow-unrelated with the --base it needs */
+	{
+		char *unrel[] = { w_prog, w_verify, w_result, v_result,
+		    w_unrelated, w_base, v_base };
+
+		parse_bad(unrel, (int)NELEM(unrel));
+	}
 }
 
 /*
@@ -953,6 +1022,7 @@ main(void)
 	test_manifest_flag_on_verbs();
 	test_operand_on_a_start();
 	test_sides_on_verbs();
+	test_verify_is_a_verb();
 	test_run_dataset();
 	printf("check_args: %lu checks passed\n", checks);
 	return (0);

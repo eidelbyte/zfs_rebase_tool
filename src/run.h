@@ -51,7 +51,6 @@ struct zr_run_opts {
 	zr_mode_t	mode;
 	int		dryrun;		/* manifest only, nothing created */
 	int		unrelated;	/* --allow-unrelated: no derivation */
-	int		verify;		/* the demand for a final check */
 	int		quiet;		/* latched in the record at start */
 	/*
 	 * The three flags of the conflicts gate. takeonto and
@@ -95,14 +94,13 @@ int zr_run(const struct zr_run_opts *);
  * which rebase they think this is, which is checked against the
  * header by name and by guid.
  *
- * verify and nomerge are --continue's alone; the others read neither.
+ * nomerge is --continue's alone; the others read it not at all.
  */
 struct zr_verb_opts {
 	const char	*result;	/* -r, or NULL */
 	const char	*path;		/* MANIFEST, or NULL */
 	const char	*from;		/* -f, or NULL */
 	const char	*onto;		/* -t, or NULL */
-	int		verify;
 	int		nomerge;
 	int		verbose;
 };
@@ -130,9 +128,12 @@ int zr_run_dataset(const struct zr_parsed *p, char *buf, size_t buflen,
  * true is left alone), the choices of the resolution after it once
  * every one of them is answered, and then done, which releases the
  * holds. An unanswered resolution is where the rebase waits.
- * With verify it prints the classification of every action as it
- * goes and repairs drift on the clean ones; conflicted names are
- * never touched. With nomerge it stops at the conflicts gate
+ * The checks of the schedule are made on the way, under no flag: at
+ * the conflicts gate the drift found becomes lines of the resolution
+ * with the choice keep, and at the done gate the final check reports
+ * and exits 3 where it finds drift, done being reached all the same.
+ * Nothing here repairs: the one fix is applying1's own self-check.
+ * With nomerge it stops at the conflicts gate
  * whatever the resolution says, and refuses altogether from a
  * record already past the merge: applying2 and done have no gate
  * left for the flag to hold.
@@ -145,10 +146,13 @@ int zr_run_dataset(const struct zr_parsed *p, char *buf, size_t buflen,
  * goes back to its skeleton, which is what discarding its edits
  * means.
  *
- * zr_report is --verify alone: it classifies and prints and writes
- * nothing at all, finding each input by name and then by guid, and
- * saying which actions it could not check and why. Exit 0 when
- * nothing is pending or drifted, 3 when something is.
+ * zr_report is the --verify verb: it classifies and prints and
+ * writes nothing at all, finding each input by name and then by
+ * guid, and saying which actions it could not check and why. Exit 0
+ * clean and 3 where anything drifted -- an action pending or
+ * drifted, or a name the manifest never spoke for that the result no
+ * longer holds as onto had it; blocked and unchecked are states and
+ * not faults.
  */
 int zr_continue(const struct zr_verb_opts *);
 int zr_restart(const struct zr_verb_opts *);

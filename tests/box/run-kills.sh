@@ -89,18 +89,16 @@
 #   nothing to continue from, --continue exits 2 naming the file it
 #   wanted, and the result is left exactly where the kill left it.
 #
-#   A --continue given --verify makes the final check itself if it
-#   reaches the done gate: there is no recorded request any more, and
-#   the flag belongs to the invocation that gets there.
+#   A --continue makes the final check itself if it reaches the done
+#   gate, under no flag at all: the check is standard, made by
+#   whichever invocation gets there, and its report is printed unless
+#   the start was given -q.
 #
 #   Before that, --verify says what the kill left without touching
 #   it: an action is pending until the stage that makes it has run,
 #   so a rebase stopped before or inside applying1 exits 3 with
 #   pending actions and one past it exits 0, and neither moves the
-#   gate, the holds or the tree. The SIGKILL cases then continue
-#   with --verify and the caught-signal ones without, so both paths
-#   through the stages are walked and both must land in the same
-#   place.
+#   gate, the holds or the tree.
 #
 #   At the held gate, while the tool is stopped, zfs destroy of each
 #   held snapshot must fail and leave the snapshot standing: that is
@@ -702,23 +700,23 @@ kill_case() {
 	else
 		wcont=1; wend=conflicts; whold=3; wsettled=0
 	fi
-	# A SIGKILL is where a repair earns its keep, so those cases
-	# continue with --verify and the caught-signal ones without:
-	# both must land in the same place, since --verify only adds
-	# the report and the mending of drift there is none of.
-	vflag=""
-	[ "$sig" = KILL ] && vflag="--verify"
-	"$bin" --continue $vflag --result "$rds" > "$tmp/cont" 2>&1
+	# One --continue for every kind of stop, with no flag on it:
+	# the checks of the schedule are made wherever it passes a
+	# gate, and there is no flag left that would ask for one or
+	# skip one.
+	"$bin" --continue --result "$rds" > "$tmp/cont" 2>&1
 	st=$?
 	[ $st -eq $wcont ] || \
-	    { cat "$tmp/cont"; fail "--continue $vflag exited $st, want $wcont"; }
+	    { cat "$tmp/cont"; fail "--continue exited $st, want $wcont"; }
 	[ "$(phasenow "$rds")" = "$wend" ] || \
 	    fail "--continue landed at '$(phasenow "$rds")', want ${wend:-done}"
-	# --verify on a --continue records nothing at all: the check is
-	# the invocation's own, made if this same --continue reaches
-	# the done gate. What it leaves at done is what any done
-	# leaves, which is no record.
+	# A --continue that reaches the done gate makes the final
+	# check there and prints its report, and records nothing at
+	# all. What it leaves at done is what any done leaves, which
+	# is no record.
 	if [ $wsettled -eq 1 ]; then
+		grep -q 'outside the manifest' "$tmp/cont" || \
+		    { cat "$tmp/cont"; fail "--continue printed no final check at done"; }
 		[ -z "$(localprops "$rds")" ] || \
 		    fail "--continue reached done and left $(localprops "$rds")"
 	fi

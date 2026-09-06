@@ -19,7 +19,6 @@
 .Op Fl p | Fl -permissive-merge
 .Op Fl v | Fl -verbose
 .Op Fl o | Fl -manifest Ar file
-.Op Fl V | Fl -verify
 .Op Fl q | Fl -quiet
 .Oo Fl u | Fl -allow-unrelated Fl b | Fl -base Ar snapshot Oc
 .Oo Fl O | Fl -take-onto | Fl F | Fl -take-from Oc
@@ -36,7 +35,6 @@
 .Fl t | Fl -onto Ar snapshot Ns | Ns Ar dataset
 .Nm
 .Fl c | Fl -continue
-.Op Fl V | Fl -verify
 .Op Fl G | Fl -no-gui
 .Op Fl M | Fl -no-merge
 .Op Fl v | Fl -verbose
@@ -422,42 +420,27 @@ or from
 is past the merge and has no gate left for the flag to hold, and it is
 refused rather than run.
 .It Fl V , Fl -verify
-Asked for at the start of a run, or with
+A verb and only a verb: it reports on one rebase and writes nothing
+anywhere; see below.
+The checks run on a schedule of their own
+.Pq Sx THE CHECKS ,
+so there is nothing left for the word to ask for, and beside a start,
+beside
+.Fl -dry-run
+and beside
 .Fl -continue ,
-this is the flag: the final check is made once, after the last stage
-verified and before anything is released, by the invocation that reaches
-that gate.
-There is no recorded request: a run stopped at
-.Sy conflicts
-and finished by a later
-.Fl -continue
-is checked if that
-.Fl -continue
-asks for it.
-(Making the check standard, so that no flag is needed at all, is
-verify-schedule's work.)
-On a
-.Fl -continue
-from the
-.Sy applying1
-gate that is all it does, since the fix there is the stage's own; from the
-.Sy conflicts
-gate on the tree is being edited by hand and nothing can tell that work
-from a stray, so a verify there reports.
-It never repairs, whatever it finds.
-The one fix in this tool is the self-check the
-.Sy applying1
-stage makes on itself, which is always on and belongs to no flag.
-The one thing a verify writes is at the
-.Sy conflicts
-gate and only with
-.Fl -continue :
-every name that no longer stands as onto had it goes into the resolution as
-a drift line with the choice
-.Sy keep ,
-so that the person answering the conflicts sees it and can leave it, put it
-back as onto had it or have the manifest's own action made again.
-Alone on a result it is a verb, and writes nothing anywhere; see below.
+.Fl -restart
+or
+.Fl -abort
+it is a usage error, exit 2, rather than a flag that means something else
+than it used to.
+.Fl -from
+and
+.Fl -onto
+go with it as they go with any verb, checked against the header; the two of
+them together with
+.Fl -result
+are the shape of a start, and a verb starts nothing.
 .It Fl q , Fl -quiet
 Silence the final check's report.
 It is a start option and is latched in
@@ -467,8 +450,11 @@ for the whole run, so that whichever invocation reaches
 finds it there; on any other verb, and on
 .Fl -dry-run ,
 it is a usage error.
-Nothing reads the property yet: making the check standard and silencing
-its report with this is verify-schedule's work.
+It silences that one report and nothing else: the check is still made, its
+verdict still stands in the exit status, and the report of the conflicts
+gate and of the
+.Fl -verify
+verb are printed as always.
 .El
 .Pp
 The verbs work on a rebase that already exists.
@@ -503,9 +489,9 @@ are left, in one process.
 Applying is idempotent \(em every action means "make this true" \(em so what is
 already true is left alone and what is not is made, which is why a fresh
 run, a resumed one and a repair are one code path.
-With
-.Fl -verify
-it prints, before each stage and at the gate after it, how every action of
+It checks at every gate it passes, under no flag
+.Pq Sx THE CHECKS ,
+and prints what it found: how every action of
 the document stands, how every answered name of the resolution stands
 against the side it names, and what the result holds outside them both.
 It writes nothing into the tree, and the only document it writes is the
@@ -562,7 +548,7 @@ is a clone of the tool's and is left unmounted for you to destroy or to
 place.
 It prints the command for each form and leaves the choice to you.
 .It Fl V , Fl -verify
-Alone on a result, report and write nothing at all, so that a deliberate
+Report and write nothing at all, so that a deliberate
 edit to a rebased file is shown and never overwritten.
 It reports on a rebase that is open; a result whose rebase reached done
 carries no record and is refused like any other dataset that has none.
@@ -792,10 +778,9 @@ was applied to
 .It Sy applying1
 apply the manifest again and go on
 .It Sy conflicts
-go on when the resolution is complete, else say how many of its names are
+check first and write the drift found into the resolution, then go on when
+the resolution is complete, else say how many of its names are
 still unanswered and exit 1; with
-.Fl -verify ,
-write the drift found into the resolution first; with
 .Fl -no-merge ,
 stop there whatever it says
 .It Sy applying2
@@ -807,6 +792,60 @@ is refused at
 .Sy applying2 :
 it is past the merge.
 A rebase that reached done has no record, so no verb resumes it.
+.Sh THE CHECKS
+One verify at every gate, on a schedule no flag changes and none can skip.
+The expected tree is onto's names with the manifest's actions applied and
+the resolution's choices after them; the result is held against it on two
+axes, the names and their content, and what a check finds is drift.
+.Bl -tag -width "end of applying1" -compact
+.It end of applying1
+fixed, by the stage's own self-check.
+Up to the conflicts gate the result is the run's own, so a name that is not
+what the expected tree says is a stray: every clean action that did not land
+is made again and every name no action spoke for is put back as onto had it.
+This is the one fix in the tool.
+.It entering conflicts
+written into the resolution, printed, and never fixed.
+Every
+.Fl -continue
+that arrives at that gate checks first: each name the result no longer holds
+as onto had it becomes a line with the choice
+.Sy keep ,
+which the person answering the conflicts can leave, change to
+.Sy onto
+to have the name put back as onto had it, or change to
+.Sy from
+to have the manifest's own action made again.
+From this gate on the tree is being edited by hand and nothing can tell that
+work from a stray, so nothing here touches it.
+.It end of applying2
+reported, and the exit status is 3;
+.Sy done
+is written all the same.
+The check is made by whichever invocation reaches that gate, the fresh run's
+own or a
+.Fl -continue Ns 's,
+and
+.Fl -quiet
+silences its report and nothing else.
+.El
+.Pp
+.Sy done
+never blocks on drift.
+What the last check finds is said and carried out in the exit status, and
+the gate is passed regardless: the record cleared, the result settled and
+the run directory taken away, exactly as on a clean pass.
+A rebase that could not be closed because somebody edited a file in it would
+be a rebase nothing could ever end.
+A check that cannot be made at all is the other thing \(em that is the tool
+failing, not the tree drifting \(em and the gate is not passed, so a
+.Fl -continue
+can try again.
+.Pp
+The
+.Fl -verify
+verb is the same check asked for on its own, at whatever gate the rebase is
+waiting: it reports and writes nothing at all.
 .Sh FILES
 Each run keeps its own directory, 0700 throughout, named for the dataset
 carrying the record with its slashes kept as directories.
@@ -876,12 +915,25 @@ it stopped at conflicts
 .It 2
 it was refused before anything was touched
 .It 3
-something failed part way
+something failed part way, or a check found drift
 .El
 .Pp
+The last two are told apart by what is left behind.
+A rebase whose final check found drift has reached
+.Sy done
+all the same and carries no record any more
+.Pq Sx THE CHECKS ;
+one that failed part way is still there, for a
+.Fl -continue
+to take on or an
+.Fl -abort
+to take away.
+The
 .Fl -verify
-alone exits 0 when nothing is pending or drifted and 3 when something is;
-blocked and unchecked are states and not faults.
+verb exits 0 when nothing has drifted and 3 when something has: an action
+pending or drifted, or a name the manifest never spoke for that the result
+no longer holds as onto had it.
+Blocked and unchecked are states and not faults.
 .Sh EXAMPLES
 Rebase a topic snapshot onto the current main, in the clone form:
 .Bd -literal -offset indent
@@ -934,9 +986,9 @@ gate and reaches
 .Sy done
 in one process, and the same command written in letters:
 .Bd -literal -offset indent
-zfs_rebase --take-onto --verify --from tank/topic@work \e
+zfs_rebase --take-onto --from tank/topic@work \e
     --onto tank/main@current --result tank/rebased
-zfs_rebase -O -V -f tank/topic@work -t tank/main@current \e
+zfs_rebase -O -f tank/topic@work -t tank/main@current \e
     -r tank/rebased
 .Ed
 .Pp

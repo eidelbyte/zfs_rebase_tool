@@ -33,7 +33,7 @@
 #define	EXIT_INTERNAL	3
 
 static const char usage[] =
-	"usage: zfs_rebase [-p] [-v] [-q] [--manifest FILE] [--verify]\n"
+	"usage: zfs_rebase [-p] [-v] [-q] [--manifest FILE]\n"
 	"                  [--allow-unrelated --base SNAP]\n"
 	"                  [--take-onto | --take-from] [--no-gui] "
 	    "[--no-merge]\n"
@@ -41,7 +41,7 @@ static const char usage[] =
 	    "NAME\n"
 	"       zfs_rebase --dry-run [-p] [--manifest FILE]\n"
 	"                  --from SNAP|DATASET --onto SNAP|DATASET\n"
-	"       zfs_rebase --continue [--verify] [--no-gui] [--no-merge]\n"
+	"       zfs_rebase --continue [--no-gui] [--no-merge]\n"
 	"                  [--from SNAP] [--onto SNAP]\n"
 	"                  (--result NAME | MANIFEST)\n"
 	"       zfs_rebase --restart (--result NAME | MANIFEST)\n"
@@ -67,9 +67,12 @@ static const char usage[] =
 	"  -o, --manifest FILE     where the manifest goes, resolution beside "
 	    "it;\n"
 	"                          a start option, and a dry run's\n"
-	"  -V, --verify            report the final check; it never repairs\n"
-	"  -q, --quiet             silence that report; a start option, kept\n"
-	"                          in the record for the whole run\n"
+	"  -V, --verify            a verb: report one rebase and write\n"
+	"                          nothing; it never repairs, and it goes\n"
+	"                          with no flag that starts or moves one\n"
+	"  -q, --quiet             silence the final check's report; a start\n"
+	"                          option, kept in the record for the whole\n"
+	"                          run\n"
 	"  -O, --take-onto         answer every conflict of the skeleton onto\n"
 	"  -F, --take-from         answer every conflict of the skeleton from\n"
 	"  -G, --no-gui            go on at the conflicts gate when the\n"
@@ -89,7 +92,9 @@ static const char usage[] =
 	"  -b, --base SNAP         with --allow-unrelated only: the base\n"
 	"--posix, --build-fixture and --edit-fixture are the project's own\n"
 	"test aids: they are long only and take the first argument position.\n"
-	"exit: 0 done, 1 stopped at conflicts, 2 refused, 3 failed\n";
+	"exit: 0 done, 1 stopped at conflicts, 2 refused, 3 failed or\n"
+	"drifted -- done is reached all the same when a check finds "
+	    "drift\n";
 
 /*
  * A command that was not understood: the one line saying what was
@@ -337,7 +342,6 @@ main(int argc, char **argv)
 	vo.path = a.za_path;
 	vo.from = a.za_from;
 	vo.onto = a.za_onto;
-	vo.verify = a.za_verify;
 	vo.nomerge = a.za_nomerge;
 	vo.verbose = a.za_verbose;
 	switch (a.za_verb) {
@@ -376,7 +380,6 @@ main(int argc, char **argv)
 	ro.dryrun = a.za_dryrun;
 	ro.quiet = a.za_quiet;
 	ro.unrelated = a.za_unrelated;
-	ro.verify = a.za_verify;
 	ro.takeonto = a.za_takeonto;
 	ro.takefrom = a.za_takefrom;
 	ro.nomerge = a.za_nomerge;

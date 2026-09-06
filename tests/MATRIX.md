@@ -641,7 +641,7 @@ again.
 | ZX37 | an inherited record is none: --abort exits 2, touches nothing | planned: box, box/run-fixture.sh |
 | ZX38 | the phases: applying1, conflicts, applying2, none at birth, and no property at all at done | planned: box, box/run-fixture.sh and box/run-kills.sh |
 | ZX39 | --abort releases the holds, and runs again after a half abort | planned: box, box/run-fixture.sh |
-| ZX40 | --verify makes the final check in the invocation that reaches done and records nothing; -n --verify still creates nothing | planned: box, box/run-fixture.sh |
+| ZX40 | the final check is made by the invocation that reaches done, under no flag, and records nothing | planned: box, box/run-fixture.sh steps 2 and 5 |
 | ZX41 | applying1 applies the clean actions before the conflicts gate | planned: box, box/run-fixture.sh |
 | ZX42 | a conflicted run: state conflicts, the holds kept, the clean actions in the tree | planned: box, box/run-fixture.sh |
 | ZX43 | stage 1 idempotence: a second rebase declares 0 actions and the same conflicts | planned: box, box/run-fixture.sh |
@@ -655,7 +655,7 @@ again.
 | ZX51 | --continue on a result whose rebase reached done: exit 2, since done left no record; the settled result is untouched | planned: box, box/run-fixture.sh |
 | ZX52 | --verify alone: exit 0 over a clean result and over a conflicted one | planned: box, box/run-fixture.sh |
 | ZX53 | --verify over a stray edit: exit 3, the drifted action named, nothing written | planned: box, box/run-fixture.sh |
-| ZX54 | --continue --verify repairs that edit; --verify is clean after it | planned: box, box/run-fixture.sh |
+| ZX54 | a plain --continue reports that edit at the gate it arrives at and repairs nothing; --verify still reports it afterwards | planned: box, box/run-fixture.sh 3b |
 | ZX55 | --restart: destroyed, cloned again, same record and tag, same gate, same tree | planned: box, box/run-fixture.sh |
 | ZX56 | a recorded snapshot that exists with another guid: every verb exits 2 | deferred: needs a destroy and a re-snapshot under the name; box, kill-tests |
 | ZX57 | a recorded snapshot gone: exit 2 for --continue and --restart, found by guid for --verify | deferred: needs a destroyed input, which the holds prevent until done; box, stray-tests |
@@ -663,7 +663,7 @@ again.
 | ZX59 | --result given as pool/fs@snap finds the same rebase as pool/fs | planned: box, box/run-fixture.sh |
 | ZX60 | a result left unmounted (a reboot) is mounted again by a verb | deferred: a reboot, or zfs unmount by hand; box |
 | ZX61 | a dataset carrying no record, never rebased or settled alike: every verb exits 2 and touches nothing | planned: box, box/run-fixture.sh |
-| ZX62 | --verify on a fresh run: the final check at the done gate, before the release | planned: box, box/run-fixture.sh |
+| ZX62 | a fresh run's final check at the done gate, before the release, under no flag | planned: box, box/run-fixture.sh step 5 |
 | ZX63 | a tool-made from snapshot goes at done and at --abort, and never at --restart | planned: box, box/run-fixture.sh |
 | ZX64 | -n with a dataset side takes a snapshot, reads it, destroys it and holds nothing | planned: box, box/run-fixture.sh |
 | ZX65 | the dataset form's --result: the short name and the full name are the same snapshot; a full name of another dataset exits 2 | planned: box, box/run-fixture.sh |
@@ -688,7 +688,7 @@ again.
 | ZX89 | a stop at conflicts or at applying2 leaves that state, the three holds and the manifest; a caught signal at conflicts is no stop at all, since nothing looks at the flag past that gate | planned: box, box/run-kills.sh |
 | ZX90 | a stop at the done gate: SIGKILL leaves the phase of the stage that ran before it and the three holds, and --continue redoes that stage and finishes; a caught signal lets the run finish, release the holds and clear the record | planned: box, box/run-kills.sh |
 | ZX91 | --verify over what a kill left: pending before and inside applying1, nothing pending past it, no drift, and the gate, the holds and the tree unmoved | planned: box, box/run-kills.sh |
-| ZX92 | --continue after every kill, with --verify and without, reaches the branch's end: readonly as the form has it, the result settled where it reached done and at the private mount where it stopped at conflicts, the holds gone and the record cleared at done and both there at conflicts, stage 1 idempotent over the result | planned: box, box/run-kills.sh |
+| ZX92 | --continue after every kill, under no flag, reaches the branch's end: readonly as the form has it, the result settled where it reached done and at the private mount where it stopped at conflicts, the holds gone and the record cleared at done and both there at conflicts, stage 1 idempotent over the result | planned: box, box/run-kills.sh |
 | ZX93 | zfs destroy of a held input, while the run is stopped, fails and leaves the snapshot standing; where nothing is cloned from it the hold is the only reason and the message says busy | planned: box, box/run-kills.sh |
 | ZX94 | a stray write into the live from or onto while the run is reading changes nothing: the tool reads snapshots, so the manifest is the expect block to the byte and the verify is clean | planned: box, box/run-strays.sh |
 | ZX95 | in the dataset form onto's own mount point is an empty directory while the run has the dataset, and a write there lands in the pool's root dataset and is hidden the moment the dataset comes home | planned: box, box/run-strays.sh |
@@ -702,7 +702,7 @@ again.
 | ZX107 | -c parses as --continue, with the gate flags and -v on it | covered: check_args.c |
 | ZX108 | -R parses as --restart | covered: check_args.c |
 | ZX109 | -a parses as --abort | covered: check_args.c |
-| ZX110 | --verify alone on a result is the verb; with the two sides it is the flag | covered: check_args.c |
+| ZX110 | --verify is the verb always, in every shape it names a run: by --result, by a manifest, by both, and with one side given beside either | covered: check_args.c |
 | ZX111 | --name VALUE and --name=VALUE are one flag; a flag that takes none refuses one | covered: check_args.c |
 | ZX112 | --posix, --build-fixture and --edit-fixture: long only, their operands, their counts, and --posix taking -p and -o alone | covered: check_args.c |
 | ZX113 | --take-onto with --take-from is refused, either spelling | covered: check_args.c |
@@ -712,7 +712,7 @@ again.
 | ZX117 | --base without --allow-unrelated is refused; with it, it parses | covered: check_args.c |
 | ZX118 | an unknown word, a bundled -nv, a bare - and --, an attached -fVALUE, a flag with no value, and no command at all | covered: check_args.c |
 | ZX119 | --take-onto reads onto, --take-from reads from, neither reads as "-" | covered: check_args.c |
-| ZX120 | a verb takes --result, the gate flags and -v; --from, --manifest, --quiet, -p, -n, --verify on --restart or --abort, and two verbs at once are refused | covered: check_args.c |
+| ZX120 | a verb takes --result, the gate flags and -v; --manifest, --quiet, -p, -n and two verbs at once are refused | covered: check_args.c |
 | ZX121 | a fresh run needs --from and --onto, and --result unless -n | covered: check_args.c |
 | ZX122 | a fresh run with --take-onto over a conflicted fixture writes a complete skeleton and reaches done in one process | planned: box, box/run-resolution.sh case 1, under both --take flags |
 | ZX123 | --no-merge stops at the conflicts gate with a complete resolution, and the next --continue without it passes the gate | planned: box, box/run-resolution.sh case 2 |
@@ -721,7 +721,7 @@ again.
 | ZX126 | --no-merge on a --continue whose record is at applying2 or done is refused, exit 2, the gate unmoved | planned: box, box/run-resolution.sh case 2 at done and case 7 at applying2 |
 | ZX130 | a hand-edited choice of each kind carried out at applying2 and verified by its side: keep leaves a hand merge standing and is never compared, onto and from make the name that side's object and pool it as that side pools it | planned: box, box/run-resolution.sh case 4, on a fixture with more than one conflicted name |
 | ZX131 | an incomplete resolution stops, and says by how much: the fresh run's count, the same count of the same total from a --continue, and what is left after one line of it is answered | planned: box, box/run-resolution.sh case 3 |
-| ZX132 | --continue --verify at the conflicts gate with the conflicts still unanswered: the drift line is written into the document and the gate stops all the same, and the line survives the answering to be the name's word at done | planned: box, box/run-resolution.sh case 6 |
+| ZX132 | a plain --continue at the conflicts gate with the conflicts still unanswered: the drift line is written into the document and the gate stops all the same, and the line survives the answering to be the name's word at done | planned: box, box/run-resolution.sh case 6 |
 | ZX133 | a drift line whose choice is flipped from keep to onto puts the name back as onto had it | planned: box, box/run-resolution.sh case 6 |
 | ZX134 | the manifest gate: a SIGKILL between the manifest and the skeleton leaves a manifest, no resolution, no state and three holds, and the rebase's exits are --abort and --restart | planned: box, box/run-resolution.sh case 7; the gate is run.c's zr_pause("manifest") |
 | ZX135 | the choice:<n> gate: a SIGKILL inside applying2's choices leaves applying2 with readonly off, and --continue redoes the whole document and reaches done with nothing for a second pass to do | planned: box, box/run-resolution.sh case 7; the gate is apply.c's zr_apply_choice_pause_at |
@@ -731,7 +731,7 @@ again.
 | ZX139 | -w and --overwrite are unknown options wherever they are given | covered: check_args.c |
 | ZX140 | the record at birth is zfs_rebase:manifest and zfs_rebase:tag and nothing else, both of them the result's own local values, in both forms | planned: box, box/run-fixture.sh step 3 and its dataset pass |
 | ZX141 | zfs_rebase:phase reads applying1, conflicts and applying2 at those gates and is absent before the first | planned: box, box/run-kills.sh, which stops at every gate, and box/run-fixture.sh at conflicts |
-| ZX142 | zfs_rebase:quiet is absent from a record no --quiet asked for | planned: box, box/run-fixture.sh step 3; the -q run that writes it is verify-schedule's, which is what reads the property |
+| ZX142 | zfs_rebase:quiet is absent from a record no --quiet asked for, and present as a local value where -q was given | planned: box, box/run-fixture.sh step 3 for the absence and step 5's -q run for the presence |
 | ZX143 | at done no zfs_rebase: property is left on the result, in either form and by either path (the run's own done and a --continue's) | planned: box, box/run-fixture.sh, box/run-kills.sh and box/run-resolution.sh, each of which now asserts the empty list where it asserted state=done |
 | ZX144 | a settled result is free: a second run over that dataset is taken with no flag, and --continue, --restart, --abort and --verify on it exit 2 as on any dataset with no record | planned: box, box/run-fixture.sh D2 and step 3a; done-cleanup took away the run directory that used to stand in D2's way |
 | ZX145 | --abort with the manifest gone: the holds are released by walking the pool for the tag, the private mount is undone, the record is cleared, nothing is destroyed or rolled back, and the two commands are printed | planned: box, box/run-fixture.sh (the manifest unlinked by hand at the conflicts gate); nothing on the Mac reaches zr_zfs_release_tag |
@@ -765,6 +765,11 @@ again.
 | ZX185 | a start takes no operand, and neither does a dry run, wherever it is written | covered: check_args.c |
 | ZX186 | --from and --onto are accepted on a verb and name no rebase: each is checked against the header by name and by guid, and a side that is not this rebase's is exit 2 with nothing touched | covered: check_args.c for the parse; box, box/run-fixture.sh 3a for the check and its refusal |
 | ZX187 | the rule that reads a run's dataset out of a header: #result in the clone form, the dataset of #onto in the dataset form with --result spelled short and spelled full, and a refusal for a --posix document and for a dry run's "-" | covered: check_args.c, over a parsed header zr_run_dataset takes and nothing else |
+| ZX188 | --verify beside --continue, --restart or --abort is refused, exit 2: two verbs are two commands, and the check the flag used to ask for is standard | covered: check_args.c; box, box/run-fixture.sh 0b |
+| ZX189 | --verify beside a start is refused, exit 2 -- --from, --onto and --result together, and --dry-run, which is the other spelling of one -- while --from or --onto alone stands on the verb and is checked against the header | covered: check_args.c; box, box/run-fixture.sh 0b, which also asserts the refused command read nothing, created nothing and held nothing |
+| ZX190 | every --continue that arrives at the conflicts gate checks first, under no flag: the drift it finds becomes lines of the resolution with the choice keep, printed and never fixed; a --continue that arrives there from applying1 in the same invocation is not checked twice, since the self-check it has just made is that check | planned: box, box/run-strays.sh case 5 and box/run-resolution.sh case 6, which are the drift-line cases with the flag dropped; the writing itself is src/run.c's add_drift, which wants a real resolution beside a real record |
+| ZX191 | the final check at the done gate in every invocation that reaches it, fresh run or --continue: drift is reported and the exit status is 3, and done is written all the same -- the record cleared, the result settled and the run directory gone -- while a check that cannot be made at all leaves the gate unpassed and the rebase standing | planned: box, box/run-strays.sh case 6 (a stray made at the applying2 gate, exit 3 with done reached) and box/run-fixture.sh step 5 (the clean pass, exit 0 with the report printed); the unmakeable check is ZX30's, and the verdict rule itself -- an action pending or drifted, or any entry of the name list -- is found_drift in src/run.c, static and read by the done gate and the --verify verb alike, deferred on the Mac because nothing here builds a report against a real result |
+| ZX192 | -q silences the final check's report and nothing else: the check is still made, the exit status still stands, done is still done, and the report of the conflicts gate and of the --verify verb are printed as always | planned: box, box/run-fixture.sh step 5, which runs the same rebase twice, once plain and once under -q |
 | ZX146 | zfs_rebase:base and :base_guid are written by nothing: the branch point is #base in the header | covered: the grep over src, tests and the docs; box, the empty property list after a run |
 | ZX147 | zfs_rebase:from and :from_guid likewise: #from | covered: the same |
 | ZX148 | zfs_rebase:onto and :onto_guid likewise: #onto | covered: the same |
@@ -774,16 +779,16 @@ again.
 | ZX152 | zfs_rebase:take likewise: #take, which --restart reads for the skeleton | covered: the same; box, box/run-resolution.sh case 5 |
 | ZX153 | zfs_rebase:readonly likewise: #readonly, which the hand-back reads | covered: the same; box, box/run-fixture.sh dataset pass |
 | ZX154 | zfs_rebase:resolution is written by nothing: the resolution is beside the manifest by rule, FILE.resolution beside a -o FILE and <rundir>/resolution beside the run directory's | covered: resolution_of in src/run.c, read by every verb; box, both -o and no -o passes -- box/run-kills.sh is the no--o one, since done-cleanup gave the three harnesses that read a document after done a -o pair, which is the only kind that survives done |
-| ZX155 | zfs_rebase:verify is written by nothing and there is no recorded request: the invocation that reaches done makes the check if it was given --verify | covered: the grep; box, box/run-fixture.sh step 5 and box/run-kills.sh |
+| ZX155 | zfs_rebase:verify is written by nothing and there is no request at all, recorded or on the command line: the invocation that reaches done makes the check | covered: the grep over src, tests and the two documents; box, box/run-fixture.sh step 5 and box/run-kills.sh |
 | ZX156 | zfs_rebase:state is written by nothing: zfs_rebase:phase replaces it and never takes the value done | covered: the grep; box, every harness |
 | ZX157 | the pre-apply snapshot a --restart or an --abort rolls back to is the header's #presnap and no property | covered: src/run.c; box, box/run-fixture.sh dataset pass |
 
 ZX96 to ZX99 are no cells: the numbering skips to a round one so
 that the command line's own rows read as the block they are. ZX100
-to ZX121, with ZX137 to ZX139 after them, are the only rows of this
-family that are read off the parse, because src/args.c decides
-nothing and opens nothing: it fills struct zr_args, and
-tests/check_args.c reads it. ZX122 to ZX126 are
+to ZX121, with ZX137 to ZX139 and ZX188 and ZX189 after them, are
+the only rows of this family that are read off the parse, because
+src/args.c decides nothing and opens nothing: it fills struct
+zr_args, and tests/check_args.c reads it. ZX122 to ZX126 are
 what the parse cannot show -- the header's #take line, a run passing
 its own conflicts gate, and the two ways --no-merge holds it. ZX127 to ZX129 are no cells either: the
 numbering skips again so that the resolution's own rows read as the
@@ -825,6 +830,17 @@ expect block, the header's #take, and the resolution's drift line --
 and box/run-kills.sh keeps the no--o placement whole: it asserts
 <rundir>/manifest and <rundir>/resolution at every gate from
 "decided" on and their absence at done, which is ZX179.
+
+ZX188 to ZX192 are verify-schedule's: the checks on a schedule no
+flag changes, and --verify a verb and only a verb. The two refusals
+are read off the parse and are check_args.c's; the three that are
+about a real gate are box only, because a check is a walk of three
+trees against a document and nothing on the Mac has any of them.
+The drift-line writing at the conflicts gate is src/run.c's, and so
+is the verdict rule the done gate and the --verify verb share: both
+are static in run.c, where the fresh-run path and the verb path
+already meet, and both are crossed by every conflicted pass on the
+box.
 
 ZX180 to ZX187 are cli-shape's: a run named to a verb by its
 manifest as well as by --result, the two cross-checked where both
@@ -1083,7 +1099,7 @@ snapshot, a clone and a kill need the box.
 | ZY35 | the blocked removal left alone with no report at all | covered: check_verify.c |
 | ZY36 | a directory rm not empty and not conflicted: still loud | covered: check_verify.c |
 | ZY37 | an NFSv4 ACL or a system xattr told apart in a classification | deferred: needs ZFS and root; box, attr-cells |
-| ZY38 | a kill at a gate, then --verify and --continue --verify | planned: box, box/run-kills.sh, which verifies after every kill and continues with --verify after every SIGKILL |
+| ZY38 | a kill at a gate, then --verify and a plain --continue | planned: box, box/run-kills.sh, which verifies after every kill and then continues under no flag |
 | ZY39 | a stray edit and a stray delete in a real result, both forms | planned: box, box/run-strays.sh |
 | ZY40 | cp with the from tree gone: unchecked | covered: check_verify.c |
 | ZY41 | write with the from tree gone: unchecked | covered: check_verify.c |
@@ -1095,7 +1111,7 @@ snapshot, a clone and a kill need the box.
 | ZY47 | a stray edit to a name an action will make: the action runs after it and overwrites it, and the name classifies done | planned: box, box/run-strays.sh |
 | ZY48 | a stray delete of an untouched name at applying1: reported gone -- the pass is over the name table and not over what the result holds -- restored from onto by the self-check, and the run goes on to its normal end | planned: box, box/run-strays.sh |
 | ZY49 | an edit to a conflicted name in a real result: never classified and never repaired | planned: box, box/run-strays.sh |
-| ZY50 | drift after the stage, in both forms and on both branches: --verify exits 3 naming it and writes nothing, --continue --verify reports it and writes nothing either, and the done gate reports and passes rather than failing | planned: box, box/run-strays.sh |
+| ZY50 | drift after the stage, in both forms and on both branches: --verify exits 3 naming it and writes nothing, a plain --continue reports it at the gate it arrives at and writes nothing into the tree either, and the done gate reports it, exits 3 and passes rather than failing | planned: box, box/run-strays.sh cases 3 and 6 |
 | ZY60 | gone: a name onto had that the result does not, which the second pass sees because it is over the name table and not over what the result holds | covered: check_verify.c |
 | ZY61 | extra: a name the result holds that nothing expected | covered: check_verify.c |
 | ZY62 | changed: a name there, but not the object onto had | covered: check_verify.c |
@@ -1120,8 +1136,8 @@ snapshot, a clone and a kill need the box.
 | ZY91 | a line whose side is one of the trees that is not there: unchecked, for either side | covered: check_verify.c |
 | ZY92 | the drift round trip through the library: every entry of the name list becomes a drift keep line, written and parsed back, and the classification with that document says nothing about those names | covered: check_verify.c |
 | ZY93 | a name a resolution line covers, deleted or added: no entry on the name axis either | covered: check_verify.c |
-| ZY94 | a stray edit to a clean name at the conflicts gate: --continue --verify writes it into the resolution as a drift keep line, the rebase reaches done with the edit intact, and --verify afterwards reports the name under the resolution and not as drift | planned: box, box/run-strays.sh |
-| ZY95 | --verify on the invocation that reaches the done gate makes the final check there, whether that invocation is the fresh run or a --continue: there is no recorded request (record-slim took the property away), so the flag is the asking | planned: box, box/run-kills.sh, whose SIGKILL cases continue with --verify, and box/run-resolution.sh cases 1, 4 and 6, which read the report out of the invocation that reaches done |
+| ZY94 | a stray edit to a clean name at the conflicts gate: a plain --continue writes it into the resolution as a drift keep line, the rebase reaches done with the edit intact, and --verify afterwards reports the name under the resolution and not as drift | planned: box, box/run-strays.sh |
+| ZY95 | the invocation that reaches the done gate makes the final check there, whether it is the fresh run or a --continue, and no flag is given or needed: there is no recorded request (record-slim took the property away) and no request form left (verify-schedule took the flag away) | planned: box, box/run-kills.sh, whose --continue after every kill reaches it, and box/run-resolution.sh cases 1, 4 and 6, which read the report out of the invocation that reaches done |
 | ZY96 | a type change (rm and a make on one name): before the apply both lines pending | covered: check_verify.c |
 | ZY97 | a type change after the apply: the name holds the later line's product, the removal reads done and not drifted; a name with no later line that holds something else stays drifted (ZY2) | covered: check_verify.c; box: run-replay.sh over type-change.zrt |
 

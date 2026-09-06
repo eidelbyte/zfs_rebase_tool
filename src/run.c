@@ -113,11 +113,11 @@
  * The verbs further down this file work on a rebase that is already
  * there, and read the record and the manifest its path names and
  * nothing else: --continue takes it on from the gate the record
- * names and, with --verify, repairs the drift it finds on the way;
+ * names, checking at every gate it passes as the schedule says;
  * --restart puts the result back as onto was -- by destroying the
  * clone and making it again, or by rolling the dataset back to its
  * pre-apply snapshot -- before doing the
- * same; --verify alone only reports; --abort takes the whole thing
+ * same; --verify only reports; --abort takes the whole thing
  * away. None of them decides anything: the manifest the record names
  * is the decision, and it is made once. Each of them takes the
  * result over the same way the run did, in both forms, and leaves it
@@ -1554,11 +1554,10 @@ run_handback(struct run *r)
 		return;
 	r->privmnt = 0;
 	/*
-	 * The final check a --verify run makes goes through the
-	 * verbs' own machinery, which settles the result itself when
-	 * it reaches done, so this can arrive at a dataset that is
-	 * already home. Handing it back twice would unmount it from
-	 * its own place for nothing.
+	 * The done gate goes through the verbs' own machinery, which
+	 * settles the result itself when it reaches done, so this can
+	 * arrive at a dataset that is already home. Handing it back
+	 * twice would unmount it from its own place for nothing.
 	 */
 	if (zr_zfs_mounted_at(r->zfs, r->ontods, at, sizeof (at), e,
 	    sizeof (e)) > 0 && strcmp(at, r->workmnt) != 0)
@@ -2080,12 +2079,13 @@ apply_manifest(struct run *r)
 		goto done;
 	zr_pause(ZR_PHASE_APPLYING1);
 	/*
-	 * No report: what a fresh run applies to is onto's tree
-	 * exactly -- a clone of the snapshot, or the dataset the
+	 * No classification: what a fresh run applies to is onto's
+	 * tree exactly -- a clone of the snapshot, or the dataset the
 	 * snapshot was just taken of -- so every action of the
 	 * manifest is still to be made and a classification could let
-	 * none of them be left alone. --continue is where a report
-	 * earns its keep.
+	 * none of them be left alone. A --continue over a tree
+	 * somebody has already applied to is where one earns its
+	 * keep.
 	 */
 	rc = zr_apply_with(&parsed, r->workmnt, &r->wf, &r->wo, NULL, &st,
 	    r->err, sizeof (r->err));
@@ -2278,11 +2278,11 @@ teardown(struct run *r, int keep)
 }
 
 /*
- * The final check --verify asks for, which is the verbs' own and is
- * written with them below: the run reaches it at its done gate, and
- * a --continue reaches the same function at the same gate.
+ * The done gate, which is the verbs' own and is written with them
+ * below: the run reaches it at the end of its last stage, and a
+ * --continue reaches the same function at the same gate.
  */
-static int final_verify(struct run *r);
+static int final_verify(struct run *r, int *settled);
 
 int
 zr_run(const struct zr_run_opts *o)
@@ -2294,7 +2294,7 @@ zr_run(const struct zr_run_opts *o)
 	FILE *out = stdout;
 	char cont[ZR_NAME_MAX];
 	char stamp[ZR_STAMP_MAX];
-	int rc = EXIT_INTERNAL, keep = 0, gocont = 0;
+	int rc = EXIT_INTERNAL, keep = 0, gocont = 0, settled = 0;
 
 	memset(&r, 0, sizeof (r));
 	memset(&rec, 0, sizeof (rec));
@@ -2630,73 +2630,58 @@ zr_run(const struct zr_run_opts *o)
 		goto done;
 	}
 	/*
-	 * Done: the holds given back, and then the record taken off.
-	 * In that order, because the tag in the record is the only
-	 * handle on those holds: a kill in between leaves a record
-	 * whose holds are already released, which --abort and
-	 * --continue both take in their stride, where the other order
-	 * would leave holds nothing names. There is no "done" among
-	 * the phases -- what says a rebase finished is that the result
-	 * carries no record at all.
+	 * Done: the final check, then the holds given back, and then
+	 * the record taken off. In that order, because the tag in the
+	 * record is the only handle on those holds: a kill in between
+	 * leaves a record whose holds are already released, which
+	 * --abort and --continue both take in their stride, where the
+	 * other order would leave holds nothing names. There is no
+	 * "done" among the phases -- what says a rebase finished is
+	 * that the result carries no record at all.
 	 *
-	 * A run that asked for --verify reaches that gate through the
-	 * same function a --continue reaches it through: the record is
-	 * on the result already, so the check is made over the rebase
-	 * and not over anything this process happens to be holding,
-	 * and a run killed before it and continued later makes exactly
-	 * the same check. It costs a second walk of from, onto and the
-	 * result, which is what asking for a check after the fact
-	 * costs.
+	 * The run reaches that gate through the same function a
+	 * --continue reaches it through: the record is on the result
+	 * already, so the check is made over the rebase and not over
+	 * anything this process happens to be holding, and a run
+	 * killed before it and continued later makes exactly the same
+	 * check. It costs a second walk of from, onto and the result,
+	 * which is what a check that is standard costs; there is no
+	 * flag that would skip it (documents-design.md, section 7).
 	 */
-	if (o->verify) {
-		rc = final_verify(&r);
-		if (rc != EXIT_CLEAN) {
-			manifest_note(&r);
-			kept_hint(&r);
-			goto done;
-		}
+	rc = final_verify(&r, &settled);
+	if (!settled) {
 		/*
-		 * The verb reached the done gate and settled the
-		 * result itself -- the dataset home, or the clone
-		 * unmounted with its placement line printed -- so the
-		 * teardown below has nothing left to do but its own
-		 * closing. settled stays clear for exactly that
-		 * reason: settling twice would unmount a dataset from
-		 * its own place.
+		 * The check could not be made at all, which is this
+		 * program failing and not the tree drifting: the gate
+		 * was not passed, and what is left is a rebase for a
+		 * --continue to take on.
 		 */
-		r.nheld = 0;		/* the check gave them back */
-		r.privmnt = 0;		/* and the result with them */
-		r.recorded = 0;		/* and took the record off */
-	} else {
-		zr_pause(ZR_GATE_DONE);
-		release_holds(&r);
-		clear_record(r.zfs, r.rds, o->verbose);
-		r.recorded = 0;
-		r.dropfrom = r.madefrom;
-		/*
-		 * And the result is settled: the teardown below undoes
-		 * the private mount once the walks are closed, and
-		 * says where the result is -- home in this form, and
-		 * nowhere at all in the other, where placing the clone
-		 * is the user's work.
-		 */
-		r.settled = 1;
-		if (in_dataset_form(&r))
-			(void) fprintf(stderr, "zfs_rebase: %s is the rebased "
-			    "tree, and %s is what it was before\n", r.rds,
-			    r.ontosnap);
+		manifest_note(&r);
+		kept_hint(&r);
+		goto done;
 	}
+	/*
+	 * The verb reached the done gate and settled the result
+	 * itself -- the dataset home, or the clone unmounted with its
+	 * placement line printed -- so the teardown below has nothing
+	 * left to do but its own closing. settled stays clear for
+	 * exactly that reason: settling twice would unmount a dataset
+	 * from its own place. rc is the check's own: 0, or 3 where it
+	 * found drift, which done does not block on.
+	 */
+	r.nheld = 0;			/* the check gave them back */
+	r.privmnt = 0;			/* and the result with them */
+	r.recorded = 0;			/* and took the record off */
 	/*
 	 * And the manifest, where there is still one to name. The two
 	 * documents a run wrote into its own directory go with that
 	 * directory at done, so only a -o pair outlives the rebase and
 	 * pointing at a path about to be unlinked would be a lie. The
-	 * same holds on the --verify branch above, whose nested verb
-	 * has already been through done and taken the directory.
+	 * nested verb has already been through done and taken the
+	 * directory.
 	 */
 	if (!in_rundir(r.rds, r.manpath))
 		manifest_note(&r);
-	rc = EXIT_CLEAN;
 done:
 	teardown(&r, keep);
 	signals_restore(saved);
@@ -2718,7 +2703,6 @@ done:
 
 		memset(&vo, 0, sizeof (vo));
 		vo.result = cont;
-		vo.verify = o->verify;
 		vo.verbose = o->verbose;
 		rc = zr_continue(&vo);
 	}
@@ -2784,8 +2768,7 @@ struct record {
 struct resume {
 	struct zr_zfs		*zfs;
 	char			result[ZR_NAME_MAX];
-	int			verify;		/* --verify on the command */
-	int			nomerge;	/* --no-merge on it */
+	int			nomerge;	/* --no-merge on the command */
 	int			report;		/* the verb is --verify */
 	int			verbose;
 	int			dataset;	/* the dataset form */
@@ -3140,9 +3123,11 @@ read_record(struct resume *s)
 	if (got < 0)
 		return (-1);
 	/*
-	 * The start latched --quiet here for the whole run. Nothing
-	 * reads it yet: it is verify-schedule that silences the final
-	 * check's report with it.
+	 * The start latched --quiet here for the whole run, and this
+	 * is where every later invocation reads it: it silences the
+	 * report of the final check at the done gate, and nothing
+	 * else -- not the check, not its verdict, not the report of
+	 * the conflicts gate and not the --verify verb's.
 	 */
 	rb->quiet = got > 0 && strcmp(q, "yes") == 0;
 	rb->rec.manifest = rb->manifest;
@@ -3864,13 +3849,15 @@ print_report(const struct resume *s, const struct zr_parsed *m,
 /*
  * One applying stage: the gate, the classification the apply reads,
  * the apply, the re-walk and read-only again. m is the document this
- * stage applies -- the recorded manifest for applying1, the
- * resolution for applying2 -- and phase is the gate to write before
- * the first write, or NULL where the gate must not move.
+ * stage applies -- the recorded manifest for applying1 -- and phase
+ * is the gate to write before the first write, or NULL where the
+ * gate must not move.
  *
- * The classification is made whether anybody asked to see it: the
- * apply reads it to know what is already true and may be left alone,
- * and --verify only decides whether it is printed as well. After the
+ * The classification is made because the apply reads it, to know
+ * what is already true and may be left alone, and it is not printed:
+ * the reports of this tool are the two the schedule makes, at the
+ * conflicts gate and at the done gate, and the --verify verb's
+ * (documents-design.md, section 7). After the
  * apply comes zr_apply_check, the self-check both this and a fresh
  * run make: the result walked again, the same document classified
  * against it, and every action then done or blocked, since a pending
@@ -3885,8 +3872,7 @@ print_report(const struct resume *s, const struct zr_parsed *m,
  * stray, and the names are left alone.
  */
 static int
-stage_apply(struct resume *s, const struct zr_parsed *m, const char *phase,
-    const char *what)
+stage_apply(struct resume *s, const struct zr_parsed *m, const char *phase)
 {
 	struct zr_verify_report rep;
 	struct zr_apply_stats st, rst;
@@ -3906,8 +3892,6 @@ stage_apply(struct resume *s, const struct zr_parsed *m, const char *phase,
 		zr_pause(phase);
 	if (classify(s, m, &rep) != 0)
 		goto out;
-	if (s->verify)
-		print_report(s, m, &rep, what);
 	if (zr_apply_with(m, s->workmnt, &s->w[ZS_FROM], &s->w[ZS_ONTO], &rep,
 	    &st, s->err, sizeof (s->err)) != 0)
 		goto out;
@@ -3948,24 +3932,61 @@ out:
 }
 
 /*
- * One document held against the result and reported, which is what
- * the gates from conflicts on do with a verify: nothing here writes
- * and nothing here fails. A pending or a drifted action at one of
- * those gates is information and not a fault -- an edit made while
- * the conflicts were being answered is the person's work, and a gate
- * that failed on it would block done for good -- so the only failure
- * is a classification that could not be made at all.
+ * What one classification is worth as a verdict: 0 clean, and 1
+ * where anything drifted. An action still pending or drifted at a
+ * check is one the tree does not carry, and so is a name the
+ * manifest never spoke for that the result no longer holds as onto
+ * had it -- the second axis of the check, and what applying1's own
+ * repair works from. Blocked and unchecked are states and not
+ * faults, a keep is never compared, and a line still unanswered is a
+ * conflict nobody has answered rather than a difference. One rule,
+ * read by the done gate and by the --verify verb alike, so that
+ * "drift" means one thing wherever the tool says it.
  */
 static int
-final_check(struct resume *s, const struct zr_parsed *m, const char *what)
+found_drift(const struct zr_verify_report *rep)
+{
+	int i;
+
+	if (rep->zv_count[ZR_OC_PENDING] != 0 ||
+	    rep->zv_count[ZR_OC_DRIFTED] != 0)
+		return (1);
+	for (i = 0; i < ZR_DF_COUNT; i++) {
+		if (rep->zv_dcount[i] != 0)
+			return (1);
+	}
+	return (0);
+}
+
+/*
+ * The final check, at the done gate: one document held against the
+ * result, reported, and its verdict in *drift. Nothing here writes
+ * and nothing here fails on what it finds. Drift at this gate is
+ * reported and not blocked on -- an edit made while the conflicts
+ * were being answered is the person's work, and a gate that failed
+ * on it would block done for good -- so the only failure is a
+ * classification that could not be made at all, which is this
+ * program's and not the tree's.
+ *
+ * The report goes to stderr unless the start was given --quiet,
+ * which the record carries for the whole run: this one report is
+ * what that flag silences, and it silences nothing else, not the
+ * verdict and not the exit status (documents-design.md, section 7).
+ */
+static int
+final_check(struct resume *s, const struct zr_parsed *m, const char *what,
+    int *drift)
 {
 	struct zr_verify_report rep;
 	int rc;
 
 	memset(&rep, 0, sizeof (rep));
 	rc = classify(s, m, &rep);
-	if (rc == 0 && s->verify)
-		print_report(s, m, &rep, what);
+	if (rc == 0) {
+		if (s->rb.quiet == 0)
+			print_report(s, m, &rep, what);
+		*drift = found_drift(&rep);
+	}
 	zr_verify_report_fini(&rep);
 	return (rc);
 }
@@ -4016,8 +4037,8 @@ name_isdir(const struct resume *s, zr_name_t nm)
  * already covers is not added a second time, and a conflicted name is
  * in no entry of that list to begin with.
  *
- * Only a --continue writes here, and only with --verify: a standalone
- * --verify writes nothing at any gate, and nothing is written at
+ * Only a --continue writes here: the --verify verb reports at this
+ * gate and writes nothing anywhere, and nothing is written at
  * applying2 or at done. The document goes back to its recorded path
  * whole, as the manifest and the skeleton were written; nothing here
  * is a temporary file, since the file is the tool's own and a failure
@@ -4088,27 +4109,40 @@ conflicts_check(struct resume *s)
 }
 
 /*
- * The last gate. An invocation given --verify makes the final check
- * here, over the manifest, and only then are the holds given back
- * and the record taken off -- in that order, because the tag in the
- * record is the only handle on those holds, so a kill between the
- * two must leave the handle rather than the holds. What says a
- * rebase reached done is that nothing of it is left on the result:
- * done is no phase and is never written. (The check is standard from
- * verify-schedule on; here it is still the invocation's own flag.)
+ * The last gate. The final check is made here, over the manifest, by
+ * whichever invocation arrives -- the fresh run's own done or a
+ * --continue's, under no flag at all -- and only then are the holds
+ * given back and the record taken off, in that order, because the
+ * tag in the record is the only handle on those holds, so a kill
+ * between the two must leave the handle rather than the holds. What
+ * says a rebase reached done is that nothing of it is left on the
+ * result: done is no phase and is never written.
+ *
+ * done never blocks on drift. What the check finds is reported and
+ * carried out in the exit status -- 3 rather than 0 -- and the gate
+ * is passed all the same: the record cleared, the result settled and
+ * the run directory taken away, exactly as on a clean pass. The
+ * rebase is over either way, and a rebase that could not be closed
+ * because somebody edited a file in it would be a rebase nothing
+ * could ever end. A check that cannot be made at all is the other
+ * thing: that is this program failing, not the tree drifting, and
+ * the gate is not passed.
  *
  * The resolution is classified with it, since the check is one call:
  * a name kept is never compared, and a name answered onto or from is
- * held against that side's object. Neither a pending nor a drifted
- * line blocks this gate, any more than a pending action does -- an
- * edit made while the conflicts were being answered is the person's
- * work, and a gate that failed on it would block done for good.
+ * held against that side's object.
  */
 static int
 done_gate(struct resume *s)
 {
-	if (s->verify && final_check(s, &s->man, "the manifest") != 0)
+	int drift = 0;
+
+	if (final_check(s, &s->man, "the manifest", &drift) != 0)
 		return (vfail(s, EXIT_INTERNAL, "verify"));
+	if (drift && s->rb.quiet == 0)
+		(void) fprintf(stderr, "zfs_rebase: the final check found "
+		    "drift, which done does not block on: %s is settled and "
+		    "the rebase is over\n", s->result);
 	zr_pause(ZR_GATE_DONE);
 	release_record(s);
 	clear_record(s->zfs, s->result, s->verbose);
@@ -4130,7 +4164,7 @@ done_gate(struct resume *s)
 		(void) fprintf(stderr, "zfs_rebase: %s is the rebased tree, "
 		    "and %s is what it was before\n", s->result,
 		    s->rb.presnap);
-	return (EXIT_CLEAN);
+	return (drift ? EXIT_INTERNAL : EXIT_CLEAN);
 }
 
 /* Has a signal come in? Then the gate reached is the gate that stays. */
@@ -4157,7 +4191,8 @@ vstopped(struct resume *s)
  * Once verify-choices lands, this should also classify the
  * resolution against the trees after the second pass -- keep never
  * compared, onto and from held against that side -- the way
- * stage_apply does for a manifest, and print it under --verify.
+ * choices_hold does below, and say so in its own words rather than
+ * in the final check's.
  */
 static int
 apply_choices(struct resume *s, const struct zr_resolution *res)
@@ -4307,8 +4342,9 @@ out:
  * move is made on human input, and nothing but the person who
  * answered the conflicts can say they are answered.
  *
- * A verify asked for here reports, and writes into the resolution and
- * nowhere else. The tree is the person's from this gate on -- they
+ * Every --continue that arrives here checks first, under no flag,
+ * and reports, and writes into the resolution and nowhere else. The
+ * tree is the person's from this gate on -- they
  * are answering conflicts in it, by hand or through a picker -- and
  * nothing here can tell an edit of theirs from a stray, so nothing
  * here touches the tree. What it does instead is say what it found:
@@ -4316,9 +4352,15 @@ out:
  * line with the choice keep, which the person can change to onto or
  * to from. The one fix in the tool is applying1's own self-check,
  * which ran before this gate was ever written.
+ *
+ * checked says that self-check has just run in this same invocation,
+ * which is what arriving here from stage1 means: the tree was held
+ * against the manifest and mended a moment ago, so the check here
+ * would be the same check over the same walks and finds the same
+ * nothing. It is skipped rather than made twice.
  */
 static int
-stage_conflicts(struct resume *s)
+stage_conflicts(struct resume *s, int checked)
 {
 	uint32_t left, total;
 
@@ -4328,7 +4370,7 @@ stage_conflicts(struct resume *s)
 	}
 	if (s->hasres == 0)
 		return (no_resolution(s));
-	if (s->verify && conflicts_check(s) != 0)
+	if (checked == 0 && conflicts_check(s) != 0)
 		return (vfail(s, EXIT_INTERNAL, "verify"));
 	left = zr_resolution_unanswered(&s->res);
 	total = s->res.zs_nlines;
@@ -4357,16 +4399,17 @@ stage_conflicts(struct resume *s)
 /*
  * applying1: the recorded manifest, and the gate that follows it.
  *
- * --verify has no other meaning at this gate. The fix here is the
- * stage's own self-check, which is always on and is no flag's, and
- * the report the stage prints is the one stage_apply already makes;
- * what is left for the flag to do is to ask for the final check,
- * which this same invocation makes if it reaches the done gate.
+ * The check of this stage is the stage's own self-check, which is
+ * always on and is no flag's, and it is the one check in the tool
+ * that mends what it finds: up to the conflicts gate the result is
+ * the run's own, so a name that is not what the expected tree says
+ * is a stray. A rebase whose decision declared no conflict goes
+ * straight from here to the done gate and its final check.
  */
 static int
 stage1(struct resume *s)
 {
-	if (stage_apply(s, &s->man, ZR_PHASE_APPLYING1, "the manifest") != 0)
+	if (stage_apply(s, &s->man, ZR_PHASE_APPLYING1) != 0)
 		return (vfail(s, EXIT_INTERNAL, "apply"));
 	if (vstopped(s) != 0)
 		return (vfail(s, EXIT_INTERNAL, "apply"));
@@ -4390,7 +4433,7 @@ stage1(struct resume *s)
 	 * and that function says which.
 	 */
 	if (s->hasres > 0 && zr_resolution_unanswered(&s->res) == 0)
-		return (stage_conflicts(s));
+		return (stage_conflicts(s, 1));
 	return (EXIT_CONFLICTS);
 }
 
@@ -4424,7 +4467,7 @@ continue_from(struct resume *s)
 	if (phase[0] == '\0' || strcmp(phase, ZR_PHASE_APPLYING1) == 0)
 		return (stage1(s));
 	if (strcmp(phase, ZR_PHASE_CONFLICTS) == 0)
-		return (stage_conflicts(s));
+		return (stage_conflicts(s, 0));
 	if (strcmp(phase, ZR_PHASE_APPLYING2) == 0)
 		return (stage2(s));
 	(void) snprintf(s->err, sizeof (s->err), "%s is at \"%s\", which is "
@@ -4580,7 +4623,6 @@ zr_continue(const struct zr_verb_opts *o)
 	int rc;
 
 	memset(&s, 0, sizeof (s));
-	s.verify = o->verify;
 	s.nomerge = o->nomerge;
 	s.verbose = o->verbose;
 	zr_pause_open();
@@ -4826,8 +4868,7 @@ report_one(struct resume *s, const struct zr_parsed *m, const char *what)
 		goto out;
 	}
 	print_report(s, m, &rep, what);
-	rc = rep.zv_count[ZR_OC_PENDING] != 0 ||
-	    rep.zv_count[ZR_OC_DRIFTED] != 0 ? EXIT_INTERNAL : EXIT_CLEAN;
+	rc = found_drift(&rep) ? EXIT_INTERNAL : EXIT_CLEAN;
 out:
 	zr_verify_report_fini(&rep);
 	return (rc);
@@ -4840,8 +4881,7 @@ zr_report(const struct zr_verb_opts *o)
 	int code;
 
 	memset(&s, 0, sizeof (s));
-	s.verify = 1;			/* the report is the whole verb */
-	s.report = 1;
+	s.report = 1;			/* the report is the whole verb */
 	s.verbose = o->verbose;
 	tag_make(s.tmptag, sizeof (s.tmptag), "zrv-");
 	code = resume_open(&s, o, 1);
@@ -4877,16 +4917,22 @@ done:
 }
 
 /*
- * The final check a fresh run's --verify asked for, made by the
- * verbs' own machinery over the record the run has just written: the
- * result walked again beside from and onto, every action classified,
- * and the release and the clearing of the record only after that. It
- * is the same function --continue reaches at its own done gate, so a
- * run killed before it and continued later makes exactly this check
- * and no other one.
+ * The fresh run's done gate, made by the verbs' own machinery over
+ * the record the run has just written: the result walked again
+ * beside from and onto, every action classified, and the release and
+ * the clearing of the record only after that. It is the same
+ * function a --continue reaches at its own done gate, so a run
+ * killed before it and continued later makes exactly this check and
+ * no other one, and the record is what both of them read --
+ * zfs_rebase:quiet included, which the start latched there.
+ *
+ * *settled says whether the gate was passed, which the caller cannot
+ * read off the status: 3 is the check that found drift, and done is
+ * reached all the same, as well as the check that could not be made,
+ * where the rebase is left standing for a --continue.
  */
 static int
-final_verify(struct run *r)
+final_verify(struct run *r, int *settled)
 {
 	struct zr_verb_opts o;
 	struct resume s;
@@ -4896,13 +4942,13 @@ final_verify(struct run *r)
 	o.result = r->rds;
 	o.verbose = r->o.verbose;
 	memset(&s, 0, sizeof (s));
-	s.verify = 1;
 	s.verbose = r->o.verbose;
 	rc = resume_open(&s, &o, 0);
 	if (rc == EXIT_CLEAN) {
 		rc = resume_trees(&s) != 0 ?
 		    vfail(&s, EXIT_INTERNAL, "verify") : done_gate(&s);
 	}
+	*settled = s.settled;
 	resume_close(&s);
 	return (rc);
 }

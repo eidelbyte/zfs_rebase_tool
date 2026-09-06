@@ -287,18 +287,17 @@ za_fixture(int argc, char **argv, struct zr_args *out, int n, char *err,
 
 /*
  * Which command this is. --continue, --restart and --abort each name
- * themselves and no two of them go together; --verify names the
- * report only where it names a rebase that already exists, since
- * with a fresh run or a --continue it is the flag asking for the
- * final check.
+ * themselves and no two of them go together, and --verify names the
+ * report always: it is a verb and only a verb (documents-design.md,
+ * section 7). There is no request form left to tell it apart from --
+ * the checks run on a schedule of their own and no flag asks for one
+ * -- so the word decides the command by itself, and the refusals
+ * below are what a command that used to mean a start with the flag
+ * gets instead.
  *
- * It names one two ways: standing alone on a result, which is the
- * older of the two and is what tells the verb from the flag on a
- * command that gives the sides, and standing on a manifest, which no
- * fresh run takes and which therefore says the same thing whatever
- * else is given. (Making --verify a verb and only a verb, refused
- * beside a motional one, is verify-schedule's; nothing here changes
- * what a command written today means.)
+ * A verb that names two commands is caught here; --verify beside one
+ * of the other three is caught in za_verb_flags, which sees the verb
+ * this chose and the flag both.
  */
 static int
 za_verb(struct zr_args *out, int cont, int rest, int abrt, char *err,
@@ -313,8 +312,7 @@ za_verb(struct zr_args *out, int cont, int rest, int abrt, char *err,
 		out->za_verb = ZR_VERB_RESTART;
 	else if (abrt != 0)
 		out->za_verb = ZR_VERB_ABORT;
-	else if (out->za_verify != 0 && (out->za_path != NULL ||
-	    (out->za_from == NULL && out->za_onto == NULL)))
+	else if (out->za_verify != 0)
 		out->za_verb = ZR_VERB_REPORT;
 	else
 		out->za_verb = ZR_VERB_RUN;
@@ -376,6 +374,36 @@ za_verb_flags(const struct zr_args *out, char *err, size_t errlen)
 {
 	const char *word = za_verb_word(out->za_verb);
 
+	/*
+	 * --verify is a verb and only a verb (documents-design.md,
+	 * section 7): the final check is standard now, made by
+	 * whichever invocation reaches the done gate, so there is no
+	 * request left for the word to be. Beside one of the three
+	 * that move a rebase it is refused rather than ignored,
+	 * because a command written for the older meaning must not
+	 * quietly do something else.
+	 */
+	if (out->za_verify != 0 && out->za_verb != ZR_VERB_REPORT)
+		return (za_no(err, errlen, "--verify is a verb of its own, "
+		    "and so is %s; the final check is standard now and no "
+		    "flag asks for it", word));
+	/*
+	 * And beside the flags that start one. --from, --onto and
+	 * --result together are a start, whatever else is given, and
+	 * the report starts nothing: either side alone stands, since
+	 * a verb takes the two sides and checks them against the
+	 * header, but all three of them are another command. A dry
+	 * run is that command's other spelling.
+	 */
+	if (out->za_verb == ZR_VERB_REPORT && out->za_dryrun != 0)
+		return (za_no(err, errlen, "--dry-run decides a rebase and "
+		    "writes its manifest; --verify reports on one that "
+		    "exists, and the two are not one command"));
+	if (out->za_verb == ZR_VERB_REPORT && out->za_from != NULL &&
+	    out->za_onto != NULL && out->za_result != NULL)
+		return (za_no(err, errlen, "--from, --onto and --result "
+		    "together start a rebase, and --verify is a verb: it "
+		    "takes --result or a manifest and reports"));
 	if (out->za_result == NULL && out->za_path == NULL)
 		return (za_no(err, errlen, "%s needs the run it acts on: "
 		    "--result, the dataset carrying the record, or the "
@@ -401,15 +429,6 @@ za_verb_flags(const struct zr_args *out, char *err, size_t errlen)
 	    out->za_base != NULL || out->za_mode != ZR_MODE_STRICT)
 		return (za_no(err, errlen, "%s takes --result and the flags "
 		    "of the gate; the rest belong to a fresh run", word));
-	/*
-	 * --verify is the verb here, or the flag --continue carries.
-	 * On --restart and --abort it is neither: one applies again
-	 * and the other takes the rebase away.
-	 */
-	if (out->za_verify != 0 && (out->za_verb == ZR_VERB_RESTART ||
-	    out->za_verb == ZR_VERB_ABORT))
-		return (za_no(err, errlen, "%s makes no check to report; "
-		    "--verify says nothing to it", word));
 	return (0);
 }
 
