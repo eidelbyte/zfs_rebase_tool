@@ -179,6 +179,21 @@ rewritten. The block is optional; a fixture without one is still a
 valid description of three trees. Nothing may follow it, because
 nothing can: the block ends at the end of the file.
 
+The block is the whole document zfs_rebase --posix writes for these
+trees, run from the directory the fixture was built in, so its
+header is the posix form's: #result, #made, #tag, #take and
+#written are the "-" that says the run had none of them, #form is
+posix, and the three names are base, from and onto with the guid 0,
+there being no snapshot to have one (v4-manifest.md, section 6).
+tools/regen-expect.sh writes it and rewrites it whole whenever the
+tool's output moves.
+
+What the harnesses compare is the block from the #mode line on,
+which is where the decision starts: above it the header is the run,
+and a real run on the box names its own snapshots, its own result
+and its own tag there. So the header of a block is a record of what
+--posix wrote and not a thing any run must match.
+
 ## An example
 
     # two files, one of them hardlinked, one edit on from
@@ -200,7 +215,17 @@ nothing can: the block ends at the end of the file.
         /log file l mode=0600 uid=0
 
     expect
-    #rebase-manifest 4
+    #rebase-manifest 5
+    #result -
+    #form posix
+    #base base 0
+    #from from 0
+    #onto onto 0
+    #made -
+    #tag -
+    #take -
+    #written -
+    #mode strict
     ...
 
 and one line carrying all three of the newer attributes, from a

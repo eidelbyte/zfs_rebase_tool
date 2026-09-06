@@ -259,7 +259,7 @@ reset_pool() {
 # before this touched it.
 answer_resolution() {
 	[ -f "$1" ] || fail "the run wrote no resolution at $1"
-	grep -q '^#rebase-resolution 4$' "$1" || \
+	grep -q '^#rebase-resolution 5$' "$1" || \
 	    { head -3 "$1"; fail "$1 is no resolution"; }
 	left=$(sed -n 's/^#unanswered //p' "$1")
 	[ "${left:-0}" -gt 0 ] || \

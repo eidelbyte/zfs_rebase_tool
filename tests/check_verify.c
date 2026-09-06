@@ -268,10 +268,16 @@ parse_doc(struct zr_parsed *p, const char *body, int nactions, int nconf,
 	int n;
 
 	n = snprintf(text, sizeof (text),
-	    "#rebase-manifest 4\n"
-	    "#base b\n"
-	    "#from f\n"
-	    "#onto o\n"
+	    "#rebase-manifest 5\n"
+	    "#result -\n"
+	    "#form posix\n"
+	    "#base b 0\n"
+	    "#from f 0\n"
+	    "#onto o 0\n"
+	    "#made -\n"
+	    "#tag -\n"
+	    "#take -\n"
+	    "#written -\n"
 	    "#mode strict\n"
 	    "#actions %d\n"
 	    "#conflicts %d\n"
@@ -321,10 +327,10 @@ parse_res(struct zr_resolution *r, const char *body, int nnames, int nunans)
 
 	memset(r, 0, sizeof (*r));
 	n = snprintf(text, sizeof (text),
-	    "#rebase-resolution 4\n"
-	    "#base b\n"
-	    "#from f\n"
-	    "#onto o\n"
+	    "#rebase-resolution 5\n"
+	    "#base b 0\n"
+	    "#from f 0\n"
+	    "#onto o 0\n"
 	    "#mode strict\n"
 	    "#names %d\n"
 	    "#unanswered %d\n"
@@ -994,9 +1000,20 @@ scene_init(struct scene *s)
 	CHECK(zr_decide(&s->sc_wb.zw_tree, &s->sc_wf.zw_tree,
 	    &s->sc_wo.zw_tree, ZR_MODE_STRICT, &s->sc_d) == 0);
 	CHECK(s->sc_d.zd_nconflicts == 1);
+	/*
+	 * The posix form's header: the three directories as given and
+	 * "-" for the rest of the run (v4-manifest.md, section 6).
+	 */
+	memset(&hdr, 0, sizeof (hdr));
+	hdr.result = "-";
+	hdr.form = ZR_HFORM_POSIX;
 	hdr.base = s->sc_base;
 	hdr.from = s->sc_from;
 	hdr.onto = s->sc_onto;
+	hdr.made = "-";
+	hdr.tag = "-";
+	hdr.take = "-";
+	hdr.written = "-";
 	hdr.mode = ZR_MODE_STRICT;
 	f = tmpfile();
 	CHECK(f != NULL);

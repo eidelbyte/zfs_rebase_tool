@@ -30,7 +30,9 @@ or the manifest text. Three levels, in order of preference:
   Mac, with no ZFS of any kind linked in.
 - end to end on the Mac: --posix mode over a fixture's three
   directories, the emitted manifest compared with the fixture's
-  expect block (tests/run-fixtures.sh).
+  expect block from the #mode line on, which is the decision
+  (tests/run-fixtures.sh); the header above it is the run, and
+  family ZH is where it is proved.
 - box: tests/box/run-fixture.sh on FreeBSD, the only
   place snapshots, holds and clones exist.
 
@@ -377,7 +379,7 @@ anchor {first name in manifest order, onto-created}; record parts
 | ZM26 | three tree lines: base, from, onto | planned: check_manifest.c |
 | ZM27 | letters in order of appearance | planned: check_manifest.c |
 | ZM28 | a tree with no pool of the group: empty | planned: check_manifest.c |
-| ZM29 | header: version, datasets, mode | planned: check_manifest.c |
+| ZM29 | header: version, datasets, mode | planned: check_manifest.c; the whole header is family ZH |
 | ZM30 | #actions and #conflicts match | planned: check_manifest.c |
 | ZM31 | a clean run: no legend, no section 2 | planned: check_manifest.c |
 | ZM32 | the probe scenario, byte for byte | planned: check_manifest.c |
@@ -391,7 +393,7 @@ anchor {first name in manifest order, onto-created}; record parts
 | ZM40 | emit, parse, emit is byte identical | covered: check_manifest.c |
 | ZM41 | the expect block parses equal | covered: check_manifest.c |
 | ZM42 | escapes, dir-rm, wide-pool, type-change .zrt | covered: check_roundtrip.c |
-| ZM43 | parse rejects a first line that is not v4 | covered: check_manifest.c |
+| ZM43 | parse rejects a first line that is not version 5 | covered: check_manifest.c, and ZH23 |
 | ZM44 | parse rejects an ln naming its own path | covered: check_manifest.c |
 | ZM45 | parse rejects a child under a leaf line | covered: check_manifest.c |
 | ZM46 | parse rejects a leaf with no slash, no action | covered: check_manifest.c |
@@ -424,7 +426,7 @@ default, add_drift}; parse rejections; round trip.
 | ZM68 | a space, a hash and a high byte in a resolution line | covered: check_manifest.c |
 | ZM69 | on-the-way directories are derived by the writer | covered: check_manifest.c |
 | ZM70 | parse refuses a manifest header | covered: check_manifest.c |
-| ZM71 | parse refuses a version that is not 4 | covered: check_manifest.c |
+| ZM71 | parse refuses a version that is not 5 | covered: check_manifest.c, and ZH23 |
 | ZM72 | parse refuses a raw action word | covered: check_manifest.c |
 | ZM73 | parse refuses a word that is neither conflict nor drift | covered: check_manifest.c |
 | ZM74 | parse refuses a choice outside the four | covered: check_manifest.c |
@@ -438,6 +440,65 @@ default, add_drift}; parse rejections; round trip.
 | ZM82 | the skeleton beside the manifest, the record naming it, --restart putting it back | planned: box, tests/box/run-fixture.sh for the unanswered skeleton, tests/box/run-resolution.sh case 5 for the answered one a --take record puts back |
 | ZM83 | an unanswered skeleton stops at conflicts, an answered one goes on | planned: box, tests/box/run-fixture.sh and run-kills.sh, and run-resolution.sh cases 1 and 3, which add the count the stop names and a document answered in part |
 | ZM84 | a conflicted name only from holds is a conflict mark in the tree section, with the directories on the way opened; the skeleton then has it to answer, and an rm above it is blocked | covered: run-fixtures.sh over h-s2-trap-dead-vs-edit.zrt and the five fixtures regenerated with it (tools/regen-expect.sh); box: run-replay.sh case 2 |
+
+## ZH -- the manifest header, the rebase's identity (check_manifest.c, check_roundtrip.c)
+
+The header of v4-manifest.md section 6, version 5. Dimensions: form
+{clone, dataset, posix}; line {version, result, form, base, from,
+onto, presnap, readonly, canmount, made, tag, take, written, mode,
+actions, conflicts}; value shape {a name, a name and a guid, a word
+out of a list, a tag, a UTC time, a count}; guid {0, the largest a
+uint64 holds, past it, signed, hexadecimal, absent}; failure
+{missing, out of order, one too many, malformed, a dataset-form line
+in another form}; document {manifest, resolution}; round trip {emit
+then parse, parse then write, skeleton}.
+
+Above #mode is the run and from #mode on is the decision. The
+harnesses -- tests/run-fixtures.sh, tests/box/run-replay.sh,
+tests/box/run-fixture.sh -- compare from #mode on, so nothing here
+is proved by them; the run part is proved by the cells below and, on
+the box, by the verbs that read a header back.
+
+| cell | scenario | disposition |
+|------|----------|-------------|
+| ZH1 | a fixture's expect block and an emitted manifest are one decision under two headers | covered: check_manifest.c |
+| ZH2 | #result is the name as given | covered: check_manifest.c |
+| ZH3 | #form clone | covered: check_manifest.c |
+| ZH4 | #form dataset | covered: check_manifest.c |
+| ZH5 | #form posix | covered: check_manifest.c |
+| ZH6 | #base NAME GUID | covered: check_manifest.c |
+| ZH7 | #from NAME GUID | covered: check_manifest.c |
+| ZH8 | #onto NAME GUID | covered: check_manifest.c |
+| ZH9 | #base - 0, the run with no base | covered: check_manifest.c; box: run-fixture.sh case 0a |
+| ZH10 | #made from, and #made - | covered: check_manifest.c |
+| ZH11 | #tag zr- and hex digits, and #tag - | covered: check_manifest.c |
+| ZH12 | #take onto, from, - | covered: check_manifest.c |
+| ZH13 | #written an ISO 8601 UTC time, and #written - | covered: check_manifest.c |
+| ZH14 | #mode, #actions and #conflicts, the decision's own three | covered: check_manifest.c |
+| ZH15 | parse then write is byte identical, both forms | covered: check_manifest.c |
+| ZH16 | #presnap in the dataset form | covered: check_manifest.c |
+| ZH17 | #readonly on, off | covered: check_manifest.c |
+| ZH18 | #canmount on, off, noauto | covered: check_manifest.c |
+| ZH19 | a guid of 0 and one of 18446744073709551615 | covered: check_manifest.c |
+| ZH20 | the posix form's placeholders, which make one fixture one document | covered: check_manifest.c, run-fixtures.sh |
+| ZH21 | every line missing is refused, naming a line | covered: check_manifest.c |
+| ZH22 | every pair of lines swapped is refused, naming a line | covered: check_manifest.c |
+| ZH23 | a version that is not 5 is refused in those words | covered: check_manifest.c |
+| ZH24 | a guid past a uint64, signed, hexadecimal or absent | covered: check_manifest.c |
+| ZH25 | #form, #made, #take: a word outside the list | covered: check_manifest.c |
+| ZH26 | #tag without its prefix, or with a digit that is not hex | covered: check_manifest.c |
+| ZH27 | #written of another shape | covered: check_manifest.c |
+| ZH28 | #readonly and #canmount: a word outside the list | covered: check_manifest.c |
+| ZH29 | a dataset-form line in a clone or posix header | covered: check_manifest.c |
+| ZH30 | a dataset-form line missing from a dataset header, and a line the header has no room for | covered: check_manifest.c |
+| ZH31 | the stamp the writer makes is one the parse accepts | covered: check_manifest.c |
+| ZH32 | the resolution header's three guids | covered: check_manifest.c |
+| ZH33 | the skeleton copies the manifest's three names and three guids | covered: check_manifest.c, check_roundtrip.c |
+| ZH34 | every field out through the emitter and back through the parse | covered: check_roundtrip.c |
+| ZH35 | the skeleton's six through a write and a parse | covered: check_roundtrip.c |
+| ZH36 | the emitter refuses a dataset form with no #presnap, #readonly or #canmount | covered: check_roundtrip.c |
+| ZH37 | a run's own header: the result, the tag it holds under, the time it wrote, the guids of the three snapshots | planned: box, tests/box/run-fixture.sh cases 1 and 2 (the #base line and its guid) and run-replay.sh |
+| ZH38 | a resolution whose name matches and whose guid does not is refused, with both guids | planned: box, tests/box/run-resolution.sh; the check is read_resolution in src/run.c, which only a real record reaches |
 
 ## ZA -- apply (check_apply.c)
 

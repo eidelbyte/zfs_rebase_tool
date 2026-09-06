@@ -34,12 +34,15 @@
 #      not open to a second opinion;
 #  0a. for probe.zrt, --allow-unrelated: that same unrelated pair
 #      goes through with no base at all, its manifest saying
-#      "#base -"; it goes through with --base given, whose snapshot
+#      "#base - 0"; it goes through with --base given, whose snapshot
 #      is walked like the other two; and a --base newer than a side
 #      is refused with exit 2;
 #   1. -n: the manifest equals the fixture's expect block from the
-#      #mode line on (the header names datasets here), and its #base
-#      line is the snapshot the two sides were cloned from; and for
+#      #mode line on, which is where the decision starts -- above it
+#      the header is this run's own and the fixture's is --posix's
+#      (v4-manifest.md, section 6) -- and its #base line names the
+#      snapshot the two sides were cloned from, with that snapshot's
+#      guid beside it; and for
 #      probe.zrt, that -n --verify still creates nothing, holds
 #      nothing and leaves no run directory;
 #   2. the real run, with --off-of for --from: exit 0 for a clean
@@ -274,9 +277,9 @@ case "$fixture" in
 	st=$?
 	[ $st -eq 0 ] || [ $st -eq 1 ] || \
 	    fail "--allow-unrelated with no base exited $st, want 0 or 1"
-	grep -q '^#base -$' "$tmp/got-u" || \
-	    { head -5 "$tmp/got-u"; fail "the empty base is not '#base -'"; }
-	echo "ok   --allow-unrelated with no base (exit $st), #base -"
+	grep -q '^#base - 0$' "$tmp/got-u" || \
+	    { head -5 "$tmp/got-u"; fail "the empty base is not '#base - 0'"; }
+	echo "ok   --allow-unrelated with no base (exit $st), #base - 0"
 	# A base given by hand: older than both sides, in one pool
 	# with them, and its dataset mounted, so its tree is walked
 	# like the other two.
@@ -285,7 +288,7 @@ case "$fixture" in
 	st=$?
 	[ $st -eq 0 ] || [ $st -eq 1 ] || \
 	    fail "--allow-unrelated --base exited $st, want 0 or 1"
-	grep -q "^#base $POOL/base@base\$" "$tmp/got-ub" || \
+	grep -q "^#base $POOL/base@base [0-9][0-9]*\$" "$tmp/got-ub" || \
 	    { head -5 "$tmp/got-ub"; fail "--base is not in the header"; }
 	echo "ok   --allow-unrelated --base $POOL/base@base (exit $st)"
 	# A base newer than a side. $POOL/other@x was taken above,
@@ -308,7 +311,7 @@ st=$?
 sed -n '/^#mode/,$p' "$tmp/expect" > "$tmp/expect.body"
 sed -n '/^#mode/,$p' "$tmp/got-n" > "$tmp/got-n.body"
 cmp -s "$tmp/expect.body" "$tmp/got-n.body" || { diff "$tmp/expect.body" "$tmp/got-n.body" | head -20; fail "dry-run manifest differs"; }
-grep -q "^#base $POOL/base@base\$" "$tmp/got-n" || { head -5 "$tmp/got-n"; fail "the dry run did not derive $POOL/base@base"; }
+grep -q "^#base $POOL/base@base [0-9][0-9]*\$" "$tmp/got-n" || { head -5 "$tmp/got-n"; fail "the dry run did not derive $POOL/base@base"; }
 echo "ok   dry run (exit $st), base derived"
 case "$fixture" in
 */probe.zrt|probe.zrt)
@@ -335,7 +338,7 @@ say "2. real run"
 st=$?
 sed -n '/^#mode/,$p' "$tmp/got" > "$tmp/got.body"
 cmp -s "$tmp/expect.body" "$tmp/got.body" || { diff "$tmp/expect.body" "$tmp/got.body" | head -20; fail "real-run manifest differs"; }
-grep -q "^#base $POOL/base@base\$" "$tmp/got" || { head -5 "$tmp/got"; fail "the real run did not derive $POOL/base@base"; }
+grep -q "^#base $POOL/base@base [0-9][0-9]*\$" "$tmp/got" || { head -5 "$tmp/got"; fail "the real run did not derive $POOL/base@base"; }
 if grep -q '^#conflicts 0$' "$tmp/expect"; then
 	clean=1
 	[ $st -eq 0 ] || fail "clean fixture exited $st"
@@ -409,9 +412,9 @@ RES=$tmp/got.resolution
 [ "$(recval zfs_rebase:resolution "$POOL/result")" = "$RES" ] || \
     fail "zfs_rebase:resolution is not $RES"
 [ -f "$RES" ] || fail "the run wrote no resolution at $RES"
-grep -q '^#rebase-resolution 4$' "$RES" || \
+grep -q '^#rebase-resolution 5$' "$RES" || \
     { head -3 "$RES"; fail "$RES is no resolution"; }
-grep -q "^#onto $POOL/onto@work\$" "$RES" || \
+grep -q "^#onto $POOL/onto@work [0-9][0-9]*\$" "$RES" || \
     { head -8 "$RES"; fail "the resolution names other snapshots"; }
 # One line per conflicted name of the manifest, and every one of
 # them unanswered: that is what a skeleton is.
@@ -757,7 +760,7 @@ dataset_pass() {
 	cmp -s "$tmp/expect.body" "$tmp/got-d.body" || \
 	    { diff "$tmp/expect.body" "$tmp/got-d.body" | head -20; \
 	      dfail "the manifest differs from the clone form's"; }
-	grep -q "^#base $POOL/base@base\$" "$tmp/got-d" || \
+	grep -q "^#base $POOL/base@base [0-9][0-9]*\$" "$tmp/got-d" || \
 	    { head -5 "$tmp/got-d"; dfail "did not derive $POOL/base@base"; }
 
 	dsay "the record on $POOL/onto"
@@ -940,7 +943,7 @@ case "$fixture" in
 	cmp -s "$tmp/expect.body" "$tmp/dry-d.body" || \
 	    { diff "$tmp/expect.body" "$tmp/dry-d.body" | head -20; \
 	      fail "the dry run over two datasets decided something else"; }
-	grep -q "^#base $POOL/base@base\$" "$tmp/dry-d" || \
+	grep -q "^#base $POOL/base@base [0-9][0-9]*\$" "$tmp/dry-d" || \
 	    fail "the dry run over two datasets did not derive the base"
 	for d in from onto; do
 		n=$(zfs list -H -o name -t snapshot -r "$POOL/$d" | \

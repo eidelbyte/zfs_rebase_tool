@@ -9,10 +9,16 @@ tree onto
 /A file x
 /X file r
 expect
-#rebase-manifest 4
-#base zrt/base@s
-#from zrt/from@s
-#onto zrt/onto@s
+#rebase-manifest 5
+#result -
+#form posix
+#base base 0
+#from from 0
+#onto onto 0
+#made -
+#tag -
+#take -
+#written -
 #mode strict
 #actions 0
 #conflicts 1

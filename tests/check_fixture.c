@@ -1768,7 +1768,8 @@ main(void)
 
 	expect = zr_fixture_expect(fx);
 	CHECK(expect != NULL);
-	CHECK(strncmp(expect, "#rebase-manifest 4\n", 19) == 0);
+	CHECK(strncmp(expect, "#rebase-manifest 5\n", 19) == 0);
+	CHECK(strstr(expect, "\n#form posix\n") != NULL);
 	CHECK(strstr(expect, "\nconflict 1 changed-both\n") != NULL);
 	CHECK(strstr(expect, "  onto ({/a}z)\n") != NULL);
 	CHECK(strstr(expect, "expect") == NULL);

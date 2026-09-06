@@ -119,8 +119,18 @@ or
 .Cm conflict Ar n
 \(em and, after it, one record per conflict giving its class, a one-sentence
 why, and the pools of that group in each of the three trees.
-A header names the three snapshots the run actually read, the mode, and the
-counts of actions and conflicts.
+A header names the rebase.
+Above its
+.Cm #mode
+line is the run: the result, the form, the three snapshots the run actually
+read with the guid of each beside its name, the pre-apply snapshot and the
+properties to put back in the dataset form, which side the tool snapshotted
+itself, the hold tag, how the conflicts were answered in advance and when the
+manifest was written.
+From
+.Cm #mode
+on is the decision: the mode and the counts of actions and conflicts.
+The version is 5, and no other is read.
 Names are escaped as a backslash and three octal digits wherever they are
 not plain printable ASCII.
 The format is a document of its own,

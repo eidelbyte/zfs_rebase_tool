@@ -11,10 +11,16 @@ tree onto
 /Q file q
 /R link /Q
 expect
-#rebase-manifest 4
-#base zrt/base@s
-#from zrt/from@s
-#onto zrt/onto@s
+#rebase-manifest 5
+#result -
+#form posix
+#base base 0
+#from from 0
+#onto onto 0
+#made -
+#tag -
+#take -
+#written -
 #mode strict
 #actions 1
 #conflicts 1

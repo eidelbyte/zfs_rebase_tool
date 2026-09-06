@@ -34,10 +34,16 @@ tree onto
 	/keep/k file k2
 
 expect
-#rebase-manifest 4
-#base zrtdiff/fs@base
-#from zrtdiff/from@work
-#onto zrtdiff/onto@work
+#rebase-manifest 5
+#result -
+#form posix
+#base base 0
+#from from 0
+#onto onto 0
+#made -
+#tag -
+#take -
+#written -
 #mode strict
 #actions 8
 #conflicts 1

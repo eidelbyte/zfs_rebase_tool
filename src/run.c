@@ -1573,6 +1573,50 @@ fill_record(struct run *r, struct zr_rebase_record *rec)
 }
 
 /*
+ * The manifest's header, which is this rebase's identity
+ * (v4-manifest.md, section 6). The three names, their guids, made,
+ * take and the mode are the record's own, filled a moment ago from
+ * the run; the result is the name the user asked for; and the
+ * dataset form adds the pre-apply snapshot and the two properties
+ * the run has to put back, canmount read here because nothing has
+ * recorded it yet.
+ *
+ * A dry run creates nothing, holds nothing and takes no pre-apply
+ * snapshot, so its result, its tag and its presnap are the "-" that
+ * says the run had none of them.
+ */
+static int
+fill_header(struct run *r, const struct zr_rebase_record *rec,
+    struct zr_manifest_hdr *h, char *stamp, size_t stamplen,
+    char *canmount, size_t cmlen)
+{
+	memset(h, 0, sizeof (*h));
+	h->result = r->o.dryrun ? ZR_NO_BASE : r->o.result;
+	h->form = in_dataset_form(r) ? ZR_HFORM_DATASET : ZR_HFORM_CLONE;
+	h->base = rec->base;
+	h->base_guid = rec->base_guid;
+	h->from = rec->from;
+	h->from_guid = rec->from_guid;
+	h->onto = rec->onto;
+	h->onto_guid = rec->onto_guid;
+	if (in_dataset_form(r)) {
+		if (zr_zfs_get(r->zfs, r->ontods, "canmount", canmount, cmlen,
+		    r->err, sizeof (r->err)) != 0)
+			return (-1);
+		h->presnap = r->presnap ? r->ontosnap : ZR_NO_BASE;
+		h->readonly = r->roorig;
+		h->canmount = canmount;
+	}
+	h->made = rec->made[0] != '\0' ? rec->made : ZR_NO_BASE;
+	h->tag = r->o.dryrun ? ZR_NO_BASE : r->tag;
+	h->take = rec->take;
+	zr_manifest_stamp(stamp, stamplen);
+	h->written = stamp;
+	h->mode = r->o.mode;
+	return (0);
+}
+
+/*
  * The clone was created with the paths the run intended; now that the
  * file is there, resolve it and record what it really is, so that
  * --abort unlinks the file this run wrote whatever directory it was
@@ -2069,6 +2113,8 @@ zr_run(const struct zr_run_opts *o)
 	struct zr_rebase_record rec;
 	FILE *out = stdout;
 	char cont[ZR_NAME_MAX];
+	char stamp[ZR_STAMP_MAX];
+	char canmount[16];
 	int rc = EXIT_INTERNAL, keep = 0, gocont = 0;
 
 	memset(&r, 0, sizeof (r));
@@ -2248,11 +2294,20 @@ zr_run(const struct zr_run_opts *o)
 		goto done;
 	}
 
-	/* 6. the manifest */
-	hdr.base = r.base[0] != '\0' ? r.base : ZR_NO_BASE;
-	hdr.from = r.fromsnap;
-	hdr.onto = r.ontosnap;
-	hdr.mode = o->mode;
+	/*
+	 * 6. the manifest. A dry run wrote no record, so the facts
+	 * its header carries -- the guids above all -- are gathered
+	 * here instead; a real run has them already.
+	 */
+	if (o->dryrun && fill_record(&r, &rec) != 0) {
+		rc = fail(&r, EXIT_PRECOND, "manifest");
+		goto done;
+	}
+	if (fill_header(&r, &rec, &hdr, stamp, sizeof (stamp), canmount,
+	    sizeof (canmount)) != 0) {
+		rc = fail(&r, EXIT_PRECOND, "manifest");
+		goto done;
+	}
 	if (r.manpath[0] != '\0') {
 		out = fopen(r.manpath, "w");
 		if (out == NULL) {
@@ -3177,11 +3232,38 @@ read_manifest(struct resume *s)
 }
 
 /*
+ * One of a resolution's three header lines against the record's.
+ * The name is what the snapshot was called and the guid is what it
+ * is, so a name that matches with a guid that does not is another
+ * snapshot wearing the name and the refusal prints both numbers.
+ */
+static int
+res_input(struct resume *s, const char *name, uint64_t guid, int i)
+{
+	const char *want = rec_snap(&s->rb, i);
+
+	if (name == NULL || strcmp(name, want) != 0) {
+		(void) snprintf(s->err, sizeof (s->err), "%s names %s as the "
+		    "%s and the record names %s", s->respath,
+		    name != NULL ? name : "nothing", input_word(i), want);
+		return (-1);
+	}
+	if (guid != rec_guid(&s->rb, i)) {
+		(void) snprintf(s->err, sizeof (s->err), "%s gives the %s %s "
+		    "the guid %llu and the record gives it %llu", s->respath,
+		    input_word(i), name, (unsigned long long)guid,
+		    (unsigned long long)rec_guid(&s->rb, i));
+		return (-1);
+	}
+	return (0);
+}
+
+/*
  * The resolution the record names: 1 with *out parsed, 0 when there
  * is no such file, -1 with err set. It is the document of choices of
  * v4-manifest.md section 8, and it must carry the same three header
- * lines the record does, since a resolution written for another
- * rebase describes another tree.
+ * lines the record does, name and guid alike, since a resolution
+ * written for another rebase describes another tree.
  *
  * Either way *out is safe to hand to zr_resolution_fini.
  */
@@ -3204,14 +3286,10 @@ read_resolution(struct resume *s, struct zr_resolution *out)
 	(void) fclose(fp);
 	if (rc != 0)
 		return (-1);
-	if (out->zs_base == NULL || out->zs_from == NULL ||
-	    out->zs_onto == NULL || strcmp(out->zs_base, s->rb.base) != 0 ||
-	    strcmp(out->zs_from, s->rb.from) != 0 ||
-	    strcmp(out->zs_onto, s->rb.onto) != 0) {
-		(void) snprintf(s->err, sizeof (s->err), "%s names other "
-		    "snapshots than the record does", s->respath);
+	if (res_input(s, out->zs_base, out->zs_base_guid, ZI_BASE) != 0 ||
+	    res_input(s, out->zs_from, out->zs_from_guid, ZI_FROM) != 0 ||
+	    res_input(s, out->zs_onto, out->zs_onto_guid, ZI_ONTO) != 0)
 		return (-1);
-	}
 	return (1);
 }
 

@@ -285,10 +285,10 @@ parse_ok(const char *tag, const char *text, size_t len,
 }
 
 /*
- * Two parses of one manifest, field by field. The three dataset
- * lines are left out: the emitter was handed the temporary
- * directories the trees were built in, and the fixture names the
- * datasets the box will use.
+ * Two parses of one decision, field by field. The run part of the
+ * header is left out: the emitter was handed the temporary
+ * directories the trees were built in, and a real run on the box
+ * writes another header over the same decision.
  */
 static void
 same_parse(const char *tag, const struct zr_parsed *a,
@@ -414,11 +414,24 @@ one(const char *name)
 	CHECK(fx != NULL);
 	tmp_template(tmpl, sizeof (tmpl), "zrround.XXXXXX");
 	CHECK(mkdtemp(tmpl) != NULL);
+	memset(&hdr, 0, sizeof (hdr));
 	hdr.mode = mode_of(name);
 	run_build(&r, fx, path, tmpl, hdr.mode);
+	/*
+	 * The posix form's header, which is what --posix wrote into
+	 * the fixture's expect block: the three directories as given
+	 * and the placeholders of v4-manifest.md section 6 for the
+	 * rest of the run.
+	 */
+	hdr.result = "-";
+	hdr.form = ZR_HFORM_POSIX;
 	hdr.base = r.r_dir[0];
 	hdr.from = r.r_dir[1];
 	hdr.onto = r.r_dir[2];
+	hdr.made = "-";
+	hdr.tag = "-";
+	hdr.take = "-";
+	hdr.written = "-";
 	f = tmpfile();
 	CHECK(f != NULL);
 	CHECK(zr_manifest_emit(f, &hdr, &r.r_w[0].zw_tree,
@@ -446,6 +459,134 @@ one(const char *name)
 	rmtree(tmpl);
 }
 
+/*
+ * ZH34 and ZH35: every field of the header out through the emitter
+ * and back through the parse, and the resolution the skeleton makes
+ * of it. The dataset form is the widest header there is -- three
+ * lines more than the others -- so that is the one taken, and a
+ * write of the parse must give the emitter's own bytes back.
+ */
+static void
+test_fields(void)
+{
+	static const char *const name = "probe.zrt";
+	char tmpl[256], path[PATHMAX], err[512];
+	struct zr_manifest_hdr hdr;
+	struct zr_fixture *fx = NULL;
+	struct zr_resolution res, rback;
+	struct zr_parsed pa;
+	struct run r;
+	char *got, *back, *doc;
+	size_t gotlen = 0, backlen = 0, doclen = 0;
+	FILE *f;
+
+	join(path, sizeof (path), FIXDIR "/", name);
+	err[0] = '\0';
+	if (zr_fixture_load(path, &fx, err, sizeof (err)) != 0)
+		printf("%s: %s\n", path, err);
+	CHECK(fx != NULL);
+	tmp_template(tmpl, sizeof (tmpl), "zrfield.XXXXXX");
+	CHECK(mkdtemp(tmpl) != NULL);
+	run_build(&r, fx, path, tmpl, ZR_MODE_PERMISSIVE);
+	memset(&hdr, 0, sizeof (hdr));
+	hdr.result = "tank/main@pre";
+	hdr.form = ZR_HFORM_DATASET;
+	hdr.base = "tank/proj@v1";
+	hdr.base_guid = 0;
+	hdr.from = "tank/dev@v2";
+	hdr.from_guid = 18446744073709551615ULL;
+	hdr.onto = "tank/main@v3";
+	hdr.onto_guid = 12345678901234567890ULL;
+	hdr.presnap = "tank/main@pre";
+	hdr.readonly = "on";
+	hdr.canmount = "noauto";
+	hdr.made = "from";
+	hdr.tag = "zr-0f1e2d3c4b5a";
+	hdr.take = "from";
+	hdr.written = "2026-09-06T13:04:11Z";
+	hdr.mode = ZR_MODE_PERMISSIVE;
+	f = tmpfile();
+	CHECK(f != NULL);
+	CHECK(zr_manifest_emit(f, &hdr, &r.r_w[0].zw_tree, &r.r_w[1].zw_tree,
+	    &r.r_w[2].zw_tree, &r.r_d) == 0);
+	got = slurp(f, &gotlen);
+	parse_ok(path, got, gotlen, &pa);
+	CHECK(strcmp(pa.zp_result, hdr.result) == 0);
+	CHECK(pa.zp_form == ZR_HFORM_DATASET);
+	CHECK(strcmp(pa.zp_base, hdr.base) == 0);
+	CHECK(pa.zp_base_guid == hdr.base_guid);
+	CHECK(strcmp(pa.zp_from, hdr.from) == 0);
+	CHECK(pa.zp_from_guid == hdr.from_guid);
+	CHECK(strcmp(pa.zp_onto, hdr.onto) == 0);
+	CHECK(pa.zp_onto_guid == hdr.onto_guid);
+	CHECK(strcmp(pa.zp_presnap, hdr.presnap) == 0);
+	CHECK(strcmp(pa.zp_readonly, hdr.readonly) == 0);
+	CHECK(strcmp(pa.zp_canmount, hdr.canmount) == 0);
+	CHECK(strcmp(pa.zp_made, hdr.made) == 0);
+	CHECK(strcmp(pa.zp_tag, hdr.tag) == 0);
+	CHECK(strcmp(pa.zp_take, hdr.take) == 0);
+	CHECK(strcmp(pa.zp_written, hdr.written) == 0);
+	CHECK(pa.zp_mode == ZR_MODE_PERMISSIVE);
+	f = tmpfile();
+	CHECK(f != NULL);
+	CHECK(zr_parsed_write(f, &pa) == 0);
+	back = slurp(f, &backlen);
+	compare(path, back, backlen, got, gotlen);
+	free(back);
+	/*
+	 * The resolution beside it: the skeleton takes the three
+	 * names and the three guids from the parse, and a write and a
+	 * parse of that document hands the same six back. This is the
+	 * pair every verb holds against its record, name and guid
+	 * alike, before it believes a word of the document.
+	 */
+	CHECK(zr_resolution_skeleton(&pa, ZR_CH_NONE, &res) == 0);
+	CHECK(strcmp(res.zs_base, pa.zp_base) == 0);
+	CHECK(res.zs_base_guid == pa.zp_base_guid);
+	CHECK(strcmp(res.zs_from, pa.zp_from) == 0);
+	CHECK(res.zs_from_guid == pa.zp_from_guid);
+	CHECK(strcmp(res.zs_onto, pa.zp_onto) == 0);
+	CHECK(res.zs_onto_guid == pa.zp_onto_guid);
+	f = tmpfile();
+	CHECK(f != NULL);
+	CHECK(zr_resolution_write(f, &res) == 0);
+	doc = slurp(f, &doclen);
+	f = tmpfile();
+	CHECK(f != NULL);
+	CHECK(fwrite(doc, 1, doclen, f) == doclen);
+	CHECK(fflush(f) == 0);
+	CHECK(fseek(f, 0, SEEK_SET) == 0);
+	err[0] = '\0';
+	if (zr_resolution_parse(f, &rback, err, sizeof (err)) != 0)
+		printf("%s: the resolution parse failed: %s\n", path, err);
+	CHECK(err[0] == '\0');
+	CHECK(fclose(f) == 0);
+	CHECK(strcmp(rback.zs_base, pa.zp_base) == 0);
+	CHECK(rback.zs_base_guid == pa.zp_base_guid);
+	CHECK(rback.zs_from_guid == pa.zp_from_guid);
+	CHECK(rback.zs_onto_guid == pa.zp_onto_guid);
+	zr_resolution_fini(&rback);
+	zr_resolution_fini(&res);
+	free(doc);
+	zr_parsed_fini(&pa);
+	free(got);
+	/*
+	 * ZH36: the dataset form's three lines have no "-" to fall
+	 * back on, so the writer refuses a header claiming that form
+	 * without them rather than writing a document the parse would
+	 * refuse.
+	 */
+	hdr.canmount = NULL;
+	f = tmpfile();
+	CHECK(f != NULL);
+	CHECK(zr_manifest_emit(f, &hdr, &r.r_w[0].zw_tree, &r.r_w[1].zw_tree,
+	    &r.r_w[2].zw_tree, &r.r_d) == -1);
+	CHECK(fclose(f) == 0);
+	run_fini(&r);
+	zr_fixture_free(fx);
+	rmtree(tmpl);
+}
+
 int
 main(void)
 {
@@ -456,6 +597,7 @@ main(void)
 	CHECK(l.l_n > 0);
 	for (i = 0; i < l.l_n; i++)
 		one(l.l_name[i]);
+	test_fields();
 	printf("check_roundtrip: %d checks passed over %d fixtures\n",
 	    checks, l.l_n);
 	list_free(&l);

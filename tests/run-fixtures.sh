@@ -1,8 +1,11 @@
 #!/bin/sh
 # End to end on any POSIX system: build every fixture as directories,
 # run zfs_rebase --posix over them, and compare the manifest with the
-# fixture's expect block from the #mode line on (the header's dataset
-# lines name directories here, and the note's example names datasets).
+# fixture's expect block from the #mode line on, which is where the
+# decision starts: above it is the run, and a real run on the box
+# writes another one there (v4-manifest.md, section 6). The run is
+# made from the built directory, so the three names are base, from
+# and onto, which is what tools/regen-expect.sh wrote into the block.
 # A fixture whose name ends in -permissive.zrt runs with -p.
 #
 # A fixture with a "platform" line is that platform's alone, and
@@ -15,6 +18,7 @@
 # Skips are counted apart from passes.
 set -u
 cd "$(dirname "$0")/.." || exit 1
+root=$(pwd)
 bin=./zfs_rebase
 [ -x "$bin" ] || { echo "run-fixtures: build first (make)"; exit 2; }
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/zr-fixtures.XXXXXX") || exit 2
@@ -53,7 +57,7 @@ for f in tests/fixtures/*.zrt tests/fixtures/freebsd/*.zrt; do
 	fi
 	flag=""
 	case "$name" in *-permissive) flag="-p" ;; esac
-	"$bin" --posix $flag -o "$d/got" "$d/base" "$d/from" "$d/onto"
+	(cd "$d" && "$root/$bin" --posix $flag -o got base from onto)
 	st=$?
 	sed -n '/^#mode/,$p' "$d/expect" > "$d/expect.body"
 	sed -n '/^#mode/,$p' "$d/got" > "$d/got.body"

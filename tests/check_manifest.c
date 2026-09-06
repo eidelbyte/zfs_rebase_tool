@@ -196,16 +196,72 @@ run(struct world *w, const struct zr_manifest_hdr *hdr, const char *tag,
 }
 
 /*
+ * The run part of the header every emitted text below carries: the
+ * clone form of a real run, every line of v4-manifest.md section 6
+ * in its place. From #mode on is the decision, which each scenario
+ * writes for itself. The guids are 11, 22 and 33 so that a line that
+ * lost one is visible at a glance.
+ */
+#define	H_RESULT	"zrt/rebased"
+#define	H_TAG		"zr-1a2b3c4d5e6f"
+#define	H_WRITTEN	"2026-09-06T13:04:11Z"
+
+#define	H_CLONE(base, from, onto)					\
+	"#rebase-manifest 5\n"						\
+	"#result " H_RESULT "\n"					\
+	"#form clone\n"						\
+	"#base " base " 11\n"						\
+	"#from " from " 22\n"						\
+	"#onto " onto " 33\n"						\
+	"#made -\n"							\
+	"#tag " H_TAG "\n"						\
+	"#take -\n"							\
+	"#written " H_WRITTEN "\n"
+
+/* The same header as the emitter is handed it. */
+static void
+clone_hdr(struct zr_manifest_hdr *h, const char *base, const char *from,
+    const char *onto, zr_mode_t mode)
+{
+	memset(h, 0, sizeof (*h));
+	h->result = H_RESULT;
+	h->form = ZR_HFORM_CLONE;
+	h->base = base;
+	h->base_guid = 11;
+	h->from = from;
+	h->from_guid = 22;
+	h->onto = onto;
+	h->onto_guid = 33;
+	h->made = "-";
+	h->tag = H_TAG;
+	h->take = "-";
+	h->written = H_WRITTEN;
+	h->mode = mode;
+}
+
+/*
+ * From #mode on, which is where the decision starts. Above it the
+ * header is the run, and two documents of one decision differ there:
+ * a fixture's expect block is the posix form's and the texts here
+ * are a clone-form run's.
+ */
+static const char *
+decision(const char *doc)
+{
+	const char *at = strstr(doc, "\n#mode ");
+
+	CHECK(at != NULL);
+	return (at + 1);
+}
+
+/*
  * The note's section 7: the probe scenario with an onto side that
  * edited a differently and edited keep/k. b is deleted on from, d is
  * renamed to e, the pool {h1 h2} is edited through one name and gains
  * a third, keep/k needs nothing, n is new, and a conflicts.
  */
 static const char want_probe[] =
-	"#rebase-manifest 4\n"
-	"#base zrtdiff/fs@base\n"
-	"#from zrtdiff/from@work\n"
-	"#onto zrtdiff/onto@work\n"
+	H_CLONE("zrtdiff/fs@base", "zrtdiff/from@work", "zrtdiff/onto@work")
 	"#mode strict\n"
 	"#actions 8\n"
 	"#conflicts 1\n"
@@ -269,10 +325,8 @@ test_probe(void)
 	add(&w, W_ONTO, "/keep", 7, ZR_T_DIR, 1, C_KEEP);
 	add(&w, W_ONTO, "/keep/k", 8, ZR_T_FILE, 1, C_K2);
 
-	hdr.base = "zrtdiff/fs@base";
-	hdr.from = "zrtdiff/from@work";
-	hdr.onto = "zrtdiff/onto@work";
-	hdr.mode = ZR_MODE_STRICT;
+	clone_hdr(&hdr, "zrtdiff/fs@base", "zrtdiff/from@work",
+	    "zrtdiff/onto@work", ZR_MODE_STRICT);
 	run(&w, &hdr, "probe", want_probe);
 	world_fini(&w);
 }
@@ -283,10 +337,7 @@ test_probe(void)
  * directory whose own name needs escaping too.
  */
 static const char want_escapes[] =
-	"#rebase-manifest 4\n"
-	"#base zrt/base@s\n"
-	"#from zrt/from@s\n"
-	"#onto zrt/onto@s\n"
+	H_CLONE("zrt/base@s", "zrt/from@s", "zrt/onto@s")
 	"#mode strict\n"
 	"#actions 1\n"
 	"#conflicts 1\n"
@@ -325,10 +376,8 @@ test_escapes(void)
 	add(&w, W_ONTO, "/caf\303\251 x", 2, ZR_T_FILE, 1, C_A3);
 	add(&w, W_ONTO, "/d d", 3, ZR_T_DIR, 1, C_D);
 
-	hdr.base = "zrt/base@s";
-	hdr.from = "zrt/from@s";
-	hdr.onto = "zrt/onto@s";
-	hdr.mode = ZR_MODE_STRICT;
+	clone_hdr(&hdr, "zrt/base@s", "zrt/from@s", "zrt/onto@s",
+	    ZR_MODE_STRICT);
 	run(&w, &hdr, "escapes", want_escapes);
 	world_fini(&w);
 }
@@ -341,10 +390,7 @@ test_escapes(void)
  * nowhere in from.
  */
 static const char want_foreign[] =
-	"#rebase-manifest 4\n"
-	"#base zrt/base@s\n"
-	"#from zrt/from@s\n"
-	"#onto zrt/onto@s\n"
+	H_CLONE("zrt/base@s", "zrt/from@s", "zrt/onto@s")
 	"#mode strict\n"
 	"#actions 1\n"
 	"#conflicts 0\n"
@@ -369,10 +415,8 @@ test_foreign_path(void)
 	add(&w, W_ONTO, "/p", 2, ZR_T_FILE, 2, C_X);
 	add(&w, W_ONTO, "/q", 2, ZR_T_FILE, 2, C_X);
 
-	hdr.base = "zrt/base@s";
-	hdr.from = "zrt/from@s";
-	hdr.onto = "zrt/onto@s";
-	hdr.mode = ZR_MODE_STRICT;
+	clone_hdr(&hdr, "zrt/base@s", "zrt/from@s", "zrt/onto@s",
+	    ZR_MODE_STRICT);
 	run(&w, &hdr, "foreign", want_foreign);
 	world_fini(&w);
 }
@@ -453,7 +497,11 @@ check_action(const struct zr_parsed *p, uint32_t i, enum zr_act_kind kind,
 	CHECK(a->za_conflict == cnum);
 }
 
-/* Two parses of one manifest agree in every field. */
+/*
+ * Two parses of one decision agree in every field of it. The run
+ * part of the header is left out: the same decision is written with
+ * one header by a run and another by --posix.
+ */
 static void
 same_parse(const char *tag, const struct zr_parsed *a,
     const struct zr_parsed *b)
@@ -468,9 +516,6 @@ same_parse(const char *tag, const struct zr_parsed *a,
 		    b->zp_nrecords);
 		exit(1);
 	}
-	CHECK(strcmp(a->zp_base, b->zp_base) == 0);
-	CHECK(strcmp(a->zp_from, b->zp_from) == 0);
-	CHECK(strcmp(a->zp_onto, b->zp_onto) == 0);
 	CHECK(a->zp_mode == b->zp_mode);
 	CHECK(a->zp_actions_declared == b->zp_actions_declared);
 	CHECK(a->zp_conflicts_declared == b->zp_conflicts_declared);
@@ -561,9 +606,11 @@ test_parse_probe(void)
 
 /*
  * ZM41: the expect block of tests/fixtures/probe.zrt is the same
- * manifest as the one the emitter wrote here, so the two parses must
- * agree field by field. The fixture is the document the box will
- * compare against, and this is what ties it to the code.
+ * decision as the one the emitter wrote here, so the two parses must
+ * agree field by field from #mode on. The fixture is the document
+ * the box will compare against, and this is what ties it to the
+ * code; its own header is the posix form's, which is the run and
+ * not the decision (ZH1).
  */
 static void
 test_parse_fixture(void)
@@ -580,7 +627,8 @@ test_parse_fixture(void)
 	CHECK(fx != NULL);
 	expect = zr_fixture_expect(fx);
 	CHECK(expect != NULL);
-	compare("fixture expect", expect, strlen(expect), want_probe);
+	compare("fixture expect", decision(expect), strlen(decision(expect)),
+	    decision(want_probe));
 	parse_ok("parse fixture", expect, &a);
 	parse_ok("parse probe again", want_probe, &b);
 	same_parse("fixture against emitted", &a, &b);
@@ -629,7 +677,7 @@ static void
 test_write_shapes(void)
 {
 	roundtrip("empty directory",
-	    "#rebase-manifest 4\n#base b\n#from f\n#onto o\n"
+	    H_CLONE("b", "f", "o")
 	    "#mode strict\n#actions 3\n#conflicts 0\n"
 	    "/\n"
 	    "    d/ rm\n"
@@ -639,7 +687,7 @@ test_write_shapes(void)
 	    "        ..\n"
 	    "    ..\n");
 	roundtrip("walk order",
-	    "#rebase-manifest 4\n#base b\n#from f\n#onto o\n"
+	    H_CLONE("b", "f", "o")
 	    "#mode strict\n#actions 2\n#conflicts 0\n"
 	    "/\n"
 	    "    a/\n"
@@ -648,7 +696,7 @@ test_write_shapes(void)
 	    "    a-1 rm\n"
 	    "    ..\n");
 	roundtrip("every class",
-	    "#rebase-manifest 4\n#base b\n#from f\n#onto o\n"
+	    H_CLONE("b", "f", "o")
 	    "#mode permissive-merge\n#actions 0\n#conflicts 1\n"
 	    "/\n"
 	    "    a conflict 1\n"
@@ -664,15 +712,15 @@ test_write_shapes(void)
 	    "  from ({/a /b}z)\n"
 	    "  onto ()\n");
 	roundtrip("nothing to do",
-	    "#rebase-manifest 4\n#base b\n#from f\n#onto o\n"
+	    H_CLONE("b", "f", "o")
 	    "#mode strict\n#actions 0\n#conflicts 0\n"
 	    "/\n"
 	    "    ..\n");
 }
 
-/* The seven header lines of a manifest to be rejected further down. */
+/* The thirteen header lines of a manifest to be rejected further down. */
 #define	RJ(acts, confs)							\
-	"#rebase-manifest 4\n#base b\n#from f\n#onto o\n"		\
+	H_CLONE("b", "f", "o")						\
 	"#mode strict\n#actions " acts "\n#conflicts " confs "\n"
 
 /* The four lines of a record, for the rejections that need one. */
@@ -681,33 +729,34 @@ test_write_shapes(void)
 /*
  * ZM34 to ZM38 and ZM43 to ZM50: every way a manifest can be wrong,
  * one test each, and each one demanding the line the error names. The
- * header is seven lines, so the tree section starts at line 8.
+ * clone form's header is thirteen lines, so the tree section starts
+ * at line 14.
  */
 static void
 test_rejections(void)
 {
 	/* ZM43: the version line is the first line or the file is not one */
-	reject("version", "#rebase-manifest 5\n" RJ("0", "0"), "line 1: ");
+	reject("version", "#rebase-manifest 4\n" RJ("0", "0"), "line 1: ");
 	/* ZM34: an action nobody defined */
 	reject("action", RJ("1", "0") "/\n    a zap /b\n    ..\n",
-	    "line 9: ");
+	    "line 15: ");
 	/* ZM35: an escape that runs off the end of the name */
 	reject("escape", RJ("1", "0") "/\n    a\\09 rm\n    ..\n",
-	    "line 9: ");
+	    "line 15: ");
 	/* ZM36: the root closes and the tree goes on */
 	reject("early close",
 	    RJ("2", "0") "/\n    a rm\n    ..\n    b rm\n    ..\n",
-	    "line 11: ");
+	    "line 17: ");
 	/* ZM36: the file ends with the root still open */
-	reject("no close", RJ("1", "0") "/\n    a rm\n", "line 9: ");
+	reject("no close", RJ("1", "0") "/\n    a rm\n", "line 15: ");
 	/* ZM37: the tree section without its root line */
-	reject("no root", RJ("1", "0") "    a rm\n    ..\n", "line 8: ");
+	reject("no root", RJ("1", "0") "    a rm\n    ..\n", "line 14: ");
 	/* ZM38: an ln naming a path the walk has not reached yet */
 	reject("ln later", RJ("2", "0") "/\n    a ln /b\n    b rm\n    ..\n",
-	    "line 9: ");
+	    "line 15: ");
 	/* ZM44: an ln naming itself, which is the same rule at zero */
 	reject("ln self", RJ("1", "0") "/\n    a ln /a\n    ..\n",
-	    "line 9: ");
+	    "line 15: ");
 	/*
 	 * ZM45: a leaf given children. Indentation says nothing, so the
 	 * inner line is read as the leaf's sibling and the two dots
@@ -716,24 +765,24 @@ test_rejections(void)
 	 */
 	reject("leaf parent",
 	    RJ("2", "0") "/\n    a rm\n        b rm\n        ..\n    ..\n",
-	    "line 12: ");
+	    "line 18: ");
 	/* ZM46: a name with neither an action nor a trailing slash */
-	reject("bare leaf", RJ("0", "0") "/\n    a\n    ..\n", "line 9: ");
+	reject("bare leaf", RJ("0", "0") "/\n    a\n    ..\n", "line 15: ");
 	/* ZM47: the count the header promised is not the count there is */
-	reject("count", RJ("2", "0") "/\n    a rm\n    ..\n", "line 6: ");
+	reject("count", RJ("2", "0") "/\n    a rm\n    ..\n", "line 12: ");
 	/* ZM48: a conflict mark pointing past the last record */
 	reject("no record",
 	    RJ("0", "1") "/\n    a conflict 2\n    ..\n"
-	    "conflict 1 disagree\n" RJ_REC, "line 9: ");
+	    "conflict 1 disagree\n" RJ_REC, "line 15: ");
 	/* ZM49: a class the theory does not name */
 	reject("class",
 	    RJ("0", "1") "/\n    a conflict 1\n    ..\n"
-	    "conflict 1 bogus\n" RJ_REC, "line 11: ");
+	    "conflict 1 bogus\n" RJ_REC, "line 17: ");
 	/* ZM50: records numbered 1..K in the order the tree named them */
 	reject("record order",
 	    RJ("0", "2") "/\n    a conflict 1\n    b conflict 2\n    ..\n"
 	    "conflict 2 disagree\n" RJ_REC "conflict 1 disagree\n" RJ_REC,
-	    "line 12: ");
+	    "line 18: ");
 }
 
 /*
@@ -743,12 +792,20 @@ test_rejections(void)
  * ---------------------------------------------------------------
  */
 
+/*
+ * The three header names of the documents below, which are the
+ * manifest's own: H_CLONE("b", "f", "o") writes those names and
+ * those guids, and a skeleton of it must give them back.
+ */
+#define	R_BFO								\
+	"#rebase-resolution 5\n#base b 11\n#from f 22\n#onto o 33\n"
+
 /* The section 8 example, which is the grammar's own statement of itself. */
 static const char want_res[] =
-	"#rebase-resolution 4\n"
-	"#base zrtdiff/fs@base\n"
-	"#from zrtdiff/from@work\n"
-	"#onto zrtdiff/onto@work\n"
+	"#rebase-resolution 5\n"
+	"#base zrtdiff/fs@base 11\n"
+	"#from zrtdiff/from@work 22\n"
+	"#onto zrtdiff/onto@work 33\n"
 	"#mode strict\n"
 	"#names 4\n"
 	"#unanswered 1\n"
@@ -890,10 +947,7 @@ test_res_example(void)
  * their own. The skeleton of it is what the tests below turn on.
  */
 static const char man_conf[] =
-	"#rebase-manifest 4\n"
-	"#base b\n"
-	"#from f\n"
-	"#onto o\n"
+	H_CLONE("b", "f", "o")
 	"#mode strict\n"
 	"#actions 1\n"
 	"#conflicts 2\n"
@@ -925,10 +979,7 @@ static const char man_conf[] =
 
 /* The skeleton of it: every conflict mark, nothing else, unanswered. */
 static const char want_skel[] =
-	"#rebase-resolution 4\n"
-	"#base b\n"
-	"#from f\n"
-	"#onto o\n"
+	R_BFO
 	"#mode strict\n"
 	"#names 4\n"
 	"#unanswered 4\n"
@@ -1007,12 +1058,11 @@ test_res_skeleton(void)
 	free(got);
 	/* and a manifest with nothing to answer */
 	got = skeleton_of("no conflicts",
-	    "#rebase-manifest 4\n#base b\n#from f\n#onto o\n"
+	    H_CLONE("b", "f", "o")
 	    "#mode permissive-merge\n#actions 1\n#conflicts 0\n"
 	    "/\n    a rm\n    ..\n", ZR_CH_NONE, &gotlen);
 	compare("no conflicts", got, gotlen,
-	    "#rebase-resolution 4\n#base b\n#from f\n#onto o\n"
-	    "#mode permissive-merge\n#names 0\n#unanswered 0\n"
+	    R_BFO "#mode permissive-merge\n#names 0\n#unanswered 0\n"
 	    "/\n    ..\n");
 	free(got);
 }
@@ -1052,8 +1102,7 @@ test_res_drift(void)
 	got = res_write(&r, &gotlen);
 	zr_resolution_fini(&r);
 	compare("drift", got, gotlen,
-	    "#rebase-resolution 4\n#base b\n#from f\n#onto o\n"
-	    "#mode strict\n#names 6\n#unanswered 4\n"
+	    R_BFO "#mode strict\n#names 6\n#unanswered 4\n"
 	    "/\n"
 	    "    a conflict 1 -\n"
 	    "    d/ conflict 2 -\n"
@@ -1080,10 +1129,7 @@ test_res_drift(void)
  * and in a directory that scopes another line.
  */
 static const char want_res_esc[] =
-	"#rebase-resolution 4\n"
-	"#base b\n"
-	"#from f\n"
-	"#onto o\n"
+	R_BFO
 	"#mode strict\n"
 	"#names 3\n"
 	"#unanswered 1\n"
@@ -1111,8 +1157,7 @@ test_res_escapes(void)
 
 /* The seven header lines of a resolution to be rejected further down. */
 #define	RR(names, unans)						\
-	"#rebase-resolution 4\n#base b\n#from f\n#onto o\n"		\
-	"#mode strict\n#names " names "\n#unanswered " unans "\n"
+	R_BFO "#mode strict\n#names " names "\n#unanswered " unans "\n"
 
 /*
  * ZM70 to ZM81: every way a resolution can be wrong, one test each,
@@ -1125,7 +1170,7 @@ test_res_rejections(void)
 	/* ZM70: a manifest is not a resolution, however well formed */
 	res_reject("manifest header", want_probe, "line 1: ");
 	/* ZM71: the version line is the first line or the file is not one */
-	res_reject("version", "#rebase-resolution 5\n" RR("0", "0"),
+	res_reject("version", "#rebase-resolution 4\n" RR("0", "0"),
 	    "line 1: ");
 	/* ZM72: the five actions of section 4 are not choices */
 	res_reject("action rm", RR("1", "0") "/\n    a rm\n    ..\n",
@@ -1174,6 +1219,333 @@ test_res_rejections(void)
 	    "line 8: ");
 }
 
+/*
+ * ---------------------------------------------------------------
+ * The header of v4-manifest.md section 6: the rebase's identity.
+ * Family ZH of tests/MATRIX.md, cells ZH1 to ZH30.
+ * ---------------------------------------------------------------
+ */
+
+/* The dataset form's header, which is the clone form's and three more. */
+#define	H_DATASET							\
+	"#rebase-manifest 5\n"						\
+	"#result tank/main@pre\n"					\
+	"#form dataset\n"						\
+	"#base tank/proj@v1 12345678901234567890\n"			\
+	"#from tank/dev@v2 0\n"						\
+	"#onto tank/main@v3 18446744073709551615\n"			\
+	"#presnap tank/main@pre\n"					\
+	"#readonly off\n"						\
+	"#canmount noauto\n"						\
+	"#made from\n"							\
+	"#tag zr-1a2b3c4d5e6f\n"					\
+	"#take onto\n"							\
+	"#written 2026-09-06T13:04:11Z\n"
+
+#define	H_BODY	"#mode strict\n#actions 1\n#conflicts 0\n/\n    a rm\n    ..\n"
+
+/*
+ * ZH1 to ZH14: a clone-form header parses, and every line of it is
+ * the value it carried. The result, the form, the three names with
+ * their guids, made, the tag, take and the time of the write are the
+ * run; the mode and the two counts are the decision.
+ */
+static void
+test_header_clone(void)
+{
+	struct zr_parsed p;
+
+	parse_ok("clone header", RJ("1", "0") "/\n    a rm\n    ..\n", &p);
+	CHECK(strcmp(p.zp_result, H_RESULT) == 0);
+	CHECK(p.zp_form == ZR_HFORM_CLONE);
+	CHECK(strcmp(p.zp_base, "b") == 0);
+	CHECK(p.zp_base_guid == 11);
+	CHECK(strcmp(p.zp_from, "f") == 0);
+	CHECK(p.zp_from_guid == 22);
+	CHECK(strcmp(p.zp_onto, "o") == 0);
+	CHECK(p.zp_onto_guid == 33);
+	CHECK(p.zp_presnap == NULL);
+	CHECK(p.zp_readonly == NULL);
+	CHECK(p.zp_canmount == NULL);
+	CHECK(strcmp(p.zp_made, "-") == 0);
+	CHECK(strcmp(p.zp_tag, H_TAG) == 0);
+	CHECK(strcmp(p.zp_take, "-") == 0);
+	CHECK(strcmp(p.zp_written, H_WRITTEN) == 0);
+	CHECK(p.zp_mode == ZR_MODE_STRICT);
+	CHECK(p.zp_actions_declared == 1);
+	CHECK(p.zp_conflicts_declared == 0);
+	zr_parsed_fini(&p);
+	/* ZH15: and a header of either form is written back as it came */
+	roundtrip("clone header", RJ("1", "0") "/\n    a rm\n    ..\n");
+	roundtrip("dataset header", H_DATASET H_BODY);
+}
+
+/*
+ * ZH16 to ZH19: the dataset form's three lines, which are there if
+ * and only if #form says dataset, and the guids at both ends of what
+ * a uint64 holds.
+ */
+static void
+test_header_dataset(void)
+{
+	struct zr_parsed p;
+
+	parse_ok("dataset header", H_DATASET H_BODY, &p);
+	CHECK(strcmp(p.zp_result, "tank/main@pre") == 0);
+	CHECK(p.zp_form == ZR_HFORM_DATASET);
+	CHECK(p.zp_base_guid == 12345678901234567890ULL);
+	CHECK(p.zp_from_guid == 0);
+	CHECK(p.zp_onto_guid == 18446744073709551615ULL);
+	CHECK(strcmp(p.zp_presnap, "tank/main@pre") == 0);
+	CHECK(strcmp(p.zp_readonly, "off") == 0);
+	CHECK(strcmp(p.zp_canmount, "noauto") == 0);
+	CHECK(strcmp(p.zp_made, "from") == 0);
+	CHECK(strcmp(p.zp_take, "onto") == 0);
+	zr_parsed_fini(&p);
+}
+
+/*
+ * ZH20: the posix form, which is the run part written as placeholders
+ * so that one fixture emits one document wherever it is run.
+ */
+static void
+test_header_posix(void)
+{
+	struct zr_parsed p;
+
+	parse_ok("posix header",
+	    "#rebase-manifest 5\n#result -\n#form posix\n"
+	    "#base base 0\n#from from 0\n#onto onto 0\n"
+	    "#made -\n#tag -\n#take -\n#written -\n" H_BODY, &p);
+	CHECK(p.zp_form == ZR_HFORM_POSIX);
+	CHECK(strcmp(p.zp_result, "-") == 0);
+	CHECK(p.zp_base_guid == 0);
+	CHECK(strcmp(p.zp_tag, "-") == 0);
+	CHECK(strcmp(p.zp_written, "-") == 0);
+	CHECK(p.zp_presnap == NULL);
+	zr_parsed_fini(&p);
+}
+
+/* The clone form's thirteen header lines, one per row, in order. */
+static const char *const zh_line[] = {
+	"#rebase-manifest 5", "#result " H_RESULT, "#form clone",
+	"#base b 11", "#from f 22", "#onto o 33", "#made -",
+	"#tag " H_TAG, "#take -", "#written " H_WRITTEN, "#mode strict",
+	"#actions 1", "#conflicts 0"
+};
+
+#define	ZH_NLINE	(sizeof (zh_line) / sizeof (zh_line[0]))
+
+/*
+ * A header built out of those lines, with one of them left out, one
+ * of them swapped with the next, or one of them replaced. The tree
+ * section after it is the same one line every time.
+ */
+static void
+zh_build(char *buf, size_t buflen, uint32_t drop, uint32_t swap,
+    uint32_t at, const char *with)
+{
+	uint32_t i, j;
+	size_t n = 0;
+
+	for (i = 0; i < ZH_NLINE; i++) {
+		const char *line;
+
+		if (i == drop)
+			continue;
+		j = i;
+		if (i == swap)
+			j = i + 1;
+		else if (i == swap + 1)
+			j = i - 1;
+		line = j == at && with != NULL ? with : zh_line[j];
+		n += (size_t)snprintf(buf + n, buflen - n, "%s\n", line);
+		CHECK(n < buflen);
+	}
+	n += (size_t)snprintf(buf + n, buflen - n, "/\n    a rm\n    ..\n");
+	CHECK(n < buflen);
+}
+
+/*
+ * ZH21 and ZH22: every line of the header is required, and every one
+ * of them is required where it is. A line left out and a pair of
+ * lines swapped are refusals naming a line, and the whole header is
+ * walked so that no line is exempt.
+ */
+static void
+test_header_order(void)
+{
+	char buf[1024], tag[64];
+	uint32_t i;
+
+	for (i = 1; i < ZH_NLINE; i++) {
+		zh_build(buf, sizeof (buf), i, ZH_NLINE, ZH_NLINE, NULL);
+		(void) snprintf(tag, sizeof (tag), "%s missing", zh_line[i]);
+		reject(tag, buf, "line ");
+	}
+	for (i = 1; i + 1 < ZH_NLINE; i++) {
+		zh_build(buf, sizeof (buf), ZH_NLINE, i, ZH_NLINE, NULL);
+		(void) snprintf(tag, sizeof (tag), "%s misordered",
+		    zh_line[i]);
+		reject(tag, buf, "line ");
+	}
+}
+
+/* One header with one line replaced, which must be refused. */
+static void
+zh_bad(const char *tag, uint32_t at, const char *with)
+{
+	char buf[1024];
+
+	zh_build(buf, sizeof (buf), ZH_NLINE, ZH_NLINE, at, with);
+	reject(tag, buf, "line ");
+}
+
+/*
+ * ZH23 to ZH28: a value of the shape no line of the header may have.
+ * Every line that is a word out of a list, a name and a guid, a tag
+ * or a time is given one that is none of those.
+ */
+static void
+test_header_malformed(void)
+{
+	zh_bad("version", 0, "#rebase-manifest 4");
+	zh_bad("version word", 0, "#rebase-manifest five");
+	zh_bad("result empty", 1, "#result");
+	zh_bad("form", 2, "#form snapshot");
+	zh_bad("base no guid", 3, "#base b");
+	zh_bad("base no name", 3, "#base 11");
+	zh_bad("made", 6, "#made onto");
+	zh_bad("tag", 7, "#tag zr-nothex");
+	zh_bad("tag prefix", 7, "#tag 1a2b3c4d5e6f");
+	zh_bad("take", 8, "#take both");
+	zh_bad("written", 9, "#written 2026-09-06 13:04:11");
+	zh_bad("written short", 9, "#written 2026-09-06T13:04:11");
+	zh_bad("written word", 9, "#written now");
+	zh_bad("mode", 10, "#mode merge");
+	zh_bad("actions", 11, "#actions many");
+	zh_bad("conflicts", 12, "#conflicts -1");
+	/* ZH24: and a guid is decimal, in range, with no sign and no hex */
+	zh_bad("guid overflow", 4, "#from f 18446744073709551616");
+	zh_bad("guid huge", 4, "#from f 99999999999999999999");
+	zh_bad("guid sign", 4, "#from f +1");
+	zh_bad("guid negative", 4, "#from f -1");
+	zh_bad("guid hex", 4, "#from f 0x10");
+	zh_bad("guid hex digits", 4, "#from f 1a");
+	zh_bad("guid empty", 4, "#from f ");
+}
+
+/*
+ * ZH29 and ZH30: the three dataset-form lines belong to that form
+ * alone. One of them in a clone-form header is refused by name, and
+ * one of them missing from a dataset-form header is the missing line
+ * every other missing line is.
+ */
+static void
+test_header_form_lines(void)
+{
+	reject("presnap in a clone form",
+	    "#rebase-manifest 5\n#result r\n#form clone\n"
+	    "#base b 1\n#from f 2\n#onto o 3\n#presnap p\n"
+	    "#made -\n#tag -\n#take -\n#written -\n" H_BODY, "line 7: ");
+	reject("readonly in a clone form",
+	    "#rebase-manifest 5\n#result r\n#form clone\n"
+	    "#base b 1\n#from f 2\n#onto o 3\n#readonly on\n"
+	    "#made -\n#tag -\n#take -\n#written -\n" H_BODY, "line 7: ");
+	reject("canmount in a posix form",
+	    "#rebase-manifest 5\n#result -\n#form posix\n"
+	    "#base b 0\n#from f 0\n#onto o 0\n#canmount on\n"
+	    "#made -\n#tag -\n#take -\n#written -\n" H_BODY, "line 7: ");
+	reject("no presnap in a dataset form",
+	    "#rebase-manifest 5\n#result r\n#form dataset\n"
+	    "#base b 1\n#from f 2\n#onto o 3\n"
+	    "#readonly on\n#canmount on\n#made -\n#tag -\n#take -\n"
+	    "#written -\n" H_BODY, "line 7: ");
+	reject("no canmount in a dataset form",
+	    "#rebase-manifest 5\n#result r\n#form dataset\n"
+	    "#base b 1\n#from f 2\n#onto o 3\n"
+	    "#presnap p\n#readonly on\n#made -\n#tag -\n#take -\n"
+	    "#written -\n" H_BODY, "line 9: ");
+	/* ZH28: and the two properties are the words zfs(8) prints */
+	reject("readonly word",
+	    "#rebase-manifest 5\n#result r\n#form dataset\n"
+	    "#base b 1\n#from f 2\n#onto o 3\n"
+	    "#presnap p\n#readonly noauto\n#canmount on\n#made -\n#tag -\n"
+	    "#take -\n#written -\n" H_BODY, "line 8: ");
+	reject("canmount word",
+	    "#rebase-manifest 5\n#result r\n#form dataset\n"
+	    "#base b 1\n#from f 2\n#onto o 3\n"
+	    "#presnap p\n#readonly on\n#canmount later\n#made -\n#tag -\n"
+	    "#take -\n#written -\n" H_BODY, "line 9: ");
+	/* a line the header has no room for at all */
+	reject("a line too many",
+	    "#rebase-manifest 5\n#result r\n#form clone\n"
+	    "#base b 1\n#from f 2\n#onto o 3\n#verify yes\n"
+	    "#made -\n#tag -\n#take -\n#written -\n" H_BODY, "line 7: ");
+}
+
+/*
+ * ZH31: the stamp the writer puts on #written is one the parse
+ * accepts, so a manifest written now is a manifest that reads back.
+ */
+static void
+test_header_stamp(void)
+{
+	char stamp[ZR_STAMP_MAX], text[1024];
+	struct zr_parsed p;
+
+	zr_manifest_stamp(stamp, sizeof (stamp));
+	CHECK(stamp[0] != '\0');
+	(void) snprintf(text, sizeof (text),
+	    "#rebase-manifest 5\n#result r\n#form clone\n"
+	    "#base b 1\n#from f 2\n#onto o 3\n#made -\n#tag -\n#take -\n"
+	    "#written %s\n" H_BODY, stamp);
+	parse_ok("stamp", text, &p);
+	CHECK(strcmp(p.zp_written, stamp) == 0);
+	zr_parsed_fini(&p);
+}
+
+/*
+ * ZH32 and ZH33: the resolution's own header, which is the three
+ * names with the manifest's guids beside them, and the skeleton that
+ * copies all six from the parse.
+ */
+static void
+test_header_resolution(void)
+{
+	struct zr_resolution r;
+	struct zr_parsed p;
+	char *got;
+	size_t gotlen = 0;
+
+	res_parse_ok("resolution header", want_res, &r);
+	CHECK(strcmp(r.zs_base, "zrtdiff/fs@base") == 0);
+	CHECK(r.zs_base_guid == 11);
+	CHECK(r.zs_from_guid == 22);
+	CHECK(r.zs_onto_guid == 33);
+	zr_resolution_fini(&r);
+	/* a name with no guid, a guid that is no number, and a version */
+	res_reject("no guid", "#rebase-resolution 5\n#base b\n"
+	    "#from f 22\n#onto o 33\n#mode strict\n#names 0\n"
+	    "#unanswered 0\n/\n    ..\n", "line 2: ");
+	res_reject("guid hex", "#rebase-resolution 5\n#base b 0x1\n"
+	    "#from f 22\n#onto o 33\n#mode strict\n#names 0\n"
+	    "#unanswered 0\n/\n    ..\n", "line 2: ");
+	/* the skeleton carries the manifest's six, name and guid alike */
+	parse_ok("skeleton guids", man_conf, &p);
+	CHECK(zr_resolution_skeleton(&p, ZR_CH_NONE, &r) == 0);
+	CHECK(r.zs_base_guid == p.zp_base_guid);
+	CHECK(r.zs_from_guid == p.zp_from_guid);
+	CHECK(r.zs_onto_guid == p.zp_onto_guid);
+	got = res_write(&r, &gotlen);
+	CHECK(strstr(got, "#base b 11\n") != NULL);
+	CHECK(strstr(got, "#from f 22\n") != NULL);
+	CHECK(strstr(got, "#onto o 33\n") != NULL);
+	free(got);
+	zr_resolution_fini(&r);
+	zr_parsed_fini(&p);
+}
+
 int
 main(void)
 {
@@ -1190,6 +1562,14 @@ main(void)
 	test_res_drift();
 	test_res_escapes();
 	test_res_rejections();
+	test_header_clone();
+	test_header_dataset();
+	test_header_posix();
+	test_header_order();
+	test_header_malformed();
+	test_header_form_lines();
+	test_header_stamp();
+	test_header_resolution();
 	printf("check_manifest: %d checks passed\n", checks);
 	return (0);
 }

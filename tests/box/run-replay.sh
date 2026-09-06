@@ -195,7 +195,7 @@ one() {
 	cmp -s "$tmp/expect.body" "$tmp/got-n.body" || \
 	    { diff "$tmp/expect.body" "$tmp/got-n.body" | head -20;
 	      fail "dry-run manifest differs"; }
-	grep -q "^#base $POOL/base@base\$" "$tmp/got-n" || \
+	grep -q "^#base $POOL/base@base [0-9][0-9]*\$" "$tmp/got-n" || \
 	    { head -5 "$tmp/got-n"; fail "the dry run did not derive base"; }
 	unchanged "$tmp/err-n" "$want" "the dry run"
 	echo "ok   dry run (exit $st): manifest equal, $want pools unchanged"
@@ -208,7 +208,7 @@ one() {
 	cmp -s "$tmp/expect.body" "$tmp/got.body" || \
 	    { diff "$tmp/expect.body" "$tmp/got.body" | head -20;
 	      fail "real-run manifest differs"; }
-	grep -q "^#base $POOL/base@base\$" "$tmp/got" || \
+	grep -q "^#base $POOL/base@base [0-9][0-9]*\$" "$tmp/got" || \
 	    { head -5 "$tmp/got"; fail "the real run did not derive base"; }
 	unchanged "$tmp/err" "$want" "the real run"
 	if grep -q '^#conflicts 0$' "$tmp/expect"; then

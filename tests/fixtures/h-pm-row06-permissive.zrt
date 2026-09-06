@@ -19,10 +19,16 @@ tree onto
 /D link /C
 /P link /C
 expect
-#rebase-manifest 4
-#base zrt/base@s
-#from zrt/from@s
-#onto zrt/onto@s
+#rebase-manifest 5
+#result -
+#form posix
+#base base 0
+#from from 0
+#onto onto 0
+#made -
+#tag -
+#take -
+#written -
 #mode permissive-merge
 #actions 0
 #conflicts 1

@@ -98,7 +98,9 @@ die_usage(const char *why)
 /*
  * --posix: walk three directories, assign content, decide, emit.
  * Exit 0 clean, 1 with conflicts, 2 on a bad tree, 3 on an internal
- * failure. The header names the directories as given.
+ * failure. The header names the directories as given and writes the
+ * posix form's placeholders for the rest of the run part, so that one
+ * fixture always emits one document.
  */
 static int
 run_posix(const char *bdir, const char *fdir, const char *odir,
@@ -156,9 +158,25 @@ run_posix(const char *bdir, const char *fdir, const char *odir,
 			goto done;
 		}
 	}
+	/*
+	 * The header names the three directories as given. Everything
+	 * else above #mode is the placeholder the posix form writes:
+	 * there is no result, no snapshot to have a guid, nothing
+	 * snapshotted, no hold, no side taken and no time of the
+	 * write, so the run part of the header says so and the
+	 * document from #mode on is the decision, which is the same
+	 * one a real run would write (v4-manifest.md, section 6).
+	 */
+	memset(&hdr, 0, sizeof (hdr));
+	hdr.result = "-";
+	hdr.form = ZR_HFORM_POSIX;
 	hdr.base = bdir;
 	hdr.from = fdir;
 	hdr.onto = odir;
+	hdr.made = "-";
+	hdr.tag = "-";
+	hdr.take = "-";
+	hdr.written = "-";
 	hdr.mode = mode;
 	if (zr_manifest_emit(out, &hdr, &wb.zw_tree, &wf.zw_tree,
 	    &wo.zw_tree, &d) != 0) {

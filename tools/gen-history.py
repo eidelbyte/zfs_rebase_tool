@@ -194,7 +194,7 @@ def normalize_classes(cs):
 
 # ---- main -----------------------------------------------------------------
 def main():
-    repo = sys.argv[1]
+    repo = os.path.abspath(sys.argv[1])
     binp = os.path.join(repo, "zfs_rebase")
     outdir = os.path.join(repo, "tests", "fixtures")
     written = 0; problems = []
@@ -209,8 +209,11 @@ def main():
                 # build without the expect block: write a spec, build, run
                 open(tmpfx, "w").write("\n".join(["tree base"] + tree_lines(b) + ["tree from"] + tree_lines(f) + ["tree onto"] + tree_lines(o)) + "\n")
                 subprocess.run([binp, "--build-fixture", tmpfx, td], check=True)
-                args = [binp, "--posix"] + (["-p"] if not strict else []) + [os.path.join(td, "base"), os.path.join(td, "from"), os.path.join(td, "onto")]
-                p = subprocess.run(args, capture_output=True, text=True)
+                args = [binp, "--posix"] + (["-p"] if not strict else []) + ["base", "from", "onto"]
+                # run from the built directory, so the header names
+                # base, from and onto: that is the document
+                # tools/regen-expect.sh regenerates the block with
+                p = subprocess.run(args, capture_output=True, text=True, cwd=td)
                 manifest = p.stdout
             exp_result, exp_classes = checker_verdict(b, f, o, strict)
             got_pools, got_classes, nconf = replay(manifest, f, o)
@@ -224,10 +227,6 @@ def main():
             if not ok:
                 problems.append((fname, verdict, sorted(got_classes), sorted((sorted(n), c) for n, c in got_pools), manifest))
                 continue
-            # rewrite the header's dataset lines to stable names
-            manifest = re.sub(r"^#base .*$", "#base zrt/base@s", manifest, flags=re.M)
-            manifest = re.sub(r"^#from .*$", "#from zrt/from@s", manifest, flags=re.M)
-            manifest = re.sub(r"^#onto .*$", "#onto zrt/onto@s", manifest, flags=re.M)
             source = "%s %s: base %s from %s onto %s [%s]" % (group, slug, bs, fs, os_, mode)
             open(os.path.join(outdir, fname), "w").write(fixture_text(b, f, o, verdict, source, manifest))
             written += 1

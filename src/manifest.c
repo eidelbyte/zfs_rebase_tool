@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "manifest.h"
 #include "name.h"
@@ -1034,6 +1035,94 @@ zm_text(const char *s)
 	return (s != NULL ? s : "");
 }
 
+/*
+ * A header value that may be absent. Absent is written "-", which is
+ * how zfs(8) spells a property with no value and is no name, no tag
+ * and no time: nothing the header carries can be a bare dash.
+ */
+static const char *
+zm_dash(const char *s)
+{
+	return (s != NULL && s[0] != '\0' ? s : "-");
+}
+
+/* The word each form is written as, indexed by enum zr_hform. */
+static const char *const zm_formword[ZR_NHFORM] = {
+	"clone", "dataset", "posix"
+};
+
+void
+zr_manifest_stamp(char *buf, size_t buflen)
+{
+	struct tm *tm;
+	time_t now;
+
+	if (buf == NULL || buflen == 0)
+		return;
+	buf[0] = '\0';
+	if (buflen < ZR_STAMP_MAX)
+		return;
+	now = time(NULL);
+	tm = gmtime(&now);
+	if (tm == NULL || strftime(buf, buflen, "%Y-%m-%dT%H:%M:%SZ",
+	    tm) == 0)
+		(void) snprintf(buf, buflen, "-");
+}
+
+/*
+ * The header, which is the same thirteen lines -- sixteen in the
+ * dataset form -- wherever it is written: by the emitter from a
+ * run's own facts, and by
+ * zr_parsed_write from a parse of one it wrote before. Above #mode is
+ * the run and from #mode on is the decision (v4-manifest.md, section
+ * 6), and the three dataset-form lines are here if and only if the
+ * form is the dataset one.
+ */
+static void
+zm_header(FILE *out, const struct zr_manifest_hdr *h, uint32_t nactions,
+    uint32_t nconflicts)
+{
+	unsigned form = (unsigned)h->form < ZR_NHFORM ? (unsigned)h->form :
+	    (unsigned)ZR_HFORM_CLONE;
+
+	(void) fputs("#rebase-manifest 5\n", out);
+	(void) fprintf(out, "#result %s\n", zm_dash(h->result));
+	(void) fprintf(out, "#form %s\n", zm_formword[form]);
+	(void) fprintf(out, "#base %s %llu\n", zm_dash(h->base),
+	    (unsigned long long)h->base_guid);
+	(void) fprintf(out, "#from %s %llu\n", zm_dash(h->from),
+	    (unsigned long long)h->from_guid);
+	(void) fprintf(out, "#onto %s %llu\n", zm_dash(h->onto),
+	    (unsigned long long)h->onto_guid);
+	if (form == (unsigned)ZR_HFORM_DATASET) {
+		(void) fprintf(out, "#presnap %s\n", zm_dash(h->presnap));
+		(void) fprintf(out, "#readonly %s\n", zm_dash(h->readonly));
+		(void) fprintf(out, "#canmount %s\n", zm_dash(h->canmount));
+	}
+	(void) fprintf(out, "#made %s\n", zm_dash(h->made));
+	(void) fprintf(out, "#tag %s\n", zm_dash(h->tag));
+	(void) fprintf(out, "#take %s\n", zm_dash(h->take));
+	(void) fprintf(out, "#written %s\n", zm_dash(h->written));
+	(void) fprintf(out, "#mode %s\n",
+	    h->mode == ZR_MODE_PERMISSIVE ? "permissive-merge" : "strict");
+	(void) fprintf(out, "#actions %u\n", nactions);
+	(void) fprintf(out, "#conflicts %u\n", nconflicts);
+}
+
+/*
+ * The dataset form's three lines have no "-" to fall back on: a
+ * header claiming that form and carrying none of them would be a
+ * document the parser refuses, so the writer refuses it first.
+ */
+static int
+zm_hdr_ok(const struct zr_manifest_hdr *h)
+{
+	if (h->form != ZR_HFORM_DATASET)
+		return (1);
+	return (h->presnap != NULL && h->readonly != NULL &&
+	    h->canmount != NULL);
+}
+
 int
 zr_manifest_emit(FILE *out, const struct zr_manifest_hdr *hdr,
     const struct zr_tree *base, const struct zr_tree *from,
@@ -1044,7 +1133,8 @@ zr_manifest_emit(FILE *out, const struct zr_manifest_hdr *hdr,
 	int rc = -1;
 
 	if (out == NULL || hdr == NULL || base == NULL || from == NULL ||
-	    onto == NULL || d == NULL || d->zd_state == NULL)
+	    onto == NULL || d == NULL || d->zd_state == NULL ||
+	    zm_hdr_ok(hdr) == 0)
 		return (-1);
 	memset(&m, 0, sizeof (m));
 	m.zm_t[ZM_BASE] = base;
@@ -1070,14 +1160,7 @@ zr_manifest_emit(FILE *out, const struct zr_manifest_hdr *hdr,
 	zm_show(&m);
 	nactions = zm_number(&m);
 
-	(void) fputs("#rebase-manifest 4\n", out);
-	(void) fprintf(out, "#base %s\n", zm_text(hdr->base));
-	(void) fprintf(out, "#from %s\n", zm_text(hdr->from));
-	(void) fprintf(out, "#onto %s\n", zm_text(hdr->onto));
-	(void) fprintf(out, "#mode %s\n",
-	    hdr->mode == ZR_MODE_PERMISSIVE ? "permissive-merge" : "strict");
-	(void) fprintf(out, "#actions %u\n", nactions);
-	(void) fprintf(out, "#conflicts %u\n", m.zm_nconf);
+	zm_header(out, hdr, nactions, m.zm_nconf);
 	zm_emit_tree(&m, out);
 	if (m.zm_nconf > 0) {
 		(void) fputs("\n# a pool is one file and all its names: "
@@ -1485,19 +1568,40 @@ zp_add_record(struct zp *p, const struct zr_record *r)
 }
 
 /*
- * The six header keys of each document, in the order it writes them.
- * The two documents differ in the last two alone, and the version
- * line the parse demands is passed in beside the table.
+ * The header keys of each document, in the order it writes them, and
+ * which of them the dataset form alone carries. The manifest's are
+ * the identity of section 6; the resolution's are the three
+ * snapshots, the mode and its own two counts.
  */
-static const char *const zp_hdrkey[] = {
-	"#base", "#from", "#onto", "#mode", "#actions", "#conflicts"
+struct zp_hline {
+	const char	*zh_key;
+	int		zh_dsonly;	/* the dataset form's line alone */
 };
 
-static const char *const zr_hdrkey[] = {
-	"#base", "#from", "#onto", "#mode", "#names", "#unanswered"
+enum {
+	ZP_H_RESULT, ZP_H_FORM, ZP_H_BASE, ZP_H_FROM, ZP_H_ONTO,
+	ZP_H_PRESNAP, ZP_H_READONLY, ZP_H_CANMOUNT, ZP_H_MADE,
+	ZP_H_TAG, ZP_H_TAKE, ZP_H_WRITTEN, ZP_H_MODE, ZP_H_ACTIONS,
+	ZP_H_CONFLICTS, ZP_NHDR
 };
 
-#define	ZP_NHDR		(sizeof (zp_hdrkey) / sizeof (zp_hdrkey[0]))
+enum {
+	ZR_H_BASE, ZR_H_FROM, ZR_H_ONTO, ZR_H_MODE, ZR_H_NAMES,
+	ZR_H_UNANSWERED, ZR_NHDR
+};
+
+static const struct zp_hline zp_hdrkey[ZP_NHDR] = {
+	{ "#result", 0 }, { "#form", 0 }, { "#base", 0 }, { "#from", 0 },
+	{ "#onto", 0 }, { "#presnap", 1 }, { "#readonly", 1 },
+	{ "#canmount", 1 }, { "#made", 0 }, { "#tag", 0 }, { "#take", 0 },
+	{ "#written", 0 }, { "#mode", 0 }, { "#actions", 0 },
+	{ "#conflicts", 0 }
+};
+
+static const struct zp_hline zr_hdrkey[ZR_NHDR] = {
+	{ "#base", 0 }, { "#from", 0 }, { "#onto", 0 }, { "#mode", 0 },
+	{ "#names", 0 }, { "#unanswered", 0 }
+};
 
 /* strict or permissive-merge, and nothing else, in either document. */
 static int
@@ -1512,28 +1616,200 @@ zp_mode(const char *v, size_t vlen, zr_mode_t *out)
 	return (0);
 }
 
-/* One header line's value: three names, the mode and the two counts. */
+/* Which of the words this value is, or -1 when it is none of them. */
+static int
+zp_word(const char *v, size_t vlen, const char *const *words, uint32_t n,
+    uint32_t *out)
+{
+	uint32_t i;
+
+	for (i = 0; i < n; i++) {
+		size_t len = strlen(words[i]);
+
+		if (vlen == len && memcmp(v, words[i], len) == 0) {
+			if (out != NULL)
+				*out = i;
+			return (0);
+		}
+	}
+	return (-1);
+}
+
+/*
+ * A guid as zfs get guid prints it: decimal digits and nothing else,
+ * no sign, no hexadecimal, and never past what a uint64 holds. Twenty
+ * digits is the width of the largest, and the two checks inside the
+ * loop refuse the ones of that width that overflow.
+ */
+static int
+zp_guid(const char *s, size_t len, uint64_t *out)
+{
+	uint64_t v = 0;
+	size_t i;
+
+	if (len == 0 || len > 20)
+		return (-1);
+	for (i = 0; i < len; i++) {
+		uint64_t digit;
+
+		if (s[i] < '0' || s[i] > '9')
+			return (-1);
+		digit = (uint64_t)(s[i] - '0');
+		if (v > UINT64_MAX / 10)
+			return (-1);
+		v *= 10;
+		if (v > UINT64_MAX - digit)
+			return (-1);
+		v += digit;
+	}
+	*out = v;
+	return (0);
+}
+
+/*
+ * One "NAME GUID" line. The guid is the last blank separated field,
+ * so a name holding a blank -- which a dataset never does and a
+ * directory of the posix form may -- is read whole.
+ */
+static int
+zp_named(struct zp *p, const char *key, const char *v, size_t vlen,
+    char **namep, uint64_t *guidp)
+{
+	size_t cut = vlen, end;
+
+	while (cut > 0 && v[cut - 1] != ' ' && v[cut - 1] != '\t')
+		cut--;
+	end = cut > 0 ? cut - 1 : 0;
+	while (end > 0 && (v[end - 1] == ' ' || v[end - 1] == '\t'))
+		end--;
+	if (cut == 0 || end == 0)
+		return (zp_errf(p, "%s wants a name and a guid", key));
+	if (zp_guid(v + cut, vlen - cut, guidp) != 0)
+		return (zp_errf(p, "%s wants a decimal guid", key));
+	*namep = zp_dup(v, end);
+	return (*namep != NULL ? 0 : zp_errf(p, "out of memory"));
+}
+
+/* One header value kept as the text it holds. */
+static int
+zp_keep(struct zp *p, const char *v, size_t vlen, char **out)
+{
+	*out = zp_dup(v, vlen);
+	return (*out != NULL ? 0 : zp_errf(p, "out of memory"));
+}
+
+/* "-", or the hold tag, which is "zr-" and lowercase hex digits. */
+static int
+zp_tagged(const char *v, size_t vlen)
+{
+	size_t i;
+
+	if (vlen == 1 && v[0] == '-')
+		return (0);
+	if (vlen < 4 || memcmp(v, "zr-", 3) != 0)
+		return (-1);
+	for (i = 3; i < vlen; i++) {
+		if ((v[i] < '0' || v[i] > '9') && (v[i] < 'a' || v[i] > 'f'))
+			return (-1);
+	}
+	return (0);
+}
+
+/*
+ * "-", or the time of the write as strftime "%Y-%m-%dT%H:%M:%SZ"
+ * writes it. The shape is what is held: a header the tool wrote can
+ * hold no other, and a reader that wants the instant parses it
+ * itself.
+ */
+static int
+zp_stamped(const char *v, size_t vlen)
+{
+	static const char shape[] = "dddd-dd-ddTdd:dd:ddZ";
+	size_t i;
+
+	if (vlen == 1 && v[0] == '-')
+		return (0);
+	if (vlen != sizeof (shape) - 1)
+		return (-1);
+	for (i = 0; i < vlen; i++) {
+		if (shape[i] == 'd') {
+			if (v[i] < '0' || v[i] > '9')
+				return (-1);
+		} else if (v[i] != shape[i]) {
+			return (-1);
+		}
+	}
+	return (0);
+}
+
+static const char *const zp_onoff[] = { "on", "off" };
+static const char *const zp_canmount[] = { "on", "off", "noauto" };
+static const char *const zp_made[] = { "from", "-" };
+static const char *const zp_take[] = { "onto", "from", "-" };
+
+/*
+ * One header line's value. Every line of section 6 is checked here
+ * for the shape it must have, so that a document the parse accepts is
+ * one the writer could have written.
+ */
 static int
 zp_header_value(struct zp *p, uint32_t which, const char *v, size_t vlen)
 {
 	struct zr_parsed *o = p->zp_out;
+	uint32_t n = 0;
 
 	switch (which) {
-	case 0:
-		o->zp_base = zp_dup(v, vlen);
-		return (o->zp_base != NULL ? 0 : zp_errf(p, "out of memory"));
-	case 1:
-		o->zp_from = zp_dup(v, vlen);
-		return (o->zp_from != NULL ? 0 : zp_errf(p, "out of memory"));
-	case 2:
-		o->zp_onto = zp_dup(v, vlen);
-		return (o->zp_onto != NULL ? 0 : zp_errf(p, "out of memory"));
-	case 3:
+	case ZP_H_RESULT:
+		return (zp_keep(p, v, vlen, &o->zp_result));
+	case ZP_H_FORM:
+		if (zp_word(v, vlen, zm_formword, ZR_NHFORM, &n) != 0)
+			return (zp_errf(p, "#form is clone, dataset or "
+			    "posix"));
+		o->zp_form = (enum zr_hform)n;
+		return (0);
+	case ZP_H_BASE:
+		return (zp_named(p, "#base", v, vlen, &o->zp_base,
+		    &o->zp_base_guid));
+	case ZP_H_FROM:
+		return (zp_named(p, "#from", v, vlen, &o->zp_from,
+		    &o->zp_from_guid));
+	case ZP_H_ONTO:
+		return (zp_named(p, "#onto", v, vlen, &o->zp_onto,
+		    &o->zp_onto_guid));
+	case ZP_H_PRESNAP:
+		return (zp_keep(p, v, vlen, &o->zp_presnap));
+	case ZP_H_READONLY:
+		if (zp_word(v, vlen, zp_onoff, 2, NULL) != 0)
+			return (zp_errf(p, "#readonly is on or off"));
+		return (zp_keep(p, v, vlen, &o->zp_readonly));
+	case ZP_H_CANMOUNT:
+		if (zp_word(v, vlen, zp_canmount, 3, NULL) != 0)
+			return (zp_errf(p, "#canmount is on, off or noauto"));
+		return (zp_keep(p, v, vlen, &o->zp_canmount));
+	case ZP_H_MADE:
+		if (zp_word(v, vlen, zp_made, 2, NULL) != 0)
+			return (zp_errf(p, "#made is from or -"));
+		return (zp_keep(p, v, vlen, &o->zp_made));
+	case ZP_H_TAG:
+		if (zp_tagged(v, vlen) != 0)
+			return (zp_errf(p, "#tag is zr- and hex digits, "
+			    "or -"));
+		return (zp_keep(p, v, vlen, &o->zp_tag));
+	case ZP_H_TAKE:
+		if (zp_word(v, vlen, zp_take, 3, NULL) != 0)
+			return (zp_errf(p, "#take is onto, from or -"));
+		return (zp_keep(p, v, vlen, &o->zp_take));
+	case ZP_H_WRITTEN:
+		if (zp_stamped(v, vlen) != 0)
+			return (zp_errf(p, "#written is a UTC time, "
+			    "YYYY-MM-DDThh:mm:ssZ, or -"));
+		return (zp_keep(p, v, vlen, &o->zp_written));
+	case ZP_H_MODE:
 		if (zp_mode(v, vlen, &o->zp_mode) != 0)
 			return (zp_errf(p, "the mode is strict or "
 			    "permissive-merge"));
 		return (0);
-	case 4:
+	case ZP_H_ACTIONS:
 		p->zp_aline = p->zp_lineno;
 		if (zp_uint(v, vlen, &o->zp_actions_declared) != 0)
 			return (zp_errf(p, "#actions wants a count"));
@@ -1550,7 +1826,7 @@ zp_header_value(struct zp *p, uint32_t which, const char *v, size_t vlen)
  * The resolution's header, the same six lines with the two counts of
  * its own: how many name lines the tree section holds and how many of
  * them are still unanswered, so that a tool can tell completeness
- * without scanning.
+ * without scanning. Its three names carry the manifest's guids.
  */
 static int
 zr_header_value(struct zp *p, uint32_t which, const char *v, size_t vlen)
@@ -1558,21 +1834,21 @@ zr_header_value(struct zp *p, uint32_t which, const char *v, size_t vlen)
 	struct zr_resolution *o = p->zp_res;
 
 	switch (which) {
-	case 0:
-		o->zs_base = zp_dup(v, vlen);
-		return (o->zs_base != NULL ? 0 : zp_errf(p, "out of memory"));
-	case 1:
-		o->zs_from = zp_dup(v, vlen);
-		return (o->zs_from != NULL ? 0 : zp_errf(p, "out of memory"));
-	case 2:
-		o->zs_onto = zp_dup(v, vlen);
-		return (o->zs_onto != NULL ? 0 : zp_errf(p, "out of memory"));
-	case 3:
+	case ZR_H_BASE:
+		return (zp_named(p, "#base", v, vlen, &o->zs_base,
+		    &o->zs_base_guid));
+	case ZR_H_FROM:
+		return (zp_named(p, "#from", v, vlen, &o->zs_from,
+		    &o->zs_from_guid));
+	case ZR_H_ONTO:
+		return (zp_named(p, "#onto", v, vlen, &o->zs_onto,
+		    &o->zs_onto_guid));
+	case ZR_H_MODE:
 		if (zp_mode(v, vlen, &o->zs_mode) != 0)
 			return (zp_errf(p, "the mode is strict or "
 			    "permissive-merge"));
 		return (0);
-	case 4:
+	case ZR_H_NAMES:
 		p->zp_aline = p->zp_lineno;
 		if (zp_uint(v, vlen, &o->zs_names_declared) != 0)
 			return (zp_errf(p, "#names wants a count"));
@@ -1587,46 +1863,86 @@ zr_header_value(struct zp *p, uint32_t which, const char *v, size_t vlen)
 
 /*
  * The version line, which is the first line of the file and nothing
- * else, then the six headers in order. Any other line beginning with a
- * hash between them is a comment and is passed over. Which document
- * this is the version line says, and the caller has already decided:
- * keys and the setter follow from it.
+ * else. A line that names the document but another version is told
+ * so in those words: there is one version, and a manifest of an
+ * older tool is not this tool's to read.
  */
 static int
-zp_header(struct zp *p, const char *version, const char *const *keys)
+zp_version(struct zp *p, const char *key, const char *noun, uint32_t want)
 {
 	const char *s = NULL;
-	size_t klen, len = 0, vlen = strlen(version);
-	uint32_t i;
+	size_t klen = strlen(key), len = 0;
+	uint32_t v = 0;
 	int rc;
 
 	rc = zp_readline(p);
 	if (rc < 0)
 		return (zp_errf(p, "out of memory"));
-	if (rc == 0)
-		return (zp_errf(p, "expected %s", version));
-	zp_trim(p, &s, &len);
-	if (len != vlen || memcmp(s, version, vlen) != 0)
-		return (zp_errf(p, "expected %s", version));
-	for (i = 0; i < ZP_NHDR; i++) {
-		klen = strlen(keys[i]);
-		for (;;) {
-			rc = zp_next(p, 0, &s, &len);
-			if (rc < 0)
-				return (-1);
-			if (rc == 0)
-				return (zp_errf(p, "expected %s", keys[i]));
-			if (len > klen && s[klen] == ' ' &&
-			    memcmp(s, keys[i], klen) == 0)
-				break;
-			if (*s != '#')
-				return (zp_errf(p, "expected %s", keys[i]));
+	if (rc != 0) {
+		zp_trim(p, &s, &len);
+		if (len > klen && s[klen] == ' ' &&
+		    memcmp(s, key, klen) == 0 &&
+		    zp_uint(s + klen + 1, len - klen - 1, &v) == 0) {
+			if (v == want)
+				return (0);
+			return (zp_errf(p, "%s version %u is not this "
+			    "tool's, which is %u", noun, v, want));
 		}
-		rc = p->zp_res != NULL ?
-		    zr_header_value(p, i, s + klen + 1, len - klen - 1) :
-		    zp_header_value(p, i, s + klen + 1, len - klen - 1);
-		if (rc != 0)
+	}
+	return (zp_errf(p, "expected %s %u", key, want));
+}
+
+/*
+ * The header after the version line: every key in the table, in that
+ * order, one line each and nothing between them. A line that is not
+ * the key expected is a refusal naming the key, so a line missing,
+ * a line too many, a line out of place and a value the shape refuses
+ * all stop the parse where the reader must go and look.
+ *
+ * The three dataset-form lines are expected if and only if #form
+ * said dataset, which it did four lines earlier; one of them in
+ * another form is told which form owns it.
+ */
+static int
+zp_header(struct zp *p, const struct zp_hline *keys, uint32_t nkeys)
+{
+	const char *s = NULL;
+	size_t klen, len = 0;
+	uint32_t i, j;
+	int rc;
+
+	for (i = 0; i < nkeys; i++) {
+		if (keys[i].zh_dsonly != 0 &&
+		    p->zp_out->zp_form != ZR_HFORM_DATASET)
+			continue;
+		rc = zp_next(p, 0, &s, &len);
+		if (rc < 0)
 			return (-1);
+		if (rc == 0)
+			return (zp_errf(p, "expected %s", keys[i].zh_key));
+		klen = strlen(keys[i].zh_key);
+		if (len > klen && s[klen] == ' ' &&
+		    memcmp(s, keys[i].zh_key, klen) == 0) {
+			rc = p->zp_res != NULL ?
+			    zr_header_value(p, i, s + klen + 1,
+			    len - klen - 1) :
+			    zp_header_value(p, i, s + klen + 1,
+			    len - klen - 1);
+			if (rc != 0)
+				return (-1);
+			continue;
+		}
+		for (j = 0; p->zp_res == NULL &&
+		    p->zp_out->zp_form != ZR_HFORM_DATASET && j < nkeys; j++) {
+			size_t m = strlen(keys[j].zh_key);
+
+			if (keys[j].zh_dsonly == 0 || len <= m ||
+			    s[m] != ' ' || memcmp(s, keys[j].zh_key, m) != 0)
+				continue;
+			return (zp_errf(p, "%s is the dataset form's line "
+			    "alone", keys[j].zh_key));
+		}
+		return (zp_errf(p, "expected %s", keys[i].zh_key));
 	}
 	return (0);
 }
@@ -2167,9 +2483,17 @@ zr_parsed_fini(struct zr_parsed *p)
 
 	if (p == NULL)
 		return;
+	free(p->zp_result);
 	free(p->zp_base);
 	free(p->zp_from);
 	free(p->zp_onto);
+	free(p->zp_presnap);
+	free(p->zp_readonly);
+	free(p->zp_canmount);
+	free(p->zp_made);
+	free(p->zp_tag);
+	free(p->zp_take);
+	free(p->zp_written);
 	for (i = 0; i < p->zp_nactions; i++) {
 		free(p->zp_actions[i].za_path);
 		free(p->zp_actions[i].za_arg);
@@ -2204,7 +2528,9 @@ zr_manifest_parse(FILE *in, struct zr_parsed *out, char *err, size_t errlen)
 	p.zp_out = out;
 	p.zp_err = err;
 	p.zp_errlen = errlen;
-	rc = zp_header(&p, "#rebase-manifest 4", zp_hdrkey);
+	rc = zp_version(&p, "#rebase-manifest", "manifest", 5);
+	if (rc == 0)
+		rc = zp_header(&p, zp_hdrkey, ZP_NHDR);
 	if (rc == 0)
 		rc = zp_tree(&p);
 	if (rc == 0)
@@ -2461,6 +2787,36 @@ zw_close(FILE *out, const struct zr_parsed *pp, const struct zw_ent *e,
 		zw_line(out, pp, &e[o->zo_next], depth);
 }
 
+/*
+ * The header of a parse, written back through the emitter's own
+ * function: parse and write cannot drift apart while the bytes have
+ * one writer.
+ */
+static void
+zw_header(FILE *out, const struct zr_parsed *pp)
+{
+	struct zr_manifest_hdr h;
+
+	memset(&h, 0, sizeof (h));
+	h.result = pp->zp_result;
+	h.form = pp->zp_form;
+	h.base = pp->zp_base;
+	h.base_guid = pp->zp_base_guid;
+	h.from = pp->zp_from;
+	h.from_guid = pp->zp_from_guid;
+	h.onto = pp->zp_onto;
+	h.onto_guid = pp->zp_onto_guid;
+	h.presnap = pp->zp_presnap;
+	h.readonly = pp->zp_readonly;
+	h.canmount = pp->zp_canmount;
+	h.made = pp->zp_made;
+	h.tag = pp->zp_tag;
+	h.take = pp->zp_take;
+	h.written = pp->zp_written;
+	h.mode = pp->zp_mode;
+	zm_header(out, &h, pp->zp_actions_declared, pp->zp_conflicts_declared);
+}
+
 int
 zr_parsed_write(FILE *out, const struct zr_parsed *pp)
 {
@@ -2477,15 +2833,7 @@ zr_parsed_write(FILE *out, const struct zr_parsed *pp)
 		free(stack);
 		return (-1);
 	}
-	(void) fputs("#rebase-manifest 4\n", out);
-	(void) fprintf(out, "#base %s\n", zm_text(pp->zp_base));
-	(void) fprintf(out, "#from %s\n", zm_text(pp->zp_from));
-	(void) fprintf(out, "#onto %s\n", zm_text(pp->zp_onto));
-	(void) fprintf(out, "#mode %s\n",
-	    pp->zp_mode == ZR_MODE_PERMISSIVE ? "permissive-merge" :
-	    "strict");
-	(void) fprintf(out, "#actions %u\n", pp->zp_actions_declared);
-	(void) fprintf(out, "#conflicts %u\n", pp->zp_conflicts_declared);
+	zw_header(out, pp);
 	for (i = 0; i < n; i++) {
 		if (e[i].ze_dup != 0)
 			continue;
@@ -2626,7 +2974,9 @@ zr_resolution_parse(FILE *in, struct zr_resolution *out, char *err,
 	p.zp_res = out;
 	p.zp_err = err;
 	p.zp_errlen = errlen;
-	rc = zp_header(&p, "#rebase-resolution 4", zr_hdrkey);
+	rc = zp_version(&p, "#rebase-resolution", "resolution", 5);
+	if (rc == 0)
+		rc = zp_header(&p, zr_hdrkey, ZR_NHDR);
 	if (rc == 0)
 		rc = zp_tree(&p);
 	if (rc == 0)
@@ -2786,10 +3136,13 @@ zr_resolution_write(FILE *out, const struct zr_resolution *r)
 		free(stack);
 		return (-1);
 	}
-	(void) fputs("#rebase-resolution 4\n", out);
-	(void) fprintf(out, "#base %s\n", zm_text(r->zs_base));
-	(void) fprintf(out, "#from %s\n", zm_text(r->zs_from));
-	(void) fprintf(out, "#onto %s\n", zm_text(r->zs_onto));
+	(void) fputs("#rebase-resolution 5\n", out);
+	(void) fprintf(out, "#base %s %llu\n", zm_dash(r->zs_base),
+	    (unsigned long long)r->zs_base_guid);
+	(void) fprintf(out, "#from %s %llu\n", zm_dash(r->zs_from),
+	    (unsigned long long)r->zs_from_guid);
+	(void) fprintf(out, "#onto %s %llu\n", zm_dash(r->zs_onto),
+	    (unsigned long long)r->zs_onto_guid);
 	(void) fprintf(out, "#mode %s\n",
 	    r->zs_mode == ZR_MODE_PERMISSIVE ? "permissive-merge" : "strict");
 	(void) fprintf(out, "#names %u\n", r->zs_nlines);
@@ -2841,6 +3194,9 @@ zr_resolution_skeleton(const struct zr_parsed *m, enum zr_choice def,
 	out->zs_base = zp_dup(zm_text(m->zp_base), strlen(zm_text(m->zp_base)));
 	out->zs_from = zp_dup(zm_text(m->zp_from), strlen(zm_text(m->zp_from)));
 	out->zs_onto = zp_dup(zm_text(m->zp_onto), strlen(zm_text(m->zp_onto)));
+	out->zs_base_guid = m->zp_base_guid;
+	out->zs_from_guid = m->zp_from_guid;
+	out->zs_onto_guid = m->zp_onto_guid;
 	out->zs_mode = m->zp_mode;
 	if (out->zs_base == NULL || out->zs_from == NULL ||
 	    out->zs_onto == NULL) {

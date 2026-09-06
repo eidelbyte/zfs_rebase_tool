@@ -1,7 +1,8 @@
 /*
  * zr_manifest_emit: the one output of a rebase run. Turns a decision
- * over three trees into the v4 manifest document, the scoped walk of
- * the result namespace and the conflict records after it.
+ * over three trees into the version 5 manifest document: the header
+ * that names the rebase, the scoped walk of the result namespace and
+ * the conflict records after it.
  *
  * zr_manifest_parse is its inverse. It reads one such document back
  * into the actions it states, every path absolute and decoded, and the
@@ -22,15 +23,66 @@
 #include "decide.h"
 
 /*
- * The header lines. The three dataset names are the snapshots the
- * engine actually read and go out verbatim, unescaped.
+ * Which form the run had. The header's #form line says it, and the
+ * three dataset-form lines -- #presnap, #readonly and #canmount --
+ * are in the header if and only if it is ZR_HFORM_DATASET.
+ */
+enum zr_hform {
+	ZR_HFORM_CLONE,
+	ZR_HFORM_DATASET,
+	ZR_HFORM_POSIX
+};
+
+#define	ZR_NHFORM	3
+
+/* The width "%Y-%m-%dT%H:%M:%SZ" and its terminator want. */
+#define	ZR_STAMP_MAX	21
+
+/*
+ * The header lines, which are the rebase's identity
+ * (v4-manifest.md, section 6). Everything above #mode is the run:
+ * what was rebased, where the result went, what the tool took for
+ * itself and must give back. Everything from #mode on is the
+ * decision, which is the same document whatever form made it, and
+ * is what the harnesses compare.
+ *
+ * The three dataset names are the snapshots the engine actually
+ * read and go out verbatim, unescaped, each with the guid of that
+ * snapshot beside it: the name is what the user called it and the
+ * guid is what it is. A run with no base carries "-" and the guid
+ * 0, the pair that says "there was no base".
+ *
+ * presnap, readonly and canmount belong to the dataset form alone
+ * and must be set there; every other string may be NULL, which goes
+ * out as the "-" that says the run had none. written is the moment
+ * of the write, formatted by zr_manifest_stamp.
  */
 struct zr_manifest_hdr {
-	const char	*base;
+	const char	*result;	/* --result as given, or "-" */
+	enum zr_hform	form;
+	const char	*base;		/* pool/fs@snap, or "-" */
+	uint64_t	base_guid;
 	const char	*from;
+	uint64_t	from_guid;
 	const char	*onto;
+	uint64_t	onto_guid;
+	const char	*presnap;	/* the pre-apply snapshot */
+	const char	*readonly;	/* "on" or "off", as it was */
+	const char	*canmount;	/* "on", "off" or "noauto" */
+	const char	*made;		/* "from", or "-" */
+	const char	*tag;		/* the hold tag, or "-" */
+	const char	*take;		/* "onto", "from" or "-" */
+	const char	*written;	/* ISO 8601 UTC, or "-" */
 	zr_mode_t	mode;
 };
+
+/*
+ * Now, as the #written line spells it: ISO 8601 UTC, strftime's
+ * "%Y-%m-%dT%H:%M:%SZ". buflen must be at least ZR_STAMP_MAX; a
+ * clock the C library will not break down leaves "-", which is what
+ * a header with no time of its own says.
+ */
+void zr_manifest_stamp(char *buf, size_t buflen);
 
 /*
  * Write the manifest of one decision over the three trees it was made
@@ -84,9 +136,21 @@ struct zr_record {
  * kept: zr_parsed_write derives them from the action paths again.
  */
 struct zr_parsed {
+	char			*zp_result;
+	enum zr_hform		zp_form;
 	char			*zp_base;
+	uint64_t		zp_base_guid;
 	char			*zp_from;
+	uint64_t		zp_from_guid;
 	char			*zp_onto;
+	uint64_t		zp_onto_guid;
+	char			*zp_presnap;	/* dataset form; else NULL */
+	char			*zp_readonly;	/* dataset form; else NULL */
+	char			*zp_canmount;	/* dataset form; else NULL */
+	char			*zp_made;
+	char			*zp_tag;
+	char			*zp_take;
+	char			*zp_written;
 	zr_mode_t		zp_mode;
 	uint32_t		zp_actions_declared;
 	uint32_t		zp_conflicts_declared;
@@ -161,12 +225,14 @@ struct zr_rline {
 };
 
 /*
- * One resolution. The three snapshots are the manifest's own, and a
- * caller holds them against its record before it believes a word of
- * the document: a resolution for another rebase describes another
- * tree. The two declared counts are what the header said, which the
- * parse has checked against the lines; the writer derives them again
- * from the lines, so the two can never drift apart.
+ * One resolution. The three snapshots are the manifest's own, name
+ * and guid alike, and a caller holds them against its record before
+ * it believes a word of the document: a resolution for another
+ * rebase describes another tree, and a name whose guid differs is
+ * another snapshot wearing that name. The two declared counts are
+ * what the header said, which the parse has checked against the
+ * lines; the writer derives them again from the lines, so the two
+ * can never drift apart.
  *
  * The lines are in document order, which is the manifest's walk
  * order for a skeleton. Directories that only scope other lines are
@@ -175,8 +241,11 @@ struct zr_rline {
  */
 struct zr_resolution {
 	char			*zs_base;
+	uint64_t		zs_base_guid;
 	char			*zs_from;
+	uint64_t		zs_from_guid;
 	char			*zs_onto;
+	uint64_t		zs_onto_guid;
 	zr_mode_t		zs_mode;
 	uint32_t		zs_names_declared;
 	uint32_t		zs_unanswered_declared;
@@ -205,11 +274,12 @@ int zr_resolution_write(FILE *out, const struct zr_resolution *r);
 void zr_resolution_fini(struct zr_resolution *r);
 
 /*
- * The skeleton of one parsed manifest: its three snapshots and its
- * mode, and one conflict line per conflict mark of the tree section,
- * in manifest order, each keeping its group number and its directory
- * flag and taking the choice def -- ZR_CH_NONE for the "-" a fresh
- * run writes, or the side a --take flag named. A manifest with no
+ * The skeleton of one parsed manifest: its three snapshots with
+ * their guids and its mode, and one conflict line per conflict mark
+ * of the tree section, in manifest order, each keeping its group
+ * number and its directory flag and taking the choice def --
+ * ZR_CH_NONE for the "-" a fresh run writes, or the side a --take
+ * flag named. A manifest with no
  * conflicts gives an empty document. Returns 0, or -1 out of memory
  * with *out safe to hand to zr_resolution_fini.
  */
