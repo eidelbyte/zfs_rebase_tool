@@ -147,9 +147,19 @@ decides where:
 .Fl -onto
 given a snapshot.
 .Fl -result
-names a new dataset, created as a read-only clone of that snapshot at the
-run's own private mountpoint, and the rebase is made in it.
-Nothing of yours is written to at all.
+names a new dataset, created as a read-only clone of that snapshot with its
+.Sy mountpoint
+property
+.Sy none ,
+and mounted at the run's own private directory, which is the only place it
+is ever mounted while the rebase is open.
+The rebase is made in it and nothing of yours is written to at all.
+At done the clone is handed to the void: unmounted, read-only, its
+.Sy mountpoint
+still
+.Sy none ,
+and the tool says how to place it, because where a rebased tree belongs is
+yours to say and not the tool's.
 .It
 .Sy The dataset form ,
 .Fl -onto
@@ -165,15 +175,49 @@ property untouched.
 A dataset somebody is using will not unmount, and then the tool says so and
 exits 2.
 Nothing is ever forced.
-Wherever the run stops \(em at conflicts, at done, at a failure, at a signal
-\(em the dataset is handed back: off the private mount, readonly as it was,
-mounted where its
+The take also puts
+.Sy readonly
+to off and
+.Sy canmount
+to
+.Sy noauto ,
+both of them while the dataset is off its mountpoint, and the manifest's
+header remembers what each of them was.
+The private mount is root's alone and writable for its whole life.
+The dataset then stays there for the whole of the rebase, the
+.Sy conflicts
+gate included, and is handed home exactly twice: at done and at
+.Fl -abort ,
+off the private mount with both properties put back and mounted where its
 .Sy mountpoint
-property says.
-The private mount is root's alone and writable for its whole life: a dataset
-that was read-only is made writable once, while it is off its mountpoint, and
-the record remembers what it was for the hand-back.
+property says, which is untouched throughout.
+A rebase waiting for its conflicts to be answered is a half rebased tree,
+and a half rebased tree is not put back into service.
+A caught signal at a gate leaves it privately mounted, as a hard kill does,
+and the next verb takes it from there.
+A dataset whose
+.Sy canmount
+is
+.Sy off
+has no home to be handed back to and is refused at precondition with
+exit 2.
 .El
+.Pp
+A reboot in the middle of a rebase leaves the result unmounted in either
+form: nothing at boot mounts a dataset whose
+.Sy mountpoint
+is
+.Sy none ,
+and nothing mounts one whose
+.Sy canmount
+is
+.Sy noauto .
+So a half rebased tree is never in service after a reboot either, and the
+next
+.Fl -continue
+or
+.Fl -abort
+mounts it privately again from there.
 .Pp
 A side given as a dataset rather than a snapshot is snapshotted by the tool
 under a generated name, recorded as tool-made, and destroyed when the
@@ -445,7 +489,16 @@ put
 .Sy readonly
 or
 .Sy canmount
-back.
+back, for which it prints the two
+.Ic zfs set
+commands.
+The one thing it can still read is the
+.Sy mountpoint
+property, which the two forms never share: a path is a dataset of yours and
+is mounted at it, and
+.Sy none
+is a clone of the tool's and is left unmounted for you to destroy or to
+place.
 It prints the command for each form and leaves the choice to you.
 .It Fl V , Fl -verify
 Alone on a result, report and write nothing at all, so that a deliberate
@@ -698,7 +751,12 @@ Each run keeps its own directory, 0700 throughout, named for the dataset
 carrying the record with its slashes kept as directories:
 .Bl -tag -width "/var/db/zfs_rebase/<result>/resolution" -compact
 .It Pa /var/db/zfs_rebase/<result>/mnt
-where the result is mounted while the run has it
+the private mount: where the result lives for the whole of the rebase, in
+both forms, put there with
+.Fn zfs_mount_at
+and never through the
+.Sy mountpoint
+property
 .It Pa /var/db/zfs_rebase/<result>/manifest
 the manifest, unless
 .Fl o
@@ -743,10 +801,15 @@ zfs_rebase -v --from tank/topic@work --onto tank/main@current \e
     --result tank/rebased
 .Ed
 .Pp
-The result is a read-only clone at
-.Pa /var/db/zfs_rebase/tank/rebased/mnt .
-The tool never promotes it: adopting it is yours to do by hand, when you
-have looked at it and are satisfied.
+While the rebase is open the result is a read-only clone at
+.Pa /var/db/zfs_rebase/tank/rebased/mnt ,
+and at done it is unmounted with its
+.Sy mountpoint
+property still
+.Sy none ,
+which the tool's last line says.
+It never promotes it either: placing and adopting it are yours to do by
+hand, when you have looked at it and are satisfied.
 .Bd -literal -offset indent
 zfs promote tank/rebased
 zfs rename tank/main tank/main.old
@@ -802,9 +865,10 @@ after it passes the gate.
 .Xr zfs-rollback 8
 .Sh CAVEATS
 The tool never promotes.
-The clone form's result is a read-only clone at a mountpoint of the run's
-own choosing, and promoting, renaming or inheriting it is the user's work,
-deliberately.
+The clone form's result is a read-only clone with no mountpoint of its own,
+mounted at a directory of the run's choosing while the rebase is open and
+unmounted at done, and placing, promoting, renaming or inheriting it is the
+user's work, deliberately.
 .Pp
 Conflict resolution is not part of this tool.
 A run with conflicts applies its clean actions, writes the resolution as a

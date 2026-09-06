@@ -4,10 +4,11 @@
 # behind for inspection).
 #
 # run-fixture.sh proves what three trees and a manifest can say.
-# Three things they cannot say are here: a nested mount inside an
-# input, the securelevel refusal, and a snapshot destroyed under a
-# running rebase. This script closes the first, prints the second as
-# a procedure to run by hand, and says why the third has to wait.
+# Four things they cannot say are here: a nested mount inside an
+# input, a dataset form onto whose canmount is off, the securelevel
+# refusal, and a snapshot destroyed under a running rebase. This
+# script closes the first two, prints the third as a procedure to run
+# by hand, and says why the fourth has to wait.
 #
 # 1. A nested mount. The walk refuses any entry whose st_dev is not
 #    the walk root's (src/walk.c, zw_entry: "nested mount at PATH"),
@@ -29,6 +30,18 @@
 #    lands. A rebase of a dataset with children under it therefore
 #    passes over their contents, and the child's mountpoint arrives
 #    in the result as the empty directory it is in the snapshot.
+#
+# 1c. canmount=off in the dataset form. A rebase in place ends by
+#    mounting the dataset where it belongs, at done and at --abort,
+#    and a dataset whose canmount is off has no such place: it is
+#    refused at precondition with exit 2, before its pre-apply
+#    snapshot is taken and before anything at all is written
+#    (sprints/sprint-5/documents-design.md, section 5). The property
+#    is read before the mounted question, which such a dataset fails
+#    too, so that the refusal names the property and not the symptom.
+#    No fixture builds a dataset like that, so the check makes one:
+#    zfs create -o canmount=off, which leaves it unmounted, and runs
+#    the tool over it in the dataset form.
 #
 # 2. securelevel. Above securelevel 0 the system immutable and
 #    append-only flags cannot be cleared, so src/run.c's
@@ -193,6 +206,37 @@ echo "ok   exit $st: the child's mountpoint is in the snapshot as the"
 echo "     empty directory it is, its contents are not, and the walk"
 echo "     saw one filesystem"
 
+say "1c. the dataset form refuses canmount=off"
+# A dataset with no home to be handed back to. It is created
+# unmounted, which is what canmount=off means, and the tool must say
+# so about the property rather than about the mount.
+zfs create -o canmount=off "$POOL/nohome" || \
+    fail "cannot create $POOL/nohome"
+[ "$(zfs get -H -o value canmount "$POOL/nohome")" = off ] || \
+    fail "$POOL/nohome is not canmount=off"
+"$bin" --from "$POOL/from@work" --onto "$POOL/nohome" --result pre \
+    > "$tmp/nohome.out" 2> "$tmp/nohome.err"
+st=$?
+[ $st -eq 2 ] || \
+    { cat "$tmp/nohome.err"; fail "canmount=off exited $st, want 2"; }
+grep -q "canmount=off and no place to be handed back to" \
+    "$tmp/nohome.err" || \
+    { cat "$tmp/nohome.err"; fail "the refusal did not name canmount"; }
+# And it was refused before it took anything: no snapshot of onto, no
+# snapshot of from, no record and no run directory.
+n=$(zfs list -H -o name -t snapshot -r "$POOL/nohome" | grep -c .)
+[ "$n" -eq 0 ] || fail "the refused run left a snapshot on $POOL/nohome"
+n=$(zfs list -H -o name -t snapshot -r "$POOL/from" | grep -c .)
+[ "$n" -eq 1 ] || fail "the refused run left a snapshot on $POOL/from"
+left=$(zfs get -H -o property,source all "$POOL/nohome" 2>/dev/null | \
+    awk '$1 ~ /^zfs_rebase:/ && $2 == "local" { print $1 }')
+[ -z "$left" ] || fail "the refused run left $left on $POOL/nohome"
+[ -e "/var/db/zfs_rebase/$POOL/nohome" ] && \
+    fail "the refused run left a run directory"
+zfs destroy "$POOL/nohome" || fail "cannot destroy $POOL/nohome"
+echo "ok   canmount=off refused (exit 2), naming the property, with"
+echo "     no snapshot, no record and no run directory left"
+
 say "2. securelevel: the manual procedure, not run here"
 cat <<'PROCEDURE'
 securelevel can be raised and not lowered, and an schg file made
@@ -236,6 +280,6 @@ echo "has not built. run-fixture.sh checks the holds at rest: none"
 echo "after done, one per input under the record's tag at conflicts."
 
 echo
-echo "run-precond: the nested-mount refusal passed; securelevel and"
-echo "the destroy-under-a-hold are documented, not run"
+echo "run-precond: the nested-mount and canmount=off refusals passed;"
+echo "securelevel and the destroy-under-a-hold are documented, not run"
 exit 0

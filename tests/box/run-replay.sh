@@ -102,6 +102,14 @@ pruned=0
 
 say() { printf '\n== %s\n' "$*"; prog_note "$*"; }
 fail() { echo "FAIL: $*"; exit 1; }
+RUNDIR=/var/db/zfs_rebase/$POOL/result
+# Every zfs_rebase: property that is this dataset's own. A rebase
+# that reached done has none of them, which is what says it got
+# there: there is no done phase.
+localprops() {
+	zfs get -H -o property,source all "$1" 2>/dev/null | \
+	    awk '$1 ~ /^zfs_rebase:/ && $2 == "local" { print $1 }'
+}
 
 teardown() {
 	# A failed step can leave the result clone, its persistent holds
@@ -227,13 +235,39 @@ one() {
 		echo "ok   the pruning fired: $want pools never read"
 	fi
 
-	say "3. abort"
-	"$bin" --abort --result "$POOL/result" || fail "abort exited $?"
+	say "3. the end of the rebase"
+	# A clean fixture reached done inside the run itself, and done
+	# took the record off: --abort has nothing to find and says so.
+	# What done left is the clone -- unmounted, read-only, its
+	# mountpoint property none, which is the void the tool hands it
+	# to -- and, until done-cleanup lands, the run directory; both
+	# are the harness's to take away. A conflicted fixture is still
+	# open and --abort settles it.
+	if [ -n "$(localprops "$POOL/result")" ]; then
+		"$bin" --abort --result "$POOL/result" || fail "abort exited $?"
+		echo "ok   aborted, holds released"
+	else
+		"$bin" --abort --result "$POOL/result" > "$tmp/settled" 2>&1
+		st=$?
+		[ $st -eq 2 ] || \
+		    { cat "$tmp/settled"; fail "--abort on a settled result exited $st, want 2"; }
+		mp=$(zfs get -H -o value mountpoint "$POOL/result")
+		[ "$mp" = none ] || \
+		    fail "the settled clone's mountpoint is $mp, want none"
+		[ "$(zfs get -H -o value mounted "$POOL/result")" = no ] || \
+		    fail "the settled clone is still mounted"
+		zfs destroy "$POOL/result" || \
+		    fail "cannot destroy the settled result"
+		rmdir "$RUNDIR/mnt" "$RUNDIR" || \
+		    fail "cannot remove the run directory of a settled rebase"
+		rmdir "/var/db/zfs_rebase/$POOL" 2>/dev/null
+		echo "ok   done: the record off, the holds released, the clone"
+		echo "     unmounted and the harness's to take away"
+	fi
 	for s in "$POOL/base@base" "$POOL/from@work" "$POOL/onto@work"; do
 		held=$(zfs holds -H "$s") || fail "zfs holds $s"
-		[ -z "$held" ] || fail "$s is still held after the abort"
+		[ -z "$held" ] || fail "$s is still held at the end"
 	done
-	echo "ok   aborted, holds released"
 
 	fixtures=$((fixtures + 1))
 	pruned=$((pruned + want))

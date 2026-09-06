@@ -54,7 +54,12 @@
 #      the tag the record carries, since a stopped rebase holds on
 #      purpose;
 #   3. the result and its record: exactly $POOL/result, read-only,
-#      mounted at /var/db/zfs_rebase/$POOL/result/mnt; the record
+#      its mountpoint property none and the clone itself mounted at
+#      /var/db/zfs_rebase/$POOL/result/mnt while the rebase is open,
+#      or unmounted with that property still none once the rebase
+#      has reached done, which is the void the tool hands it to and
+#      the placement line on stderr says how to leave (the harness
+#      places it with zfs set mountpoint to read its tree); the record
 #      itself, which is zfs_rebase:manifest and zfs_rebase:tag and
 #      (at a gate) zfs_rebase:phase and nothing else, every one of
 #      them a local value that beats the bogus one on the parent,
@@ -107,9 +112,9 @@
 #      /var/db/zfs_rebase, and a second --abort exit 2 because there
 #      is no such run. Where it reached done there is nothing to
 #      abort -- the record is off, so --abort exits 2 and touches
-#      nothing -- and the result is the user's: the harness destroys
-#      it and removes the run directory itself, which is what
-#      done-cleanup will do at done;
+#      nothing -- and the result is the user's, unmounted and
+#      unplaced: the harness destroys it and removes the run
+#      directory itself, which is what done-cleanup will do at done;
 #   5. a second real run given --verify -- every clean fixture, and
 #      probe.zrt as the conflicted one: its tag is a new one, and on
 #      a clean fixture the final check runs at the done gate (its
@@ -123,26 +128,36 @@
 #      the unmount fail, the run exits 2 saying onto is in use, and
 #      it takes back everything it had made -- its record, the
 #      pre-apply snapshot, the snapshot it took of from, and its run
-#      directory -- leaving onto mounted where it was;
+#      directory -- leaving onto mounted where it was with canmount
+#      untouched, since the unmount is the first thing the take does
+#      and nothing after it ran. (The other refusal of the take,
+#      a dataset whose canmount is off, is run-precond.sh's: it needs
+#      a dataset built for it and no fixture of ours has one.)
 #  D1. the run itself: the manifest is the clone form's manifest
 #      exactly and derives the same base; the record on $POOL/onto is
 #      the manifest's path and the tag, local against the bogus ones
 #      on the pool root, and its header says form dataset, made from,
 #      the readonly it found, the pre-apply snapshot as #presnap and
 #      #onto and the tool's own snapshot of from as #from; the
-#      dataset is mounted at its own mountpoint again with readonly
-#      as it was and the mountpoint property untouched; the pre-apply
+#      dataset is where the rebase has it -- at the private mount
+#      with canmount noauto and readonly off while the rebase is
+#      open, the conflicts gate included, and home at its own
+#      mountpoint with the readonly and the canmount the fixture
+#      built once the rebase has reached done -- with the mountpoint
+#      property untouched throughout; the pre-apply
 #      snapshot is there; and then per branch -- a clean fixture at
 #      done with no record left, every hold released, the tool's own
 #      snapshot destroyed and the live tree the rebased tree, a
 #      conflicted one at phase conflicts with the clean actions
 #      applied, the three holds under the record's tag and the same
 #      conflicts declared by a second rebase. --verify and --continue
-#      then behave as they do in the clone form and hand the dataset
-#      back each time, an open rebase is refused (there is no flag
-#      that would overrule it any more), and --abort rolls onto back
-#      to what it was, destroys both snapshots, takes every
-#      zfs_rebase: property off it and leaves it mounted at home
+#      then behave as they do in the clone form and leave the dataset
+#      at the private mount each time, since home is reached at done
+#      and at --abort and nowhere else, an open rebase is refused
+#      (there is no flag that would overrule it any more), and
+#      --abort rolls onto back to what it was, destroys both
+#      snapshots, takes every zfs_rebase: property off it and leaves
+#      it mounted at home with canmount and readonly as they were,
 #      holding the tree the fixture built;
 #  D2. for a clean fixture, a settled dataset: the rebase that
 #      reached done took its record off, so a second run over that
@@ -226,6 +241,41 @@ localprops() {
 hdr() { sed -n "s/^#$1 //p" "$2"; }
 # Is that snapshot there at all?
 hassnap() { zfs list -H -o name -t snapshot "$1" > /dev/null 2>&1; }
+# Where the clone's tree is to be read just now, with the assertion
+# that it is there. While the rebase is open the clone is at the run's
+# private mount and its mountpoint property is none, which it is from
+# the create on and stays; done unmounts it and leaves the property
+# none, which is the void the tool hands it to, and placing it is the
+# user's work -- the tool's last line says how. The harness does
+# exactly what that line says and reads the tree where it lands.
+clone_open() {
+	mp=$(zfs get -H -o value mountpoint "$POOL/result")
+	[ "$mp" = none ] || fail "the clone's mountpoint is $mp, want none"
+	mount | grep -q " on $RUNDIR/mnt " || \
+	    fail "the clone is not at the private mount $RUNDIR/mnt"
+	cmnt=$RUNDIR/mnt
+}
+clone_placed() {
+	mp=$(zfs get -H -o value mountpoint "$POOL/result")
+	[ "$mp" = none ] || \
+	    fail "a settled clone's mountpoint is $mp, want none"
+	[ "$(zfs get -H -o value mounted "$POOL/result")" = no ] || \
+	    fail "a settled clone is still mounted"
+	[ "$(zfs get -H -o value readonly "$POOL/result")" = on ] || \
+	    fail "a settled clone is not read-only"
+	zfs set mountpoint="$MNT/result" "$POOL/result" || \
+	    fail "cannot place the settled clone"
+	mount | grep -q " on $MNT/result " || \
+	    fail "placing the clone did not mount it at $MNT/result"
+	cmnt=$MNT/result
+}
+# And the line the tool prints at done, which is the whole of what it
+# says about a clone it has finished with.
+placement_line() {		# LOGFILE
+	grep -q "$POOL/result is the rebased tree, unmounted; place it with zfs inherit mountpoint $POOL/result or zfs set mountpoint=PATH $POOL/result" "$1" || \
+	    { cat "$1"; fail "done did not say how to place the clone"; }
+}
+
 # A rebase that reached done left no record, so --abort has nothing to
 # find and says so; what is left is the result itself and, until
 # done-cleanup lands, the run directory. The harness takes both away.
@@ -237,6 +287,7 @@ settled_clone() {
 	[ "$(zfs list -H -o name "$POOL/result" 2>/dev/null)" = "$POOL/result" ] || \
 	    fail "the refused --abort took $POOL/result away"
 	zfs destroy "$POOL/result" || fail "cannot destroy the settled result"
+	rmdir "$MNT/result" 2>/dev/null
 	rmdir "$RUNDIR/mnt" "$RUNDIR" || \
 	    fail "cannot remove the run directory of a settled rebase"
 	rmdir "/var/db/zfs_rebase/$POOL" 2>/dev/null
@@ -396,8 +447,9 @@ esac
 
 say "2. real run"
 "$bin" $flag -v -o "$tmp/got" --off-of "$POOL/from@work" \
-    --onto "$POOL/onto@work" --result "$POOL/result"
+    --onto "$POOL/onto@work" --result "$POOL/result" > "$tmp/run2" 2>&1
 st=$?
+cat "$tmp/run2"
 sed -n '/^#mode/,$p' "$tmp/got" > "$tmp/got.body"
 cmp -s "$tmp/expect.body" "$tmp/got.body" || { diff "$tmp/expect.body" "$tmp/got.body" | head -20; fail "real-run manifest differs"; }
 grep -q "^#base $POOL/base@base [0-9][0-9]*\$" "$tmp/got" || { head -5 "$tmp/got"; fail "the real run did not derive $POOL/base@base"; }
@@ -443,8 +495,20 @@ say "3. the result and its record"
 [ "$(zfs list -H -o name "$POOL/result" 2>/dev/null)" = "$POOL/result" ] \
     || fail "no result dataset $POOL/result"
 [ "$(zfs get -H -o value readonly "$POOL/result")" = on ] || fail "the result is not read-only"
-cmnt=$(zfs get -H -o value mountpoint "$POOL/result")
-[ "$cmnt" = "$RUNDIR/mnt" ] || fail "the result is at $cmnt, want $RUNDIR/mnt"
+# The clone's mountpoint property is none from the create on and
+# stays none: while the rebase is open the clone is at the run's own
+# place, mounted there with zfs_mount_at, and at done it is unmounted
+# and handed to the user to place.
+if [ $clean -eq 1 ]; then
+	placement_line "$tmp/run2"
+	clone_placed
+	echo "ok   done handed the clone to the void: unmounted, readonly"
+	echo "     on, mountpoint none; the harness placed it at $cmnt"
+else
+	clone_open
+	echo "ok   the clone is at the private mount $cmnt with mountpoint"
+	echo "     none, which it never leaves while the rebase is open"
+fi
 
 # The record is four properties at most, and here it is two or three:
 # the manifest and the tag from birth, the phase once a gate has been
@@ -691,6 +755,9 @@ case "$fixture" in
 	    fail "--restart changed the tag"
 	[ "$(zfs get -H -o value readonly "$POOL/result")" = on ] || \
 	    fail "--restart left the result writable"
+	# The clone was destroyed and made again, so it is at the
+	# private mount again, with the mountpoint property none.
+	clone_open
 	if [ $clean -eq 0 ]; then
 		for s in "$POOL/base@base" "$POOL/from@work" \
 		    "$POOL/onto@work"; do
@@ -729,6 +796,10 @@ case "$fixture" in
 	[ -z "$left" ] || \
 	    fail "the answered rebase reached done and left $left"
 	settled=1
+	# done by a --continue hands the clone to the void exactly as
+	# done by the run itself does, and says the same line.
+	placement_line "$tmp/cont3"
+	clone_placed
 	for s in "$POOL/base@base" "$POOL/from@work" "$POOL/onto@work"; do
 		held=$(zfs holds -H "$s") || fail "zfs holds $s"
 		[ -z "$held" ] || fail "$s is still held after done: $held"
@@ -819,8 +890,10 @@ if [ $do5 -eq 1 ]; then
 			[ -z "$held" ] || \
 			    fail "$s is held after a --verify run reached done"
 		done
+		placement_line "$tmp/verify5"
 		echo "ok   --verify: the check at the done gate, then the"
-		echo "     holds and then the record, and nothing recorded"
+		echo "     holds and then the record, the clone unmounted"
+		echo "     with its placement line, and nothing recorded"
 		settled_clone
 	else
 		# It stopped at conflicts, so the rebase is open and
@@ -875,6 +948,15 @@ case "$fixture" in
 	    fail "--abort destroyed a result whose form it could not know"
 	grep -q 'cannot tell the clone form from the dataset form' "$tmp/l2" || \
 	    { cat "$tmp/l2"; fail "--abort did not say what it could not do"; }
+	# The mountpoint property is the one thing left that tells the
+	# two forms apart: none is a clone of the tool's, and a clone
+	# has no home to be put at, so it is left unmounted.
+	[ "$(zfs get -H -o value mountpoint "$POOL/result")" = none ] || \
+	    fail "--abort changed the clone's mountpoint property"
+	[ "$(zfs get -H -o value mounted "$POOL/result")" = no ] || \
+	    fail "--abort left the clone mounted"
+	grep -q "no mountpoint of its own and is left unmounted" "$tmp/l2" || \
+	    { cat "$tmp/l2"; fail "--abort did not say the clone is unplaced"; }
 	grep -q "zfs destroy $POOL/result" "$tmp/l2" || \
 	    { cat "$tmp/l2"; fail "--abort did not print the clone form's command"; }
 	grep -q "zfs rollback $POOL/result@PRE" "$tmp/l2" || \
@@ -1011,17 +1093,48 @@ dataset_pass() {
 	[ "$(sed -n 's/^#unanswered //p' "$DRES")" = "$want_names" ] || \
 	    { head -8 "$DRES"; dfail "the skeleton is not wholly unanswered"; }
 
-	dsay "the dataset is back in service"
+	dsay "where the dataset is"
+	# The mountpoint property is untouched from first to last: the
+	# private mount is made with zfs_mount_at, which takes the path
+	# as an argument, so what the property says is where the
+	# dataset goes home to.
 	[ "$(zfs get -H -o value mountpoint "$POOL/onto")" = "$MNT/onto" ] || \
 	    dfail "the mountpoint property was changed"
-	[ "$(zfs get -H -o value mounted "$POOL/onto")" = yes ] || \
-	    dfail "onto is not mounted after the run"
-	mount | grep -q " on $MNT/onto " || \
-	    dfail "onto is not mounted at $MNT/onto"
-	[ "$(zfs get -H -o value readonly "$POOL/onto")" = off ] || \
-	    dfail "readonly was not put back to off"
+	if [ $dsettled -eq 1 ]; then
+		# done is one of the two moments a rebase puts the
+		# dataset home, and it puts both properties back to
+		# what the fixture built them as.
+		[ "$(zfs get -H -o value mounted "$POOL/onto")" = yes ] || \
+		    dfail "onto is not mounted after a run that reached done"
+		mount | grep -q " on $MNT/onto " || \
+		    dfail "onto is not mounted at $MNT/onto after done"
+		[ "$(zfs get -H -o value readonly "$POOL/onto")" = off ] || \
+		    dfail "readonly was not put back to off"
+		[ "$(zfs get -H -o value canmount "$POOL/onto")" = on ] || \
+		    dfail "canmount was not put back to on"
+		cmnt=$MNT/onto
+		echo "ok   done: home at $MNT/onto, readonly off, canmount on,"
+		echo "     the mountpoint property untouched"
+	else
+		# And an open rebase holds it at the private mount, the
+		# conflicts gate included: a half rebased tree is not
+		# handed back into service while it waits to be
+		# answered. canmount noauto is what keeps a reboot from
+		# mounting it there either.
+		mount | grep -q " on $DRUN/mnt " || \
+		    dfail "onto is not at the private mount $DRUN/mnt"
+		if mount | grep -q " on $MNT/onto "; then
+			dfail "onto is at home while its rebase is open"
+		fi
+		[ "$(zfs get -H -o value canmount "$POOL/onto")" = noauto ] || \
+		    dfail "canmount is not noauto while the run has the dataset"
+		[ "$(zfs get -H -o value readonly "$POOL/onto")" = off ] || \
+		    dfail "the private mount is not writable"
+		cmnt=$DRUN/mnt
+		echo "ok   at conflicts: held at $DRUN/mnt, canmount noauto,"
+		echo "     readonly off, the mountpoint property untouched"
+	fi
 	[ -d "$DRUN/mnt" ] || dfail "no run directory at $DRUN"
-	echo "ok   handed back: at $MNT/onto, readonly off, mountpoint kept"
 
 	dphase=$(recval zfs_rebase:phase "$POOL/onto")
 	if [ $clean -eq 1 ]; then
@@ -1077,8 +1190,8 @@ dataset_pass() {
 		    { cat "$tmp/d-verify"; dfail "--verify found drift"; }
 		grep -q 'pending 0' "$tmp/d-verify" || \
 		    { cat "$tmp/d-verify"; dfail "--verify found pending actions"; }
-		mount | grep -q " on $MNT/onto " || \
-		    dfail "--verify did not hand the dataset back"
+		mount | grep -q " on $DRUN/mnt " || \
+		    dfail "--verify did not leave the dataset at the private mount"
 		[ "$(recval zfs_rebase:phase "$POOL/onto")" = "$dphase" ] || \
 		    dfail "--verify moved the phase"
 		"$bin" --continue --result "$POOL/onto" > "$tmp/d-cont" 2>&1
@@ -1091,10 +1204,12 @@ dataset_pass() {
 		    { cat "$tmp/d-cont"; dfail "--continue did not count the unanswered"; }
 		[ "$(recval zfs_rebase:phase "$POOL/onto")" = "$dphase" ] || \
 		    dfail "--continue moved the phase"
-		mount | grep -q " on $MNT/onto " || \
-		    dfail "--continue did not hand the dataset back"
+		mount | grep -q " on $DRUN/mnt " || \
+		    dfail "--continue did not leave the dataset at the private mount"
+		[ "$(zfs get -H -o value canmount "$POOL/onto")" = noauto ] || \
+		    dfail "a verb changed canmount while the rebase is open"
 		echo "ok   --verify and --continue: exit 0 and $dst, the phase"
-		echo "     unmoved, the dataset handed back each time"
+		echo "     unmoved, the dataset still at $DRUN/mnt each time"
 
 		# An open rebase is not rebased over, and there is no
 		# flag left that would overrule it: a dataset carrying
@@ -1147,6 +1262,8 @@ dataset_pass() {
 	    dfail "onto is not at $MNT/onto at the end of the pass"
 	[ "$(zfs get -H -o value readonly "$POOL/onto")" = off ] || \
 	    dfail "the end of the pass left readonly on"
+	[ "$(zfs get -H -o value canmount "$POOL/onto")" = on ] || \
+	    dfail "the end of the pass left canmount noauto"
 	onto_is_the_fixture "$tmp/d-after"
 	for s in "$POOL/base@base" "$POOL/from@work" "$POOL/onto@work"; do
 		held=$(zfs holds -H "$s") || dfail "zfs holds $s"
@@ -1217,8 +1334,15 @@ case "$fixture" in
 	[ -e "$DRUN" ] && fail "the refused run left a run directory"
 	mount | grep -q " on $MNT/onto " || \
 	    fail "the refused run left onto unmounted"
+	# The unmount is the first thing the take does and it failed,
+	# so neither property was ever written.
+	[ "$(zfs get -H -o value canmount "$POOL/onto")" = on ] || \
+	    fail "the refused run left canmount noauto on $POOL/onto"
+	[ "$(zfs get -H -o value readonly "$POOL/onto")" = off ] || \
+	    fail "the refused run left readonly on on $POOL/onto"
 	echo "ok   a file open under onto: exit 2, and the run took"
-	echo "     back its snapshot, its record and its directory"
+	echo "     back its snapshot, its record and its directory,"
+	echo "     with canmount and readonly untouched"
 	;;
 esac
 

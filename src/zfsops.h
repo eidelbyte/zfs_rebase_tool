@@ -106,14 +106,36 @@ int zr_zfs_release(struct zr_zfs *z, const char *snapshot, const char *tag,
     char *err, size_t errlen);
 
 /*
- * Clone snapshot as clone with readonly=on, the given mountpoint and
- * the record, then mount it there. The record is set by the create
- * itself, so it exists from the clone's first instant and no kill
- * can leave a result dataset the tool cannot recognize.
+ * The mountpoint every dataset this tool creates is created with, and
+ * the one it never changes: the result clone's mountpoint property is
+ * none for the clone's whole life under the rebase, and the run mounts
+ * it at its private directory with zr_zfs_mount_at instead
+ * (sprints/sprint-5/documents-design.md, section 5). It is spelled out
+ * here because run.c has no ZFS header in its include path and has to
+ * recognize the word when --abort meets a result whose manifest is
+ * gone.
+ */
+#define	ZR_MOUNTPOINT_NONE	"none"
+
+/*
+ * And the canmount the dataset form writes at the take, for the same
+ * reason: nothing mounts a noauto dataset by itself, so a reboot in
+ * the middle of a rebase leaves the half rebased tree unmounted until
+ * --continue or --abort settles it. What it was is the header's
+ * #canmount, and the hand-back puts that back.
+ */
+#define	ZR_CANMOUNT_NOAUTO	"noauto"
+
+/*
+ * Clone snapshot as clone with readonly=on, mountpoint=none and the
+ * record. The record is set by the create itself, so it exists from
+ * the clone's first instant and no kill can leave a result dataset the
+ * tool cannot recognize; nothing is mounted here, because a dataset
+ * whose mountpoint is none mounts nowhere by itself and the caller
+ * puts it at the run's own place with zr_zfs_mount_at.
  */
 int zr_zfs_clone(struct zr_zfs *z, const char *snapshot, const char *clone,
-    const char *mountpoint, const struct zr_rebase_record *rec, char *err,
-    size_t errlen);
+    const struct zr_rebase_record *rec, char *err, size_t errlen);
 
 /*
  * Write the record on a dataset that already exists, which is what
@@ -255,6 +277,22 @@ int zr_zfs_mounted_at(struct zr_zfs *z, const char *dataset, char *buf,
 int zr_zfs_set_readonly(struct zr_zfs *z, const char *dataset, int on,
     char *err, size_t errlen);
 
+/*
+ * Set canmount to one of "on", "off" and "noauto", through the same
+ * zfs_prop_set the readonly flip goes through. The dataset form sets
+ * it to noauto at the take and back to what the header says at the
+ * hand-back, so that a reboot in the middle of a rebase leaves a half
+ * rebased tree unmounted rather than in service.
+ *
+ * A canmount change makes no changelist at all unless the new value is
+ * off on a mounted dataset (zfs_prop_set_list_flags, lib/libzfs/
+ * libzfs_dataset.c), so nothing here mounts or unmounts anything;
+ * the box probe of 2026-09-06 shows the same from the outside
+ * (sprints/sprint-5/probe-mount.txt, 3c to 3g and 4c to 4f).
+ */
+int zr_zfs_set_canmount(struct zr_zfs *z, const char *dataset,
+    const char *value, char *err, size_t errlen);
+
 /* Unmount dataset if it is mounted, then destroy it. */
 int zr_zfs_destroy(struct zr_zfs *z, const char *dataset, char *err,
     size_t errlen);
@@ -268,12 +306,14 @@ int zr_zfs_exists(struct zr_zfs *z, const char *dataset, char *err,
 
 /*
  * One property of dataset as the string zfs(8) would print. What is
- * really a string is what this is for, and after sprint 5 that is
- * two properties: origin and mountpoint, which are names. A property
- * that has no value and no default reads as "-", as zfs(8) prints
- * it; origin on a dataset that is not a clone is the one this tool
- * asks for. Everything else the tool reads is a number and goes
- * through zr_zfs_get_int, so that no verdict rests on a word.
+ * really a string is what this is for -- origin and mountpoint, which
+ * are names -- and beside them the two words the dataset form has to
+ * write into the manifest's header and read back out of it, readonly
+ * and canmount: the header is text by contract, and what goes into it
+ * is the word zfs(8) prints. A property that has no value and no
+ * default reads as "-", as zfs(8) prints it; origin on a dataset that
+ * is not a clone is the one this tool asks for. Everything a verdict
+ * rests on is a number and goes through zr_zfs_get_int instead.
  */
 int zr_zfs_get(struct zr_zfs *z, const char *dataset, const char *prop,
     char *buf, size_t buflen, char *err, size_t errlen);

@@ -183,6 +183,55 @@ hdr() { sed -n "s/^#$1 //p" "$2"; }
 at_done() {
 	[ -z "$(localprops "$1")" ] || \
 	    fail "the rebase reached done and left $(localprops "$1")"
+	sethere
+}
+# A clone whose rebase reached done is unmounted with its mountpoint
+# property still none, which is the void the tool hands it to;
+# placing it is the user's work, and the tool's last line says how.
+place_clone() {
+	mp=$(recval mountpoint "$POOL/result")
+	[ "$mp" = none ] || fail "a settled clone's mountpoint is $mp, want none"
+	if ! mounted_at "$MNT/result"; then
+		[ "$(recval mounted "$POOL/result")" = no ] || \
+		    fail "a settled clone is mounted somewhere else"
+		zfs set mountpoint="$MNT/result" "$POOL/result" || \
+		    fail "cannot place the settled clone"
+		mounted_at "$MNT/result" || \
+		    fail "placing the clone did not mount it at $MNT/result"
+	fi
+	return 0
+}
+# Where the result's tree is to be read or edited just now, with the
+# assertion that it is there, and where its own snapshots are read
+# through in the dataset form. An open rebase holds the result at the
+# run's private mount in both forms, the conflicts gate included: a
+# half rebased tree is not handed back into service while its
+# conflicts wait to be answered (documents-design.md, section 5).
+# done puts the dataset home and leaves the clone in the void.
+sethere() {
+	if [ -n "$(localprops "$rds")" ]; then
+		hmnt=$rundir/mnt
+		mounted_at "$hmnt" || \
+		    fail "an open rebase does not hold $rds at $hmnt"
+		[ "$form" = clone ] || \
+		    [ "$(recval canmount "$POOL/onto")" = noauto ] || \
+		    fail "canmount is not noauto while the rebase is open"
+	elif [ "$form" = dataset ]; then
+		hmnt=$MNT/onto
+		mounted_at "$hmnt" || fail "done left onto away from home"
+		[ "$(recval canmount "$POOL/onto")" = on ] || \
+		    fail "done did not put canmount back to on"
+	else
+		place_clone
+		hmnt=$MNT/result
+	fi
+	# In the dataset form the recorded onto is a snapshot of the
+	# result itself, so it is read through .zfs under wherever the
+	# result is mounted just now and never through the mountpoint
+	# property. In the clone form onto is another dataset, at home
+	# throughout.
+	[ "$form" = clone ] || ontodir=$hmnt/.zfs/snapshot/pre
+	return 0
 }
 localprops() {
 	zfs get -H -o property,source all "$1" 2>/dev/null | \
@@ -466,6 +515,7 @@ end_case() {
 		if [ "$form" = clone ]; then
 			zfs destroy "$POOL/result" || \
 			    fail "cannot destroy the settled result"
+			rmdir "$MNT/result" 2>/dev/null
 		else
 			zfs rollback -r "$POOL/onto@pre" || \
 			    fail "cannot roll onto back to @pre"
@@ -487,6 +537,8 @@ end_case() {
 	mounted_at "$MNT/onto" || fail "--abort left onto unmounted"
 	[ "$(recval readonly "$POOL/onto")" = off ] || \
 	    fail "--abort left onto read-only"
+	[ "$(recval canmount "$POOL/onto")" = on ] || \
+	    fail "--abort left onto at canmount noauto"
 	cases=$((cases + 1))
 	return 0
 }
@@ -543,6 +595,7 @@ at_conflicts() {
 	[ "$(phasenow "$rds")" = conflicts ] || \
 	    fail "the run is at '$(phasenow "$rds")', want conflicts"
 	[ -f "$res" ] || fail "the run wrote no resolution at $res"
+	sethere
 	return 0
 }
 # The result writable for one edit made behind the tool's back, and
@@ -1060,15 +1113,21 @@ res_pass() {
 	form=$1
 	if [ "$form" = clone ]; then
 		rds=$POOL/result
-		hmnt=/var/db/zfs_rebase/$POOL/result/mnt
-		ontodir=$MNT/onto/.zfs/snapshot/work
 	else
 		rds=$POOL/onto
-		hmnt=$MNT/onto
-		ontodir=$MNT/onto/.zfs/snapshot/pre
+	fi
+	rundir=/var/db/zfs_rebase/$rds
+	# Where the result is while a rebase is open, which is where
+	# every case starts; sethere moves both of these as the rebase
+	# settles. In the clone form onto is a dataset of its own and
+	# stays at home whatever the rebase does.
+	hmnt=$rundir/mnt
+	if [ "$form" = clone ]; then
+		ontodir=$MNT/onto/.zfs/snapshot/work
+	else
+		ontodir=$hmnt/.zfs/snapshot/pre
 	fi
 	fromdir=$MNT/from/.zfs/snapshot/work
-	rundir=/var/db/zfs_rebase/$rds
 	man=$rundir/manifest
 	res=$rundir/resolution
 	log=$tmp/pass.log

@@ -355,11 +355,9 @@ zz_record_ok(const struct zr_rebase_record *rec)
 
 int
 zr_zfs_clone(struct zr_zfs *z, const char *snapshot, const char *clone,
-    const char *mountpoint, const struct zr_rebase_record *rec, char *err,
-    size_t errlen)
+    const struct zr_rebase_record *rec, char *err, size_t errlen)
 {
 	struct zz_record rp;
-	zfs_handle_t *zhp;
 	nvlist_t *props;
 	uint64_t ro;
 	int rc;
@@ -367,7 +365,7 @@ zr_zfs_clone(struct zr_zfs *z, const char *snapshot, const char *clone,
 	if (err != NULL && errlen > 0)
 		err[0] = '\0';
 	if (z == NULL || snapshot == NULL || clone == NULL ||
-	    mountpoint == NULL || !zz_record_ok(rec))
+	    !zz_record_ok(rec))
 		return (zz_err(err, errlen, "clone", EINVAL));
 	zz_record_fill(&rp, rec);
 	/*
@@ -384,7 +382,10 @@ zr_zfs_clone(struct zr_zfs *z, const char *snapshot, const char *clone,
 	 * PROP_TYPE_INDEX string to its index and re-adds it as a
 	 * uint64; off the libzfs path that conversion is ours to do.
 	 * mountpoint is zprop_register_string in the same table, so it
-	 * stays a string.
+	 * stays a string, and the string is none: the result carries no
+	 * path in that property at any point of the rebase, and the run
+	 * mounts it at its own place with zfs_mount_at, which takes the
+	 * path as an argument (documents-design.md, section 5).
 	 */
 	ro = 0;
 	if (zfs_prop_string_to_index(ZFS_PROP_READONLY, "on", &ro) != 0)
@@ -396,7 +397,7 @@ zr_zfs_clone(struct zr_zfs *z, const char *snapshot, const char *clone,
 		    zfs_prop_to_name(ZFS_PROP_READONLY), ro);
 	if (rc == 0)
 		rc = nvlist_add_string(props,
-		    zfs_prop_to_name(ZFS_PROP_MOUNTPOINT), mountpoint);
+		    zfs_prop_to_name(ZFS_PROP_MOUNTPOINT), ZR_MOUNTPOINT_NONE);
 	/*
 	 * The record. A user property is a name with a colon in it
 	 * (zfs_prop_user, module/zcommon/zfs_prop.c) and its value
@@ -427,22 +428,16 @@ zr_zfs_clone(struct zr_zfs *z, const char *snapshot, const char *clone,
 	/*
 	 * lzc_clone (lib/libzfs_core/libzfs_core.c) creates it with
 	 * the properties already set, so the clone is read-only from
-	 * the first instant it exists and is never mounted anywhere
-	 * but the private mountpoint.
+	 * the first instant it exists and has no mountpoint of its own
+	 * at any instant. Nothing is mounted here: a mountpoint of none
+	 * is nothing for zfs_mount to do (zfs_is_mountable, lib/libzfs/
+	 * libzfs_mount.c), and the caller puts the clone at the run's
+	 * private directory with zr_zfs_mount_at.
 	 */
 	rc = lzc_clone(clone, snapshot, props);
 	nvlist_free(props);
 	if (rc != 0)
 		return (zz_err(err, errlen, clone, rc));
-	zhp = zfs_open(z->zz_hdl, clone, ZFS_TYPE_FILESYSTEM);
-	if (zhp == NULL)
-		return (zz_hdl_err(z, err, errlen, clone));
-	/* zfs_mount is lib/libzfs/libzfs_mount.c. */
-	if (zfs_mount(zhp, NULL, 0) != 0) {
-		zfs_close(zhp);
-		return (zz_hdl_err(z, err, errlen, mountpoint));
-	}
-	zfs_close(zhp);
 	return (0);
 }
 
@@ -919,6 +914,34 @@ zr_zfs_set_readonly(struct zr_zfs *z, const char *dataset, int on, char *err,
 }
 
 int
+zr_zfs_set_canmount(struct zr_zfs *z, const char *dataset, const char *value,
+    char *err, size_t errlen)
+{
+	zfs_handle_t *zhp;
+	int rc;
+
+	if (err != NULL && errlen > 0)
+		err[0] = '\0';
+	if (z == NULL || dataset == NULL || value == NULL)
+		return (zz_err(err, errlen, "canmount", EINVAL));
+	zhp = zfs_open(z->zz_hdl, dataset, ZFS_TYPE_FILESYSTEM);
+	if (zhp == NULL)
+		return (zz_hdl_err(z, err, errlen, dataset));
+	/*
+	 * zfs_prop_set is lib/libzfs/libzfs_dataset.c, and it is the
+	 * same call the readonly flip makes: the word is turned into
+	 * the index of the property's table by zfs_valid_proplist on
+	 * the way in, and a word that is no value of canmount is
+	 * refused there rather than here.
+	 */
+	rc = zfs_prop_set(zhp, zfs_prop_to_name(ZFS_PROP_CANMOUNT), value);
+	zfs_close(zhp);
+	if (rc != 0)
+		return (zz_hdl_err(z, err, errlen, dataset));
+	return (0);
+}
+
+int
 zr_zfs_destroy(struct zr_zfs *z, const char *dataset, char *err, size_t errlen)
 {
 	zfs_handle_t *zhp;
@@ -1305,13 +1328,11 @@ zr_zfs_release_tag(struct zr_zfs *z, const char *pool, const char *tag,
 
 int
 zr_zfs_clone(struct zr_zfs *z, const char *snapshot, const char *clone,
-    const char *mountpoint, const struct zr_rebase_record *rec, char *err,
-    size_t errlen)
+    const struct zr_rebase_record *rec, char *err, size_t errlen)
 {
 	(void) z;
 	(void) snapshot;
 	(void) clone;
-	(void) mountpoint;
 	(void) rec;
 	return (zz_unbuilt(err, errlen));
 }
@@ -1323,6 +1344,16 @@ zr_zfs_set_readonly(struct zr_zfs *z, const char *dataset, int on, char *err,
 	(void) z;
 	(void) dataset;
 	(void) on;
+	return (zz_unbuilt(err, errlen));
+}
+
+int
+zr_zfs_set_canmount(struct zr_zfs *z, const char *dataset, const char *value,
+    char *err, size_t errlen)
+{
+	(void) z;
+	(void) dataset;
+	(void) value;
 	return (zz_unbuilt(err, errlen));
 }
 

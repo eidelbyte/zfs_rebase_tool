@@ -56,10 +56,20 @@ Each side is a snapshot of yours or a dataset the tool snapshots for
 itself, and --onto decides the form of the run.
 
 **The clone form**, --onto a snapshot. --result names a new dataset,
-created as a read-only clone of that snapshot at the run's own
-mountpoint, and the rebase is made in it. Nothing of yours is
-written to at all, and the clone is yours to promote, rename or
-inherit when it is done.
+created as a read-only clone of that snapshot with its `mountpoint`
+property `none`, and mounted at the run's own private directory,
+which is the only place it is ever mounted while the rebase is open.
+The rebase is made in it and nothing of yours is written to at all.
+At done the clone is handed to the void: unmounted, read-only, its
+`mountpoint` still `none`, and the tool says how to place it --
+
+    zfs_rebase: tank/rebased is the rebased tree, unmounted; place it
+    with zfs inherit mountpoint tank/rebased or zfs set
+    mountpoint=PATH tank/rebased
+
+-- because where a rebased tree belongs is yours to say and not the
+tool's. It is yours to promote, rename or inherit as well; the tool
+never promotes.
 
 **The dataset form**, --onto a dataset. The rebase is made in that
 dataset, and --result names the snapshot the tool takes of it before
@@ -78,19 +88,38 @@ dataset somebody is using will not unmount, and then the tool says
 "onto is in use; unmount it or give a snapshot" and exits 2. Nothing
 is ever forced.
 
-Wherever the run stops -- at conflicts, at done, at a failure, at a
-signal -- the dataset is handed back: off the private mount, readonly
-as it was before, mounted where its mountpoint property says. A
-rebase that is waiting for a conflict to be answered can wait for
-days, and it does not hold a filesystem out of service while it
-waits. Only a hard kill leaves it privately mounted, and the next
---continue, --verify or --abort takes it from there. The private
-mount is root's alone and writable for its whole life: a dataset that
-was read-only is made writable once, while it is off its mountpoint,
-and the manifest's header remembers what it was for the hand-back. (libzfs
-answers a readonly change on a mounted dataset with a remount at the
-mountpoint property, which cannot be done while the dataset sits at
-the private mount, so the property is only ever touched unmounted.)
+The take also sets `canmount` to `noauto` and puts `readonly` to off,
+both of them while the dataset is off its mountpoint; the manifest's
+header remembers what each of them was. (libzfs answers a readonly
+change on a mounted dataset with a remount at the mountpoint
+property, which cannot be done while the dataset sits at the private
+mount, so the property is only ever touched unmounted. The private
+mount is root's alone and writable for its whole life.)
+
+The dataset then stays at the private mount for the whole of the
+rebase, the conflicts gate included, and is handed home exactly
+twice: at done and at --abort (and by a run that gives up before it
+has written anything, which takes itself away as an --abort would).
+Off the private mount, `readonly` and
+`canmount` back to what the header says they were, and mounted where
+its `mountpoint` property says -- that property is never touched, so
+home is where it always was. A rebase waiting for its conflicts to be
+answered is a half rebased tree, and a half rebased tree is not put
+back into service: holding a filesystem in that state where anyone
+can reach it is worse than holding it out of service while it is
+settled. A caught signal at a gate leaves it privately mounted, as a
+hard kill does, and the next --continue, --verify or --abort takes it
+from there.
+
+A dataset whose `canmount` is `off` has no home to be handed back to,
+and the dataset form refuses it at precondition with exit 2, before
+anything at all is taken or written.
+
+A reboot in the middle of a rebase leaves the result unmounted in
+either form: nothing at boot mounts a dataset whose `mountpoint` is
+`none`, and nothing mounts one whose `canmount` is `noauto`. So a
+half rebased tree is never in service after a reboot either, and the
+next --continue or --abort mounts it privately again from there.
 
 --result for every verb is the dataset carrying the rebase's record
 -- the clone in one form, onto itself in the other -- and a snapshot
@@ -209,9 +238,16 @@ gate, --abort takes the rebase away.
 
 Each run keeps its own directory, 0700 throughout:
 
-    /var/db/zfs_rebase/<result as a path>/mnt          the result
+    /var/db/zfs_rebase/<result as a path>/mnt          the private mount
     /var/db/zfs_rebase/<result as a path>/manifest     unless --manifest
     /var/db/zfs_rebase/<result as a path>/resolution   the choices
+
+`mnt` is where the result lives for the whole of the rebase, in both
+forms: the clone is mounted there at birth and the dataset the moment
+it is taken over, neither of them through the `mountpoint` property,
+which is what lets that property stay `none` in one form and stay
+where it always pointed in the other. The rebase ends by undoing that
+mount.
 
 With --manifest FILE (-o FILE) the manifest is FILE and the
 resolution is FILE.resolution, beside it. Either way the record names
@@ -221,10 +257,11 @@ verb finds both and never by guessing a path.
 Not /var/run: FreeBSD's cleanvar deletes every regular file there at
 boot, and a rebase stopped at conflicts can outlast one.
 
-The clone form's result is yours to promote, rename or inherit as you
-see fit: the tool never promotes. The dataset form's result is the
-dataset you already had, back at its own mountpoint with the rebase
-in it.
+The clone form's result is yours to promote, rename, place or inherit
+as you see fit: the tool never promotes, and at done it leaves the
+clone unmounted with no mountpoint of its own. The dataset form's
+result is the dataset you already had, back at its own mountpoint
+with the rebase in it, its `readonly` and `canmount` as they were.
 
 Four verbs work on a rebase that already exists. Each takes --result
 and -v, --continue takes the flags of the gate as well, and nothing
@@ -297,7 +334,11 @@ for the record's tag, undoes the private mount and takes the record
 off, and then says plainly what it cannot do without the manifest:
 it cannot tell the clone form from the dataset form, so it destroys
 nothing and rolls nothing back, and it cannot put readonly or
-canmount back. It prints the command for each form and leaves the
+canmount back -- it prints the two `zfs set` commands for that. The
+one thing it can still read is the `mountpoint` property, which the
+two forms never share: a path is a dataset of yours and is mounted at
+it, `none` is a clone of the tool's and is left unmounted for you to
+destroy or to place. It prints the command for each form and leaves the
 choice to you.
 
 A dataset that carries any zfs_rebase: property of its own is an open

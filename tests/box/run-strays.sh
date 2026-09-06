@@ -58,9 +58,10 @@
 #    is reading, at the read gate: the tool reads snapshots, so the
 #    manifest is the expect block to the byte and the verify is
 #    clean. In the dataset form onto is not even where it lives just
-#    then -- it is at the run's private mount -- so its own directory
-#    is empty and a write there lands in the pool's root dataset and
-#    is hidden the moment the dataset comes home.
+#    then -- it is at the run's private mount, and stays there for
+#    the whole of an open rebase -- so its own directory is empty and
+#    a write there lands in the pool's root dataset and is hidden the
+#    moment the dataset comes home at done or at --abort.
 #
 # 5. A stray edit at the conflicts gate, which --continue --verify
 #    writes into the resolution rather than into the tree. The edit
@@ -77,6 +78,17 @@
 # still open, and by hand where it reached done, which leaves no
 # record for --abort to find -- and the pool is proved to be the
 # fixture again before the next one starts.
+#
+# Where the tree is to be read or edited moves with the rebase, and
+# sethere is what says so. An open rebase holds the result at the
+# run's private mount in both forms, the conflicts gate included: a
+# dataset whose conflicts are unanswered is a half rebased tree, and
+# a half rebased tree is not handed back into service
+# (sprints/sprint-5/documents-design.md, section 5). done puts the
+# dataset home and hands the clone to the void -- unmounted, with the
+# mountpoint property still none -- and placing that clone is the
+# user's work, which the tool's own last line spells out; the harness
+# does exactly what it says.
 #
 # A clean fixture reaches done inside the run itself, and done takes
 # the record off, so from that moment there is no rebase on the
@@ -271,9 +283,53 @@ drop_pool() {
 	rmdir "$MNT" 2>/dev/null
 }
 
+# A clone whose rebase reached done is unmounted with its mountpoint
+# property still none, which is the void the tool hands it to;
+# placing it is the user's work and the tool's last line says how.
+place_clone() {
+	mp=$(recval mountpoint "$POOL/result")
+	[ "$mp" = none ] || fail "a settled clone's mountpoint is $mp, want none"
+	if ! mounted_at "$MNT/result"; then
+		[ "$(recval mounted "$POOL/result")" = no ] || \
+		    fail "a settled clone is mounted somewhere else"
+		zfs set mountpoint="$MNT/result" "$POOL/result" || \
+		    fail "cannot place the settled clone"
+		mounted_at "$MNT/result" || \
+		    fail "placing the clone did not mount it at $MNT/result"
+	fi
+	return 0
+}
+
+# Where the result's tree is to be read or edited just now, with the
+# assertion that it is there: hmnt after this. An open rebase holds
+# it at the run's private mount in both forms; done puts the dataset
+# home and leaves the clone in the void, which the harness places.
+sethere() {
+	if [ -n "$(localprops "$rds")" ]; then
+		hmnt=$rundir/mnt
+		mounted_at "$hmnt" || \
+		    fail "an open rebase does not hold $rds at $hmnt"
+		[ "$form" = clone ] || \
+		    [ "$(recval canmount "$POOL/onto")" = noauto ] || \
+		    fail "canmount is not noauto while the rebase is open"
+		return 0
+	fi
+	if [ "$form" = dataset ]; then
+		hmnt=$MNT/onto
+		mounted_at "$hmnt" || fail "done left onto away from home"
+		[ "$(recval canmount "$POOL/onto")" = on ] || \
+		    fail "done did not put canmount back to on"
+		return 0
+	fi
+	place_clone
+	hmnt=$MNT/result
+	return 0
+}
+
 # Where the branch ends, as an assertion: a conflicted rebase waits
 # at the conflicts gate with its record on the result, and a clean one
-# reached done, which took every zfs_rebase: property off it.
+# reached done, which took every zfs_rebase: property off it. Either
+# way it says where the tree is to be read from here on.
 at_end() {
 	if [ $clean -eq 1 ]; then
 		[ -z "$(localprops "$rds")" ] || \
@@ -282,6 +338,7 @@ at_end() {
 		[ "$(phasenow "$rds")" = conflicts ] || \
 		    fail "the phase is $(phasenow "$rds"), want conflicts"
 	fi
+	sethere
 }
 
 # --verify on the result, where there is still a rebase to ask about.
@@ -333,6 +390,7 @@ end_case() {
 		if [ "$form" = clone ]; then
 			zfs destroy "$POOL/result" || \
 			    fail "cannot destroy the settled result"
+			rmdir "$MNT/result" 2>/dev/null
 		else
 			zfs rollback -r "$POOL/onto@pre" || \
 			    fail "cannot roll onto back to @pre"
@@ -400,6 +458,7 @@ case_strays() {
 	printf 'stray\n' > "$wmnt/zr-new" || fail "cannot create /zr-new"
 	printf 'stray\n' >> "$wmnt$wtgt" || fail "cannot edit $wtgt"
 	finish
+	at_end
 
 	# The self-check ended all three: the edit to the untouched name
 	# is onto's bytes again, the name no tree had is gone, and the
@@ -544,6 +603,7 @@ case_live() {
 	printf 'live\n' > "$MNT/onto/zr-live" || \
 	    fail "cannot write at onto's mount point"
 	finish
+	at_end
 
 	# The tool read snapshots, so none of that is in the decision.
 	sed -n '/^#mode/,$p' "$fdir/expect" > "$tmp/expect.body"
@@ -558,15 +618,33 @@ case_live() {
 		    { cat "$tmp/verify"; fail "a live write reached the result"; }
 	fi
 	if [ "$form" = dataset ]; then
-		[ -e "$MNT/onto/zr-live" ] && \
-		    fail "the write at onto's mount point is visible in onto"
-		echo "ok   $case_id: it landed in the pool root and is hidden"
+		# The write landed in the pool's root dataset, under
+		# the directory onto is mounted over. While the rebase
+		# is open onto is at the private mount and that
+		# directory is uncovered, so the write is there to be
+		# seen; the moment onto comes home, at done or at the
+		# --abort end_case makes, it is hidden again. Either
+		# way it is nowhere in the rebase.
+		if [ -n "$(localprops "$rds")" ]; then
+			[ -f "$MNT/onto/zr-live" ] || \
+			    fail "the write at onto's uncovered mount point is gone"
+		elif [ -e "$MNT/onto/zr-live" ]; then
+			fail "the write at onto's mount point is visible in onto"
+		fi
+		[ -e "$hmnt/zr-live" ] && \
+		    fail "the write at onto's mount point reached the rebase"
+		echo "ok   $case_id: it landed in the pool root, not in the rebase"
 	else
 		[ -f "$MNT/onto/zr-live" ] || \
 		    fail "the write into the live onto did not land"
 		echo "ok   $case_id: the live edits are in the datasets and in no rebase"
 	fi
 	end_case
+	# And with onto home again, which is what end_case leaves, the
+	# pool root's copy is under the dataset and out of sight.
+	if [ "$form" = dataset ] && [ -e "$MNT/onto/zr-live" ]; then
+		fail "the write is still visible with onto back at home"
+	fi
 
 	# Take the two strays away again, so the pool is the fixture
 	# for the next form. The one under onto's own mount point is
@@ -593,6 +671,7 @@ case_driftline() {
 	[ $st -eq $wrun ] || { cat "$log"; fail "the run exited $st, want $wrun"; }
 	[ "$(phasenow "$rds")" = conflicts ] || \
 	    fail "the run is at $(phasenow "$rds"), want conflicts"
+	sethere
 	kept=$(kept_name "$man" "$hmnt")
 	[ -n "$kept" ] || fail "the fixture has no untouched file to edit"
 	names0=$(sed -n 's/^#names //p' "$res")
@@ -630,6 +709,9 @@ case_driftline() {
 	# is no phase: what says it got there is the record being off.
 	[ -z "$(localprops "$rds")" ] || \
 	    fail "the rebase reached done and left $(localprops "$rds")"
+	# done settled the result: the dataset is home, the clone is
+	# in the void and the harness places it to look at the tree.
+	sethere
 	grep -q drift "$hmnt$kept" || fail "a verb wrote over the edit to $kept"
 
 	# A verify afterwards would have nothing outside the manifest
@@ -659,12 +741,8 @@ stray_pass() {
 	fi
 	rundir=/var/db/zfs_rebase/$rds
 	man=$rundir/manifest
-	wmnt=$rundir/mnt		# where the tree is while the tool has it
-	if [ "$form" = clone ]; then
-		hmnt=$rundir/mnt	# and where it is when it does not
-	else
-		hmnt=$MNT/onto
-	fi
+	wmnt=$rundir/mnt		# where the tree is while the run has it
+	hmnt=$wmnt			# and where it is between commands
 	res=$rundir/resolution
 	log=$tmp/pass.log
 	prog_step "$fixture, the $form form"

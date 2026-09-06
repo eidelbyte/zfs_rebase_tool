@@ -10,9 +10,13 @@
  * of the whole run:
  *
  * The clone form, onto given as a snapshot. --result names a new
- * dataset, cloned from that snapshot read-only at the run's own
- * mountpoint, and the record lives on the clone. Nothing of the
- * user's is written to at all.
+ * dataset, cloned from that snapshot read-only and with the
+ * mountpoint property none, and mounted at the run's private
+ * directory with zfs_mount_at; the record lives on the clone.
+ * Nothing of the user's is written to at all. At done the clone is
+ * unmounted and handed to the void -- readonly on, mountpoint still
+ * none -- and the tool says how to place it, which is the user's
+ * work and not the tool's.
  *
  * The dataset form, onto given as a dataset. --result names the
  * pre-apply snapshot the tool takes of it -- the short name after
@@ -20,11 +24,15 @@
  * rebase is made in that dataset itself, so the record lives on it.
  * Exclusivity is the unmount: the dataset is unmounted from its own
  * mountpoint and mounted at the run's private directory instead,
- * with its mountpoint property untouched, and it goes back there
- * whenever the run stops. Nothing is ever forced; a dataset somebody
- * is using is refused. The pre-apply snapshot is the user's own
- * before-image: it stays after done and only --abort takes it away,
- * rolling the dataset back to it first.
+ * with its mountpoint property untouched and canmount set to noauto,
+ * and it stays there for the whole of the rebase. Nothing is ever
+ * forced; a dataset somebody is using is refused. It is handed home
+ * at done and at --abort and at no other moment: a rebase waiting
+ * for a conflict to be answered is a half rebased tree, and a half
+ * rebased tree is not put back into service (documents-design.md,
+ * section 5). The pre-apply snapshot is the user's own before-image:
+ * it stays after done and only --abort takes it away, rolling the
+ * dataset back to it first.
  *
  * A side given as a dataset is snapshotted by the tool under a
  * generated name and recorded as tool-made, and that snapshot lives
@@ -112,8 +120,8 @@
  * same; --verify alone only reports; --abort takes the whole thing
  * away. None of them decides anything: the manifest the record names
  * is the decision, and it is made once. Each of them takes the
- * dataset form's dataset over the same way the run did and hands it
- * back when it stops.
+ * result over the same way the run did, in both forms, and leaves it
+ * at the private mount unless it reached done.
  *
  * A signal that would ordinarily end the process -- INT, TERM, HUP
  * -- is caught instead and only raises a flag. Before every phase,
@@ -286,6 +294,7 @@ struct run {
 	char			ontomnt[ZR_NAME_MAX];	/* where onto is read */
 	char			ontohome[ZR_NAME_MAX];	/* onto's own place */
 	char			roorig[8];	/* onto's readonly before */
+	char			cmorig[16];	/* and its canmount */
 	/*
 	 * The guids of the three inputs, read off the snapshots
 	 * themselves just before the manifest is written: they are
@@ -310,6 +319,7 @@ struct run {
 	int			madeonto;	/* and onto's: a dry run */
 	int			presnap;	/* the pre-apply snapshot is */
 	int			privmnt;	/* onto is at workmnt */
+	int			settled;	/* the run reached done */
 	int			dropfrom;	/* done: the made snap goes */
 	int			nheld;		/* holds taken, base first */
 	uint32_t		unanswered;	/* lines of the skeleton */
@@ -405,7 +415,8 @@ signals_restore(const struct sigaction *saved)
  *			recorded, before applying1 is written
  *	applying1	that gate is written and readonly is off,
  *			before the first action
- *	conflicts	that gate is written, before the hand-back
+ *	conflicts	that gate is written, before the note that
+ *			says what the run is waiting for
  *	applying2	that gate is written and readonly is off,
  *			before the choices are carried out
  *	done		that gate is written, before the release
@@ -1046,6 +1057,34 @@ onto_open(struct run *r)
 		    r->ontods);
 		return (-1);
 	}
+	/*
+	 * The two properties the run takes away and gives back, read
+	 * here and nowhere else: what they are is what they were
+	 * before this rebase touched anything, and the manifest's
+	 * header is written from these and not from a second read
+	 * after the take, which would find the tool's own values.
+	 */
+	if (zr_zfs_get(r->zfs, r->ontods, "readonly", r->roorig,
+	    sizeof (r->roorig), r->err, sizeof (r->err)) != 0 ||
+	    zr_zfs_get(r->zfs, r->ontods, "canmount", r->cmorig,
+	    sizeof (r->cmorig), r->err, sizeof (r->err)) != 0)
+		return (-1);
+	/*
+	 * canmount=off is a dataset with no home to be handed back
+	 * to: the rebase ends by mounting it where it belongs, and a
+	 * dataset that will not mount has no such place. Asked before
+	 * the mounted question, which such a dataset fails too, so
+	 * that the answer names the property and not the symptom; and
+	 * before its snapshot is taken and before anything at all is
+	 * written (documents-design.md, section 5).
+	 */
+	if (strcmp(r->cmorig, "off") == 0) {
+		(void) snprintf(r->err, sizeof (r->err), "%s has "
+		    "canmount=off and no place to be handed back to; the "
+		    "dataset form ends by mounting it where it belongs",
+		    r->ontods);
+		return (-1);
+	}
 	if (zr_zfs_get_int(r->zfs, r->ontods, "mounted", &v, r->err,
 	    sizeof (r->err)) != 0)
 		return (-1);
@@ -1054,9 +1093,6 @@ onto_open(struct run *r)
 		    r->ontods);
 		return (-1);
 	}
-	if (zr_zfs_get(r->zfs, r->ontods, "readonly", r->roorig,
-	    sizeof (r->roorig), r->err, sizeof (r->err)) != 0)
-		return (-1);
 	got = 0;
 	for (i = 0; i < ZR_NRECORD && got == 0; i++) {
 		got = zr_zfs_get_user(r->zfs, r->ontods, zr_record_props[i],
@@ -1279,25 +1315,19 @@ clear_record(struct zr_zfs *z, const char *dataset, int verbose)
  * dataset mounted where only it can reach, with the mountpoint
  * property untouched, so that giving it back is one mount call.
  *
- * readonly goes on immediately after, which is the clone form's
- * flag exactly: the result is read-only except while a stage writes
- * to it. What the property was before this is in the manifest's
- * header, and the hand-back puts it back.
- */
-/*
- * The readonly property in the dataset form is touched only while
- * the dataset is off its mountpoint: here, before the private mount,
- * and at the hand-back, after the private mount is undone. libzfs
- * answers a change of readonly on a mounted dataset with a remount
- * at the mountpoint property (changelist_postfix,
- * lib/libzfs/libzfs_changelist.c), which is an update on a directory
- * nothing is mounted on while the dataset sits at the private mount,
- * and EINVAL from the kernel. The kernel itself needs no remount --
- * readonly_changed_cb applies the property to the live mount -- but
- * libzfs makes one anyway. So a dataset that was read-only is made
- * writable once, unmounted, for the private mount's whole life, the
- * header keeping what it was; the private mount is root's alone, and
- * the per-stage flips are the clone form's.
+ * The readonly property is touched only while the dataset is off its
+ * mountpoint: here, before the private mount, and at the hand-back,
+ * after the private mount is undone. libzfs answers a change of
+ * readonly on a mounted dataset with a remount at the mountpoint
+ * property (changelist_postfix, lib/libzfs/libzfs_changelist.c),
+ * which is an update on a directory nothing is mounted on while the
+ * dataset sits at the private mount, and EINVAL from the kernel. The
+ * kernel itself needs no remount -- readonly_changed_cb applies the
+ * property to the live mount -- but libzfs makes one anyway. So a
+ * dataset that was read-only is made writable once, unmounted, for
+ * the private mount's whole life, the header keeping what it was;
+ * the private mount is root's alone and the per-stage flips are the
+ * clone form's.
  */
 static int
 private_rw(struct zr_zfs *z, const char *dataset, char *err, size_t errlen)
@@ -1312,59 +1342,66 @@ private_rw(struct zr_zfs *z, const char *dataset, char *err, size_t errlen)
 	return (zr_zfs_set_readonly(z, dataset, 0, err, errlen));
 }
 
-static int
-exclusive(struct run *r)
-{
-	char e[512];
-
-	if (zr_zfs_unmount(r->zfs, r->ontods, r->err, sizeof (r->err)) != 0) {
-		(void) fprintf(stderr, "zfs_rebase: %s is in use; unmount it "
-		    "or give a snapshot\n", r->ontods);
-		return (-1);
-	}
-	if (private_rw(r->zfs, r->ontods, r->err, sizeof (r->err)) != 0 ||
-	    zr_zfs_mount_at(r->zfs, r->ontods, r->workmnt, r->err,
-	    sizeof (r->err)) != 0) {
-		/* it came from somewhere: put it back before giving up */
-		if (zr_zfs_set_readonly(r->zfs, r->ontods,
-		    strcmp(r->roorig, "on") == 0, e, sizeof (e)) != 0 ||
-		    zr_zfs_mount(r->zfs, r->ontods, e, sizeof (e)) != 0)
-			(void) fprintf(stderr, "zfs_rebase: %s is unmounted "
-			    "and will not mount: %s\n", r->ontods, e);
-		return (-1);
-	}
-	r->privmnt = 1;
-	if (r->o.verbose)
-		(void) fprintf(stderr, "zfs_rebase: %s is this run's alone, "
-		    "mounted at %s\n", r->ontods, r->workmnt);
-	return (0);
-}
-
 /*
  * Give the dataset back to service: off the private mount, readonly
- * as the record says it was, and mounted where its own mountpoint
- * property says. This runs wherever the dataset form stops -- at
- * conflicts, at done, at a failure, at a signal -- because a rebase
- * that is waiting for an answer must not be holding a filesystem
- * hostage while it waits. A kill leaves it privately mounted, and
- * the next verb takes it from there.
+ * and canmount as the manifest's header says they were, and mounted
+ * where its own mountpoint property says. A rebase reaches this
+ * exactly twice -- at done and at --abort -- and at no gate in
+ * between: a dataset waiting for its conflicts to be answered is a
+ * half rebased tree, and a half rebased tree is not put back into
+ * service (documents-design.md, section 5). A run that takes itself
+ * away whole before it has written anything reaches it too, since
+ * that is an --abort in all but name, and so does the take's own way
+ * out when the private mount cannot be made.
+ *
+ * Only the private mount is undone. A dataset found at its own place
+ * -- after an --abort that follows a mount by hand -- is left where
+ * it is rather than unmounted for nothing, and one found nowhere is
+ * mounted. Both properties go back before the mount, so that the
+ * readonly change never meets a dataset mounted at the private mount
+ * and the noauto the run wrote is gone before anything can act on
+ * it.
  */
 static void
-handback(struct zr_zfs *z, const char *dataset, const char *ro, int verbose)
+handback(struct zr_zfs *z, const char *dataset, const char *ro,
+    const char *cm, const char *mnt, int verbose)
 {
-	char e[512];
+	char at[ZR_NAME_MAX], e[512];
+	int rc;
 
-	if (zr_zfs_unmount(z, dataset, e, sizeof (e)) != 0) {
-		(void) fprintf(stderr, "zfs_rebase: %s is still this run's: "
+	rc = zr_zfs_mounted_at(z, dataset, at, sizeof (at), e, sizeof (e));
+	if (rc < 0)
+		(void) fprintf(stderr, "zfs_rebase: where %s is mounted: "
 		    "%s\n", dataset, e);
-		return;
+	if (rc > 0 && mnt != NULL && strcmp(at, mnt) == 0) {
+		if (zr_zfs_unmount(z, dataset, e, sizeof (e)) != 0) {
+			(void) fprintf(stderr, "zfs_rebase: %s is still this "
+			    "run's: %s\n", dataset, e);
+			return;
+		}
+		rc = 0;
 	}
 	if (ro != NULL && ro[0] != '\0' &&
 	    zr_zfs_set_readonly(z, dataset, strcmp(ro, "on") == 0, e,
 	    sizeof (e)) != 0)
 		(void) fprintf(stderr, "zfs_rebase: readonly=%s on %s: %s\n",
 		    ro, dataset, e);
-	if (zr_zfs_mount(z, dataset, e, sizeof (e)) != 0) {
+	if (cm != NULL && cm[0] != '\0' &&
+	    zr_zfs_set_canmount(z, dataset, cm, e, sizeof (e)) != 0)
+		(void) fprintf(stderr, "zfs_rebase: canmount=%s on %s: %s\n",
+		    cm, dataset, e);
+	/*
+	 * And where it is now, asked again rather than assumed. A
+	 * canmount change makes no changelist at all unless the new
+	 * value is off on a mounted dataset (zfs_prop_set_list_flags,
+	 * lib/libzfs/libzfs_dataset.c), so nothing above can have
+	 * mounted it; the question is one property read, and its
+	 * answer is what says whether to mount at all.
+	 */
+	if (rc == 0)
+		rc = zr_zfs_mounted_at(z, dataset, at, sizeof (at), e,
+		    sizeof (e));
+	if (rc == 0 && zr_zfs_mount(z, dataset, e, sizeof (e)) != 0) {
 		(void) fprintf(stderr, "zfs_rebase: %s will not mount: %s\n",
 		    dataset, e);
 		return;
@@ -1372,6 +1409,64 @@ handback(struct zr_zfs *z, const char *dataset, const char *ro, int verbose)
 	if (verbose)
 		(void) fprintf(stderr, "zfs_rebase: %s is back where it "
 		    "belongs\n", dataset);
+}
+
+/*
+ * The clone form's end of a rebase, which is no hand-back at all:
+ * the clone has no home to go to, because its mountpoint property
+ * was never a path. The private mount is undone and the clone is
+ * left as a finished rebase should be -- unmounted, read-only, the
+ * mountpoint property still none -- and the one useful thing the
+ * tool can say is how to place it, which is the user's work and not
+ * the tool's.
+ */
+static void
+to_the_void(struct zr_zfs *z, const char *clone)
+{
+	char e[512];
+
+	if (zr_zfs_unmount(z, clone, e, sizeof (e)) != 0) {
+		(void) fprintf(stderr, "zfs_rebase: %s will not unmount: "
+		    "%s\n", clone, e);
+		return;
+	}
+	(void) fprintf(stderr, "zfs_rebase: %s is the rebased tree, "
+	    "unmounted; place it with zfs inherit mountpoint %s or zfs set "
+	    "mountpoint=PATH %s\n", clone, clone, clone);
+}
+
+/*
+ * The take. The unmount is the exclusivity; readonly goes off while
+ * the dataset is off its mountpoint, where the change costs no
+ * remount; canmount goes to noauto, so that a reboot in the middle
+ * of a rebase leaves the half rebased tree unmounted until a verb
+ * settles it rather than mounting it at boot; and then the private
+ * mount. Every property is written while the dataset is mounted
+ * nowhere, and the header keeps what each of them was.
+ */
+static int
+exclusive(struct run *r)
+{
+	if (zr_zfs_unmount(r->zfs, r->ontods, r->err, sizeof (r->err)) != 0) {
+		(void) fprintf(stderr, "zfs_rebase: %s is in use; unmount it "
+		    "or give a snapshot\n", r->ontods);
+		return (-1);
+	}
+	if (private_rw(r->zfs, r->ontods, r->err, sizeof (r->err)) != 0 ||
+	    zr_zfs_set_canmount(r->zfs, r->ontods, ZR_CANMOUNT_NOAUTO,
+	    r->err, sizeof (r->err)) != 0 ||
+	    zr_zfs_mount_at(r->zfs, r->ontods, r->workmnt, r->err,
+	    sizeof (r->err)) != 0) {
+		/* it came from somewhere: put it back before giving up */
+		handback(r->zfs, r->ontods, r->roorig, r->cmorig, r->workmnt,
+		    r->o.verbose);
+		return (-1);
+	}
+	r->privmnt = 1;
+	if (r->o.verbose)
+		(void) fprintf(stderr, "zfs_rebase: %s is this run's alone, "
+		    "mounted at %s\n", r->ontods, r->workmnt);
+	return (0);
 }
 
 static void
@@ -1384,15 +1479,31 @@ run_handback(struct run *r)
 	r->privmnt = 0;
 	/*
 	 * The final check a --verify run makes goes through the
-	 * verbs' own machinery, which hands the dataset back itself
-	 * when it is done, so this can arrive at a dataset that is
+	 * verbs' own machinery, which settles the result itself when
+	 * it reaches done, so this can arrive at a dataset that is
 	 * already home. Handing it back twice would unmount it from
 	 * its own place for nothing.
 	 */
 	if (zr_zfs_mounted_at(r->zfs, r->ontods, at, sizeof (at), e,
 	    sizeof (e)) > 0 && strcmp(at, r->workmnt) != 0)
 		return;
-	handback(r->zfs, r->ontods, r->roorig, r->o.verbose);
+	handback(r->zfs, r->ontods, r->roorig, r->cmorig, r->workmnt,
+	    r->o.verbose);
+}
+
+/*
+ * What the end of a run does with its result, by the form: the
+ * dataset given back, or the clone handed to the void. Only a run
+ * that reached done, or one taking itself away whole, comes here.
+ */
+static void
+run_settle(struct run *r)
+{
+	if (in_dataset_form(r)) {
+		run_handback(r);
+		return;
+	}
+	to_the_void(r->zfs, r->rds);
 }
 
 /*
@@ -1559,15 +1670,16 @@ read_guids(struct run *r)
  * itself and which way the skeleton was answered are the run's own;
  * the result is the name the user asked for; and the dataset form
  * adds the pre-apply snapshot and the two properties the run has to
- * put back, canmount read here because nothing has recorded it yet.
+ * put back, both of them read before the take changed either of them
+ * (onto_open) and never after it.
  *
  * A dry run creates nothing, holds nothing and takes no pre-apply
  * snapshot, so its result, its tag and its presnap are the "-" that
  * says the run had none of them.
  */
-static int
+static void
 fill_header(struct run *r, struct zr_manifest_hdr *h, char *stamp,
-    size_t stamplen, char *canmount, size_t cmlen)
+    size_t stamplen)
 {
 	memset(h, 0, sizeof (*h));
 	h->result = r->o.dryrun ? ZR_NO_BASE : r->o.result;
@@ -1579,12 +1691,9 @@ fill_header(struct run *r, struct zr_manifest_hdr *h, char *stamp,
 	h->onto = r->ontosnap;
 	h->onto_guid = r->ontoguid;
 	if (in_dataset_form(r)) {
-		if (zr_zfs_get(r->zfs, r->ontods, "canmount", canmount, cmlen,
-		    r->err, sizeof (r->err)) != 0)
-			return (-1);
 		h->presnap = r->presnap ? r->ontosnap : ZR_NO_BASE;
 		h->readonly = r->roorig;
-		h->canmount = canmount;
+		h->canmount = r->cmorig;
 	}
 	/*
 	 * made names the sides the tool snapshotted itself, which is
@@ -1597,7 +1706,6 @@ fill_header(struct run *r, struct zr_manifest_hdr *h, char *stamp,
 	zr_manifest_stamp(stamp, stamplen);
 	h->written = stamp;
 	h->mode = r->o.mode;
-	return (0);
 }
 
 /*
@@ -1993,15 +2101,20 @@ teardown(struct run *r, int keep)
 	if (r->names != NULL)
 		zr_names_destroy(r->names);
 	/*
-	 * The dataset form gives the dataset back before anything
-	 * else, kept run or not: the walks are closed by now, so the
-	 * snapshots under its .zfs are idle and the unmount can have
-	 * it. A run that is kept -- at conflicts, or after a failure
-	 * -- keeps everything but this: a rebase waiting for an
-	 * answer must not hold a filesystem out of service while it
-	 * waits.
+	 * The result, and only where the rebase is over: the walks
+	 * are closed by now, so the snapshots under the private
+	 * mount's .zfs are idle and the unmount can have it. A run
+	 * that reached done gives the dataset back or hands the clone
+	 * to the void; a run taking itself away whole puts the
+	 * dataset back the way an --abort would, its clone being
+	 * destroyed below in any case. A kept run at a gate leaves
+	 * the result where it is, at the private mount, which is what
+	 * the next verb expects to find.
 	 */
-	run_handback(r);
+	if (r->settled)
+		run_settle(r);
+	else if (!keep)
+		run_handback(r);
 	if (!keep) {
 		/*
 		 * The holds go before the result, because the record
@@ -2100,7 +2213,6 @@ zr_run(const struct zr_run_opts *o)
 	FILE *out = stdout;
 	char cont[ZR_NAME_MAX];
 	char stamp[ZR_STAMP_MAX];
-	char canmount[16];
 	int rc = EXIT_INTERNAL, keep = 0, gocont = 0;
 
 	memset(&r, 0, sizeof (r));
@@ -2216,13 +2328,26 @@ zr_run(const struct zr_run_opts *o)
 			}
 			r.recorded = 1;
 		} else {
-			if (zr_zfs_clone(r.zfs, r.ontosnap, o->result,
-			    r.workmnt, &rec, r.err, sizeof (r.err)) != 0) {
+			/*
+			 * The clone is born with the record on it,
+			 * read-only and with no mountpoint of its
+			 * own; the private mount is put on it here,
+			 * exactly as the dataset form's take does,
+			 * and is the only place it is ever mounted
+			 * while the rebase is open.
+			 */
+			if (zr_zfs_clone(r.zfs, r.ontosnap, o->result, &rec,
+			    r.err, sizeof (r.err)) != 0) {
 				rc = fail(&r, EXIT_PRECOND, "clone");
 				goto done;
 			}
 			r.cloned = 1;
 			r.recorded = 1;
+			if (zr_zfs_mount_at(r.zfs, o->result, r.workmnt,
+			    r.err, sizeof (r.err)) != 0) {
+				rc = fail(&r, EXIT_PRECOND, "clone");
+				goto done;
+			}
 		}
 		if (hold_inputs(&r) != 0) {
 			rc = fail(&r, EXIT_PRECOND, "hold");
@@ -2281,11 +2406,11 @@ zr_run(const struct zr_run_opts *o)
 	 * here, by a dry run and a real one alike, and every verb
 	 * that follows reads them back out of the file.
 	 */
-	if (read_guids(&r) != 0 || fill_header(&r, &hdr, stamp,
-	    sizeof (stamp), canmount, sizeof (canmount)) != 0) {
+	if (read_guids(&r) != 0) {
 		rc = fail(&r, EXIT_PRECOND, "manifest");
 		goto done;
 	}
+	fill_header(&r, &hdr, stamp, sizeof (stamp));
 	if (r.manpath[0] != '\0') {
 		out = fopen(r.manpath, "w");
 		if (out == NULL) {
@@ -2449,8 +2574,17 @@ zr_run(const struct zr_run_opts *o)
 			kept_hint(&r);
 			goto done;
 		}
+		/*
+		 * The verb reached the done gate and settled the
+		 * result itself -- the dataset home, or the clone
+		 * unmounted with its placement line printed -- so the
+		 * teardown below has nothing left to do but its own
+		 * closing. settled stays clear for exactly that
+		 * reason: settling twice would unmount a dataset from
+		 * its own place.
+		 */
 		r.nheld = 0;		/* the check gave them back */
-		r.privmnt = 0;		/* and the dataset with them */
+		r.privmnt = 0;		/* and the result with them */
 		r.recorded = 0;		/* and took the record off */
 	} else {
 		zr_pause(ZR_GATE_DONE);
@@ -2458,13 +2592,18 @@ zr_run(const struct zr_run_opts *o)
 		clear_record(r.zfs, r.rds, o->verbose);
 		r.recorded = 0;
 		r.dropfrom = r.madefrom;
+		/*
+		 * And the result is settled: the teardown below undoes
+		 * the private mount once the walks are closed, and
+		 * says where the result is -- home in this form, and
+		 * nowhere at all in the other, where placing the clone
+		 * is the user's work.
+		 */
+		r.settled = 1;
 		if (in_dataset_form(&r))
 			(void) fprintf(stderr, "zfs_rebase: %s is the rebased "
 			    "tree, and %s is what it was before\n", r.rds,
 			    r.ontosnap);
-		else
-			(void) fprintf(stderr, "zfs_rebase: %s is the rebased "
-			    "tree, read-only at %s\n", r.rds, r.workmnt);
 	}
 	manifest_note(&r);
 	rc = EXIT_CLEAN;
@@ -2474,12 +2613,15 @@ done:
 	/*
 	 * The gate was passed by this run itself, and the rest of the
 	 * rebase is a --continue: made after the teardown, so that
-	 * the dataset form has handed the dataset back and given it
-	 * up before the verb takes it over again, and made through
-	 * zr_continue and not through some second path of the fresh
-	 * run's own, so that what a person's --continue does and what
-	 * this does are one thing. --no-merge cannot be set here: it
-	 * is what would have stopped the run at the gate.
+	 * this process has closed its walks and its libzfs handle
+	 * before the verb opens its own, and made through zr_continue
+	 * and not through some second path of the fresh run's own, so
+	 * that what a person's --continue does and what this does are
+	 * one thing. The result stays at the private mount across the
+	 * two, in both forms, and the verb's take_over finds it
+	 * there: there is no hand-back at this gate to undo.
+	 * --no-merge cannot be set here: it is what would have
+	 * stopped the run at the gate.
 	 */
 	if (gocont)
 		rc = zr_continue(cont, o->verify, 0, o->verbose);
@@ -2552,7 +2694,7 @@ struct resume {
 	int			dataset;	/* the dataset form */
 	int			privmnt;	/* it is at workmnt just now */
 	int			dropfrom;	/* done: the made snap goes */
-	char			home[ZR_NAME_MAX];	/* where it belongs */
+	int			settled;	/* it reached the done gate */
 	struct record		rb;
 	char			rundir[ZR_NAME_MAX];
 	char			workmnt[ZR_NAME_MAX];	/* <rundir>/mnt */
@@ -3109,16 +3251,25 @@ rescan_result(struct resume *s)
 }
 
 /*
- * The dataset form's result, taken over for the length of this verb
- * exactly as the run took it over: unmounted from wherever it is and
- * mounted at the run's own place, with readonly on, so that no
- * writer can be in it while a stage or a walk reads it. A kill can
- * have left it privately mounted already, in which case there is
- * nothing to move.
+ * The result taken over for the length of this verb, exactly as the
+ * run took it over and in both forms alike: at the run's own place,
+ * where no writer but this verb can reach it, and read-only in the
+ * clone form so that nothing can be in it while a stage or a walk
+ * reads it. Three states are possible and all three are ordinary:
  *
- * Its own mountpoint is remembered here rather than read again
- * later, since the property is what says where the dataset belongs
- * and nothing this verb does changes it.
+ *	at the private mount already, which is what a kill and what
+ *	the gate between two verbs leave, and there is nothing to do;
+ *	mounted nowhere, which is what a reboot leaves in either form
+ *	-- a clone whose mountpoint is none and a dataset whose
+ *	canmount is noauto are both mounted by nothing at boot -- and
+ *	the private mount goes straight on;
+ *	mounted somewhere else, which only a hand can have done, and
+ *	the unmount that takes it back is the same refusal the take
+ *	makes: a result somebody is using is not this verb's to move.
+ *
+ * After a reboot the directories under WORKDIR are still there but
+ * nothing is mounted, and the mount point itself may have been taken
+ * away by hand; mkdir_p makes both good.
  */
 static int
 take_over(struct resume *s)
@@ -3126,9 +3277,6 @@ take_over(struct resume *s)
 	char at[ZR_NAME_MAX];
 	int rc;
 
-	if (zr_zfs_get(s->zfs, s->result, "mountpoint", s->home,
-	    sizeof (s->home), s->err, sizeof (s->err)) != 0)
-		return (-1);
 	if (mkdir_p(s->workmnt, s->err, sizeof (s->err)) != 0)
 		return (-1);
 	rc = zr_zfs_mounted_at(s->zfs, s->result, at, sizeof (at), s->err,
@@ -3144,72 +3292,34 @@ take_over(struct resume *s)
 			    "unmount it and try again\n", s->result);
 			return (-1);
 		}
-		if (private_rw(s->zfs, s->result, s->err,
-		    sizeof (s->err)) != 0 ||
+		/*
+		 * The dataset form's private mount is writable for
+		 * its whole life, and the flip is made here while the
+		 * dataset is off any mountpoint; the clone's readonly
+		 * is the stages' own and is put back on below.
+		 */
+		if ((s->dataset && private_rw(s->zfs, s->result, s->err,
+		    sizeof (s->err)) != 0) ||
 		    zr_zfs_mount_at(s->zfs, s->result, s->workmnt, s->err,
-		    sizeof (s->err)) != 0) {
-			char e[512];
-
-			if (zr_zfs_mount(s->zfs, s->result, e,
-			    sizeof (e)) != 0)
-				(void) fprintf(stderr, "zfs_rebase: %s is "
-				    "unmounted and will not mount: %s\n",
-				    s->result, e);
+		    sizeof (s->err)) != 0)
 			return (-1);
-		}
 		s->privmnt = 1;
 		if (s->verbose)
 			(void) fprintf(stderr, "zfs_rebase: %s is this verb's "
 			    "alone, mounted at %s\n", s->result, s->workmnt);
 	}
 	/*
-	 * Read-only outside a stage is the clone form's rule, made at
-	 * the clone's own mountpoint; the dataset form's private mount
-	 * is writable for its life (private_rw), and its record says
-	 * what readonly was.
+	 * Read-only outside a stage is the clone form's rule, and the
+	 * kernel applies the change to the live private mount with no
+	 * remount at all (readonly_changed_cb; the box probe of
+	 * 2026-09-06, sprints/sprint-5/probe-mount.txt, 2a to 2d).
+	 * The dataset form's private mount is writable for its life
+	 * (private_rw), and the header says what readonly was.
 	 */
 	if (s->dataset)
 		return (0);
 	return (zr_zfs_set_readonly(s->zfs, s->result, 1, s->err,
 	    sizeof (s->err)));
-}
-
-/*
- * The clone where the run left it. After a reboot the directories
- * under WORKDIR are still there but nothing is mounted, and the
- * mount point itself may have been taken away by hand, so both are
- * made good here. A result mounted anywhere but the run's own place
- * is not this run's to write into and is refused.
- */
-static int
-mount_result(struct resume *s)
-{
-	char buf[ZR_NAME_MAX];
-	uint64_t mounted;
-
-	if (s->dataset)
-		return (take_over(s));
-	if (zr_zfs_get(s->zfs, s->result, "mountpoint", buf, sizeof (buf),
-	    s->err, sizeof (s->err)) != 0)
-		return (-1);
-	if (strcmp(buf, s->workmnt) != 0) {
-		(void) snprintf(s->err, sizeof (s->err), "%s is mounted at %s "
-		    "and not at %s, which is this run's own place", s->result,
-		    buf, s->workmnt);
-		return (-1);
-	}
-	if (zr_zfs_get_int(s->zfs, s->result, "mounted", &mounted, s->err,
-	    sizeof (s->err)) != 0)
-		return (-1);
-	if (mounted != ZR_NOT_MOUNTED)
-		return (0);
-	if (mkdir_p(s->workmnt, s->err, sizeof (s->err)) != 0 ||
-	    zr_zfs_mount(s->zfs, s->result, s->err, sizeof (s->err)) != 0)
-		return (-1);
-	if (s->verbose)
-		(void) fprintf(stderr, "zfs_rebase: mounted %s at %s\n",
-		    s->result, s->workmnt);
-	return (0);
 }
 
 /*
@@ -3690,13 +3800,18 @@ done_gate(struct resume *s)
 	 * is only marked here; resume_close does it.
 	 */
 	s->dropfrom = made_says(&s->rb, "from");
+	/*
+	 * And the result is the user's again: resume_close undoes the
+	 * private mount once the walks are closed and puts the
+	 * dataset home, or leaves the clone unmounted and says how to
+	 * place it. This is one of the two moments a rebase reaches
+	 * that -- the other is --abort -- and no gate before it does.
+	 */
+	s->settled = 1;
 	if (s->dataset)
 		(void) fprintf(stderr, "zfs_rebase: %s is the rebased tree, "
 		    "and %s is what it was before\n", s->result,
 		    s->rb.presnap);
-	else
-		(void) fprintf(stderr, "zfs_rebase: %s is the rebased tree, "
-		    "read-only at %s\n", s->result, s->workmnt);
 	return (EXIT_CLEAN);
 }
 
@@ -4040,7 +4155,7 @@ resume_open(struct resume *s, const char *result, int byguid)
 static int
 resume_trees(struct resume *s)
 {
-	if (mount_result(s) != 0)
+	if (take_over(s) != 0)
 		return (-1);
 	s->names = zr_names_create();
 	if (s->names == NULL) {
@@ -4082,15 +4197,23 @@ resume_close(struct resume *s)
 		zr_parsed_fini(&s->man);
 	zr_resolution_fini(&s->res);
 	/*
-	 * The dataset form gives the dataset back wherever the verb
-	 * stops, and only now, with the walks closed: the snapshots
-	 * under its .zfs are idle by this point and the unmount can
-	 * have them. What the record says readonly was is what it
-	 * goes back to.
+	 * The result, and only where the verb reached done: the walks
+	 * are closed by now, so the snapshots under the private
+	 * mount's .zfs are idle and the unmount can have them. The
+	 * dataset form goes home with the readonly and the canmount
+	 * the header kept; the clone form is handed to the void, and
+	 * placing it is the user's work. A verb that stopped short of
+	 * done -- at conflicts, at a refusal, at a caught signal --
+	 * leaves the result at the private mount, where the next verb
+	 * takes it from (documents-design.md, section 5).
 	 */
-	if (s->privmnt) {
+	if (s->privmnt && s->settled) {
 		s->privmnt = 0;
-		handback(s->zfs, s->result, s->rb.readonly, s->verbose);
+		if (s->dataset)
+			handback(s->zfs, s->result, s->rb.readonly,
+			    s->rb.canmount, s->workmnt, s->verbose);
+		else
+			to_the_void(s->zfs, s->result);
 	}
 	/*
 	 * A from snapshot the tool took itself lives exactly as long
@@ -4276,7 +4399,10 @@ zr_restart(const char *result, int verbose)
 	 * Destroy and clone again, with the record the old one carried:
 	 * the same tag, so the holds it named are still this rebase's,
 	 * the same manifest, which is still the decision, and no
-	 * phase, because the new clone has passed no gate. The holds
+	 * phase, because the new clone has passed no gate. Nothing is
+	 * mounted here: the new clone's mountpoint is none like the
+	 * old one's, and restart_from's take_over puts it at the
+	 * private mount as it would after a reboot. The holds
 	 * themselves are untouched -- they are on the snapshots and
 	 * not on the clone -- and onto's snapshot cannot go while a
 	 * clone of it lives, so there is no moment here where the
@@ -4287,8 +4413,8 @@ zr_restart(const char *result, int verbose)
 		goto done;
 	}
 	if (mkdir_p(s.workmnt, s.err, sizeof (s.err)) != 0 ||
-	    zr_zfs_clone(s.zfs, s.rb.onto, s.result, s.workmnt, &s.rb.rec,
-	    s.err, sizeof (s.err)) != 0) {
+	    zr_zfs_clone(s.zfs, s.rb.onto, s.result, &s.rb.rec, s.err,
+	    sizeof (s.err)) != 0) {
 		rc = vfail(&s, EXIT_INTERNAL, "clone");
 		/*
 		 * The record went with the clone, and the tag it named
@@ -4451,8 +4577,8 @@ final_verify(struct run *r)
  *	destroy that snapshot, which the rebase owned from the moment
  *	--result named it;
  *	take the record off, property by property;
- *	give the dataset back: readonly as the header says it was,
- *	mounted where its mountpoint property says.
+ *	give the dataset back: readonly and canmount as the header
+ *	says they were, mounted where its mountpoint property says.
  *
  * A rollback that cannot be made -- the snapshot gone, or a newer
  * snapshot in the way -- stops the abort with the record intact,
@@ -4461,9 +4587,9 @@ final_verify(struct run *r)
  */
 static int
 abort_dataset(struct zr_zfs *z, const char *result, const char *snap,
-    const char *ro, const char *rundir, int verbose)
+    const char *ro, const char *cm, const char *rundir, int verbose)
 {
-	char at[ZR_NAME_MAX], mnt[ZR_NAME_MAX];
+	char mnt[ZR_NAME_MAX];
 	char err[512];
 	int rc;
 
@@ -4498,24 +4624,14 @@ abort_dataset(struct zr_zfs *z, const char *result, const char *snap,
 		    err);
 	clear_record(z, result, verbose);
 	/*
-	 * And back to service. A kill can have left it at the run's
-	 * own mount point, at its own, or nowhere at all; only the
-	 * first has to be undone, and the other two want no unmount
-	 * that could fail for nothing.
+	 * And back to service, which is the one hand-back --abort
+	 * makes and the same one done makes. A kill can have left the
+	 * dataset at the run's own mount point, at its own, or
+	 * nowhere at all; the hand-back undoes only the first, and
+	 * puts both properties back in every case.
 	 */
 	(void) snprintf(mnt, sizeof (mnt), "%s/mnt", rundir);
-	rc = zr_zfs_mounted_at(z, result, at, sizeof (at), err, sizeof (err));
-	if (rc > 0 && strcmp(at, mnt) == 0) {
-		handback(z, result, ro, verbose);
-		return (0);
-	}
-	if (ro != NULL && ro[0] != '\0' && zr_zfs_set_readonly(z, result,
-	    strcmp(ro, "on") == 0, err, sizeof (err)) != 0)
-		(void) fprintf(stderr, "zfs_rebase: readonly=%s on %s: %s\n",
-		    ro, result, err);
-	if (rc == 0 && zr_zfs_mount(z, result, err, sizeof (err)) != 0)
-		(void) fprintf(stderr, "zfs_rebase: %s will not mount: %s\n",
-		    result, err);
+	handback(z, result, ro, cm, mnt, verbose);
 	return (0);
 }
 
@@ -4530,9 +4646,19 @@ abort_dataset(struct zr_zfs *z, const char *result, const char *snap,
  * Nothing is destroyed and nothing is rolled back. Which form the
  * run was in, and what the pre-apply snapshot was called, were the
  * manifest's to say, and a tool that guessed would be destroying a
- * dataset it cannot identify. It says so instead, and says what a
- * person would run for each form. Returns 0: this is as far as an
- * abort can get, and it got there.
+ * dataset it cannot identify.
+ *
+ * What it can read is the one property the two forms do not share.
+ * A clone of this tool's making has mountpoint none for the whole of
+ * its life, so a result whose mountpoint is a path is a dataset of
+ * the user's and is mounted there -- an explicit mount works whatever
+ * canmount says, which the box probe shows (probe-mount.txt, 3e) --
+ * while a result whose mountpoint is none has no home to be put at
+ * and is left unmounted, which is what an unplaced clone is. Neither
+ * readonly nor canmount can be put back: what they were was the
+ * header's to say. It prints the two commands for that, the command
+ * for each form, and leaves the choice to the person. Returns 0:
+ * this is as far as an abort can get, and it got there.
  */
 static int
 abort_lost(struct zr_zfs *z, const char *result, const char *tag,
@@ -4552,11 +4678,11 @@ abort_lost(struct zr_zfs *z, const char *result, const char *tag,
 		(void) fprintf(stderr, "zfs_rebase: released %s on %u "
 		    "snapshot%s of %s\n", tag, n, n == 1 ? "" : "s", pool);
 	/*
-	 * The private mount, undone where the result is at it. A
-	 * dataset of the user's goes home, which is where its
-	 * mountpoint property points; a clone's mountpoint property is
-	 * the private mount itself, so it is left unmounted, which is
-	 * what an unplaced clone is.
+	 * The private mount, undone where the result is at it, and
+	 * then the mountpoint property, which is the one thing that
+	 * still tells the two forms apart: a path is a dataset of the
+	 * user's and is mounted at it, none is a clone of this tool's
+	 * and stays unmounted.
 	 */
 	(void) snprintf(mnt, sizeof (mnt), "%s/mnt", rundir);
 	rc = zr_zfs_mounted_at(z, result, at, sizeof (at), err, sizeof (err));
@@ -4564,21 +4690,44 @@ abort_lost(struct zr_zfs *z, const char *result, const char *tag,
 		if (zr_zfs_unmount(z, result, err, sizeof (err)) != 0)
 			(void) fprintf(stderr, "zfs_rebase: %s will not "
 			    "unmount from %s: %s\n", result, mnt, err);
-		else if (zr_zfs_get(z, result, "mountpoint", home,
-		    sizeof (home), err, sizeof (err)) == 0 &&
-		    strcmp(home, mnt) != 0 &&
-		    zr_zfs_mount(z, result, err, sizeof (err)) != 0)
-			(void) fprintf(stderr, "zfs_rebase: %s will not "
-			    "mount at %s: %s\n", result, home, err);
-		else if (verbose)
-			(void) fprintf(stderr, "zfs_rebase: %s is off the "
-			    "private mount %s\n", result, mnt);
+		else {
+			rc = 0;
+			if (verbose)
+				(void) fprintf(stderr, "zfs_rebase: %s is off "
+				    "the private mount %s\n", result, mnt);
+		}
 	}
+	home[0] = '\0';
+	if (zr_zfs_get(z, result, "mountpoint", home, sizeof (home), err,
+	    sizeof (err)) != 0)
+		(void) fprintf(stderr, "zfs_rebase: mountpoint on %s: %s\n",
+		    result, err);
 	clear_record(z, result, verbose);
 	(void) fprintf(stderr, "zfs_rebase: the manifest is gone, so this "
 	    "abort cannot tell the clone form from the dataset form: %s was "
-	    "not destroyed, nothing was rolled back, and readonly and "
-	    "canmount are as the run left them\n", result);
+	    "not destroyed and nothing was rolled back\n", result);
+	if (home[0] != '\0' && strcmp(home, ZR_MOUNTPOINT_NONE) != 0) {
+		if (rc > 0)
+			(void) fprintf(stderr, "zfs_rebase: %s is mounted at "
+			    "%s and is left there; its mountpoint property "
+			    "names %s\n", result, at, home);
+		else if (zr_zfs_mount(z, result, err, sizeof (err)) != 0)
+			(void) fprintf(stderr, "zfs_rebase: %s will not mount "
+			    "at %s: %s\n", result, home, err);
+		else
+			(void) fprintf(stderr, "zfs_rebase: %s is mounted at "
+			    "%s, which its mountpoint property names\n",
+			    result, home);
+		(void) fprintf(stderr, "zfs_rebase: what readonly and "
+		    "canmount were was the manifest's to say, so they are as "
+		    "the run left them: zfs set readonly=VALUE %s and zfs set "
+		    "canmount=VALUE %s put them back\n", result, result);
+	} else {
+		(void) fprintf(stderr, "zfs_rebase: %s has no mountpoint of "
+		    "its own and is left unmounted; if it is a clone this "
+		    "tool made it is yours to destroy or to place\n",
+		    result);
+	}
 	(void) fprintf(stderr, "zfs_rebase: if %s is a clone this tool made: "
 	    "zfs destroy %s\n", result, result);
 	(void) fprintf(stderr, "zfs_rebase: if %s is a dataset of yours: zfs "
@@ -4610,9 +4759,9 @@ abort_lost(struct zr_zfs *z, const char *result, const char *tag,
  *
  * What the record buys is the manifest, and the manifest's header is
  * everything else: the form, the three snapshots to release, which
- * of them the tool made, and the pre-apply snapshot and the readonly
- * value the dataset form puts back. Where the file is gone or will
- * not parse, abort_lost above is as far as this can go.
+ * of them the tool made, and the pre-apply snapshot and the two
+ * property values the dataset form puts back. Where the file is gone
+ * or will not parse, abort_lost above is as far as this can go.
  *
  * It can be run again. The holds are released first, so a destroy
  * that fails leaves nothing held that a second --abort would have
@@ -4782,7 +4931,8 @@ zr_abort(const char *result, int verbose)
 		 */
 		if (p.zp_form == ZR_HFORM_DATASET) {
 			if (abort_dataset(z, result, p.zp_presnap,
-			    p.zp_readonly, dir, verbose) != 0)
+			    p.zp_readonly, p.zp_canmount, dir,
+			    verbose) != 0)
 				goto done;
 			(void) fprintf(stderr, "zfs_rebase: %s is as it was "
 			    "before the rebase\n", result);

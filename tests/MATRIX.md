@@ -612,15 +612,15 @@ again.
 | ZX13 | a side given as a dataset is snapshotted as <dataset>@zfs_rebase-<tag> and recorded made=from | planned: box, box/run-fixture.sh |
 | ZX14 | one hold per input, under the record's tag | planned: box, box/run-fixture.sh |
 | ZX15 | the holds outlive the process; done and --abort release them | planned: box, box/run-fixture.sh |
-| ZX16 | clone readonly=on, private mount | planned: box, box/run-fixture.sh |
-| ZX17 | the clone mounts under that root | planned: box, box/run-fixture.sh |
+| ZX16 | the clone is created readonly=on with mountpoint=none, and that property is never a path | planned: box, box/run-fixture.sh step 3 |
+| ZX17 | the clone is mounted at <rundir>/mnt with zfs_mount_at, which is the only place it is mounted while the rebase is open | planned: box, box/run-fixture.sh step 3 |
 | ZX18 | readonly off to apply, on after | planned: box, box/run-fixture.sh |
 | ZX19 | the failure path destroys it | planned: box, box/run-fixture.sh |
 | ZX20 | preconditions: mounted, one pool | planned: box, box/run-fixture.sh |
 | ZX21 | name semantics on all three | planned: box, box/run-fixture.sh |
 | ZX22 | refusal when not run as root | planned: box, box/run-fixture.sh |
 | ZX23 | securelevel refusal | deferred: a reboot; see the note |
-| ZX24 | a foreign mountpoint is refused | planned: box, box/run-fixture.sh |
+| ZX24 | (retired with the clone's own mountpoint: a result mounted anywhere but the private mount is now taken back by an unmount rather than refused, which is ZX163) | -- |
 | ZX25 | the self-check after applying1 finds every action done or blocked and no name outside the manifest | planned: box, box/run-fixture.sh |
 | ZX26 | a stray write at applying1 caught and put back by the self-check | planned: box, box/run-strays.sh, which is where the pause hook can put one there mid-apply |
 | ZX27 | exit 0: clean and applied | planned: box, box/run-fixture.sh |
@@ -667,11 +667,11 @@ again.
 | ZX68 | exclusivity: onto is unmounted from its own place and mounted at <rundir>/mnt, with the mountpoint property untouched | planned: box, box/run-fixture.sh |
 | ZX69 | a file held open under onto: the unmount refuses, exit 2, nothing touched | planned: box, box/run-fixture.sh |
 | ZX70 | readonly on outside the apply, off during it, and the recorded value back at the hand-back | planned: box, box/run-fixture.sh |
-| ZX71 | the hand-back: at conflicts, at done and after a failure the dataset is mounted at home again | planned: box, box/run-fixture.sh |
+| ZX71 | home is reached exactly twice, at done and at --abort, and by a run that takes itself away whole; no gate between them hands the dataset back | planned: box, box/run-fixture.sh dataset pass and box/run-kills.sh |
 | ZX72 | a kill in the dataset form leaves it privately mounted, and the next verb takes it from there | planned: box, box/run-kills.sh |
 | ZX73 | --restart in the dataset form: rolled back to the pre-apply snapshot, applied again, same gate and tag | planned: box, box/run-fixture.sh |
 | ZX74 | --abort in the dataset form: rolled back, the pre-apply snapshot destroyed, no zfs_rebase: property left local, mounted at home | planned: box, box/run-fixture.sh |
-| ZX75 | --verify alone in the dataset form: the live tree walked privately and handed back, nothing written | planned: box, box/run-fixture.sh |
+| ZX75 | --verify alone in the dataset form: the live tree walked privately, left at the private mount, nothing written | planned: box, box/run-fixture.sh dataset pass |
 | ZX76 | (retired with --overwrite: a rebase that reached done leaves no record to replace, and the rule that took its place is ZX144) | -- |
 | ZX77 | a base that is a snapshot of onto is read through the private mount | deferred: needs a from cloned out of onto, which the fixtures do not build; by hand on the box |
 | ZX78 | a snapshot newer than the pre-apply one: --restart and --abort refuse rather than destroy it | deferred: needs a snapshot taken during a rebase; by hand on the box |
@@ -683,7 +683,7 @@ again.
 | ZX89 | a stop at conflicts or at applying2 leaves that state, the three holds and the manifest; a caught signal at conflicts is no stop at all, since nothing looks at the flag past that gate | planned: box, box/run-kills.sh |
 | ZX90 | a stop at the done gate: SIGKILL leaves the phase of the stage that ran before it and the three holds, and --continue redoes that stage and finishes; a caught signal lets the run finish, release the holds and clear the record | planned: box, box/run-kills.sh |
 | ZX91 | --verify over what a kill left: pending before and inside applying1, nothing pending past it, no drift, and the gate, the holds and the tree unmoved | planned: box, box/run-kills.sh |
-| ZX92 | --continue after every kill, with --verify and without, reaches the branch's end: readonly as the form has it, the dataset home, the holds gone and the record cleared at done and both there at conflicts, stage 1 idempotent over the result | planned: box, box/run-kills.sh |
+| ZX92 | --continue after every kill, with --verify and without, reaches the branch's end: readonly as the form has it, the result settled where it reached done and at the private mount where it stopped at conflicts, the holds gone and the record cleared at done and both there at conflicts, stage 1 idempotent over the result | planned: box, box/run-kills.sh |
 | ZX93 | zfs destroy of a held input, while the run is stopped, fails and leaves the snapshot standing; where nothing is cloned from it the hold is the only reason and the message says busy | planned: box, box/run-kills.sh |
 | ZX94 | a stray write into the live from or onto while the run is reading changes nothing: the tool reads snapshots, so the manifest is the expect block to the byte and the verify is clean | planned: box, box/run-strays.sh |
 | ZX95 | in the dataset form onto's own mount point is an empty directory while the run has the dataset, and a write there lands in the pool's root dataset and is hidden the moment the dataset comes home | planned: box, box/run-strays.sh |
@@ -730,6 +730,21 @@ again.
 | ZX143 | at done no zfs_rebase: property is left on the result, in either form and by either path (the run's own done and a --continue's) | planned: box, box/run-fixture.sh, box/run-kills.sh and box/run-resolution.sh, each of which now asserts the empty list where it asserted state=done |
 | ZX144 | a settled result is free: a second run over that dataset is taken with no flag, and --continue, --restart, --abort and --verify on it exit 2 as on any dataset with no record | planned: box, box/run-fixture.sh D2 and step 3a |
 | ZX145 | --abort with the manifest gone: the holds are released by walking the pool for the tag, the private mount is undone, the record is cleared, nothing is destroyed or rolled back, and the two commands are printed | planned: box, box/run-fixture.sh (the manifest unlinked by hand at the conflicts gate); nothing on the Mac reaches zr_zfs_release_tag |
+| ZX158 | the mountpoint property of the result is never a path in the clone form: none at the create, none at every gate, none at done and none after --abort without a manifest | planned: box, box/run-fixture.sh steps 3, 3c and 5a |
+| ZX159 | the clone stays at the private mount through every gate, the conflicts gate included, since it has no home to be handed to | planned: box, box/run-fixture.sh step 3b and box/run-kills.sh |
+| ZX160 | the per-stage readonly flips of the clone form reach the kernel at the private mount, with no remount attempted at a stale path | planned: box; the probe of 2026-09-06 answered it directly (tools/probe-mount.c 2a-2d, sprints/sprint-5/probe-mount.txt), and every harness reads readonly per gate after it |
+| ZX161 | done hands the clone to the void: unmounted, readonly on, mountpoint none, and one line on stderr saying how to place it | planned: box, box/run-fixture.sh steps 3, 3d and 5, which place it with zfs set mountpoint to read its tree |
+| ZX162 | a reboot leaves the clone unmounted, and the next verb's take_over mounts it privately again; --restart's fresh clone takes the same path | planned: box, box/run-fixture.sh 3c (the fresh clone); the reboot itself is by hand on the box |
+| ZX163 | a result mounted anywhere but the private mount is unmounted and taken back, and one somebody is using refuses with the take's own message | deferred: needs a result mounted by hand and held open; by hand on the box, as ZX69 is for the take |
+| ZX164 | --abort in the clone form undoes the private mount and destroys the clone, whatever the mountpoint property says | planned: box, box/run-fixture.sh step 4 |
+| ZX165 | the take sets canmount=noauto while the dataset is unmounted, and the header's #canmount is what it was before the take and not what the take wrote | planned: box, box/run-fixture.sh dataset pass |
+| ZX166 | at every gate and after every kill the dataset is at the private mount with canmount noauto and readonly off, never at home | planned: box, box/run-kills.sh, box/run-strays.sh and box/run-resolution.sh |
+| ZX167 | the hand-back: both properties put back while the dataset is unmounted, then mounted home only where it is not there already | planned: box, box/run-fixture.sh dataset pass and its --abort |
+| ZX168 | a caught signal at a gate leaves the dataset privately mounted, as a SIGKILL does, and --continue finds it there | planned: box, box/run-kills.sh, every gate crossed with INT and TERM |
+| ZX169 | a run that gives up before it has written anything puts the dataset home with both properties back, as an --abort would | planned: box, box/run-kills.sh, the torn cases |
+| ZX170 | a dataset form onto whose canmount is off is refused at precondition, exit 2, with nothing taken and nothing written; the property is read before the mounted question so the message names it | planned: box, box/run-precond.sh 1c |
+| ZX171 | --abort with the manifest gone tells the forms apart by the mountpoint property alone: a path is mounted home, none is left unmounted, and neither readonly nor canmount is guessed at | planned: box, box/run-fixture.sh 5a |
+| ZX172 | an edit made at the conflicts gate in the dataset form is made at the private mount, where only root can reach it | planned: box, box/run-strays.sh and box/run-resolution.sh, whose gate cases now edit there |
 | ZX146 | zfs_rebase:base and :base_guid are written by nothing: the branch point is #base in the header | covered: the grep over src, tests and the docs; box, the empty property list after a run |
 | ZX147 | zfs_rebase:from and :from_guid likewise: #from | covered: the same |
 | ZX148 | zfs_rebase:onto and :onto_guid likewise: #onto | covered: the same |
@@ -756,6 +771,19 @@ block they are. ZX130 to ZX136 are what the resolution does to a real
 tree -- the choices by hand, the count a stop names, the drift lines,
 the two new pause gates and the ACL strip -- and every one of them,
 with ZX122 to ZX126, is box/run-resolution.sh's.
+
+ZX158 to ZX172 are private-mount's: the clone form on the private
+mount and the dataset form's canmount. Every one of them is box only,
+because every one of them is a mount or a property on a real dataset,
+and the four questions they rest on were answered on the box before
+the code was written -- tools/probe-mount.c, run through
+tests/box/run-probe.sh, transcript in
+sprints/sprint-5/probe-mount.txt. ZX24 is retired by the same work:
+a result mounted somewhere else is no longer refused but taken back,
+which is ZX163, and that row is deferred with ZX69 because both want
+a mount held open by hand. Nothing here is reachable on the Mac: the
+portable build answers every one of these calls with "not built with
+ZR_FREEBSD".
 
 ZX137 to ZX157 are record-slim's: the command line's two changes
 (--quiet added, --overwrite gone), the four properties the record

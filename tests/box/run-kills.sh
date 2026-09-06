@@ -42,19 +42,25 @@
 #      the record with that phase (or no phase at all before
 #      applying1, when the record is the manifest's path and the tag
 #      alone), the three holds, the manifest from "decided" on, and
-#      the result. In the clone form readonly is back on
+#      the result, which is at the run's private mount in both forms:
+#      the clone with its mountpoint property none, the dataset with
+#      canmount noauto. In the clone form readonly is back on
 #      wherever the tool had the chance to put it back (every SIGINT
 #      and SIGTERM, and a SIGKILL at a gate where readonly was
 #      already on) and off after a SIGKILL inside an applying stage.
-#      In the dataset form a caught signal hands the dataset back to
-#      its own mount point and a SIGKILL leaves it at the run's
-#      private one, where the next verb takes it from; its readonly
-#      property is what the record says it was, at the private mount
-#      and at home alike, since the tool changes it only while the
-#      dataset is off its mountpoint (libzfs remounts at the
-#      mountpoint property on a readonly change, which cannot land
-#      while the dataset sits at the private mount) -- the private
-#      mount is root's alone and writable for its life.
+#      In the dataset form the stop leaves the dataset privately
+#      mounted whatever the signal was -- home is reached at done and
+#      at --abort and at no gate between them, because a half rebased
+#      tree waiting for its conflicts to be answered is not put back
+#      into service (documents-design.md, section 5) -- except at the
+#      held gate, which is before the take, where it is still at
+#      home with canmount on. Its readonly property is what the
+#      record says it was, at the private mount and at home alike,
+#      since the tool changes it only while the dataset is off its
+#      mountpoint (libzfs remounts at the mountpoint property on a
+#      readonly change, which cannot land while the dataset sits at
+#      the private mount) -- the private mount is root's alone and
+#      writable for its life.
 #
 #   finished -- SIGINT and SIGTERM at done. Nothing looks at the flag
 #      after that gate, so the run finishes: the holds released, the
@@ -71,12 +77,17 @@
 #
 #   --continue --result reaches the gate the fixture's branch ends
 #   in -- done for a clean one, conflicts for a conflicted one -- and
-#   after it readonly is on, the dataset is home, the holds are gone
-#   at done and there at conflicts, and a --posix rebase of the
-#   fixture's from onto the result declares zero actions, which is
-#   stage 1 idempotence. A kill before the manifest was written is
-#   the exception: there is nothing to continue from and --continue
-#   exits 2 naming the file it wanted.
+#   after it readonly is on, the holds are gone at done and there at
+#   conflicts, and a --posix rebase of the fixture's from onto the
+#   result declares zero actions, which is stage 1 idempotence. Where
+#   it reached done the result is settled: the dataset home with
+#   canmount and readonly as the fixture built them, the clone
+#   unmounted with mountpoint none, which the harness places to read
+#   its tree the way the tool's own last line says. Where it stopped
+#   at conflicts the result is at the private mount, in both forms. A
+#   kill before the manifest was written is the exception: there is
+#   nothing to continue from, --continue exits 2 naming the file it
+#   wanted, and the result is left exactly where the kill left it.
 #
 #   A --continue given --verify makes the final check itself if it
 #   reaches the done gate: there is no recorded request any more, and
@@ -188,6 +199,54 @@ holdcount() {
 }
 holdtags() { zfs holds -H "$1" | cut -f2; }
 mounted_at() { mount | grep -q " on $1 "; }
+# A clone whose rebase reached done is unmounted with its mountpoint
+# property still none -- the void the tool hands it to -- so reading
+# its tree means placing it first, which is exactly what the tool's
+# own last line says to do. reset_pool destroys it again.
+place_clone() {
+	mp=$(recval mountpoint "$POOL/result")
+	[ "$mp" = none ] || fail "a settled clone's mountpoint is $mp, want none"
+	if ! mounted_at "$MNT/result"; then
+		[ "$(recval mounted "$POOL/result")" = no ] || \
+		    fail "a settled clone is mounted somewhere else"
+		zfs set mountpoint="$MNT/result" "$POOL/result" || \
+		    fail "cannot place the settled clone"
+		mounted_at "$MNT/result" || \
+		    fail "placing the clone did not mount it at $MNT/result"
+	fi
+	return 0
+}
+# Where the result is, as an assertion. "priv" is the run's own mount
+# point, which is where both forms hold it for the whole of an open
+# rebase; "home" is where a dataset goes at done and at --abort; and
+# "void" is where a clone goes at done, which is nowhere at all --
+# unmounted, with the mountpoint property still none, for the user to
+# place. A clone has no home and a dataset never sees the void.
+where_is() {			# priv | home | void
+	if [ "$1" = void ]; then
+		mp=$(recval mountpoint "$POOL/result")
+		[ "$mp" = none ] || \
+		    fail "a settled clone's mountpoint is $mp, want none"
+		[ "$(recval mounted "$POOL/result")" = no ] || \
+		    fail "a settled clone is still mounted"
+		return 0
+	fi
+	if [ "$1" = priv ]; then
+		mounted_at "$rundir/mnt" || \
+		    fail "$rds is not at the private mount $rundir/mnt"
+		[ "$form" = clone ] || \
+		    [ "$(recval canmount "$POOL/onto")" = noauto ] || \
+		    fail "canmount is $(recval canmount "$POOL/onto") at the private mount, want noauto"
+		[ "$form" = dataset ] || \
+		    [ "$(recval mountpoint "$POOL/result")" = none ] || \
+		    fail "the clone's mountpoint is $(recval mountpoint "$POOL/result"), want none"
+		return 0
+	fi
+	mounted_at "$MNT/onto" || fail "$rds is not at home $MNT/onto"
+	[ "$(recval canmount "$POOL/onto")" = on ] || \
+	    fail "canmount is $(recval canmount "$POOL/onto") at home, want on"
+	return 0
+}
 # Rebase the fixture's from onto the result again, over three plain
 # directories: stage 1 is idempotent, so this must have nothing left
 # to do and must name the same conflicts.
@@ -263,6 +322,7 @@ reset_pool() {
 	if zfs list -H -o name "$POOL/result" >/dev/null 2>&1; then
 		zfs destroy "$POOL/result" || \
 		    fail "the reset cannot destroy the settled $POOL/result"
+		rmdir "$MNT/result" 2>/dev/null
 	fi
 	if hassnap "$POOL/onto@pre"; then
 		zfs rollback -r "$POOL/onto@pre" || \
@@ -288,6 +348,8 @@ reset_pool() {
 	mounted_at "$MNT/onto" || fail "the reset left onto unmounted"
 	[ "$(recval readonly "$POOL/onto")" = off ] || \
 	    fail "the reset left onto read-only"
+	[ "$(recval canmount "$POOL/onto")" = on ] || \
+	    fail "the reset left onto at canmount noauto"
 	return 0
 }
 
@@ -351,25 +413,29 @@ kill_case() {
 			wro=off; wmnt=home
 		fi ;;
 	applying1|action:*)
-		out=kept; wstate=applying1; wman=yes
+		# A kept rebase holds the result at the private mount
+		# whatever the signal was: only done and --abort hand
+		# it back, and a caught signal at a gate is neither.
+		out=kept; wstate=applying1; wman=yes; wmnt=priv
 		if [ "$sig" = KILL ]; then
-			wexit=137; wro=off; wmnt=priv
+			wexit=137; wro=off
 		else
-			wexit=3; wro=on; wmnt=home
+			wexit=3; wro=on
 		fi ;;
 	conflicts)
-		out=kept; wstate=conflicts; wman=yes; wro=on
+		out=kept; wstate=conflicts; wman=yes; wro=on; wmnt=priv
 		if [ "$sig" = KILL ]; then
-			wexit=137; wmnt=priv
+			wexit=137
 		else
-			wexit=1; wmnt=home
+			wexit=1
 		fi ;;
 	applying2)
 		out=kept; wstate=applying2; wman=yes; resumed=yes
+		wmnt=priv
 		if [ "$sig" = KILL ]; then
-			wexit=137; wro=off; wmnt=priv
+			wexit=137; wro=off
 		else
-			wexit=3; wro=on; wmnt=home
+			wexit=3; wro=on
 		fi ;;
 	done)
 		# done is no phase: a SIGKILL at that gate stops before
@@ -399,6 +465,11 @@ kill_case() {
 	# tool touches its readonly only while it is off its mountpoint.
 	if [ "$form" = dataset ]; then
 		wro=off
+	fi
+	# And the clone form has no home to be handed back to: what
+	# done leaves it at is the void.
+	if [ "$form" = clone ] && [ $wmnt = home ]; then
+		wmnt=void
 	fi
 
 	# A gate past conflicts is reached by a --continue over an
@@ -488,8 +559,7 @@ kill_case() {
 			[ -z "$left" ] || fail "a torn run left $left on onto"
 			hassnap "$POOL/onto@pre" && \
 			    fail "a torn run left the pre-apply snapshot"
-			mounted_at "$MNT/onto" || \
-			    fail "a torn run left onto away from home"
+			where_is home
 			[ "$(recval readonly "$POOL/onto")" = off ] || \
 			    fail "a torn run left onto read-only"
 		fi
@@ -535,15 +605,10 @@ kill_case() {
 		[ -e "$man" ] && fail "a manifest at $man before the decision"
 		[ -e "$res" ] && fail "a resolution at $res before the decision"
 	fi
-	if [ "$form" = dataset ]; then
-		if [ $wmnt = home ]; then
-			mounted_at "$MNT/onto" || \
-			    fail "onto was not handed back to $MNT/onto"
-		else
-			mounted_at "$rundir/mnt" || \
-			    fail "onto is not at the private mount $rundir/mnt"
-		fi
-	fi
+	# Where the stop left the result, which is the private mount in
+	# both forms unless the run reached done or never took the
+	# dataset over at all.
+	where_is $wmnt
 	if [ $out = finished ]; then
 		# It reached done, so there is no rebase left: every
 		# verb says so and the tree is the rebased tree.
@@ -556,7 +621,8 @@ kill_case() {
 		if [ "$form" = dataset ]; then
 			cmnt=$MNT/onto
 		else
-			cmnt=$rundir/mnt
+			place_clone
+			cmnt=$MNT/result
 		fi
 		again "$tmp/again" "$cmnt"
 		echo "ok   $case_id: finished, the record off, the holds released"
@@ -577,8 +643,9 @@ kill_case() {
 		    { cat "$tmp/cont"; fail "--continue did not name the manifest"; }
 		[ "$(phasenow "$rds")" = "$wstate" ] || \
 		    fail "the failed --continue moved the phase"
-		[ "$form" = dataset ] && { mounted_at "$MNT/onto" || \
-		    fail "the failed --continue did not hand onto back"; }
+		# It was refused before it took the result over, so
+		# the result is exactly where the kill left it.
+		where_is $wmnt
 		echo "ok   $case_id: at ${wstate:-no gate}, readonly $wro, 3 holds; no manifest to continue from"
 		reset_pool
 		return 0
@@ -656,11 +723,20 @@ kill_case() {
 	fi
 	[ "$(recval readonly "$rds")" = "$endro" ] || \
 	    fail "readonly is $(recval readonly "$rds") after --continue, want $endro"
-	if [ "$form" = dataset ]; then
-		mounted_at "$MNT/onto" || \
-		    fail "--continue did not hand onto back"
-		cmnt=$MNT/onto
+	# And where the --continue left the result: settled where it
+	# reached done -- the dataset home with the properties the
+	# fixture built, the clone unmounted for the user to place --
+	# and at the private mount where it stopped at conflicts.
+	if [ $wsettled -eq 1 ]; then
+		if [ "$form" = dataset ]; then
+			where_is home
+			cmnt=$MNT/onto
+		else
+			place_clone
+			cmnt=$MNT/result
+		fi
 	else
+		where_is priv
 		cmnt=$rundir/mnt
 	fi
 	again "$tmp/again" "$cmnt"
