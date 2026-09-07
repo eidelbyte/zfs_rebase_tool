@@ -60,17 +60,22 @@ prog_t0=0
 prog_rows=0
 prog_cols=80
 
-# The terminal's size: tput, else stty, else the environment, else a
-# guess. Anything not a number is treated as unknown.
+# The terminal's size, from the terminal itself: stty size asks the
+# tty it is given for TIOCGWINSZ, and it is given /dev/tty, so the
+# answer is the window's whatever stdout and stderr are at the time.
+# tput is not asked. It sizes the window through stdout, or through
+# stderr where stdout is no terminal (setupterm, ncurses
+# tinfo/lib_setup.c), and inside a command substitution with stderr
+# closed neither is one, so it answers the terminfo entry's 24 and 80
+# instead: the box showed exactly that on 2026-09-07, the two rows
+# pinned mid-screen and an 80-column bar in a wider window. Where
+# there is no tty to ask, the environment, then a guess; a row count
+# of 0 keeps the display off. Anything not a number is unknown.
 prog_size() {
-	prog_rows=$(tput lines 2>/dev/null)
-	prog_cols=$(tput cols 2>/dev/null)
-	case "$prog_rows" in ''|*[!0-9]*)
-		prog_rows=$(stty size 2>/dev/null | cut -d' ' -f1) ;;
-	esac
-	case "$prog_cols" in ''|*[!0-9]*)
-		prog_cols=$(stty size 2>/dev/null | cut -d' ' -f2) ;;
-	esac
+	prog_sz=$( ( stty size </dev/tty ) 2>/dev/null )
+	prog_rows=${prog_sz%% *}
+	prog_cols=${prog_sz##* }
+	[ "$prog_sz" != "$prog_rows" ] || prog_cols=""
 	case "$prog_rows" in ''|*[!0-9]*) prog_rows=${LINES:-0} ;; esac
 	case "$prog_cols" in ''|*[!0-9]*) prog_cols=${COLUMNS:-80} ;; esac
 	case "$prog_rows" in ''|*[!0-9]*) prog_rows=0 ;; esac
