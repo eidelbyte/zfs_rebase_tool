@@ -170,9 +170,14 @@ say() { printf '\n== %s\n' "$*"; prog_note "$*"; }
 fail() { echo "FAIL: $case_id: $*"; exit 1; }
 recval() { zfs get -H -o value "$1" "$2" 2>/dev/null; }
 recsrc() { zfs get -H -o source "$1" "$2" 2>/dev/null; }
+# The phase, with "" for a record that has passed no gate yet and for
+# a result with no record at all, which is what done leaves. The
+# pool root carries a bogus phase, so the value counts only where it
+# is the dataset's own: an inherited one is no record.
 phasenow() {
-	v=$(zfs get -H -o value zfs_rebase:phase "$1" 2>/dev/null)
-	[ "$v" = - ] && v=""
+	v=""
+	[ "$(recsrc zfs_rebase:phase "$1")" = local ] && \
+	    v=$(recval zfs_rebase:phase "$1")
 	printf '%s' "$v"
 }
 # One line of a manifest's header, which is where the rebase's

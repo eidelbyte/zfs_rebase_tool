@@ -671,8 +671,11 @@ phase=$(recval zfs_rebase:phase "$POOL/result")
 want_conf=$(sed -n 's/^#conflicts //p' "$tmp/expect")
 if [ $clean -eq 1 ]; then
 	# done is no phase: it is the absence of the whole record,
-	# which the property list above has already shown.
-	[ "$phase" = "-" ] || \
+	# which the property list above has already shown. The value
+	# read back is the pool root's bogus one, inherited, so it is
+	# the source that says whether the result has a phase of its
+	# own.
+	[ "$(recsrc zfs_rebase:phase "$POOL/result")" != local ] || \
 	    fail "zfs_rebase:phase is $phase on a rebase that reached done"
 	again "$tmp/again"
 	idempotent "$tmp/again" 0
@@ -1382,7 +1385,9 @@ dataset_pass() {
 
 	dphase=$(recval zfs_rebase:phase "$POOL/onto")
 	if [ $clean -eq 1 ]; then
-		[ "$dphase" = "-" ] || \
+		# The value is the pool root's bogus one, inherited: no
+		# phase of its own is what done leaves.
+		[ "$(recsrc zfs_rebase:phase "$POOL/onto")" != local ] || \
 		    dfail "zfs_rebase:phase is $dphase on a rebase at done"
 		for s in "$POOL/base@base" "$POOL/onto@$dname"; do
 			held=$(zfs holds -H "$s") || dfail "zfs holds $s"
