@@ -194,17 +194,23 @@ at_done() {
 # A clone whose rebase reached done is unmounted with its mountpoint
 # property still none, which is the void the tool hands it to;
 # placing it is the user's work, and the tool's last line says how.
+# A case that reaches done and looks again finds the clone where
+# this placed it the first time, mountpoint and all: that is the
+# harness's own placement standing, not the tool's doing.
 place_clone() {
 	mp=$(recval mountpoint "$POOL/result")
-	[ "$mp" = none ] || fail "a settled clone's mountpoint is $mp, want none"
-	if ! mounted_at "$MNT/result"; then
-		[ "$(recval mounted "$POOL/result")" = no ] || \
-		    fail "a settled clone is mounted somewhere else"
-		zfs set mountpoint="$MNT/result" "$POOL/result" || \
-		    fail "cannot place the settled clone"
-		mounted_at "$MNT/result" || \
-		    fail "placing the clone did not mount it at $MNT/result"
+	if mounted_at "$MNT/result"; then
+		[ "$mp" = "$MNT/result" ] || \
+		    fail "the placed clone's mountpoint is $mp, want $MNT/result"
+		return 0
 	fi
+	[ "$mp" = none ] || fail "a settled clone's mountpoint is $mp, want none"
+	[ "$(recval mounted "$POOL/result")" = no ] || \
+	    fail "a settled clone is mounted somewhere else"
+	zfs set mountpoint="$MNT/result" "$POOL/result" || \
+	    fail "cannot place the settled clone"
+	mounted_at "$MNT/result" || \
+	    fail "placing the clone did not mount it at $MNT/result"
 	return 0
 }
 # Where the result's tree is to be read or edited just now, with the
