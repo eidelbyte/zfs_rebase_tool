@@ -445,10 +445,12 @@ it, here exactly as at done.
 
 Which of those it does is the manifest's to say. Where that file has
 been lost, --abort gives the holds back by walking the result's pool
-for the record's tag, undoes the private mount and takes the record
-off, and then says plainly what it cannot do without the manifest:
-it cannot tell the clone form from the dataset form, so it destroys
-nothing and rolls nothing back, and it cannot put readonly or
+for the record's tag, destroys the snapshot the run took for itself
+where it took one -- that walk finds it held under the tag and named
+with it -- undoes the private mount and takes the record off, and
+then says plainly what it cannot do without the manifest: it cannot
+tell the clone form from the dataset form, so it destroys nothing
+else and rolls nothing back, and it cannot put readonly or
 canmount back -- it prints the two `zfs set` commands for that. The
 one thing it can still read is the `mountpoint` property, which the
 two forms never share: a path is a dataset of yours and is mounted at

@@ -652,7 +652,28 @@ kill_case() {
 		# It was refused before it took the result over, so
 		# the result is exactly where the kill left it.
 		where_is $wmnt
-		echo "ok   $case_id: at ${wstate:-no gate}, readonly $wro, 3 holds; no manifest to continue from"
+		if [ "$form" = dataset ]; then
+			# The run took from's snapshot itself, and the
+			# manifest that would say so is not written:
+			# --abort finds it all the same, by the hold
+			# under the tag and the name the run gave it,
+			# and destroys it with the holds given back.
+			made=$POOL/from@zfs_rebase-$tag
+			hassnap "$made" || fail "the kill left no $made"
+			"$bin" --abort --result "$rds" > "$tmp/abort" 2>&1
+			st=$?
+			[ $st -eq 0 ] || \
+			    { cat "$tmp/abort"; fail "--abort without a manifest exited $st, want 0"; }
+			hassnap "$made" && \
+			    { cat "$tmp/abort"; fail "--abort left the run's own $made"; }
+			grep -q "$made was this run's own snapshot" "$tmp/abort" || \
+			    { cat "$tmp/abort"; fail "--abort did not say it destroyed $made"; }
+			[ "$(holdcount)" = 0 ] || \
+			    fail "--abort without a manifest left $(holdcount) holds"
+			echo "ok   $case_id: at ${wstate:-no gate}, readonly $wro, 3 holds; no manifest to continue from; --abort destroyed the run's own $made"
+		else
+			echo "ok   $case_id: at ${wstate:-no gate}, readonly $wro, 3 holds; no manifest to continue from"
+		fi
 		reset_pool
 		return 0
 	fi

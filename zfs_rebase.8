@@ -544,10 +544,11 @@ Which of those it does is the manifest's to say.
 Where that file has been lost,
 .Fl -abort
 gives the holds back by walking the result's pool for the record's tag,
-undoes the private mount and takes the record off, and then says what it
-cannot do without the manifest: it cannot tell the clone form from the
-dataset form, so it destroys nothing and rolls nothing back, and it cannot
-put
+destroys the snapshot the run took for itself where it took one, which
+that walk finds held under the tag and named with it, undoes the private
+mount and takes the record off, and then says what it cannot do without
+the manifest: it cannot tell the clone form from the dataset form, so it
+destroys nothing else and rolls nothing back, and it cannot put
 .Sy readonly
 or
 .Sy canmount

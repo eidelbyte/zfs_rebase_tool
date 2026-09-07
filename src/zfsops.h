@@ -193,14 +193,24 @@ int zr_zfs_rollback(struct zr_zfs *z, const char *dataset,
  * dataset, and each snapshot's holds are read with lzc_get_holds
  * (lib/libzfs_core/libzfs_core.c), whose keys are the tags.
  *
+ * Where made is not NULL, the walk also looks, among the snapshots
+ * it gave the tag back on, for the one the run took for itself: its
+ * name after the @ is made exactly, or made, "-" and a number, which
+ * is how the run names what it takes (snapshot_input in run.c). Its
+ * full name goes into madebuf, and "" says there was none. A run
+ * that is recorded takes at most one such snapshot, so one is all
+ * that is looked for.
+ *
  * This is --abort's way out when the manifest the record names is
- * gone: the record still carries the tag, and the holds filed under
- * it are the one thing that must not be left behind. Every other
- * verb releases by name, because the manifest names the three
- * snapshots and a walk of the pool is a walk of the pool.
+ * gone: the record still carries the tag, the holds filed under it
+ * are the one thing that must not be left behind, and the snapshot
+ * the run took is the other. Every other verb releases by name,
+ * because the manifest names the three snapshots and a walk of the
+ * pool is a walk of the pool.
  */
 int zr_zfs_release_tag(struct zr_zfs *z, const char *pool, const char *tag,
-    unsigned *nfound, char *err, size_t errlen);
+    const char *made, char *madebuf, size_t madelen, unsigned *nfound,
+    char *err, size_t errlen);
 
 /*
  * Hold snapshot under tag against a cleanup descriptor of this

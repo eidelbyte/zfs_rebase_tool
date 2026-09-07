@@ -809,9 +809,44 @@ zr_zfs_find_guid(struct zr_zfs *z, const char *pool, uint64_t guid, char *buf,
 struct zz_reltag {
 	struct zr_zfs	*zt_z;
 	const char	*zt_tag;
+	const char	*zt_made;	/* the run's own name, or NULL */
+	char		*zt_madebuf;	/* where that snapshot's name goes */
+	size_t		zt_madelen;
 	unsigned	zt_found;
 	int		zt_failed;
 };
+
+/*
+ * Is this the snapshot the run took for itself? The run names what
+ * it takes made, or made, "-" and a try number where that name was
+ * taken (snapshot_input in run.c): the name after the @ is held
+ * against exactly that, and nothing else about it is read.
+ */
+static int
+zz_is_made(const char *snapshot, const char *made)
+{
+	const char *at, *p;
+	size_t n;
+
+	if (made == NULL)
+		return (0);
+	at = strchr(snapshot, '@');
+	if (at == NULL)
+		return (0);
+	at++;
+	n = strlen(made);
+	if (strncmp(at, made, n) != 0)
+		return (0);
+	if (at[n] == '\0')
+		return (1);
+	if (at[n] != '-' || at[n + 1] == '\0')
+		return (0);
+	for (p = at + n + 1; *p != '\0'; p++) {
+		if (*p < '0' || *p > '9')
+			return (0);
+	}
+	return (1);
+}
 
 /*
  * One snapshot, given the tag back where it is held under it.
@@ -822,22 +857,31 @@ struct zz_reltag {
  * nothing to release: the snapshot may have gone between the
  * iteration and this. A release that fails is remembered and the
  * walk goes on, because the point of the walk is to leave nothing
- * of this rebase's held anywhere.
+ * of this rebase's held anywhere. A snapshot given the tag back
+ * that bears the run's own name is the one the run took, and its
+ * name is kept for the caller: the hold and the name together say
+ * whose it is.
  */
 static int
 zz_rel_snap(zfs_handle_t *zhp, void *arg)
 {
 	struct zz_reltag *t = arg;
 	nvlist_t *holds = NULL;
+	const char *name = zfs_get_name(zhp);
 	char e[512];
 
-	if (lzc_get_holds(zfs_get_name(zhp), &holds) == 0 && holds != NULL &&
+	if (lzc_get_holds(name, &holds) == 0 && holds != NULL &&
 	    nvlist_exists(holds, t->zt_tag)) {
-		if (zr_zfs_release(t->zt_z, zfs_get_name(zhp), t->zt_tag, e,
-		    sizeof (e)) != 0)
+		if (zr_zfs_release(t->zt_z, name, t->zt_tag, e,
+		    sizeof (e)) != 0) {
 			t->zt_failed = 1;
-		else
+		} else {
 			t->zt_found++;
+			if (t->zt_madebuf != NULL && t->zt_madebuf[0] == '\0' &&
+			    zz_is_made(name, t->zt_made))
+				(void) snprintf(t->zt_madebuf, t->zt_madelen,
+				    "%s", name);
+		}
 	}
 	nvlist_free(holds);
 	zfs_close(zhp);
@@ -859,7 +903,8 @@ zz_rel_fs(zfs_handle_t *zhp, void *arg)
 
 int
 zr_zfs_release_tag(struct zr_zfs *z, const char *pool, const char *tag,
-    unsigned *nfound, char *err, size_t errlen)
+    const char *made, char *madebuf, size_t madelen, unsigned *nfound,
+    char *err, size_t errlen)
 {
 	struct zz_reltag t;
 	zfs_handle_t *zhp;
@@ -869,11 +914,18 @@ zr_zfs_release_tag(struct zr_zfs *z, const char *pool, const char *tag,
 		err[0] = '\0';
 	if (nfound != NULL)
 		*nfound = 0;
+	if (madebuf != NULL && madelen > 0)
+		madebuf[0] = '\0';
 	if (z == NULL || pool == NULL || tag == NULL || tag[0] == '\0')
 		return (zz_err(err, errlen, "release", EINVAL));
 	(void) memset(&t, 0, sizeof (t));
 	t.zt_z = z;
 	t.zt_tag = tag;
+	t.zt_made = made;
+	if (madebuf != NULL && madelen > 0) {
+		t.zt_madebuf = madebuf;
+		t.zt_madelen = madelen;
+	}
 	zhp = zfs_open(z->zz_hdl, pool, ZFS_TYPE_FILESYSTEM);
 	if (zhp == NULL)
 		return (zz_hdl_err(z, err, errlen, pool));
@@ -1316,11 +1368,15 @@ zr_zfs_release(struct zr_zfs *z, const char *snapshot, const char *tag,
 
 int
 zr_zfs_release_tag(struct zr_zfs *z, const char *pool, const char *tag,
-    unsigned *nfound, char *err, size_t errlen)
+    const char *made, char *madebuf, size_t madelen, unsigned *nfound,
+    char *err, size_t errlen)
 {
 	(void) z;
 	(void) pool;
 	(void) tag;
+	(void) made;
+	if (madebuf != NULL && madelen > 0)
+		madebuf[0] = '\0';
 	if (nfound != NULL)
 		*nfound = 0;
 	return (zz_unbuilt(err, errlen));

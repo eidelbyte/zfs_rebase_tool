@@ -5251,10 +5251,16 @@ abort_dataset(struct zr_zfs *z, const char *result, const char *snap,
  * result is at it, and the record is taken off, which frees the name
  * for another rebase.
  *
- * Nothing is destroyed and nothing is rolled back. Which form the
- * run was in, and what the pre-apply snapshot was called, were the
- * manifest's to say, and a tool that guessed would be destroying a
- * dataset it cannot identify.
+ * The result is not destroyed and nothing is rolled back. Which form
+ * the run was in, and what the pre-apply snapshot was called, were
+ * the manifest's to say, and a tool that guessed would be destroying
+ * a dataset it cannot identify. The one snapshot the run took for
+ * itself is the exception: the header's #made would have named it,
+ * and without the header the hold under the record's tag and the
+ * name the run gave it -- the tag again -- say the same thing, so
+ * the walk that releases the tag brings its name back and it is
+ * destroyed, as it would be with the manifest in hand. It lives as
+ * long as the rebase, and this is the end of the rebase.
  *
  * What it can read is the one property the two forms do not share.
  * A clone of this tool's making has mountpoint none for the whole of
@@ -5273,18 +5279,35 @@ abort_lost(struct zr_zfs *z, const char *result, const char *tag,
     const char *rundir, int verbose)
 {
 	char pool[ZR_SNAP_MAX], at[ZR_NAME_MAX], mnt[ZR_NAME_MAX];
-	char home[ZR_NAME_MAX], err[512];
+	char home[ZR_NAME_MAX], made[ZR_SNAP_MAX], own[ZR_SNAP_MAX];
+	char err[512];
 	unsigned n = 0;
 	int rc;
 
 	(void) snprintf(pool, sizeof (pool), "%.*s",
 	    (int)strcspn(result, "/"), result);
-	if (zr_zfs_release_tag(z, pool, tag, &n, err, sizeof (err)) != 0)
+	(void) snprintf(made, sizeof (made), "%s%s", ZR_MADE_PREFIX, tag);
+	if (zr_zfs_release_tag(z, pool, tag, made, own, sizeof (own), &n,
+	    err, sizeof (err)) != 0)
 		(void) fprintf(stderr, "zfs_rebase: release %s in %s: %s\n",
 		    tag, pool, err);
 	else
 		(void) fprintf(stderr, "zfs_rebase: released %s on %u "
 		    "snapshot%s of %s\n", tag, n, n == 1 ? "" : "s", pool);
+	/*
+	 * The snapshot the run took for itself, where it took one,
+	 * after its hold is gone: the walk found it held under the
+	 * tag and named with it.
+	 */
+	if (own[0] != '\0') {
+		if (zr_zfs_destroy_snap(z, own, err, sizeof (err)) != 0)
+			(void) fprintf(stderr, "zfs_rebase: destroy %s: %s\n",
+			    own, err);
+		else
+			(void) fprintf(stderr, "zfs_rebase: %s was this run's "
+			    "own snapshot, held under %s and named with it, "
+			    "and is destroyed\n", own, tag);
+	}
 	/*
 	 * The private mount, undone where the result is at it, and
 	 * then the mountpoint property, which is the one thing that
