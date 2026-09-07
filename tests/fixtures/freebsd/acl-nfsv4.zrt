@@ -21,9 +21,9 @@ tree onto
 
 expect
 #rebase-manifest 4
-#base zrt/base@s
-#from zrt/from@s
-#onto zrt/onto@s
+#base base
+#from from
+#onto onto
 #mode strict
 #actions 1
 #conflicts 0
