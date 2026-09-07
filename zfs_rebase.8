@@ -482,6 +482,15 @@ What they do is say which rebase the person thinks this is, and each is
 checked against the header by name and by guid \(em a name is what a
 snapshot is called and the guid is what it is \(em with both numbers
 printed on a mismatch, which is exit 2 with nothing touched.
+One side beside
+.Fl -result ,
+or both beside a manifest;
+.Fl -from ,
+.Fl -onto
+and
+.Fl -result
+together are the shape of a start, and beside any verb they are refused,
+exit 2.
 .Bl -tag -width indent
 .It Fl c , Fl -continue
 Take the rebase on from the gate its record names, through the gates that

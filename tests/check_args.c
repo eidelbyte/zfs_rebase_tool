@@ -825,10 +825,11 @@ test_operand_on_a_start(void)
 /*
  * ZX186, ZX189: --from and --onto are accepted on a verb, where they
  * name no rebase and change nothing: the driver checks them against
- * the header by name and by guid. The --verify verb takes them like
- * the other three -- beside a manifest, and beside --result where
- * only one side is given -- but --from, --onto and --result together
- * are the shape of a start, and a verb starts nothing.
+ * the header by name and by guid. Every verb takes them the same
+ * way -- beside a manifest, and beside --result where only one side
+ * is given -- but --from, --onto and --result together are the
+ * shape of a start, and no verb starts anything (ruled 2026-09-06:
+ * the starting set is banned beside every verb, --verify included).
  */
 static void
 test_sides_on_verbs(void)
@@ -847,14 +848,14 @@ test_sides_on_verbs(void)
 		cmd[5] = v_from;
 		cmd[6] = w_onto;
 		cmd[7] = v_onto;
-		a = parse_ok(cmd, 8);
-		CHECK(a.za_from == v_from && a.za_onto == v_onto);
-		CHECK(a.za_result == v_result);
-		check_pair(cmd, 8);
-		/* one side alone says as much as two */
+		/* the starting set beside a verb is another command */
+		parse_bad(cmd, 8);
+		/* one side alone is a side and not a start */
 		cmd[6] = w_verbose;
 		a = parse_ok(cmd, 7);
 		CHECK(a.za_from == v_from && a.za_onto == NULL);
+		CHECK(a.za_result == v_result);
+		check_pair(cmd, 7);
 		/* and beside a manifest operand */
 		cmd[2] = v_manifest;
 		cmd[3] = w_from;

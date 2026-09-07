@@ -345,7 +345,10 @@ another snapshot and these answers do not describe it.
 reads the two sides out of the header. What they do is say which
 rebase the person thinks this is, and each is checked against the
 header by name and by guid, both numbers printed on a mismatch. A
-side that does not match is exit 2 with nothing touched.
+side that does not match is exit 2 with nothing touched. One side
+beside --result, or both beside a manifest; --from, --onto and
+--result together are the shape of a start, and beside any verb
+they are refused, exit 2.
 
     zfs_rebase --continue [--no-gui] [--no-merge] \
         [--from SNAP] [--onto SNAP] (--result DATASET | MANIFEST)

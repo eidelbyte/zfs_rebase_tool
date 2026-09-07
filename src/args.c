@@ -390,20 +390,22 @@ za_verb_flags(const struct zr_args *out, char *err, size_t errlen)
 	/*
 	 * And beside the flags that start one. --from, --onto and
 	 * --result together are a start, whatever else is given, and
-	 * the report starts nothing: either side alone stands, since
-	 * a verb takes the two sides and checks them against the
-	 * header, but all three of them are another command. A dry
+	 * no verb starts anything: either side alone stands beside
+	 * --result, and both stand beside a manifest, since a verb
+	 * takes the sides and checks them against the header, but the
+	 * three together are another command (ruled 2026-09-06, kept
+	 * simple: the starting set is banned beside every verb). A dry
 	 * run is that command's other spelling.
 	 */
 	if (out->za_verb == ZR_VERB_REPORT && out->za_dryrun != 0)
 		return (za_no(err, errlen, "--dry-run decides a rebase and "
 		    "writes its manifest; --verify reports on one that "
 		    "exists, and the two are not one command"));
-	if (out->za_verb == ZR_VERB_REPORT && out->za_from != NULL &&
-	    out->za_onto != NULL && out->za_result != NULL)
+	if (out->za_from != NULL && out->za_onto != NULL &&
+	    out->za_result != NULL)
 		return (za_no(err, errlen, "--from, --onto and --result "
-		    "together start a rebase, and --verify is a verb: it "
-		    "takes --result or a manifest and reports"));
+		    "together start a rebase, and %s is a verb: it takes "
+		    "--result or a manifest", word));
 	if (out->za_result == NULL && out->za_path == NULL)
 		return (za_no(err, errlen, "%s needs the run it acts on: "
 		    "--result, the dataset carrying the record, or the "
