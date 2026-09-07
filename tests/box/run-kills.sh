@@ -670,7 +670,17 @@ kill_case() {
 			    { cat "$tmp/abort"; fail "--abort did not say it destroyed $made"; }
 			[ "$(holdcount)" = 0 ] || \
 			    fail "--abort without a manifest left $(holdcount) holds"
-			echo "ok   $case_id: at ${wstate:-no gate}, readonly $wro, 3 holds; no manifest to continue from; --abort destroyed the run's own $made"
+			# What the abort cannot put back without the
+			# manifest it says plainly: canmount went to
+			# noauto at the take, which a kill past the held
+			# gate came after, and what it was before is the
+			# header's to say. It prints the command; the
+			# harness knows the fixture's value and runs it.
+			grep -q "zfs set canmount=VALUE $rds" "$tmp/abort" || \
+			    { cat "$tmp/abort"; fail "--abort did not print the canmount command"; }
+			zfs set canmount=on "$rds" || \
+			    fail "cannot put canmount back on $rds"
+			echo "ok   $case_id: at ${wstate:-no gate}, readonly $wro, 3 holds; no manifest to continue from; --abort destroyed the run's own $made and named the canmount command"
 		else
 			echo "ok   $case_id: at ${wstate:-no gate}, readonly $wro, 3 holds; no manifest to continue from"
 		fi
