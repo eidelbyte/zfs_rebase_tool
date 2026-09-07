@@ -1082,18 +1082,24 @@ case_killchoice() {
 		same_as "$fromdir" "$hmnt" "$p"
 	done
 	pooled_like "$fromdir" "$hmnt"
-	# And nothing at all is left to do: the same call again reads
-	# every line of the document done.
+	# And nothing at all was left to do: the done gate's own final
+	# check, made by that --continue before it released anything,
+	# read every line of the document done. A rebase that reached
+	# done has no record, so the same call again finds no rebase
+	# and is refused before any stage runs.
+	grep -q "the resolution: done $nconf, first " "$tmp/kc1" || \
+	    { cat "$tmp/kc1"; fail "a choice is not done after the redo"; }
+	grep -q "the resolution: drifted 0\$" "$tmp/kc1" || \
+	    { cat "$tmp/kc1"; fail "a choice drifted after the redo"; }
+	grep -q "the resolution: pending 0\$" "$tmp/kc1" || \
+	    { cat "$tmp/kc1"; fail "a choice is still pending after the redo"; }
 	"$bin" --continue --result "$rds" > "$tmp/kc2" 2>&1
 	st=$?
-	[ $st -eq 0 ] || \
-	    { cat "$tmp/kc2"; fail "--continue at done exited $st, want 0"; }
-	grep -q "the resolution: done $nconf, first " "$tmp/kc2" || \
-	    { cat "$tmp/kc2"; fail "a choice is not done after the redo"; }
-	grep -q "the resolution: drifted 0\$" "$tmp/kc2" || \
-	    { cat "$tmp/kc2"; fail "a choice drifted after the redo"; }
-	grep -q "the resolution: pending 0\$" "$tmp/kc2" || \
-	    { cat "$tmp/kc2"; fail "a choice is still pending after the redo"; }
+	[ $st -eq 2 ] || \
+	    { cat "$tmp/kc2"; fail "--continue on a settled result exited $st, want 2"; }
+	grep -q 'not a zfs_rebase result' "$tmp/kc2" || \
+	    { cat "$tmp/kc2"; fail "the refusal does not say there is no record"; }
+	at_done "$rds"
 	echo "ok   $case_id: applying2 kept, redone whole, done, nothing left"
 	end_case
 }
