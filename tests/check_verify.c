@@ -2263,6 +2263,158 @@ check_choice_roundtrip(void)
 	vshape_fini(&v);
 }
 
+/*
+ * ---------------------------------------------------------------
+ * The settled check: what --verify makes of a rebase that is over.
+ * There is no gate left and no record, so what the classifier is
+ * handed is exactly what the done gate handed it -- the manifest,
+ * the resolution the run wrote beside it, and the three trees -- and
+ * the verdict is the same rule read over the same report. What is
+ * the settled check's own is the from side: a side given as a
+ * dataset was snapshotted by the tool and destroyed at done, so it
+ * is missing on purpose, and every action that would have to read it
+ * comes back unchecked rather than drifted.
+ *
+ * Everything about finding those trees is the driver's and is box
+ * only: the header's names and guids, where the result is mounted
+ * and the private mount a clone in the void needs. What is here is
+ * the call itself, over paths.
+ * ---------------------------------------------------------------
+ */
+
+/* The one rebase every settled test below is about. */
+static const char settled_body[] =
+	"    n cp /n\n"
+	"    o rm\n"
+	"    x conflict 1\n";
+static const char settled_record[] =
+	"\n"
+	"conflict 1 changed-both\n"
+	"  why  /x changed on both sides\n"
+	"  base ()\n"
+	"  from ()\n"
+	"  onto ({/x}x)\n";
+
+/*
+ * onto, from and the result as done left it: the cp made, the rm
+ * made, the conflicted name merged by hand and one name no action
+ * ever spoke for standing as onto had it.
+ */
+static void
+settled_trees(struct vshape *v)
+{
+	vshape_init(v);
+	mkfile(v->vs_onto, "/o", "onto holds this\n", 0644);
+	mkfile(v->vs_onto, "/u", "untouched\n", 0644);
+	mkfile(v->vs_onto, "/x", "onto bytes\n", 0644);
+	mkfile(v->vs_from, "/n", "from bytes\n", 0644);
+	mkfile(v->vs_from, "/x", "from bytes\n", 0644);
+	mkfile(v->vs_res, "/n", "from bytes\n", 0644);
+	mkfile(v->vs_res, "/u", "untouched\n", 0644);
+	mkfile(v->vs_res, "/x", "a hand merge\n", 0644);
+}
+
+/* The settled check over those trees, with the resolution kept. */
+static void
+settled_run(struct vshape *v, unsigned miss, struct zr_parsed *p,
+    struct zr_verify_report *rep)
+{
+	struct zr_resolution res;
+
+	parse_res(&res, "    x conflict 1 keep\n", 1, 0);
+	vshape_run_miss(v, settled_body, 2, 1, settled_record, miss, &res, p,
+	    rep);
+	zr_resolution_fini(&res);
+}
+
+/*
+ * ZY100, ZY101: the shape a settled check exits 0 on. Every action
+ * of the manifest is done, the one name no action spoke for is as
+ * onto had it, and the conflicted name is the person's by a keep --
+ * the verdict rule's three inputs all at zero. With the from side
+ * gone the cp cannot be read at all and comes back unchecked, which
+ * is a state and not a fault, so the verdict does not move.
+ */
+static void
+check_settled_clean(void)
+{
+	struct zr_verify_report rep;
+	struct zr_parsed p;
+	struct vshape v;
+
+	settled_trees(&v);
+	settled_run(&v, 0, &p, &rep);
+	CHECK(rep.zv_outcome[idx_of(&p, "/n")] == ZR_OC_DONE);
+	CHECK(rep.zv_outcome[idx_of(&p, "/o")] == ZR_OC_DONE);
+	CHECK(rep.zv_count[ZR_OC_PENDING] == 0);
+	CHECK(rep.zv_count[ZR_OC_DRIFTED] == 0);
+	CHECK(rep.zv_ndiffs == 0);
+	CHECK(rep.zv_nrlines == 1);
+	CHECK(rep.zv_rcount[ZR_OC_DRIFTED] == 0);
+	zr_verify_report_fini(&rep);
+	zr_parsed_fini(&p);
+
+	settled_run(&v, ZR_MISS_FROM, &p, &rep);
+	CHECK(rep.zv_outcome[idx_of(&p, "/n")] == ZR_OC_UNCHECKED);
+	CHECK(rep.zv_outcome[idx_of(&p, "/o")] == ZR_OC_DONE);
+	CHECK(rep.zv_count[ZR_OC_PENDING] == 0);
+	CHECK(rep.zv_count[ZR_OC_DRIFTED] == 0);
+	CHECK(rep.zv_ndiffs == 0);
+	zr_verify_report_fini(&rep);
+	zr_parsed_fini(&p);
+	vshape_fini(&v);
+}
+
+/*
+ * ZY102, ZY103: the two shapes a settled check exits 3 on, which are
+ * the two axes of the verdict. An edit to a name the manifest never
+ * spoke for is one entry of the name list, and onto is what says so,
+ * so the from side being gone takes nothing from it; an edit over an
+ * action's own name is that action drifted, and there the from side
+ * is exactly what the answer rests on, so with it gone nobody can
+ * say -- which is the limit of a check made long after the rebase.
+ */
+static void
+check_settled_drift(void)
+{
+	struct zr_verify_report rep;
+	struct zr_parsed p;
+	struct vshape v;
+
+	settled_trees(&v);
+	mkfile(v.vs_res, "/u", "edited since\n", 0644);
+	settled_run(&v, 0, &p, &rep);
+	CHECK(rep.zv_count[ZR_OC_DRIFTED] == 0);
+	CHECK(rep.zv_ndiffs == 1);
+	CHECK(rep.zv_dcount[ZR_DF_CHANGED] == 1);
+	CHECK(rep.zv_dfirst[ZR_DF_CHANGED] ==
+	    zr_names_lookup(v.vs_ns, "/u", 2));
+	zr_verify_report_fini(&rep);
+	zr_parsed_fini(&p);
+	settled_run(&v, ZR_MISS_FROM, &p, &rep);
+	CHECK(rep.zv_ndiffs == 1);
+	CHECK(rep.zv_dcount[ZR_DF_CHANGED] == 1);
+	zr_verify_report_fini(&rep);
+	zr_parsed_fini(&p);
+	vshape_fini(&v);
+
+	settled_trees(&v);
+	mkfile(v.vs_res, "/n", "edited since\n", 0644);
+	settled_run(&v, 0, &p, &rep);
+	CHECK(rep.zv_outcome[idx_of(&p, "/n")] == ZR_OC_DRIFTED);
+	CHECK(rep.zv_count[ZR_OC_DRIFTED] == 1);
+	CHECK(rep.zv_ndiffs == 0);
+	zr_verify_report_fini(&rep);
+	zr_parsed_fini(&p);
+	settled_run(&v, ZR_MISS_FROM, &p, &rep);
+	CHECK(rep.zv_outcome[idx_of(&p, "/n")] == ZR_OC_UNCHECKED);
+	CHECK(rep.zv_count[ZR_OC_DRIFTED] == 0);
+	CHECK(rep.zv_ndiffs == 0);
+	zr_verify_report_fini(&rep);
+	zr_parsed_fini(&p);
+	vshape_fini(&v);
+}
+
 int
 main(void)
 {
@@ -2299,6 +2451,8 @@ main(void)
 	check_choice_dir();
 	check_choice_miss();
 	check_choice_roundtrip();
+	check_settled_clean();
+	check_settled_drift();
 
 	printf("check_verify: %d checks passed\n", checks);
 	return (0);

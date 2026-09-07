@@ -550,8 +550,9 @@ It prints the command for each form and leaves the choice to you.
 .It Fl V , Fl -verify
 Report and write nothing at all, so that a deliberate
 edit to a rebased file is shown and never overwritten.
-It reports on a rebase that is open; a result whose rebase reached done
-carries no record and is refused like any other dataset that has none.
+It reports on a rebase that is open and on one that is over; which of the
+two this is, the record says, and a result whose rebase reached done carries
+none.
 Every action of the manifest is classified as
 .Sy done ,
 .Sy pending
@@ -577,6 +578,49 @@ with).
 With
 .Fl v
 the whole list follows.
+.Pp
+On a settled result
+.Fl -result
+has no record to read a rebase off and says to give the manifest instead.
+The manifest is what names a settled rebase, and only a
+.Fl -manifest
+one can: the manifest a run writes for itself is unlinked at done with the
+run directory.
+Given it, the verb makes the final check over again, with no gate to make
+it at.
+It wants both documents \(em the manifest and the resolution beside it \(em
+since the expected tree is onto's names with the manifest's actions and that
+resolution's choices applied, and a resolution that is not there or cannot
+be read is exit 2 saying so.
+The inputs are the header's: each of
+.Sy base ,
+.Sy from
+and
+.Sy onto
+is looked up by the name the header kept, its guid must be the guid the
+header kept, and a name that is gone or that another snapshot wears now is
+exit 2 naming the snapshot and printing both numbers.
+No pool is searched, as it is on a rebase in flight: a settled rebase is
+checked against the identity it wrote down, or not at all.
+Where a side was given as a dataset,
+.Sy #made
+says the tool took that snapshot itself and
+.Sy done
+destroyed it; that one is gone by design, so the check covers the names and
+onto's bytes, says which actions it leaves
+.Sy unchecked ,
+and exits 0 all the same.
+The result is read wherever it is mounted \(em a dataset is at home, and so
+is a clone you have placed \(em and a settled clone in the void is mounted
+nowhere, so the check mounts it at the run directory's
+.Pa mnt
+with
+.Fn zfs_mount_at
+for the length of the read and takes that mount and the directory away
+again, whatever it found.
+No property of the result is touched either way, nothing is fixed, and the
+exit status is 0 clean and 3 with drift, by the same rule as every other
+check.
 .El
 .Pp
 Three test aids exist for the project's own harness and are not part of
@@ -791,7 +835,9 @@ carry the choices out again and go on
 is refused at
 .Sy applying2 :
 it is past the merge.
-A rebase that reached done has no record, so no verb resumes it.
+A rebase that reached done has no record, so no verb resumes it, and
+.Fl -verify
+is the only one that has anything to say about it.
 .Sh THE CHECKS
 One verify at every gate, on a schedule no flag changes and none can skip.
 The expected tree is onto's names with the manifest's actions applied and
@@ -828,6 +874,14 @@ own or a
 and
 .Fl -quiet
 silences its report and nothing else.
+.It a settled result
+reported, and the exit status is 3.
+The
+.Fl -verify
+verb given the manifest a
+.Fl -manifest
+run left behind makes that same check over again, with no gate to make it
+at, against the identity the header wrote down.
 .El
 .Pp
 .Sy done
@@ -845,7 +899,7 @@ can try again.
 The
 .Fl -verify
 verb is the same check asked for on its own, at whatever gate the rebase is
-waiting: it reports and writes nothing at all.
+waiting and after it is over: it reports and writes nothing at all.
 .Sh FILES
 Each run keeps its own directory, 0700 throughout, named for the dataset
 carrying the record with its slashes kept as directories.
@@ -1027,13 +1081,16 @@ without stopping.
 That is a policy, not a merge, and it is meant for a script that knows what
 it wants; the flags are not a substitute for looking at the conflicts.
 .Pp
-A verify after done is best effort.
+A verify of a rebase in flight is best effort.
 Each input is looked for by name and then by guid across the pool, which is
 what survives a rename or a promote, and what cannot be found is reported
 as unchecked rather than guessed at.
-Where a side was given as a dataset, the snapshot the tool took of it is
-gone at done, so the actions that would have to read it cannot be checked
-or redone afterwards.
+A verify after done is not: the header is the whole of what a settled rebase
+wrote down about itself, so each input must be there under the name it kept
+and with the guid it kept, and anything else stops the check.
+The one exception is a side given as a dataset: the snapshot the tool took
+of it is gone at done by design, so the actions that would have to read it
+are unchecked rather than a loss, and cannot be redone afterwards.
 After done, drift on a live dataset is indistinguishable from new work,
 which is why nothing past the
 .Sy applying1

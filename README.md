@@ -252,7 +252,10 @@ written: when the result has verified and is read-only again, the
 holds are given back and then every zfs_rebase: property is taken
 off, in that order, since the tag is the only handle on those holds.
 A result that carries any of them is therefore an open rebase, and
-one that carries none has no rebase, whatever its history. What a
+one that carries none has no rebase to move, whatever its history:
+--continue, --restart and --abort all say so and touch nothing.
+--verify is the exception, and only by the manifest, which is the
+one thing a settled rebase left behind that still names it. What a
 kill leaves is the last gate reached, there is no phase at all until
 the first one, and a stop writes none: --continue resumes from the
 gate, --abort takes the rebase away.
@@ -265,7 +268,7 @@ changes and none can skip:
 | end of applying1 | fixed, by the stage's own self-check: up to the conflicts gate the result is the run's own, so a name that is not what the expected tree says is a stray |
 | entering conflicts, and every --continue that arrives at that gate | written into the resolution as lines with the choice keep, printed, and never fixed: from this gate on the tree is being edited by hand, and nothing can tell that work from a stray |
 | end of applying2, before done is written | reported, exit 3, and done written all the same; --quiet prints nothing and the exit status stands |
-| a settled result, --verify MANIFEST | reported, exit 3 (verify-settled's work; today a settled result has no record and every verb on it exits 2) |
+| a settled result, --verify MANIFEST | reported, exit 3; the same check with no gate, against the header's identity |
 
 done never blocks on drift. What the last check finds is said and
 carried out in the exit status, and the gate is passed regardless:
@@ -384,14 +387,42 @@ there is nothing left for the word to ask for. It exits 0 when
 nothing has drifted and 3 when something has -- an action pending or
 drifted, or a name the manifest never spoke for that the result no
 longer holds as onto had it; blocked and unchecked are states and
-not faults. After done it is best effort: each input
+not faults. On a rebase in flight it is best effort: each input
 is looked for by name and then by guid across the pool, which is
 what survives a rename or a promote, each one it finds is held for
 the length of the report and not a moment longer, and what it cannot
 find it names -- with every action that would have had to be read
-against that tree reported unchecked rather than guessed at. A
-result whose rebase reached done carries no record and no verb finds
-it; naming a settled result by its manifest is verify-settled's.
+against that tree reported unchecked rather than guessed at.
+
+A result whose rebase reached done carries no record, so `--result`
+has nothing there to read a rebase off and says to give the manifest
+instead. The manifest is what names a settled rebase, and only a
+`--manifest` one can: the manifest a run writes for itself is
+unlinked at done with the run directory. Given it, `--verify` makes
+the final check over again, with no gate to make it at:
+
+- it wants both documents, the manifest and the resolution beside
+  it, since the expected tree is onto's names with the manifest's
+  actions and that resolution's choices applied. A resolution that
+  is not there, or that cannot be read, is exit 2 saying so.
+- the inputs are the header's. Each of base, from and onto is looked
+  up by the name the header kept and its guid must be the guid the
+  header kept; a name that is gone, or that another snapshot wears
+  now, is exit 2 naming the snapshot and printing both numbers. No
+  pool is searched: a settled rebase is checked against the identity
+  it wrote down, or not at all.
+- where a side was given as a dataset, `#made` says the tool took
+  that snapshot itself and done destroyed it. That one is gone by
+  design: the check covers the names and onto's bytes, says which
+  actions it leaves unchecked, and exits 0 all the same.
+- the result is read wherever it is mounted -- a dataset is at home,
+  and so is a clone you have placed. A settled clone in the void is
+  mounted nowhere, so the check mounts it at the run directory's
+  `mnt` for the length of the read and takes that mount and the
+  directory away again, whatever it found. No property of the result
+  is touched either way, and nothing is fixed.
+- exit 0 clean and 3 with drift, by the same rule as every other
+  check.
 
     zfs_rebase --abort (--result DATASET | MANIFEST)
 

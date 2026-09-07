@@ -92,10 +92,15 @@
 #      conflicts are outstanding -- and --continue exits 1, naming
 #      the resolution it waits for, and leaves the phase and the tree
 #      exactly as they were. On a clean fixture the rebase reached
-#      done and took its record off, so there is no rebase there any
-#      more: every verb exits 2 saying so and touches nothing, which
-#      is what a settled result is. (Naming a settled result by its
-#      manifest is verify-settled's, two issues on.) Either way every
+#      done and took its record off, so the three motional verbs exit
+#      2 saying so and touch nothing, and --verify --result says to
+#      give the manifest instead. The manifest is the whole of what
+#      names a settled rebase, and --verify given it makes the final
+#      check over again: exit 0 with the counts, nothing written and
+#      no run directory left, first where the harness has placed the
+#      clone and then with the clone put back in the void, where the
+#      check has to mount it privately and take that mount and the
+#      directory away again. Either way every
 #      verb refuses the plain dataset that only inherits the record
 #      properties, with exit 2 and no harm to it; and --result
 #      spelled as a snapshot of the result, one that does not even
@@ -687,11 +692,10 @@ fi
 
 say "3a. the verbs on the result"
 if [ $settled -eq 1 ]; then
-	# A rebase that reached done took its record off, so there is
-	# no rebase here for a verb to find: each of them says so and
-	# leaves the result standing. Naming a settled result by its
-	# manifest is verify-settled's, two issues on.
-	for verb in --verify --continue --restart --abort; do
+	# A rebase that reached done took its record off, so the three
+	# motional verbs find no rebase here: each of them says so and
+	# leaves the result standing.
+	for verb in --continue --restart --abort; do
 		"$bin" $verb --result "$POOL/result" > "$tmp/settled1" 2>&1
 		st=$?
 		[ $st -eq 2 ] || \
@@ -699,13 +703,83 @@ if [ $settled -eq 1 ]; then
 		grep -q 'not a zfs_rebase result' "$tmp/settled1" || \
 		    { cat "$tmp/settled1"; fail "$verb did not say there is no record"; }
 	done
+	# --verify is the one verb a settled result still answers, and
+	# only by its manifest: --result reads a rebase off a record,
+	# and this dataset has none to read.
+	"$bin" --verify --result "$POOL/result" > "$tmp/settled1" 2>&1
+	st=$?
+	[ $st -eq 2 ] || \
+	    { cat "$tmp/settled1"; fail "--verify --result on a settled result exited $st, want 2"; }
+	grep -q 'give the manifest' "$tmp/settled1" || \
+	    { cat "$tmp/settled1"; fail "--verify did not ask for the manifest"; }
 	[ "$(zfs list -H -o name "$POOL/result" 2>/dev/null)" = "$POOL/result" ] || \
 	    fail "a refused verb took the settled result away"
 	[ -z "$(localprops "$POOL/result")" ] || \
 	    fail "a refused verb wrote a property on the settled result"
+
+	# And by its manifest, which is the settled check: the -o pair
+	# is still here, the header names the three inputs and the
+	# result, and what is made is the final check over again --
+	# reported, never fixed, exit 0 clean and 3 with drift. The
+	# harness has placed the clone, so the tool reads it where it
+	# stands and makes no run directory at all.
+	"$bin" --verify "$tmp/got" > "$tmp/settledv" 2>&1
+	st=$?
+	[ $st -eq 0 ] || \
+	    { cat "$tmp/settledv"; fail "--verify MANIFEST on a settled result exited $st, want 0"; }
+	grep -q 'drifted 0' "$tmp/settledv" || \
+	    { cat "$tmp/settledv"; fail "the settled check found drift"; }
+	grep -q 'pending 0' "$tmp/settledv" || \
+	    { cat "$tmp/settledv"; fail "the settled check found pending actions"; }
+	[ ! -d "$RUNDIR" ] || \
+	    fail "the settled check made a run directory at $RUNDIR"
+	mount | grep -q " on $cmnt " || \
+	    fail "the settled check left the clone away from $cmnt"
+	[ -z "$(localprops "$POOL/result")" ] || \
+	    fail "the settled check wrote a property on the result"
+	echo "ok   --verify $tmp/got: exit 0 where the clone stands, no"
+	echo "     run directory made, nothing written"
+
+	# The same clone as done left it, in the void: unmounted, with
+	# the mountpoint property none. There is nowhere to read it,
+	# so the check mounts it at the run directory's mnt with the
+	# run's own call, reads it and takes the mount and the
+	# directory away again.
+	zfs set mountpoint=none "$POOL/result" || \
+	    fail "cannot put the settled clone back in the void"
+	[ "$(zfs get -H -o value mounted "$POOL/result")" = no ] || \
+	    fail "mountpoint=none left the settled clone mounted"
+	"$bin" --verify -v "$tmp/got" > "$tmp/settledu" 2>&1
+	st=$?
+	[ $st -eq 0 ] || \
+	    { cat "$tmp/settledu"; fail "--verify of a clone in the void exited $st, want 0"; }
+	grep -q 'drifted 0' "$tmp/settledu" || \
+	    { cat "$tmp/settledu"; fail "the settled check found drift"; }
+	grep -q "mounts it at $RUNDIR/mnt" "$tmp/settledu" || \
+	    { cat "$tmp/settledu"; fail "the check did not mount the clone privately"; }
+	[ ! -d "$RUNDIR" ] || \
+	    fail "the settled check left the run directory $RUNDIR"
+	[ "$(zfs get -H -o value mounted "$POOL/result")" = no ] || \
+	    fail "the settled check left the clone mounted"
+	[ "$(zfs get -H -o value mountpoint "$POOL/result")" = none ] || \
+	    fail "the settled check changed the mountpoint property"
+	[ "$(zfs get -H -o value readonly "$POOL/result")" = on ] || \
+	    fail "the settled check changed readonly"
+	[ -z "$(localprops "$POOL/result")" ] || \
+	    fail "the settled check wrote a property on the result"
+	echo "ok   --verify of a clone in the void: mounted privately,"
+	echo "     read, unmounted, and the run directory gone again"
+	# and placed again, which is where the rest of this step reads
+	# the tree from.
+	zfs set mountpoint="$MNT/result" "$POOL/result" || \
+	    fail "cannot place the settled clone again"
+	mount | grep -q " on $MNT/result " || \
+	    fail "placing the clone did not mount it at $MNT/result"
+
 	again "$tmp/again2"
 	idempotent "$tmp/again2" "$want_conf"
-	echo "ok   a settled result: every verb exits 2, nothing touched"
+	echo "ok   a settled result: the motional verbs exit 2, --verify"
+	echo "     reports by its manifest, nothing touched"
 else
 	# --verify reports and writes nothing. Every action of the
 	# manifest must be done by now, because a conflicted run
@@ -1349,8 +1423,33 @@ dataset_pass() {
 		    dfail "a refused verb left onto unmounted"
 		[ -z "$(localprops "$POOL/onto")" ] || \
 		    dfail "a refused verb wrote a property on the dataset"
-		echo "ok   a settled dataset: every verb exits 2, nothing"
-		echo "     touched, onto still at home"
+		# And the settled check, by the manifest, which is the
+		# only thing that can name this rebase now. The rule
+		# the dataset form differs by is the derivation --
+		# #result is the pre-apply snapshot and the run's
+		# dataset is #onto's -- and this is where it is made
+		# against a real pool. A settled dataset is at home, so
+		# the check reads it there and makes no run directory.
+		"$bin" --verify "$tmp/got-d" > "$tmp/d-setv" 2>&1
+		dst=$?
+		[ $dst -eq 0 ] || \
+		    { cat "$tmp/d-setv"; dfail "--verify MANIFEST on a settled dataset exited $dst, want 0"; }
+		grep -q 'drifted 0' "$tmp/d-setv" || \
+		    { cat "$tmp/d-setv"; dfail "the settled check found drift"; }
+		grep -q 'pending 0' "$tmp/d-setv" || \
+		    { cat "$tmp/d-setv"; dfail "the settled check found pending actions"; }
+		[ ! -d "$DRUN" ] || \
+		    dfail "the settled check made a run directory at $DRUN"
+		mount | grep -q " on $MNT/onto " || \
+		    dfail "the settled check moved the dataset off $MNT/onto"
+		[ "$(zfs get -H -o value canmount "$POOL/onto")" = on ] || \
+		    dfail "the settled check changed canmount"
+		[ "$(zfs get -H -o value readonly "$POOL/onto")" = off ] || \
+		    dfail "the settled check changed readonly"
+		[ -z "$(localprops "$POOL/onto")" ] || \
+		    dfail "the settled check wrote a property on the dataset"
+		echo "ok   a settled dataset: every verb exits 2, --verify"
+		echo "     $tmp/got-d exits 0 with onto read at home"
 	else
 		"$bin" --verify --result "$POOL/onto" > "$tmp/d-verify" 2>&1
 		dst=$?
@@ -1364,6 +1463,20 @@ dataset_pass() {
 		    dfail "--verify did not leave the dataset at the private mount"
 		[ "$(recval zfs_rebase:phase "$POOL/onto")" = "$dphase" ] || \
 		    dfail "--verify moved the phase"
+		# The same rebase named by its manifest instead, which
+		# is the rule that differs in this form: the run's
+		# dataset is #onto's and not #result's, #result being
+		# the pre-apply snapshot. The record names this file
+		# back, so the cross-check passes and the verb does
+		# what it did with --result.
+		"$bin" --verify "$tmp/got-d" > "$tmp/d-verifym" 2>&1
+		dst=$?
+		[ $dst -eq 0 ] || \
+		    { cat "$tmp/d-verifym"; dfail "--verify MANIFEST exited $dst, want 0"; }
+		grep -q 'drifted 0' "$tmp/d-verifym" || \
+		    { cat "$tmp/d-verifym"; dfail "--verify MANIFEST found drift"; }
+		[ "$(recval zfs_rebase:phase "$POOL/onto")" = "$dphase" ] || \
+		    dfail "--verify MANIFEST moved the phase"
 		"$bin" --continue --result "$POOL/onto" > "$tmp/d-cont" 2>&1
 		dst=$?
 		[ $dst -eq 1 ] || \

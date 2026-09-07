@@ -85,7 +85,31 @@
 #    exit status is 3, and done is reached all the same -- the record
 #    off, the run directory gone, the result settled and the edit
 #    still standing, because nothing past applying1 mends anything.
-#    Conflicted fixtures only, for the gate it stops at.
+#    Then the same question put to the settled result -- --verify of
+#    the manifest done left behind, which has no record to read and
+#    takes the inputs from the header -- which must say what the done
+#    gate said, drifted 1 with that name and exit 3, and leave the
+#    result exactly as it stands. Conflicted fixtures only, for the
+#    gate it stops at.
+#
+# 7. The onto snapshot destroyed after done, which is the one thing a
+#    settled check has no answer for: gone by name is exit 2 naming
+#    it, and there under the name with another snapshot's guid is
+#    exit 2 with both numbers. The dataset form's alone -- the clone
+#    form's onto snapshot is the result's origin and cannot be
+#    destroyed -- and clean fixtures' alone, for the run that reaches
+#    done in one invocation. A safety snapshot taken before the run
+#    is what puts the fixture back.
+#
+# 8. A from side given as a dataset, so that the snapshot read is one
+#    the tool took itself and destroyed at done. The settled check
+#    says so in the words a post-done report has always used, calls
+#    every action that reads from unchecked and exits 0: a snapshot
+#    gone on purpose is no loss. The clone form's, for the second
+#    thing it proves -- done leaves that clone unmounted with no
+#    mountpoint of its own, so the check mounts it at the run
+#    directory's mnt itself and takes the mount and the directory
+#    away again.
 #
 # Every case ends by taking the rebase away -- --abort where one is
 # still open, and by hand where it reached done, which leaves no
@@ -105,16 +129,16 @@
 #
 # A clean fixture reaches done inside the run itself, and done takes
 # the record off, so from that moment there is no rebase on the
-# result for --verify or --continue to be asked about: the cases
-# assert what the tree holds instead, and that every verb exits 2.
-# Asking for the report on a settled result comes back with
-# verify-settled, which names it by its manifest.
+# result for a verb named by --result to be asked about: the cases
+# assert what the tree holds instead, and that every motional verb
+# exits 2. The manifest is what names a settled rebase, and cases 5
+# to 8 ask by it.
 #
-# The dataset form is given from as a snapshot here rather than as a
-# dataset, so that the from tree is still there after done: a rebase
-# that reached done has destroyed a snapshot it took itself, and a
-# verify that cannot read from can only say unchecked.
-# run-fixture.sh and run-kills.sh take the dataset spelling.
+# Cases 1 to 7 give the dataset form from as a snapshot rather than
+# as a dataset, so that the from tree is still there after done; case
+# 8 is the other spelling, where a verify that cannot read from can
+# only say unchecked. run-fixture.sh and run-kills.sh take the
+# dataset spelling too.
 set -u
 cd "$(dirname "$0")/../.." || exit 2
 . tests/box/progress.sh
@@ -170,6 +194,11 @@ localprops() {
 	    awk '$1 ~ /^zfs_rebase:/ && $2 == "local" { print $1 }'
 }
 allsnaps() { zfs list -H -o name -t snapshot -r "$POOL"; }
+hassnap() { zfs list -H -o name -t snapshot "$1" > /dev/null 2>&1; }
+# One line of a manifest's header, which is where a rebase's identity
+# lives once its record is off: the three snapshots with their guids,
+# the form, the result and what the tool snapshotted itself.
+hdr() { sed -n "s/^#$1 //p" "$2"; }
 holdcount() {
 	n=0
 	for s in $(allsnaps); do
@@ -356,14 +385,16 @@ at_end() {
 
 # --verify on the result, where there is still a rebase to ask about.
 # Returns 0 with the report in $1 when there was, and 1 after
-# checking that a settled result refuses every verb, which is all
-# there is to ask of one until verify-settled lands.
+# checking that a settled result has no record for --result to read
+# and says to give the manifest instead, which cases 5 to 8 do.
 verify_open() {			# OUT WANTEXIT
 	"$bin" --verify --result "$rds" > "$1" 2>&1
 	st=$?
 	if [ $clean -eq 1 ]; then
 		[ $st -eq 2 ] || \
 		    { cat "$1"; fail "--verify on a settled result exited $st, want 2"; }
+		grep -q 'give the manifest' "$1" || \
+		    { cat "$1"; fail "--verify did not ask for the manifest"; }
 		return 1
 	fi
 	[ $st -eq "$2" ] || \
@@ -372,8 +403,8 @@ verify_open() {			# OUT WANTEXIT
 }
 
 # The same for a --continue, which checks at the gate it arrives at
-# under no flag: on a settled result it is refused, and there is
-# nothing left for it to do in any case.
+# under no flag: on a settled result it is refused for want of a
+# record, and there is nothing left for it to do in any case.
 continue_open() {		# OUT WANTEXIT
 	"$bin" --continue --result "$rds" > "$1" 2>&1
 	st=$?
@@ -392,7 +423,13 @@ continue_open() {		# OUT WANTEXIT
 # to find. What done leaves by hand is the result alone: the run
 # directory went with it, and the case asserts that. Then the proof
 # that the pool is the fixture again with no rebase left in it.
+#
+# $1 is the snapshot the dataset form rolls back to and destroys,
+# which is the run's own pre-apply snapshot for every case but the
+# one that destroys it: that one takes a snapshot of the fixture
+# before its run and names it here instead.
 end_case() {
+	back=${1:-$POOL/onto@pre}
 	if [ -n "$(localprops "$rds")" ]; then
 		"$bin" --abort --result "$rds" > "$tmp/abort" 2>&1
 		st=$?
@@ -407,10 +444,9 @@ end_case() {
 			    fail "cannot destroy the settled result"
 			rmdir "$MNT/result" 2>/dev/null
 		else
-			zfs rollback -r "$POOL/onto@pre" || \
-			    fail "cannot roll onto back to @pre"
-			zfs destroy "$POOL/onto@pre" || \
-			    fail "cannot destroy @pre"
+			zfs rollback -r "$back" || \
+			    fail "cannot roll onto back to $back"
+			zfs destroy "$back" || fail "cannot destroy $back"
 		fi
 		[ ! -d "$rundir" ] || \
 		    fail "done left the run directory $rundir"
@@ -734,17 +770,29 @@ case_driftline() {
 	sethere
 	grep -q drift "$hmnt$kept" || fail "a verb wrote over the edit to $kept"
 
-	# A verify afterwards would have nothing outside the manifest
-	# to say -- the name is the resolution's now, and a keep is
-	# never compared -- but the rebase is settled and carries no
-	# record, so there is nothing left to ask until verify-settled
-	# lands and names it by its manifest.
+	# The rebase is settled and carries no record, so --result has
+	# nothing to read and says to give the manifest.
 	"$bin" --verify --result "$rds" > "$tmp/driftv" 2>&1
 	st=$?
 	[ $st -eq 2 ] || \
 	    { cat "$tmp/driftv"; fail "--verify on a settled result exited $st, want 2"; }
+	grep -q 'give the manifest' "$tmp/driftv" || \
+	    { cat "$tmp/driftv"; fail "--verify did not ask for the manifest"; }
+	# And given it, the check has nothing outside the manifest to
+	# say about the name: it is the resolution's now, and a keep is
+	# never compared, so the edit that was drift at the gate is
+	# clean here.
+	"$bin" --verify "$man" > "$tmp/driftvm" 2>&1
+	st=$?
+	[ $st -eq 0 ] || \
+	    { cat "$tmp/driftvm"; fail "--verify of the settled result exited $st, want 0"; }
+	no_outside "$tmp/driftvm" || \
+	    { cat "$tmp/driftvm"; fail "the settled check counts the kept name"; }
+	[ ! -d "$rundir" ] || \
+	    fail "the settled check left the run directory $rundir"
 	grep -q drift "$hmnt$kept" || fail "--verify wrote over the edit"
-	echo "ok   $case_id: $kept is a drift keep line, the edit stands"
+	echo "ok   $case_id: $kept is a drift keep line, the edit stands,"
+	echo "     and the settled check by $man says nothing of it"
 	end_case
 }
 
@@ -792,12 +840,154 @@ case_donedrift() {
 	sethere
 	grep -q late "$hmnt$tgt" || fail "something mended the stray in $tgt"
 	echo "ok   $case_id: drifted 1 at done, exit 3, done all the same"
+
+	# And the same question asked again of the settled result,
+	# which is what --verify MANIFEST is: no record to read, the
+	# inputs taken from the header by name with their guids, the
+	# same document held against the same tree. It must say what
+	# the done gate said -- the one drifted name, exit 3 -- fix
+	# nothing and leave the result exactly as it stands.
+	ro0=$(recval readonly "$rds")
+	"$bin" --verify "$man" > "$tmp/setv" 2>&1
+	st=$?
+	[ $st -eq 3 ] || \
+	    { cat "$tmp/setv"; fail "--verify of the settled result exited $st, want 3"; }
+	grep -q "drifted 1, first $tgt" "$tmp/setv" || \
+	    { cat "$tmp/setv"; fail "the settled check did not name the drifted $tgt"; }
+	grep -q late "$hmnt$tgt" || fail "the settled check mended the stray"
+	[ -z "$(localprops "$rds")" ] || \
+	    fail "the settled check wrote a property on $rds"
+	[ "$(recval readonly "$rds")" = "$ro0" ] || \
+	    fail "the settled check flipped readonly"
+	[ ! -d "$rundir" ] || \
+	    fail "the settled check left the run directory $rundir"
+	mounted_at "$hmnt" || fail "the settled check moved the result off $hmnt"
+	echo "ok   $case_id: --verify $man says the same, exit 3, nothing"
+	echo "     touched"
+	end_case
+}
+
+# --- 7. the onto snapshot destroyed after done: the settled check
+#        refuses, and says what it looked for ---
+#
+# The dataset form's alone, because the clone form's onto snapshot is
+# the result's origin and cannot be destroyed while the clone stands.
+# The run's own pre-apply snapshot is the header's #onto here, and
+# nothing depends on it once the rebase is over, so a hand can take
+# it away -- which is the one thing the settled check has no answer
+# for. A safety snapshot taken before the run is what puts the
+# fixture back afterwards, since the snapshot end_case rolls back to
+# is the one this case destroys.
+case_ontogone() {
+	case_id="$fixture $form the onto snapshot destroyed after done"
+	zfs snapshot "$POOL/onto@zrsafe" || \
+	    fail "cannot take the safety snapshot"
+	run_fg
+	st=$?
+	[ $st -eq 0 ] || { cat "$log"; fail "the run exited $st, want 0"; }
+	[ -z "$(localprops "$rds")" ] || \
+	    fail "the run did not reach done: $(localprops "$rds") is still on $rds"
+	sethere
+	# Clean first, so that what the two refusals below prove is
+	# the missing input and not something else.
+	"$bin" --verify "$man" > "$tmp/og0" 2>&1
+	st=$?
+	[ $st -eq 0 ] || \
+	    { cat "$tmp/og0"; fail "--verify of the settled result exited $st, want 0"; }
+	og=$(hdr onto "$man")
+	osnap=${og%% *}
+	oguid=${og##* }
+	[ "$osnap" = "$POOL/onto@pre" ] || \
+	    fail "#onto is $osnap, want $POOL/onto@pre"
+	# Gone by name, which stops the check with the name.
+	zfs destroy "$osnap" || fail "cannot destroy $osnap"
+	"$bin" --verify "$man" > "$tmp/og1" 2>&1
+	st=$?
+	[ $st -eq 2 ] || \
+	    { cat "$tmp/og1"; fail "--verify with $osnap gone exited $st, want 2"; }
+	grep -q "$osnap is gone" "$tmp/og1" || \
+	    { cat "$tmp/og1"; fail "the refusal did not name $osnap"; }
+	# And there under the name with another snapshot's guid, which
+	# is the other half: a name is what a snapshot is called and
+	# the guid is what it is, and the refusal prints both numbers.
+	zfs snapshot "$osnap" || fail "cannot take $osnap again"
+	nguid=$(recval guid "$osnap")
+	[ -n "$nguid" ] && [ "$nguid" != "$oguid" ] || \
+	    fail "the new $osnap has the guid the header kept"
+	"$bin" --verify "$man" > "$tmp/og2" 2>&1
+	st=$?
+	[ $st -eq 2 ] || \
+	    { cat "$tmp/og2"; fail "--verify with another $osnap exited $st, want 2"; }
+	grep -q "$osnap" "$tmp/og2" || \
+	    { cat "$tmp/og2"; fail "the refusal did not name $osnap"; }
+	grep -q "$oguid" "$tmp/og2" && grep -q "$nguid" "$tmp/og2" || \
+	    { cat "$tmp/og2"; fail "the refusal did not print both guids"; }
+	[ ! -d "$rundir" ] || \
+	    fail "a refused settled check left the run directory $rundir"
+	[ -z "$(localprops "$rds")" ] || \
+	    fail "a refused settled check wrote a property on $rds"
+	echo "ok   $case_id: exit 2 by name and by guid, both numbers said"
+	end_case "$POOL/onto@zrsafe"
+}
+
+# --- 8. a from side given as a dataset: gone at done on purpose, and
+#        the settled check says so rather than calling it a loss ---
+#
+# The clone form's, for the second thing it proves: done leaves the
+# clone unmounted with no mountpoint of its own, so the check has
+# nowhere to read it and mounts it at the run directory's mnt itself,
+# then takes the mount and the directory away again.
+case_madefrom() {
+	case_id="$fixture $form a from side the tool made"
+	"$bin" $flag -v -o "$man" --from "$POOL/from" \
+	    --onto "$POOL/onto@work" --result "$POOL/result" > "$log" 2>&1
+	st=$?
+	[ $st -eq 0 ] || { cat "$log"; fail "the run exited $st, want 0"; }
+	[ -z "$(localprops "$rds")" ] || \
+	    fail "the run did not reach done: $(localprops "$rds") is still on $rds"
+	[ "$(hdr made "$man")" = from ] || \
+	    { head -14 "$man"; fail "#made is $(hdr made "$man"), want from"; }
+	fsnap=$(hdr from "$man")
+	fsnap=${fsnap%% *}
+	hassnap "$fsnap" && fail "$fsnap survived done; the tool made it"
+	# The clone as done left it: in the void, which is where the
+	# check has to place it for itself.
+	[ "$(recval mountpoint "$POOL/result")" = none ] || \
+	    fail "a settled clone's mountpoint is not none"
+	[ "$(recval mounted "$POOL/result")" = no ] || \
+	    fail "a settled clone is mounted somewhere"
+	"$bin" --verify -v "$man" > "$tmp/mf" 2>&1
+	st=$?
+	[ $st -eq 0 ] || \
+	    { cat "$tmp/mf"; fail "--verify with the made from gone exited $st, want 0"; }
+	grep -q 'the snapshot the tool took of it is not there any more' \
+	    "$tmp/mf" || \
+	    { cat "$tmp/mf"; fail "the check did not say the from side is gone by design"; }
+	grep -q 'every action that reads from is unchecked' "$tmp/mf" || \
+	    { cat "$tmp/mf"; fail "the check did not say what that leaves unchecked"; }
+	grep -q 'drifted 0' "$tmp/mf" || \
+	    { cat "$tmp/mf"; fail "the settled check found drift"; }
+	grep -q "mounts it at $rundir/mnt" "$tmp/mf" || \
+	    { cat "$tmp/mf"; fail "the check did not mount the clone privately"; }
+	# And it is back in the void, with the directory gone again.
+	[ ! -d "$rundir" ] || \
+	    fail "the settled check left the run directory $rundir"
+	[ "$(recval mounted "$POOL/result")" = no ] || \
+	    fail "the settled check left the clone mounted"
+	[ "$(recval mountpoint "$POOL/result")" = none ] || \
+	    fail "the settled check changed the mountpoint property"
+	[ "$(recval readonly "$POOL/result")" = on ] || \
+	    fail "the settled check changed readonly"
+	[ -z "$(localprops "$POOL/result")" ] || \
+	    fail "the settled check wrote a property on the result"
+	echo "ok   $case_id: the from side unchecked, exit 0, the clone"
+	echo "     mounted and unmounted and the directory gone"
 	end_case
 }
 
 # ---------------------------------------------------------------
 # One fixture in one form: the cases above, each ending in --abort.
-# The last two of them are the conflicted fixtures' alone.
+# The last four of them belong to one kind of fixture or one form.
 # ---------------------------------------------------------------
 stray_pass() {
 	form=$1
@@ -833,6 +1023,18 @@ stray_pass() {
 	if [ $clean -eq 0 ]; then
 		case_driftline
 		case_donedrift
+	fi
+	# And the two settled checks, each of which wants a rebase
+	# that reached done in one invocation: the destroyed onto
+	# snapshot is the dataset form's, since the clone form's onto
+	# is the result's origin, and the tool-made from side is the
+	# clone form's, where done also leaves the result unmounted.
+	if [ $clean -eq 1 ]; then
+		if [ "$form" = clone ]; then
+			case_madefrom
+		else
+			case_ontogone
+		fi
 	fi
 	return 0
 }

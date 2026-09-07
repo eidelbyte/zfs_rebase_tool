@@ -2775,9 +2775,19 @@ struct resume {
 	int			privmnt;	/* it is at workmnt just now */
 	int			dropfrom;	/* done: the made snap goes */
 	int			settled;	/* it reached the done gate */
+	int			post;		/* --verify of a settled one */
+	int			postmnt;	/* and this check mounted it */
 	struct record		rb;
 	char			rundir[ZR_NAME_MAX];
-	char			workmnt[ZR_NAME_MAX];	/* <rundir>/mnt */
+	/*
+	 * Where the result's tree is to be read. For a rebase in
+	 * flight that is <rundir>/mnt, the private mount the run made
+	 * and every verb takes over; for a settled result it is
+	 * wherever the result is mounted, which is that same path
+	 * only where this check had to mount it there itself
+	 * (documents-design.md, section 7).
+	 */
+	char			workmnt[ZR_NAME_MAX];
 	char			respath[ZR_NAME_MAX];	/* the resolution */
 	char			given[ZR_NAME_MAX];	/* MANIFEST, resolved */
 	char			tmptag[ZR_TAG_MAX];	/* the report's hold */
@@ -3083,13 +3093,42 @@ read_manifest(struct resume *s)
 }
 
 /*
+ * Is there a rebase in flight on this dataset at all: 1 with the two
+ * properties read into the record, 0 where neither is there, -1 with
+ * err set. A dataset carrying neither zfs_rebase:manifest nor
+ * zfs_rebase:tag as a local value is no open rebase -- not a dataset
+ * of the user's own that a mistyped name found, not one that only
+ * inherits those properties from a parent, since zr_zfs_get_user
+ * answers for the local value alone, and not one whose rebase
+ * reached done, which took the record off.
+ *
+ * The last of those is the one a verb can still be about: --verify
+ * of a settled result reads it from its manifest instead
+ * (settled_open), and every other verb moves a rebase and has
+ * nothing here to move.
+ */
+static int
+has_record(struct resume *s)
+{
+	struct record *rb = &s->rb;
+	int got;
+
+	got = rec_str(s, ZR_PROP_MANIFEST, rb->manifest,
+	    sizeof (rb->manifest));
+	if (got < 0)
+		return (-1);
+	if (got == 0)
+		return (0);
+	got = rec_str(s, ZR_PROP_TAG, rb->tag, sizeof (rb->tag));
+	if (got < 0)
+		return (-1);
+	return (got > 0);
+}
+
+/*
  * The whole record, and the refusal that guards every verb: a
- * dataset carrying neither zfs_rebase:manifest nor zfs_rebase:tag as
- * a local value is not a zfs_rebase result, and nothing here touches
- * it -- not a dataset of the user's own that a mistyped name found,
- * not one that only inherits those properties from a parent, since
- * zr_zfs_get_user answers for the local value alone, and not one
- * whose rebase reached done, which took the record off.
+ * dataset with none of it is not a zfs_rebase result and nothing
+ * here touches it.
  *
  * What the two properties buy is the manifest, and the manifest's
  * header is the rest of the record: the three snapshots and their
@@ -3103,15 +3142,9 @@ read_record(struct resume *s)
 	char q[8];
 	int got;
 
-	got = rec_str(s, ZR_PROP_MANIFEST, rb->manifest,
-	    sizeof (rb->manifest));
+	got = has_record(s);
 	if (got < 0)
 		return (-1);
-	if (got > 0) {
-		got = rec_str(s, ZR_PROP_TAG, rb->tag, sizeof (rb->tag));
-		if (got < 0)
-			return (-1);
-	}
 	if (got == 0) {
 		(void) snprintf(s->err, sizeof (s->err), "%s is not a "
 		    "zfs_rebase result; nothing was touched", s->result);
@@ -3174,25 +3207,42 @@ no_base(const char *snap)
 }
 
 /*
+ * How the inputs are looked for, which is one question per verb.
+ */
+#define	ZF_NAME		0	/* by name and guid; a miss stops the verb */
+#define	ZF_GUID		1	/* and then by guid, over the whole pool */
+#define	ZF_SETTLED	2	/* by name and guid, and no search at all */
+
+/*
  * Every input the record names, found again. By name first, and the
  * guid must be the one the record kept: a snapshot destroyed and
  * taken again under the same name is another snapshot, and the
  * answers this rebase wrote do not describe it.
  *
- * byguid is the report's own way out. A snapshot is its guid, where
- * a name is only what it is called, so a rename or a promote is
- * followed here rather than reported as a loss; what cannot be found
- * by either is marked gone, and the actions that would have had to
- * read it come back unchecked. Without byguid -- a --continue or a
- * --restart, which have to read those trees to write anything -- a
- * missing input stops the verb instead.
+ * ZF_GUID is the report's own way out on a rebase in flight. A
+ * snapshot is its guid, where a name is only what it is called, so a
+ * rename or a promote is followed here rather than reported as a
+ * loss; what cannot be found by either is marked gone, and the
+ * actions that would have had to read it come back unchecked. Under
+ * ZF_NAME -- a --continue or a --restart, which have to read those
+ * trees to write anything -- a missing input stops the verb instead.
+ *
+ * ZF_SETTLED is the check of a rebase that is over, and it searches
+ * for nothing: the header names the three snapshots and a name that
+ * is not there, or that another snapshot wears now, stops the check
+ * (documents-design.md, section 7). The one exception is a from side
+ * the tool snapshotted itself, which #made says so of: that snapshot
+ * lives exactly as long as the rebase and is gone at done on
+ * purpose, so it is marked gone and explain_gone says which actions
+ * that leaves unchecked.
  */
 static int
-find_inputs(struct resume *s, int byguid)
+find_inputs(struct resume *s, int how)
 {
 	char pool[ZR_SNAP_MAX];
 	uint64_t have;
 	int i, ex, rc;
+	int byguid = how == ZF_GUID;
 
 	(void) snprintf(pool, sizeof (pool), "%.*s",
 	    (int)strcspn(s->result, "/"), s->result);
@@ -3234,6 +3284,19 @@ find_inputs(struct resume *s, int byguid)
 		} else {
 			(void) snprintf(s->err, sizeof (s->err),
 			    "%s is gone", want);
+			/*
+			 * The one input a settled result is allowed
+			 * to have lost: the snapshot the tool took of
+			 * a side given as a dataset, which done
+			 * destroyed because the rebase it belonged to
+			 * had ended.
+			 */
+			if (how == ZF_SETTLED && i == ZI_FROM &&
+			    made_says(&s->rb, input_word(i))) {
+				s->gone[i] = 1;
+				s->found[i][0] = '\0';
+				continue;
+			}
 		}
 		/*
 		 * A snapshot the tool took itself is destroyed at
@@ -4476,12 +4539,72 @@ continue_from(struct resume *s)
 }
 
 /*
+ * The other half of --verify: a rebase that is over. A result that
+ * reached done carries no record and, unless the run was given -o,
+ * no manifest either -- done unlinked the one it wrote and took the
+ * run directory with it -- so the only settled rebase there is to
+ * ask about is one whose manifest the user kept, and the file is
+ * what names it (documents-design.md, sections 4 and 7).
+ *
+ * What the record would have given, the header gives: the manifest
+ * is the file that was named, the three snapshots and their guids
+ * are its own, and #made says which of them the tool took for itself
+ * and destroyed at done. The two documents are both required here,
+ * where a rebase in flight can go on without the resolution and only
+ * say so: the settled check holds the result against onto's names
+ * with the manifest's actions and the resolution's choices applied,
+ * and a check made without the choices would be answering a
+ * different question.
+ *
+ * Nothing here searches the pool: each input is looked up by the
+ * name the header kept, its guid must be the guid the header kept,
+ * and a name that is gone or that another snapshot wears now stops
+ * the check. Returns EXIT_CLEAN, or the status to give up with.
+ */
+static int
+settled_open(struct resume *s, const struct zr_verb_opts *o)
+{
+	/*
+	 * --result reads a rebase off a record, and this dataset has
+	 * none. Only the manifest can name this one.
+	 */
+	if (s->given[0] == '\0') {
+		(void) fprintf(stderr, "zfs_rebase: %s: no rebase in flight; "
+		    "for a settled result give the manifest\n", s->result);
+		return (EXIT_PRECOND);
+	}
+	(void) snprintf(s->rb.manifest, sizeof (s->rb.manifest), "%s",
+	    s->given);
+	if (read_manifest(s) != 0 || resume_paths(s) != 0)
+		return (vfail(s, EXIT_PRECOND, NULL));
+	s->hasres = read_resolution(s, &s->res);
+	if (s->hasres == 0) {
+		(void) fprintf(stderr, "zfs_rebase: %s is gone; a settled "
+		    "result is checked against both documents, the manifest "
+		    "and the resolution beside it\n", s->respath);
+		return (EXIT_PRECOND);
+	}
+	if (s->hasres < 0)
+		return (vfail(s, EXIT_PRECOND, "resolution"));
+	if (find_inputs(s, ZF_SETTLED) != 0 || check_given(s, o) != 0)
+		return (vfail(s, EXIT_PRECOND, NULL));
+	if (s->verbose)
+		(void) fprintf(stderr, "zfs_rebase: %s is settled; %s is the "
+		    "rebase it carried\n", s->result, s->rb.manifest);
+	return (EXIT_CLEAN);
+}
+
+/*
  * What every verb does first: it must be root, the command must name
  * a rebase, libzfs must open, the result must carry a record, the
  * manifest that record names must parse, every input its header
  * names must still be the snapshot it named, and what the command
  * said about the rebase beyond its name must agree with all of that.
- * Returns EXIT_CLEAN, or the status to give up with.
+ *
+ * The --verify verb is the one that also has a settled result to
+ * answer for, and the record is what tells the two apart: settled_
+ * open takes it from there. Returns EXIT_CLEAN, or the status to
+ * give up with.
  */
 static int
 resume_open(struct resume *s, const struct zr_verb_opts *o, int byguid)
@@ -4501,8 +4624,37 @@ resume_open(struct resume *s, const struct zr_verb_opts *o, int byguid)
 		return (EXIT_PRECOND);
 	if (zr_zfs_open(&s->zfs, s->err, sizeof (s->err)) != 0)
 		return (vfail(s, EXIT_PRECOND, "libzfs"));
+	/*
+	 * In flight or settled, which only the report has to ask: a
+	 * rebase that reached done took its record off, and every
+	 * other verb moves a rebase and has nothing there to move.
+	 * The dataset itself is asked for first, so that a result
+	 * somebody destroyed is named as what it is rather than as a
+	 * property that could not be read.
+	 */
+	if (s->report) {
+		int got;
+
+		got = zr_zfs_exists(s->zfs, s->result, s->err,
+		    sizeof (s->err));
+		if (got < 0)
+			return (vfail(s, EXIT_PRECOND, NULL));
+		if (got == 0) {
+			(void) fprintf(stderr, "zfs_rebase: %s: there is no "
+			    "such dataset\n", s->result);
+			return (EXIT_PRECOND);
+		}
+		got = has_record(s);
+		if (got < 0)
+			return (vfail(s, EXIT_PRECOND, NULL));
+		if (got == 0) {
+			s->post = 1;
+			return (settled_open(s, o));
+		}
+	}
 	if (read_record(s) != 0 || resume_paths(s) != 0 ||
-	    find_inputs(s, byguid) != 0 || check_given(s, o) != 0)
+	    find_inputs(s, byguid ? ZF_GUID : ZF_NAME) != 0 ||
+	    check_given(s, o) != 0)
 		return (vfail(s, EXIT_PRECOND, NULL));
 	/*
 	 * The resolution, read once and kept: every gate from
@@ -4522,11 +4674,57 @@ resume_open(struct resume *s, const struct zr_verb_opts *o, int byguid)
 	return (EXIT_CLEAN);
 }
 
+/*
+ * Where a settled result is read, which is the one thing the check
+ * of a rebase that is over does differently from the check of one in
+ * flight: it takes nothing over. A settled dataset is at home and is
+ * read there, and so is a clone somebody has placed; a settled clone
+ * is unmounted with no mountpoint of its own (documents-design.md,
+ * section 5), and for that one alone the check mounts it at the run
+ * directory's mnt with the same call the run uses, reads it there
+ * and takes the mount and the directory away again (resume_close).
+ *
+ * No property of the result is touched either way. A settled clone
+ * has readonly on, so the private mount is read-only, which is all a
+ * check ever wanted of it.
+ */
+static int
+settled_mount(struct resume *s)
+{
+	char at[ZR_NAME_MAX];
+	int rc;
+
+	rc = zr_zfs_mounted_at(s->zfs, s->result, at, sizeof (at), s->err,
+	    sizeof (s->err));
+	if (rc < 0)
+		return (-1);
+	if (rc > 0) {
+		(void) snprintf(s->workmnt, sizeof (s->workmnt), "%s", at);
+		if (s->verbose)
+			(void) fprintf(stderr, "zfs_rebase: %s is mounted at "
+			    "%s and is read there\n", s->result, s->workmnt);
+		return (0);
+	}
+	if (mkdir_p(s->workmnt, s->err, sizeof (s->err)) != 0)
+		return (-1);
+	if (zr_zfs_mount_at(s->zfs, s->result, s->workmnt, s->err,
+	    sizeof (s->err)) != 0) {
+		(void) rmdir_run(s->result);
+		return (-1);
+	}
+	s->postmnt = 1;
+	if (s->verbose)
+		(void) fprintf(stderr, "zfs_rebase: %s is mounted nowhere; "
+		    "this check mounts it at %s and takes that away again\n",
+		    s->result, s->workmnt);
+	return (0);
+}
+
 /* The clone mounted and the trees walked; the manifest is read. */
 static int
 resume_trees(struct resume *s)
 {
-	if (take_over(s) != 0)
+	if (s->post ? settled_mount(s) != 0 : take_over(s) != 0)
 		return (-1);
 	s->names = zr_names_create();
 	if (s->names == NULL) {
@@ -4553,7 +4751,7 @@ static void
 resume_close(struct resume *s)
 {
 	char e[512];
-	int i;
+	int i, rc;
 
 	(void) ro_on(s);
 	if (s->oracle != NULL)
@@ -4585,6 +4783,29 @@ resume_close(struct resume *s)
 			    s->rb.canmount, s->workmnt, s->verbose);
 		else
 			to_the_void(s->zfs, s->result);
+	}
+	/*
+	 * And the mount a settled check made for itself, undone
+	 * whatever the check found: a result that was mounted nowhere
+	 * when the verb began is mounted nowhere when it ends, and
+	 * the directory the mount needed goes with it, so a rebase
+	 * that is over leaves nothing under WORKDIR either way
+	 * (documents-design.md, section 7). Nothing here can change
+	 * what the check returned; every failure is reported and none
+	 * is passed up.
+	 */
+	if (s->postmnt) {
+		s->postmnt = 0;
+		if (zr_zfs_unmount(s->zfs, s->result, e, sizeof (e)) != 0)
+			(void) fprintf(stderr, "zfs_rebase: unmount %s: %s\n",
+			    s->result, e);
+		rc = rmdir_run(s->result);
+		if (rc != 0)
+			(void) fprintf(stderr, "zfs_rebase: %s/%s: %s\n",
+			    WORKDIR, s->result, strerror(rc));
+		else if (s->verbose)
+			(void) fprintf(stderr, "zfs_rebase: removed %s/%s\n",
+			    WORKDIR, s->result);
 	}
 	/*
 	 * A from snapshot the tool took itself lives exactly as long
