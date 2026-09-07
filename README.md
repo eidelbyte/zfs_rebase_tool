@@ -46,7 +46,7 @@ MANIFEST at all.
 | `--quiet` | `-q` | a start option: latched in the record for the whole run, and it silences the final check's report and nothing else -- not the check, not its verdict, not the exit status |
 | `--take-onto` | `-O` | write the skeleton with every conflict answered onto |
 | `--take-from` | `-F` | write the skeleton with every conflict answered from; the two exclude each other |
-| `--interactive` | `-i` | open the picker at the conflicts gate; this build has no picker, so the gate is headless with or without it |
+| `--interactive` | `-i` | open the picker at the conflicts gate, for this invocation only (not latched: say it on each --continue); this build has no picker, so the gate is headless with or without it |
 | `--no-merge` | `-M` | stop at the conflicts gate however the resolution reads; an error once the gate is passed |
 | `--continue` | `-c` | take the rebase on from the gate its record names |
 | `--restart` | `-R` | the result back as onto was, the manifest applied again from the first gate, the resolution back to its skeleton |
@@ -248,7 +248,10 @@ the one code path a --continue uses. --no-merge holds it at the gate
 instead, and is refused once the gate is passed. The gate is
 headless: this is a system tool, and it opens nothing of its own.
 --interactive asks for the picker, which this build does not have,
-so the gate reads the same with the flag and without it.
+so the gate reads the same with the flag and without it. The flag is
+not latched: it belongs to the invocation, so a --continue that
+should open the picker says -i each time, and a start given -i that
+reaches the gate in the same process is still interactive there.
 applying2 carries the choices out. done is no phase and is never
 written: when the result has verified and is read-only again, the
 holds are given back and then every zfs_rebase: property is taken

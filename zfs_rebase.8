@@ -401,6 +401,10 @@ gate.
 Without it the gate is headless, which is what a system tool does by
 default: it goes on when the resolution is complete and stops when it is
 not.
+The flag is not latched: it belongs to the invocation, so a
+.Fl -continue
+that should open the picker says it each time, and a start given it that
+reaches the gate in the same process is still interactive there.
 This build has no picker to open, so the flag changes nothing today: it is
 accepted on a fresh run and on
 .Fl -continue ,
