@@ -271,13 +271,15 @@ is run by this script.
 The cell is ZX23 in tests/MATRIX.md, deferred there for this reason.
 PROCEDURE
 
-say "3. a snapshot destroyed during a run: not yet testable"
+say "3. a snapshot destroyed during a run: run-kills.sh has it"
 echo "The hold is what refuses the destroy, and catching it means"
 echo "destroying the input while the run is between two gates. That"
-echo "needs the pause hook -- an environment variable naming a gate"
-echo "at which the tool raises SIGSTOP on itself -- which sprint 5"
-echo "has not built. run-fixture.sh checks the holds at rest: none"
-echo "after done, one per input under the record's tag at conflicts."
+echo "is the pause hook's -- ZFS_REBASE_PAUSE names a gate at which"
+echo "the tool raises SIGSTOP on itself -- and run-kills.sh does it"
+echo "at the held gate in both forms: zfs destroy on each held input"
+echo "is refused and the snapshot stands. run-fixture.sh checks the"
+echo "holds at rest: none after done, one per input under the"
+echo "record's tag at conflicts. Nothing is repeated here."
 
 echo
 echo "run-precond: the nested-mount and canmount=off refusals passed;"
