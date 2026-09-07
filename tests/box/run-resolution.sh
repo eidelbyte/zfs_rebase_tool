@@ -12,13 +12,13 @@
 #
 # The other harnesses answer every conflict with keep, the one choice
 # that changes nothing. This one is where a choice of onto or from is
-# carried out for the first time, where the two --take flags and the
-# two gate flags are exercised on real datasets, and where a kill
-# lands inside the applying2 stage. What it asserts, case by case:
+# carried out for the first time, where the two --take flags and
+# --no-merge are exercised on real datasets, and where a kill lands
+# inside the applying2 stage. What it asserts, case by case:
 #
-# 1. Headless to done. A fresh run given --take-onto --no-gui writes
-#    its skeleton answered, which makes it complete from the start,
-#    so the run passes its own conflicts gate and reaches done in one
+# 1. Headless to done. A fresh run given --take-onto writes its
+#    skeleton answered, which makes it complete from the start, so
+#    the run passes its own conflicts gate and reaches done in one
 #    process (exit 0, not 1). The manifest's header then reads
 #    #take onto; the document has nothing left to
 #    answer and every line reads onto; every conflicted name in the
@@ -36,7 +36,7 @@
 # 2. --no-merge. The same run given --no-merge stops at the gate with
 #    the document complete, since the flag is the command saying not
 #    yet; a --continue --no-merge stops there again and moves
-#    nothing; a --continue --no-gui then passes the gate and reaches
+#    nothing; a plain --continue then passes the gate and reaches
 #    done; and a --continue on the result afterwards is refused
 #    before any stage runs -- exit 2, "not a zfs_rebase result",
 #    readonly unmoved -- because done took the record off. ("past
@@ -630,10 +630,10 @@ case_headless() {
 	# The final check is made by the invocation that reaches the
 	# done gate, under no flag, and this run is it. Afterwards
 	# there is no record to ask anything of.
-	fresh "--take-$side" --no-gui
+	fresh "--take-$side"
 	st=$?
 	[ $st -eq 0 ] || \
-	    { cat "$log"; fail "--take-$side --no-gui exited $st, want 0"; }
+	    { cat "$log"; fail "--take-$side exited $st, want 0"; }
 	# One process: the gate said the document was complete and
 	# went on rather than waiting for a --continue.
 	grep -q "the resolution $res is answered in full; going on" "$log" || \
@@ -710,10 +710,10 @@ case_nomerge() {
 	[ "$(phasenow "$rds")" = conflicts ] || \
 	    fail "--continue --no-merge moved the gate"
 	# And without it the same document takes the same rebase on.
-	"$bin" --continue --no-gui --result "$rds" > "$tmp/nm3" 2>&1
+	"$bin" --continue --result "$rds" > "$tmp/nm3" 2>&1
 	st=$?
 	[ $st -eq 0 ] || \
-	    { cat "$tmp/nm3"; fail "--continue --no-gui exited $st, want 0"; }
+	    { cat "$tmp/nm3"; fail "--continue exited $st, want 0"; }
 	at_done "$rds"
 	[ "$(holdcount)" = 0 ] || fail "done left holds behind"
 	for p in $names; do
@@ -814,7 +814,7 @@ case_hand() {
 	# flag, and -v is what adds the per-line list to it. There is
 	# no asking afterwards -- a settled result carries no record --
 	# until verify-settled names it by its manifest.
-	"$bin" --continue -v --no-gui --result "$rds" \
+	"$bin" --continue -v --result "$rds" \
 	    > "$tmp/handv" 2>&1
 	st=$?
 	[ $st -eq 0 ] || \
@@ -1024,7 +1024,7 @@ case_killwindow() {
 # no line at all.
 case_killchoice() {
 	case_id="$fixture $form SIGKILL inside applying2's choices"
-	fresh_bg choice:1 --take-from --no-gui
+	fresh_bg choice:1 --take-from
 	kill -KILL "$pid" || fail "cannot signal the stopped tool"
 	wait "$pid"
 	st=$?

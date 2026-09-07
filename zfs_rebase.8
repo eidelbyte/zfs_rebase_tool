@@ -22,7 +22,7 @@
 .Op Fl q | Fl -quiet
 .Oo Fl u | Fl -allow-unrelated Fl b | Fl -base Ar snapshot Oc
 .Oo Fl O | Fl -take-onto | Fl F | Fl -take-from Oc
-.Op Fl G | Fl -no-gui
+.Op Fl i | Fl -interactive
 .Op Fl M | Fl -no-merge
 .Fl f | Fl -from Ar snapshot Ns | Ns Ar dataset
 .Fl t | Fl -onto Ar snapshot Ns | Ns Ar dataset
@@ -35,7 +35,7 @@
 .Fl t | Fl -onto Ar snapshot Ns | Ns Ar dataset
 .Nm
 .Fl c | Fl -continue
-.Op Fl G | Fl -no-gui
+.Op Fl i | Fl -interactive
 .Op Fl M | Fl -no-merge
 .Op Fl v | Fl -verbose
 .Op Fl f | Fl -from Ar snapshot
@@ -394,15 +394,17 @@ is a usage error.
 The same, answering every conflict
 .Sy from .
 The two exclude each other.
-.It Fl G , Fl -no-gui
-At the
+.It Fl i , Fl -interactive
+Open the picker at the
 .Sy conflicts
-gate, go on without the picker when the resolution is complete and stop
-when it is not.
-That is what the gate does anyway while there is no picker to launch, so
-the flag changes nothing today: it is accepted on a fresh run and on
+gate.
+Without it the gate is headless, which is what a system tool does by
+default: it goes on when the resolution is complete and stops when it is
+not.
+This build has no picker to open, so the flag changes nothing today: it is
+accepted on a fresh run and on
 .Fl -continue ,
-and it is the only behavior there is.
+and the gate reads the same either way.
 .It Fl M , Fl -no-merge
 Stop at the
 .Sy conflicts
@@ -785,9 +787,9 @@ it is for the next
 .Fl -continue ;
 past the gate the flag is refused, since there is nothing left for it to
 stop.
-.Fl -no-gui
-asks for what the gate does anyway while there is no picker to launch, and
-changes nothing today.
+.Fl -interactive
+asks for the picker, which this build does not have, so the gate is
+headless with the flag and without it.
 .Sy applying2
 carries the choices out.
 .Sy done

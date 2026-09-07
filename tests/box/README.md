@@ -354,8 +354,9 @@ stops a run or a --continue at the gate however the resolution
 reads, and leaves the gate where it is for the next --continue
 without it; and --no-merge on a --continue whose record is already
 at applying2 or done is refused with "past the merge", exit 2, the
-gate unmoved. --no-gui is accepted on a fresh run and on --continue
-and changes nothing while there is no picker.
+gate unmoved. The gate is headless under no flag at all, which is
+what every run here relies on; --interactive is accepted on a fresh
+run and on --continue and changes nothing while there is no picker.
 
 One thing this harness does say about --verify: a --continue given
 it from before or inside applying1 records zfs_rebase:verify on the
@@ -451,10 +452,10 @@ the tool reads them too.
 
 The cases, in the order they run, per fixture and form:
 
-- headless to done under --take-onto --no-gui and then under
-  --take-from --no-gui. Each writes its skeleton answered, which
-  makes it complete from the start, so the run passes its own
-  conflicts gate and reaches done in one process: exit 0 and not 1.
+- headless to done under --take-onto and then under --take-from.
+  Each writes its skeleton answered, which makes it complete from
+  the start, so the run passes its own conflicts gate and reaches
+  done in one process: exit 0 and not 1.
   The record then reads zfs_rebase:take onto or from, as its own
   local value against a bogus one on the pool root; every line of the
   document reads that side and none is left to answer; every
@@ -468,7 +469,7 @@ The cases, in the order they run, per fixture and form:
 - --no-merge, which stops the same run at the gate with the document
   complete, stops a --continue there again, and is refused outright
   once the record is past the merge -- exit 2, "past the merge", the
-  state and readonly unmoved. In between, a --continue --no-gui
+  state and readonly unmoved. In between, a plain --continue
   passes the gate and reaches done.
 - an incomplete skeleton, which stops the fresh run with a count of
   what is unanswered and stops a --continue with the same count of

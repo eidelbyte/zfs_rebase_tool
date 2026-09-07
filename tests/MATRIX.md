@@ -703,7 +703,7 @@ again.
 | ZX103 | -V, -q, -u and -b parse as --verify, --quiet, --allow-unrelated and --base | covered: check_args.c |
 | ZX104 | -n parses as --dry-run, and a dry run needs no --result | covered: check_args.c |
 | ZX105 | -O and -F parse as --take-onto and --take-from | covered: check_args.c |
-| ZX106 | -G and -M parse as --no-gui and --no-merge | covered: check_args.c |
+| ZX106 | -i and -M parse as --interactive and --no-merge | covered: check_args.c |
 | ZX107 | -c parses as --continue, with the gate flags and -v on it | covered: check_args.c |
 | ZX108 | -R parses as --restart | covered: check_args.c |
 | ZX109 | -a parses as --abort | covered: check_args.c |
@@ -712,10 +712,10 @@ again.
 | ZX112 | --posix, --build-fixture and --edit-fixture: long only, their operands, their counts, and --posix taking -p and -o alone | covered: check_args.c |
 | ZX113 | --take-onto with --take-from is refused, either spelling | covered: check_args.c |
 | ZX114 | a --take flag with --continue, --restart, --abort or the --verify verb is refused | covered: check_args.c |
-| ZX115 | --no-gui with --restart, --abort or the --verify verb is refused; accepted on a fresh run and on --continue | covered: check_args.c |
+| ZX115 | --interactive with --restart, --abort or the --verify verb is refused; accepted on a fresh run and on --continue | covered: check_args.c |
 | ZX116 | --no-merge with --restart, --abort or the --verify verb is refused; accepted on a fresh run and on --continue | covered: check_args.c |
 | ZX117 | --base without --allow-unrelated is refused; with it, it parses | covered: check_args.c |
-| ZX118 | an unknown word, a bundled -nv, a bare - and --, an attached -fVALUE, a flag with no value, and no command at all | covered: check_args.c |
+| ZX118 | an unknown word, a bundled -nv, a bare - and --, an attached -fVALUE, a flag with no value, no command at all, and the retired --no-gui and -G | covered: check_args.c |
 | ZX119 | --take-onto reads onto, --take-from reads from, neither reads as "-" | covered: check_args.c |
 | ZX120 | a verb takes --result, the gate flags and -v; --manifest, --quiet, -p, -n and two verbs at once are refused | covered: check_args.c |
 | ZX121 | a fresh run needs --from and --onto, and --result unless -n | covered: check_args.c |

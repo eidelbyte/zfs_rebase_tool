@@ -64,9 +64,9 @@ struct zr_run_opts {
 	 * itself, since a complete resolution plus the command that
 	 * asked for the rebase is the signal the gate waits for.
 	 *
-	 * --no-gui is not here. What it asks of the gate -- go on
-	 * when the resolution is complete, stop when it is not -- is
-	 * what the gate does while there is no picker to launch, so
+	 * --interactive is not here. What it asks for is the picker
+	 * at the gate, and there is none to launch in this build, so
+	 * the gate is headless with the flag or without it and
 	 * nothing in the run reads it.
 	 */
 	int		takeonto;

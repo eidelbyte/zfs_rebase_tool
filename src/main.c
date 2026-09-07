@@ -35,13 +35,13 @@
 static const char usage[] =
 	"usage: zfs_rebase [-p] [-v] [-q] [--manifest FILE]\n"
 	"                  [--allow-unrelated --base SNAP]\n"
-	"                  [--take-onto | --take-from] [--no-gui] "
+	"                  [--take-onto | --take-from] [--interactive] "
 	    "[--no-merge]\n"
 	"                  --from SNAP|DATASET --onto SNAP|DATASET --result "
 	    "NAME\n"
 	"       zfs_rebase --dry-run [-p] [--manifest FILE]\n"
 	"                  --from SNAP|DATASET --onto SNAP|DATASET\n"
-	"       zfs_rebase --continue [--no-gui] [--no-merge]\n"
+	"       zfs_rebase --continue [--interactive] [--no-merge]\n"
 	"                  [--from SNAP] [--onto SNAP]\n"
 	"                  (--result NAME | MANIFEST)\n"
 	"       zfs_rebase --restart (--result NAME | MANIFEST)\n"
@@ -75,10 +75,9 @@ static const char usage[] =
 	"                          run\n"
 	"  -O, --take-onto         answer every conflict of the skeleton onto\n"
 	"  -F, --take-from         answer every conflict of the skeleton from\n"
-	"  -G, --no-gui            go on at the conflicts gate when the\n"
-	"                          resolution is complete and stop when it is\n"
-	"                          not: the only behavior while there is no\n"
-	"                          picker\n"
+	"  -i, --interactive       ask for the picker at the conflicts gate;\n"
+	"                          this build has no picker, so the gate is\n"
+	"                          headless with the flag or without it\n"
 	"  -M, --no-merge          stop at the conflicts gate however the\n"
 	"                          resolution is answered; an error past it\n"
 	"  -c, --continue          take the rebase on from the gate it left\n"
@@ -316,11 +315,11 @@ edit_fixture(const char *path, const char *tree, const char *dir)
  * The command line is args.c's; what is left here is the dispatch
  * over what it parsed. Nothing below reads argv again.
  *
- * --no-gui is parsed, refused where it does not belong, and goes no
- * further: what it asks of the conflicts gate -- go on when the
- * resolution is complete, stop when it is not -- is what the gate
- * does while there is no picker to launch, so there is nothing for
- * the run or the verb to do differently under it.
+ * --interactive is parsed, refused where it does not belong, and
+ * goes no further: what it asks for is the picker at the conflicts
+ * gate, and there is none to launch in this build, so the gate is
+ * headless with the flag or without it and there is nothing for the
+ * run or the verb to do differently under it.
  */
 int
 main(int argc, char **argv)

@@ -61,7 +61,7 @@ static char w_manifest[] = "--manifest";
 static char w_verify[] = "--verify";
 static char w_takeonto[] = "--take-onto";
 static char w_takefrom[] = "--take-from";
-static char w_nogui[] = "--no-gui";
+static char w_interactive[] = "--interactive";
 static char w_nomerge[] = "--no-merge";
 static char w_continue[] = "--continue";
 static char w_restart[] = "--restart";
@@ -83,7 +83,7 @@ static char s_manifest[] = "-o";
 static char s_verify[] = "-V";
 static char s_takeonto[] = "-O";
 static char s_takefrom[] = "-F";
-static char s_nogui[] = "-G";
+static char s_interactive[] = "-i";
 static char s_nomerge[] = "-M";
 static char s_continue[] = "-c";
 static char s_restart[] = "-R";
@@ -118,7 +118,7 @@ static const struct {
 	{ w_verify, s_verify },
 	{ w_takeonto, s_takeonto },
 	{ w_takefrom, s_takefrom },
-	{ w_nogui, s_nogui },
+	{ w_interactive, s_interactive },
 	{ w_nomerge, s_nomerge },
 	{ w_continue, s_continue },
 	{ w_restart, s_restart },
@@ -199,7 +199,7 @@ test_pairs_run(void)
 	    w_result, v_result };
 	char *with[10];
 	char *one[] = { w_perm, w_verbose, w_takeonto, w_takefrom,
-	    w_nogui, w_nomerge, w_quiet };
+	    w_interactive, w_nomerge, w_quiet };
 	char *val[] = { w_manifest, w_base };
 	size_t i;
 	int n;
@@ -242,7 +242,7 @@ static void
 test_pairs_verbs(void)
 {
 	char *cont[] = { w_prog, w_continue, w_result, v_result };
-	char *contv[] = { w_prog, w_continue, w_nogui, w_nomerge,
+	char *contv[] = { w_prog, w_continue, w_interactive, w_nomerge,
 	    w_verbose, w_result, v_result };
 	char *rest[] = { w_prog, w_restart, w_result, v_result };
 	char *abrt[] = { w_prog, w_abort, w_verbose, w_result, v_result };
@@ -260,7 +260,7 @@ test_pairs_verbs(void)
 	CHECK(a.za_result == v_result);
 	a = parse_ok(contv, (int)NELEM(contv));
 	CHECK(a.za_verb == ZR_VERB_CONTINUE);
-	CHECK(a.za_verify == 0 && a.za_nogui == 1 && a.za_nomerge == 1);
+	CHECK(a.za_verify == 0 && a.za_interactive == 1 && a.za_nomerge == 1);
 	CHECK(a.za_verbose == 1);
 	a = parse_ok(rest, (int)NELEM(rest));
 	CHECK(a.za_verb == ZR_VERB_RESTART);
@@ -432,20 +432,20 @@ test_take_on_verbs(void)
 }
 
 /*
- * ZX115, ZX116: --no-gui and --no-merge belong to the two commands
- * that reach the conflicts gate -- a fresh run and --continue -- and
- * to nothing else.
+ * ZX115, ZX116: --interactive and --no-merge belong to the two
+ * commands that reach the conflicts gate -- a fresh run and
+ * --continue -- and to nothing else.
  */
 static void
 test_gate_flags_on_verbs(void)
 {
 	char *verb[] = { w_restart, w_abort, w_verify };
-	char *gate[] = { w_nogui, w_nomerge };
+	char *gate[] = { w_interactive, w_nomerge };
 	char *cmd[6];
 	char *run[] = { w_prog, w_from, v_from, w_onto, v_onto,
-	    w_result, v_result, w_nogui, w_nomerge };
-	char *cont[] = { w_prog, w_continue, w_result, v_result, w_nogui,
-	    w_nomerge };
+	    w_result, v_result, w_interactive, w_nomerge };
+	char *cont[] = { w_prog, w_continue, w_result, v_result,
+	    w_interactive, w_nomerge };
 	struct zr_args a;
 	size_t i, j;
 
@@ -461,10 +461,10 @@ test_gate_flags_on_verbs(void)
 	}
 	a = parse_ok(run, (int)NELEM(run));
 	CHECK(a.za_verb == ZR_VERB_RUN);
-	CHECK(a.za_nogui == 1 && a.za_nomerge == 1);
+	CHECK(a.za_interactive == 1 && a.za_nomerge == 1);
 	a = parse_ok(cont, (int)NELEM(cont));
 	CHECK(a.za_verb == ZR_VERB_CONTINUE);
-	CHECK(a.za_nogui == 1 && a.za_nomerge == 1);
+	CHECK(a.za_interactive == 1 && a.za_nomerge == 1);
 }
 
 /*
@@ -499,7 +499,10 @@ test_base_and_unrelated(void)
 /*
  * ZX118: what is not a flag of ours. Short flags do not bundle, an
  * option needs the value it takes, and an operand where a flag
- * belongs is a refusal rather than the end of the options.
+ * belongs is a refusal rather than the end of the options. The
+ * retired spellings of the gate flag that --interactive replaced,
+ * --no-gui and -G, are words of no one now and refused like any
+ * other unknown option.
  */
 static void
 test_bad_words(void)
@@ -510,8 +513,11 @@ test_bad_words(void)
 	static char dashes[] = "--";
 	static char dash[] = "-";
 	static char attached[] = "-ftank/topic@work";
+	static char nogui[] = "--no-gui";
+	static char guiletter[] = "-G";
 	char *cmd[8];
-	char *words[] = { unknown, bundled, letter, dashes, dash, attached };
+	char *words[] = { unknown, bundled, letter, dashes, dash, attached,
+	    nogui, guiletter };
 	size_t i;
 
 	for (i = 0; i < NELEM(words); i++) {

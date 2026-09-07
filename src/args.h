@@ -59,7 +59,7 @@ struct zr_args {
 	int		za_unrelated;	/* -u, --allow-unrelated */
 	int		za_takeonto;	/* -O, --take-onto */
 	int		za_takefrom;	/* -F, --take-from */
-	int		za_nogui;	/* -G, --no-gui */
+	int		za_interactive;	/* -i, --interactive */
 	int		za_nomerge;	/* -M, --no-merge */
 };
 

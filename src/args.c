@@ -31,7 +31,7 @@ enum zr_optid {
 	ZO_QUIET,
 	ZO_TAKEONTO,
 	ZO_TAKEFROM,
-	ZO_NOGUI,
+	ZO_INTERACTIVE,
 	ZO_NOMERGE,
 	ZO_CONTINUE,
 	ZO_RESTART,
@@ -67,7 +67,7 @@ static const struct zr_opt zr_opts[] = {
 	{ "quiet",		'q', 0, ZO_QUIET },
 	{ "take-onto",		'O', 0, ZO_TAKEONTO },
 	{ "take-from",		'F', 0, ZO_TAKEFROM },
-	{ "no-gui",		'G', 0, ZO_NOGUI },
+	{ "interactive",	'i', 0, ZO_INTERACTIVE },
 	{ "no-merge",		'M', 0, ZO_NOMERGE },
 	{ "continue",		'c', 0, ZO_CONTINUE },
 	{ "restart",		'R', 0, ZO_RESTART },
@@ -211,8 +211,8 @@ za_set(struct zr_args *out, const struct zr_opt *opt, const char *val,
 	case ZO_TAKEFROM:
 		out->za_takefrom = 1;
 		break;
-	case ZO_NOGUI:
-		out->za_nogui = 1;
+	case ZO_INTERACTIVE:
+		out->za_interactive = 1;
 		break;
 	case ZO_NOMERGE:
 		out->za_nomerge = 1;
@@ -323,8 +323,8 @@ za_verb(struct zr_args *out, int cont, int rest, int abrt, char *err,
  * The three flags of the conflicts gate. --take-onto and --take-from
  * answer the skeleton the fresh run writes, so they belong to that
  * run alone: no verb writes a skeleton, and --restart writes the one
- * the run asked for by reading the record. --no-gui and --no-merge
- * belong to the two commands that reach the gate.
+ * the run asked for by reading the record. --interactive and
+ * --no-merge belong to the two commands that reach the gate.
  */
 static int
 za_gate_flags(const struct zr_args *out, char *err, size_t errlen)
@@ -341,10 +341,10 @@ za_gate_flags(const struct zr_args *out, char *err, size_t errlen)
 		    out->za_takeonto != 0 ? "--take-onto" : "--take-from",
 		    word));
 	if (out->za_verb != ZR_VERB_RUN && out->za_verb != ZR_VERB_CONTINUE) {
-		if (out->za_nogui != 0)
-			return (za_no(err, errlen, "--no-gui is for a rebase "
-			    "and --continue, which reach the conflicts gate, "
-			    "not for %s", word));
+		if (out->za_interactive != 0)
+			return (za_no(err, errlen, "--interactive is for a "
+			    "rebase and --continue, which reach the conflicts "
+			    "gate, not for %s", word));
 		if (out->za_nomerge != 0)
 			return (za_no(err, errlen, "--no-merge is for a "
 			    "rebase and --continue, which reach the conflicts "
