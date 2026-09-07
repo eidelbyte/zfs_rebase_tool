@@ -308,9 +308,9 @@ placement_line() {		# LOGFILE
 # harness's to take away. The run directory went at done.
 settled_clone() {
 	"$bin" --abort --result "$POOL/result" > "$tmp/settled" 2>&1
-	st=$?
-	[ $st -eq 2 ] || \
-	    { cat "$tmp/settled"; fail "--abort on a settled result exited $st, want 2"; }
+	hst=$?
+	[ $hst -eq 2 ] || \
+	    { cat "$tmp/settled"; fail "--abort on a settled result exited $hst, want 2"; }
 	[ "$(zfs list -H -o name "$POOL/result" 2>/dev/null)" = "$POOL/result" ] || \
 	    fail "the refused --abort took $POOL/result away"
 	zfs destroy "$POOL/result" || fail "cannot destroy the settled result"
@@ -338,8 +338,8 @@ holdcount() {
 # Stage 1 is idempotent, so this must have nothing left to do.
 again() {
 	"$bin" --posix $flag -o "$1" "$tmp/base" "$tmp/from" "$cmnt"
-	st=$?
-	[ $st -eq 0 ] || [ $st -eq 1 ] || fail "the --posix re-run exited $st"
+	hst=$?
+	[ $hst -eq 0 ] || [ $hst -eq 1 ] || fail "the --posix re-run exited $hst"
 }
 # That manifest declares no actions and the conflicts named in $2.
 idempotent() {
