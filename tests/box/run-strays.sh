@@ -342,6 +342,28 @@ place_clone() {
 	return 0
 }
 
+# An edit by hand to the tree the rebase holds, behind the tool's
+# back: a line appended to FILE. The clone form keeps readonly on
+# outside a stage, so there it goes off around the edit and back on
+# after. The dataset form's private mount is writable for its whole
+# life (private_rw in run.c), and a readonly flip on it is the one
+# thing that must not be made: libzfs answers a readonly change on a
+# mounted dataset with a remount at the mountpoint property, where
+# nothing is mounted while the dataset sits at the private mount,
+# and the kernel says EINVAL ("cannot mount: Invalid argument",
+# the box, 2026-09-07). So readonly is flipped only where it is on.
+edit_hand() {		# FILE TEXT
+	hro=$(recval readonly "$rds")
+	if [ "$hro" = on ]; then
+		zfs set readonly=off "$rds" || fail "readonly=off"
+	fi
+	printf '%s\n' "$2" >> "$1" || fail "cannot edit $1"
+	if [ "$hro" = on ]; then
+		zfs set readonly=on "$rds" || fail "readonly=on"
+	fi
+	return 0
+}
+
 # Where the result's tree is to be read or edited just now, with the
 # assertion that it is there: hmnt after this. An open rebase holds
 # it at the run's private mount in both forms; done puts the dataset
@@ -585,9 +607,7 @@ case_drift() {
 	tgt=$(write_target "$man" "$hmnt")
 	[ -n "$tgt" ] || fail "the manifest writes or copies nothing"
 	ro0=$(recval readonly "$rds")
-	zfs set readonly=off "$rds" || fail "readonly=off"
-	printf 'drift\n' >> "$hmnt$tgt" || fail "cannot edit $tgt"
-	zfs set "readonly=$ro0" "$rds" || fail "readonly=$ro0"
+	edit_hand "$hmnt$tgt" drift
 	if verify_open "$tmp/verify" 3; then
 		grep -q "drifted 1, first $tgt" "$tmp/verify" || \
 		    { cat "$tmp/verify"; fail "--verify did not name the drifted $tgt"; }
@@ -617,9 +637,7 @@ case_drift() {
 		case_id="$fixture $form an edit to a conflicted name"
 		cname=$(conflict_name "$man")
 		[ -n "$cname" ] || fail "the manifest marks no conflict"
-		zfs set readonly=off "$rds" || fail "readonly=off"
-		printf 'mine\n' >> "$hmnt$cname" || fail "cannot edit $cname"
-		zfs set "readonly=$ro0" "$rds" || fail "readonly=$ro0"
+		edit_hand "$hmnt$cname" mine
 		# The clean drift above still stands, since nothing past
 		# applying1 mends it, so the verb still exits 3. What the
 		# edit to the conflicted name must not do is add to that:
@@ -735,10 +753,7 @@ case_driftline() {
 	# The edit the person makes while answering the conflicts. It
 	# is to a name the manifest says nothing about, so nothing but
 	# the second pass can see it.
-	ro0=$(recval readonly "$rds")
-	zfs set readonly=off "$rds" || fail "readonly=off"
-	printf 'drift\n' >> "$hmnt$kept" || fail "cannot edit $kept"
-	zfs set "readonly=$ro0" "$rds" || fail "readonly=$ro0"
+	edit_hand "$hmnt$kept" drift
 	# Answering is one field per line and the header's count with
 	# them, as tests/box/README.md says a hand edit must do.
 	sed -e 's/ -$/ keep/' -e 's/^#unanswered .*$/#unanswered 0/' \

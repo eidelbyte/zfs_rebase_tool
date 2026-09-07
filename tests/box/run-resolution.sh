@@ -613,12 +613,22 @@ at_conflicts() {
 	return 0
 }
 # The result writable for one edit made behind the tool's back, and
-# read-only again after it, as run-strays.sh does.
+# read-only again after it, as run-strays.sh does. Only the clone
+# form has readonly on to take off: the dataset form's private mount
+# is writable for its whole life (private_rw in run.c), and a
+# readonly flip on it is what must not be made -- libzfs answers one
+# with a remount at the mountpoint property, where nothing is mounted
+# while the dataset sits at the private mount, and the kernel says
+# EINVAL (the box, 2026-09-07).
 ro_off() {
 	ro0=$(recval readonly "$rds")
+	[ "$ro0" = on ] || return 0
 	zfs set readonly=off "$rds" || fail "readonly=off"
 }
-ro_back() { zfs set "readonly=$ro0" "$rds" || fail "readonly=$ro0"; }
+ro_back() {
+	[ "$ro0" = on ] || return 0
+	zfs set readonly=on "$rds" || fail "readonly=on"
+}
 # Which side a choice names, as the directory to read it out of.
 sidedir() {
 	if [ "$1" = onto ]; then
