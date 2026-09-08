@@ -587,6 +587,144 @@ test_fields(void)
 	rmtree(tmpl);
 }
 
+/* What the atomic write is handed: one header, one document. */
+static int
+emit_hdr(FILE *out, void *arg)
+{
+	return (zr_manifest_birth(out, arg));
+}
+
+/* And an emitter that fails, having written whatever it wrote. */
+static int
+emit_fails(FILE *out, void *arg)
+{
+	(void) fputs("half a document\n", out);
+	(void) arg;
+	return (-1);
+}
+
+/* The whole of a file the write left, or NULL where there is none. */
+static char *
+read_file(const char *path, size_t *lenp)
+{
+	FILE *f;
+
+	f = fopen(path, "r");
+	if (f == NULL)
+		return (NULL);
+	return (slurp(f, lenp));
+}
+
+/*
+ * ZH43 to ZH45: the atomic write. Every manifest and every
+ * resolution the tool writes to a file goes through it
+ * (documents-design.md, section 11.2): the bytes to <path>.tmp in
+ * the destination's own directory, then a rename over the
+ * destination. What is asserted here is what the run and the verbs
+ * rely on -- the destination holds the whole document, the sibling
+ * is gone, and a write that fails leaves the document that was
+ * there before it untouched.
+ *
+ * The directory is the test's own, made under TMPDIR, so the sibling
+ * can be looked for by name and nowhere else. The unwritable-
+ * directory half is skipped for root, who writes into it anyway.
+ */
+static void
+test_atomic(void)
+{
+	char tmpl[256], path[PATHMAX], tmp[PATHMAX];
+	struct zr_manifest_hdr hdr;
+	struct zr_parsed p;
+	char err[512];
+	char *got, *want;
+	size_t gotlen = 0, wantlen = 0;
+	FILE *f;
+
+	tmp_template(tmpl, sizeof (tmpl), "zratomic.XXXXXX");
+	CHECK(mkdtemp(tmpl) != NULL);
+	join(path, sizeof (path), tmpl, "/manifest");
+	join(tmp, sizeof (tmp), path, ".tmp");
+	memset(&hdr, 0, sizeof (hdr));
+	hdr.result = "tank/rebased";
+	hdr.form = ZR_HFORM_CLONE;
+	hdr.base = "tank/proj@v1";
+	hdr.base_guid = 11;
+	hdr.from = "tank/dev@v2";
+	hdr.from_guid = 22;
+	hdr.onto = "tank/main@v3";
+	hdr.onto_guid = 33;
+	hdr.made = "-";
+	hdr.tag = "zr-0f1e2d3c4b5a";
+	hdr.take = "-";
+	hdr.written = "2026-09-08T10:11:12Z";
+	hdr.mode = ZR_MODE_STRICT;
+	err[0] = '\0';
+	if (zr_doc_write(path, emit_hdr, &hdr, err, sizeof (err)) != 0)
+		printf("%s: the write failed: %s\n", path, err);
+	CHECK(err[0] == '\0');
+	/* the document is there, whole, and the sibling is not */
+	f = tmpfile();
+	CHECK(f != NULL);
+	CHECK(zr_manifest_birth(f, &hdr) == 0);
+	want = slurp(f, &wantlen);
+	got = read_file(path, &gotlen);
+	CHECK(got != NULL);
+	compare(path, got, gotlen, want, wantlen);
+	CHECK(read_file(tmp, &gotlen) == NULL);
+	free(got);
+	free(want);
+	/*
+	 * A second write over the first: the same path, the same
+	 * absence of a sibling, and the new document in place of the
+	 * old one. That is the decision going over the birth header.
+	 */
+	hdr.written = "2026-09-08T10:11:13Z";
+	err[0] = '\0';
+	CHECK(zr_doc_write(path, emit_hdr, &hdr, err, sizeof (err)) == 0);
+	got = read_file(path, &gotlen);
+	CHECK(got != NULL);
+	parse_ok(path, got, gotlen, &p);
+	CHECK(strcmp(p.zp_written, "2026-09-08T10:11:13Z") == 0);
+	zr_parsed_fini(&p);
+	free(got);
+	CHECK(read_file(tmp, &gotlen) == NULL);
+	/*
+	 * ZH44, the first half: an emitter that gives up part way
+	 * through. The half document goes with the sibling and the
+	 * destination is the second write's, byte for byte.
+	 */
+	err[0] = '\0';
+	CHECK(zr_doc_write(path, emit_fails, &hdr, err, sizeof (err)) == -1);
+	CHECK(err[0] != '\0');
+	CHECK(read_file(tmp, &gotlen) == NULL);
+	got = read_file(path, &gotlen);
+	CHECK(got != NULL);
+	parse_ok(path, got, gotlen, &p);
+	CHECK(strcmp(p.zp_written, "2026-09-08T10:11:13Z") == 0);
+	zr_parsed_fini(&p);
+	free(got);
+	/* and the second half: the sibling cannot be made at all */
+	if (geteuid() == 0) {
+		printf("skip the unwritable destination: running as root\n");
+	} else {
+		CHECK(chmod(tmpl, 0500) == 0);
+		err[0] = '\0';
+		CHECK(zr_doc_write(path, emit_hdr, &hdr, err,
+		    sizeof (err)) == -1);
+		CHECK(err[0] != '\0');
+		CHECK(chmod(tmpl, 0700) == 0);
+		CHECK(read_file(tmp, &gotlen) == NULL);
+		got = read_file(path, &gotlen);
+		CHECK(got != NULL);
+		parse_ok(path, got, gotlen, &p);
+		CHECK(strcmp(p.zp_written, "2026-09-08T10:11:13Z") == 0);
+		zr_parsed_fini(&p);
+		free(got);
+	}
+	CHECK(unlink(path) == 0);
+	CHECK(rmdir(tmpl) == 0);
+}
+
 int
 main(void)
 {
@@ -598,6 +736,7 @@ main(void)
 	for (i = 0; i < l.l_n; i++)
 		one(l.l_name[i]);
 	test_fields();
+	test_atomic();
 	printf("check_roundtrip: %d checks passed over %d fixtures\n",
 	    checks, l.l_n);
 	list_free(&l);

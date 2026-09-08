@@ -204,8 +204,8 @@ result carries a record of four user properties -- set by the create
 itself in the clone form, and on the dataset before anything is
 touched in the other -- read back as local values only:
 
-    zfs_rebase:phase       the last gate the run passed: applying1,
-                           conflicts or applying2
+    zfs_rebase:phase       the last gate the run passed: decided,
+                           applying1, conflicts or applying2
     zfs_rebase:manifest    where the manifest was written
     zfs_rebase:tag         the tag its holds are filed under
     zfs_rebase:quiet       "yes", where the start was given --quiet
@@ -218,6 +218,18 @@ values to give back. Either document names the run -- the property
 points at the manifest, the header names the result -- and nothing
 else is ever written to a dataset by this tool.
 
+The file that record names exists from the record's first instant.
+The run writes the whole header, with `#actions 0` and `#conflicts
+0` and no body, before it writes the record, and writes the decision
+over it later; so the order a run acquires things in is the pre-apply
+snapshot (dataset form), the run directory, that header, the record,
+the holds, the snapshot it takes of from, the take, and then the
+walks, the decision and the skeleton. Every document is written to a
+sibling `<file>.tmp` in its own directory and renamed over its
+destination, so a reader finds the document whole or as it was and
+never half of either; a `.tmp` left beside a `-o` file by a crash is
+the only thing that survives one.
+
 There is one persistent hold per input snapshot under that tag, so that
 none of the three can be destroyed while the rebase is open: zfs
 holds shows the tag, and zfs destroy refuses with "dataset is busy".
@@ -226,9 +238,16 @@ resumed.
 
 Its progress is a sequence of gates:
 
-    applying1 -> conflicts -> applying2 -> done
-    applying1 -> done                          (no conflicts)
+    decided -> applying1 -> conflicts -> applying2 -> done
+    decided -> applying1 -> done               (no conflicts)
 
+decided is written the moment the decision has been renamed over the
+header the run was born with, and before the skeleton beside it: it
+is what says the manifest is a decision and not that header. A record
+with no phase at all is therefore a rebase born and never decided,
+which is nothing to carry out: --continue and --restart refuse it in
+those words, before they take the result over, and --abort takes it
+away with everything the header gave it.
 applying1 is written immediately before the result stops being
 read-only, and under it the clean actions of the manifest are applied
 -- whether the decision had conflicts or not, since a conflict stops
@@ -258,11 +277,14 @@ holds are given back and then every zfs_rebase: property is taken
 off, in that order, since the tag is the only handle on those holds.
 A result that carries any of them is therefore an open rebase, and
 one that carries none has no rebase to move, whatever its history:
---continue, --restart and --abort all say so and touch nothing.
+--continue, --restart and --abort all say so and touch nothing --
+except that --abort, given a result with no record but a run
+directory of its own, takes that directory away: it is what a crash
+before the record left.
 --verify is the exception, and only by the manifest, which is the
 one thing a settled rebase left behind that still names it. What a
 kill leaves is the last gate reached, there is no phase at all until
-the first one, and a stop writes none: --continue resumes from the
+the decision, and a stop writes none: --continue resumes from the
 gate, --abort takes the rebase away.
 
 **The checks.** One verify at every gate, on a schedule no flag
@@ -300,7 +322,9 @@ mount.
 
 Making the directory is the lock: a leaf that is already there is
 another run of the same result, and the run is refused with "a run
-for X is in place". Removing it at done is what frees the name again.
+for X is in place" -- or, where that result carries no record, it is
+what a crash left before the record, and --abort removes it.
+Removing it at done is what frees the name again.
 
 At done the run unlinks the two documents it wrote into that
 directory, and then `mnt`, the directory and every empty parent up
@@ -443,13 +467,16 @@ directory, and removes that directory: as if the run never happened.
 A --manifest pair is the exception, and is left where you asked for
 it, here exactly as at done.
 
-Which of those it does is the manifest's to say. Where that file has
-been lost, --abort gives the holds back by walking the result's pool
+Which of those it does is the manifest's to say, and the file is
+there at every gate, since the run writes its header before its
+record. Where it has been lost all the same -- removed by a hand --
+--abort gives the holds back by walking the result's pool
 for the record's tag, destroys the snapshot the run took for itself
 where it took one -- that walk finds it held under the tag and named
 with it -- undoes the private mount and takes the record off, and
-then says plainly what it cannot do without the manifest: it cannot
-tell the clone form from the dataset form, so it destroys nothing
+then says plainly what it cannot do without the manifest: the form,
+the pre-apply snapshot and the two property values went with the
+file, so it destroys nothing
 else and rolls nothing back, and it cannot put readonly or
 canmount back -- it prints the two `zfs set` commands for that. The
 one thing it can still read is the `mountpoint` property, which the

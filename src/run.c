@@ -80,14 +80,18 @@
  * The phase is written at the gates the run passes, and nowhere
  * else, so that what a kill leaves is the last gate reached:
  *
- *	applying1 -> conflicts -> applying2 -> done
- *	applying1 -> done			(no conflicts)
+ *	decided -> applying1 -> conflicts -> applying2 -> done
+ *	decided -> applying1 -> done		(no conflicts)
  *
  * done is no phase: at done every zfs_rebase: property is taken off
  * the result, so a dataset that carries one is always an open
  * rebase and one that carries none has no rebase, whatever its
  * history.
  *
+ * "decided" goes down the moment the decision manifest has been
+ * renamed over the birth manifest, which is before the skeleton is
+ * written beside it: what it says is that the document the record
+ * names is the decision and not the header the run was born with.
  * "applying1" goes down immediately before readonly comes off, and
  * the clean actions of the manifest are applied under it whether the
  * decision had conflicts or not. A conflict stops the names it
@@ -108,7 +112,21 @@
  *
  * At birth there is no phase at all, and a stop writes none: what a
  * stop leaves is the gate it was working under, and --continue
- * resumes from exactly that.
+ * resumes from exactly that. A record with no phase is therefore a
+ * rebase born and not decided, which --continue and --restart
+ * refuse -- there is no decision to carry out -- and --abort takes
+ * away with everything the birth manifest's header gave it.
+ *
+ * The order a run acquires things in, which is the order --abort
+ * and done give them back in, reversed (documents-design.md,
+ * section 11.3): the pre-apply snapshot in the dataset form, the
+ * run directory, the birth manifest, the record, the holds, the
+ * snapshot the tool took of from, the take, and then -- after the
+ * walks and the decision -- the decision manifest, the phase
+ * "decided" and the skeleton. Everything from the birth manifest on
+ * is in the header from that moment, so an --abort at any gate has
+ * the form, the pre-apply snapshot and the two properties to put
+ * back.
  *
  * The verbs further down this file work on a rebase that is already
  * there, and read the record and the manifest its path names and
@@ -183,11 +201,18 @@
  * other: the record names the manifest, and where the manifest is
  * says where the resolution is (resolution_of, below).
  *
- * The first three are the values zfs_rebase:phase takes. "done" is
+ * The first four are the values zfs_rebase:phase takes. "done" is
  * not one of them and is never written: it is the name of the last
  * gate, for the pause hook and for the messages, and what it leaves
  * on the result is no record at all.
+ *
+ * "decided" is written the moment the decision manifest is renamed
+ * into place, which is before the skeleton beside it: a record with
+ * no phase at all is a rebase that was born and never decided, and
+ * the manifest its record names is the birth document
+ * (documents-design.md, section 11.1).
  */
+#define	ZR_PHASE_DECIDED	"decided"
 #define	ZR_PHASE_APPLYING1	"applying1"
 #define	ZR_PHASE_CONFLICTS	"conflicts"
 #define	ZR_PHASE_APPLYING2	"applying2"
@@ -305,6 +330,7 @@ struct run {
 	 */
 	uint64_t		baseguid, fromguid, ontoguid;
 	int			dirmade, cloned, walked;
+	int			born;		/* the birth manifest is */
 	/*
 	 * Whether the unchanged set may be read off the walks. It may
 	 * when base was derived from the two sides, which is what
@@ -1180,9 +1206,11 @@ make_rundir(struct run *r)
 	if (mkdir(r->rundir, 0700) != 0) {
 		if (errno == EEXIST)
 			(void) snprintf(r->err, sizeof (r->err),
-			    "a run for %s is in place (%s); zfs_rebase "
-			    "--abort --result %s removes it", r->rds,
-			    r->rundir, r->rds);
+			    "a run for %s is in place (%s); where %s carries "
+			    "no record that directory is what a crash left "
+			    "before the record was written, and zfs_rebase "
+			    "--abort --result %s removes either", r->rds,
+			    r->rundir, r->rds, r->rds);
 		else
 			(void) snprintf(r->err, sizeof (r->err), "%s: %s",
 			    r->rundir, strerror(errno));
@@ -1606,8 +1634,9 @@ retarget(struct run *r)
 /*
  * The phase is a gate the run has passed, not a step of it: a
  * failure to write one warns and the run goes on. The values are
- * "applying1", "conflicts" and "applying2", and no others; at birth
- * there is none, and at done the whole record goes.
+ * "decided", "applying1", "conflicts" and "applying2", and no
+ * others; at birth there is none, which says the run has not
+ * decided yet, and at done the whole record goes.
  */
 static void
 put_phase(struct zr_zfs *z, const char *result, const char *phase)
@@ -1784,33 +1813,87 @@ fill_header(struct run *r, struct zr_manifest_hdr *h, char *stamp,
 }
 
 /*
- * The clone was created with the path the run intended; now that the
- * file is there, resolve it and record what it really is, so that
- * every verb opens the manifest this run wrote whatever directory it
- * was started from -- and so that the resolution's path, which is
- * derived from this one, is absolute too.
+ * The birth manifest is written before the record, so the file is
+ * already there when the path goes into the record: resolve it here
+ * and let the create and every write after it carry what it really
+ * is, so that every verb opens the manifest this run wrote whatever
+ * directory it was started from -- and so that the resolution's
+ * path, which is derived from this one, is absolute too. A path
+ * that will not resolve is kept as it was given and said; it is
+ * still a path this run can write to, and the verbs will resolve it
+ * or fail to open it in their turn.
  */
 static void
-record_path(struct run *r, char *path, size_t pathlen)
+resolve_manifest(struct run *r)
 {
-	char e[512];
 	char *real;
 
-	if (!r->recorded || path[0] == '\0')
+	if (r->manpath[0] == '\0')
 		return;
-	real = realpath(path, NULL);
+	real = realpath(r->manpath, NULL);
 	if (real == NULL) {
-		(void) fprintf(stderr, "zfs_rebase: %s: %s\n", path,
+		(void) fprintf(stderr, "zfs_rebase: %s: %s\n", r->manpath,
 		    strerror(errno));
 		return;
 	}
-	if (zr_zfs_set_user(r->zfs, r->rds, ZR_PROP_MANIFEST, real, e,
-	    sizeof (e)) != 0)
-		(void) fprintf(stderr, "zfs_rebase: %s: %s\n",
-		    ZR_PROP_MANIFEST, e);
-	else
-		(void) snprintf(path, pathlen, "%s", real);
+	(void) snprintf(r->manpath, sizeof (r->manpath), "%s", real);
 	free(real);
+}
+
+/*
+ * The documents a run writes, as zr_doc_write wants them: one
+ * function that puts the bytes on the stream it is given, and
+ * whatever it needs behind the void pointer. None of them opens a
+ * file -- the primitive does that, and does it atomically
+ * (manifest.h) -- and none of them is the only writer of its bytes:
+ * the emitter and the parser's writer share them.
+ */
+static int
+emit_birth(FILE *out, void *arg)
+{
+	return (zr_manifest_birth(out, arg));
+}
+
+/* The decision: the header, the three trees and what they decided. */
+struct emit_decision {
+	const struct zr_manifest_hdr	*hdr;
+	struct run			*r;
+};
+
+static int
+emit_manifest(FILE *out, void *arg)
+{
+	struct emit_decision *e = arg;
+
+	return (zr_manifest_emit(out, e->hdr, &e->r->wb.zw_tree,
+	    &e->r->wf.zw_tree, &e->r->wo.zw_tree, &e->r->d));
+}
+
+static int
+emit_resolution(FILE *out, void *arg)
+{
+	return (zr_resolution_write(out, arg));
+}
+
+/*
+ * The birth manifest (documents-design.md, section 11.1): the whole
+ * header, no body, written before the record so that from the
+ * record's first instant the file it names exists and carries the
+ * form, the three snapshots and their guids, the tag, #made, #take
+ * and the dataset form's three. An --abort at any gate from here on
+ * reads it and needs nothing else.
+ */
+static int
+write_birth(struct run *r, struct zr_manifest_hdr *h)
+{
+	if (zr_doc_write(r->manpath, emit_birth, h, r->err,
+	    sizeof (r->err)) != 0)
+		return (-1);
+	r->born = 1;
+	if (r->o.verbose)
+		(void) fprintf(stderr, "zfs_rebase: %s carries this rebase's "
+		    "header; the decision goes over it\n", r->manpath);
+	return (0);
 }
 
 /*
@@ -1837,7 +1920,7 @@ write_skeleton(struct run *r)
 {
 	struct zr_parsed parsed;
 	struct zr_resolution res;
-	FILE *in, *out;
+	FILE *in;
 	int rc = -1;
 
 	memset(&parsed, 0, sizeof (parsed));
@@ -1860,17 +1943,9 @@ write_skeleton(struct run *r)
 		(void) snprintf(r->err, sizeof (r->err), "out of memory");
 		goto done;
 	}
-	out = fopen(r->respath, "w");
-	if (out == NULL) {
-		(void) snprintf(r->err, sizeof (r->err), "%s: %s", r->respath,
-		    strerror(errno));
+	if (zr_doc_write(r->respath, emit_resolution, &res, r->err,
+	    sizeof (r->err)) != 0)
 		goto done;
-	}
-	if (zr_resolution_write(out, &res) != 0 || fclose(out) != 0) {
-		(void) snprintf(r->err, sizeof (r->err), "%s: write failed",
-		    r->respath);
-		goto done;
-	}
 	r->unanswered = zr_resolution_unanswered(&res);
 	rc = 0;
 done:
@@ -2229,11 +2304,13 @@ teardown(struct run *r, int keep)
 		/*
 		 * Only the run's own two documents go, and they have
 		 * to, because they are inside the directory about to
-		 * be removed. Where -o named the manifest the pair is
-		 * the user's: the run wrote them where they asked and
-		 * does not take them back.
+		 * be removed. The birth manifest is written before the
+		 * record, so what says there is a document to unlink
+		 * is that write and not the record. Where -o named the
+		 * manifest the pair is the user's: the run wrote them
+		 * where they asked and does not take them back.
 		 */
-		if (r->recorded && r->o.outpath == NULL) {
+		if (r->born && r->o.outpath == NULL) {
 			(void) unlink(r->manpath);
 			(void) unlink(r->respath);
 		}
@@ -2390,29 +2467,57 @@ zr_run(const struct zr_run_opts *o)
 		rc = fail(&r, EXIT_PRECOND, "precondition");
 		goto done;
 	}
+	/*
+	 * The guids, read off the three snapshots themselves and by a
+	 * dry run as well as a real one. They are the header's, and
+	 * the header is written twice: once at birth, before the
+	 * record, and once at the decision. Everything they are read
+	 * from is in place by now -- the pre-apply snapshot is taken
+	 * and the base is derived -- and nothing between here and the
+	 * decision touches any of the three.
+	 */
+	if (read_guids(&r) != 0) {
+		rc = fail(&r, EXIT_PRECOND, "precondition");
+		goto done;
+	}
 
 	/*
-	 * 3. the working tree -- a read-only clone in one form, the
-	 * dataset itself taken over in the other -- the record, and
-	 * then the three holds, which the record's tag names. A dry
-	 * run creates nothing and holds nothing: it only reads, and
-	 * it leaves no rebase behind to be continued or aborted.
+	 * 3. the birth manifest, the working tree -- a read-only
+	 * clone in one form, the dataset itself taken over in the
+	 * other -- the record, and then the three holds, which the
+	 * record's tag names. A dry run creates nothing and holds
+	 * nothing: it only reads, and it leaves no rebase behind to
+	 * be continued or aborted.
 	 */
 	if (!o->dryrun) {
 		if (make_rundir(&r) != 0) {
 			rc = fail(&r, EXIT_PRECOND, "run directory");
 			goto done;
 		}
-		if (o->outpath != NULL) {
+		if (o->outpath != NULL)
 			(void) snprintf(r.manpath, sizeof (r.manpath), "%s",
 			    o->outpath);
-			resolution_beside(r.respath, sizeof (r.respath),
-			    o->outpath);
-		} else {
+		else
 			(void) snprintf(r.manpath, sizeof (r.manpath),
 			    "%s/manifest", r.rundir);
-			resolution_path(r.respath, sizeof (r.respath), r.rds);
+		/*
+		 * The header, whole, before anything else of this
+		 * rebase exists to need it: the identity is known
+		 * before the first walk, so an --abort at any gate
+		 * from here on has the form, the pre-apply snapshot
+		 * and the two properties to give back. The path is
+		 * resolved once the file is there, and the record
+		 * carries what it really is from the create on; the
+		 * resolution's path follows from it by the one rule
+		 * every verb reads it back with.
+		 */
+		fill_header(&r, &hdr, stamp, sizeof (stamp));
+		if (write_birth(&r, &hdr) != 0) {
+			rc = fail(&r, EXIT_INTERNAL, "manifest");
+			goto done;
 		}
+		resolve_manifest(&r);
+		resolution_of(r.respath, sizeof (r.respath), r.rds, r.manpath);
 		fill_record(&r, &rec);
 		if (in_dataset_form(&r)) {
 			if (zr_zfs_write_record(r.zfs, r.rds, &rec, r.err,
@@ -2496,40 +2601,36 @@ zr_run(const struct zr_run_opts *o)
 	}
 
 	/*
-	 * 6. the manifest, whose header is the whole identity of this
-	 * rebase and the only place it is kept: the guids are read
-	 * here, by a dry run and a real one alike, and every verb
-	 * that follows reads them back out of the file.
+	 * 6. the decision, written whole over the header this run was
+	 * born with -- the same file, the same path in the record,
+	 * the same identity, and now the actions and the conflicts as
+	 * well. The write is atomic, so what a reader finds there is
+	 * one document or the other and never half of either, and the
+	 * phase "decided" goes down the moment it is in place: that
+	 * is what tells a verb the file is the decision.
+	 *
+	 * A dry run has no record and no file of its own to write
+	 * over. It goes to the -o path or to standard output, which
+	 * is its whole output.
 	 */
-	if (read_guids(&r) != 0) {
-		rc = fail(&r, EXIT_PRECOND, "manifest");
-		goto done;
-	}
 	fill_header(&r, &hdr, stamp, sizeof (stamp));
 	if (r.manpath[0] != '\0') {
-		out = fopen(r.manpath, "w");
-		if (out == NULL) {
-			(void) snprintf(r.err, sizeof (r.err), "%s: %s",
-			    r.manpath, strerror(errno));
+		struct emit_decision ed;
+
+		ed.hdr = &hdr;
+		ed.r = &r;
+		if (zr_doc_write(r.manpath, emit_manifest, &ed, r.err,
+		    sizeof (r.err)) != 0) {
 			rc = fail(&r, EXIT_INTERNAL, "manifest");
 			goto done;
 		}
-	}
-	if (zr_manifest_emit(out, &hdr, &r.wb.zw_tree, &r.wf.zw_tree,
-	    &r.wo.zw_tree, &r.d) != 0 || (out != stdout && fclose(out) != 0)) {
+	} else if (zr_manifest_emit(out, &hdr, &r.wb.zw_tree, &r.wf.zw_tree,
+	    &r.wo.zw_tree, &r.d) != 0) {
 		(void) snprintf(r.err, sizeof (r.err), "write failed");
 		rc = fail(&r, EXIT_INTERNAL, "manifest");
 		goto done;
 	}
-	record_path(&r, r.manpath, sizeof (r.manpath));
-	/*
-	 * And where the resolution goes, by the one rule every verb
-	 * reads it back with, from the manifest's path as it now
-	 * stands: nothing records that path, so the run must derive
-	 * it exactly as they will.
-	 */
-	if (!o->dryrun)
-		resolution_of(r.respath, sizeof (r.respath), r.rds, r.manpath);
+	set_phase(&r, ZR_PHASE_DECIDED);
 	/*
 	 * A dry run stops here: it created nothing to apply to, and
 	 * its whole output is the manifest it just wrote.
@@ -2550,10 +2651,10 @@ zr_run(const struct zr_run_opts *o)
 	 * conflicts gate the tool did not write the skeleton for
 	 * would be a gate nobody could pass. The gate between the
 	 * two writes is the harness's: it is the only moment at
-	 * which a rebase has a manifest and no resolution, and what
-	 * a kill there leaves is a rebase whose exits are --restart,
-	 * which writes the skeleton again from the recorded manifest,
-	 * and --abort.
+	 * which a rebase has its decision and no resolution, and what
+	 * a kill there leaves is a rebase at "decided" whose exits are
+	 * --restart, which writes the skeleton again from the recorded
+	 * manifest, and --abort.
 	 */
 	zr_pause("manifest");
 	if (write_skeleton(&r) != 0) {
@@ -2562,10 +2663,10 @@ zr_run(const struct zr_run_opts *o)
 	}
 
 	/* 7. applying1: the clean actions and the self-check after them */
-	zr_pause("decided");
+	zr_pause(ZR_PHASE_DECIDED);
 	if (stopped(&r) != 0) {
 		rc = fail(&r, EXIT_INTERNAL, "apply");
-		goto done;	/* nothing written yet: the run goes */
+		goto done;	/* nothing applied yet: the run goes */
 	}
 	/*
 	 * A failure or a signal from here on leaves the phase at the
@@ -2830,6 +2931,24 @@ vfail(const struct resume *s, int code, const char *what)
 	else
 		(void) fprintf(stderr, "zfs_rebase: %s\n", s->err);
 	return (code);
+}
+
+/*
+ * The refusal a rebase born and never decided gets from the verbs
+ * that move one. Its record has no phase, so the file that record
+ * names is the header the run was born with: there is no decision in
+ * it and applying it would be applying nothing at all
+ * (documents-design.md, section 11.1). --abort is the way out, and
+ * has everything the header gave it.
+ */
+static int
+undecided(struct resume *s)
+{
+	(void) snprintf(s->err, sizeof (s->err), "%s never reached its "
+	    "decision: %s is the header it was born with and carries no "
+	    "actions to apply; zfs_rebase --abort --result %s takes the "
+	    "rebase away", s->result, s->rb.manifest, s->result);
+	return (vfail(s, EXIT_PRECOND, NULL));
 }
 
 /* The recorded name of one input, "" when the record has none. */
@@ -4116,10 +4235,12 @@ name_isdir(const struct resume *s, zr_name_t nm)
  *
  * Only a --continue writes here: the --verify verb reports at this
  * gate and writes nothing anywhere, and nothing is written at
- * applying2 or at done. The document goes back to its recorded path
- * whole, as the manifest and the skeleton were written; nothing here
- * is a temporary file, since the file is the tool's own and a failure
- * to write it is a failure of the gate.
+ * applying2 or at done. The document goes back to its path whole and
+ * atomically, through the primitive the manifest and the skeleton
+ * are written with (zr_doc_write): by this gate the file holds a
+ * person's answers, and a rewrite torn by a crash would destroy work
+ * only --restart could replace -- with the answers it exists to
+ * discard (documents-design.md, section 11.2).
  *
  * Returns 0, or -1 with err set.
  */
@@ -4127,7 +4248,6 @@ static int
 add_drift(struct resume *s, const struct zr_verify_report *rep)
 {
 	const char *nm;
-	FILE *out;
 	size_t len;
 	uint32_t i, n = 0;
 
@@ -4148,17 +4268,9 @@ add_drift(struct resume *s, const struct zr_verify_report *rep)
 	}
 	if (n == 0)
 		return (0);
-	out = fopen(s->respath, "w");
-	if (out == NULL) {
-		(void) snprintf(s->err, sizeof (s->err), "%s: %s", s->respath,
-		    strerror(errno));
+	if (zr_doc_write(s->respath, emit_resolution, &s->res, s->err,
+	    sizeof (s->err)) != 0)
 		return (-1);
-	}
-	if (zr_resolution_write(out, &s->res) != 0 || fclose(out) != 0) {
-		(void) snprintf(s->err, sizeof (s->err), "%s: write failed",
-		    s->respath);
-		return (-1);
-	}
 	(void) fprintf(stderr, "zfs_rebase: %u drift line%s added to the "
 	    "resolution %s\n", n, n == 1 ? "" : "s", s->respath);
 	return (0);
@@ -4515,18 +4627,23 @@ stage1(struct resume *s)
 }
 
 /*
- * Resume from the gate the record names. There is no phase at all
- * until the first gate is written, and a run killed between the
- * clone and applying1 leaves exactly that: applying1 is where it
- * starts either way, since applying nothing again is what an
- * idempotent apply does over a tree nothing was applied to. There is
- * no done to resume from either: a rebase that reached it carries no
- * record, and read_record has already refused.
+ * Resume from the gate the record names. "decided" and "applying1"
+ * are one place to start: the manifest is the decision either way,
+ * and applying it again over a tree nothing was applied to is what
+ * an idempotent apply does. There is no phase at all until the
+ * decision, which is a rebase to abort and not one to resume
+ * (undecided, refused by resume_open before the result is taken
+ * over, and refused here for a caller that came another way). There
+ * is no done to resume from either: a rebase that reached it carries
+ * no record, and read_record has already refused.
  */
 static int
 continue_from(struct resume *s)
 {
 	const char *phase = s->rb.phase;
+
+	if (phase[0] == '\0')
+		return (undecided(s));
 
 	/*
 	 * --no-merge stops at the conflicts gate, so it says
@@ -4541,7 +4658,8 @@ continue_from(struct resume *s)
 		    s->result, phase);
 		return (vfail(s, EXIT_PRECOND, NULL));
 	}
-	if (phase[0] == '\0' || strcmp(phase, ZR_PHASE_APPLYING1) == 0)
+	if (strcmp(phase, ZR_PHASE_DECIDED) == 0 ||
+	    strcmp(phase, ZR_PHASE_APPLYING1) == 0)
 		return (stage1(s));
 	if (strcmp(phase, ZR_PHASE_CONFLICTS) == 0)
 		return (stage_conflicts(s, 0));
@@ -4670,6 +4788,19 @@ resume_open(struct resume *s, const struct zr_verb_opts *o, int byguid)
 	    find_inputs(s, byguid ? ZF_GUID : ZF_NAME) != 0 ||
 	    check_given(s, o) != 0)
 		return (vfail(s, EXIT_PRECOND, NULL));
+	/*
+	 * A record with no phase at all is a rebase that was born and
+	 * never decided: the file it names is the header this run was
+	 * born with and carries no decision to carry out
+	 * (documents-design.md, section 11.1). The verbs that move a
+	 * rebase refuse it here, before they take the result over, so
+	 * that it is left exactly where the kill left it; --abort has
+	 * everything the header gave it and takes the rebase away.
+	 * The report is not one of them: it says what the document
+	 * says, which of a birth manifest is nothing.
+	 */
+	if (s->report == 0 && s->rb.phase[0] == '\0')
+		return (undecided(s));
 	/*
 	 * The resolution, read once and kept: every gate from
 	 * conflicts on classifies against it, and every verb that has
@@ -4889,8 +5020,7 @@ static int
 reset_resolution(struct resume *s)
 {
 	struct zr_resolution res;
-	FILE *out;
-	int rc = -1;
+	int rc;
 
 	if (zr_resolution_skeleton(&s->man, take_choice(s->rb.take),
 	    &res) != 0) {
@@ -4898,18 +5028,8 @@ reset_resolution(struct resume *s)
 		zr_resolution_fini(&res);
 		return (-1);
 	}
-	out = fopen(s->respath, "w");
-	if (out == NULL) {
-		(void) snprintf(s->err, sizeof (s->err), "%s: %s", s->respath,
-		    strerror(errno));
-		zr_resolution_fini(&res);
-		return (-1);
-	}
-	if (zr_resolution_write(out, &res) != 0 || fclose(out) != 0)
-		(void) snprintf(s->err, sizeof (s->err), "%s: write failed",
-		    s->respath);
-	else
-		rc = 0;
+	rc = zr_doc_write(s->respath, emit_resolution, &res, s->err,
+	    sizeof (s->err));
 	if (rc == 0 && s->verbose)
 		(void) fprintf(stderr, "zfs_rebase: %s is a skeleton again, "
 		    "%u name%s, %u to answer\n", s->respath, res.zs_nlines,
@@ -4980,23 +5100,30 @@ zr_restart(const struct zr_verb_opts *o)
 		 * to the pre-apply snapshot the header names, which
 		 * is what the clone form's destroy-and-clone-again
 		 * does: onto's tree exactly as it was, with the same
-		 * record on it and no phase, since it has passed no
-		 * gate again. The rollback wants no unmount -- the
+		 * record on it and the phase back at the decision,
+		 * since the decision is what it is about to apply
+		 * again. The rollback wants no unmount -- the
 		 * kernel suspends and resumes the filesystem around
 		 * it -- so it is made before the trees are read and
 		 * the dataset is taken over, and nothing this process
 		 * holds open is in the way.
+		 *
+		 * The phase goes down before the rollback and not
+		 * after it: a kill between the two then leaves
+		 * "decided" over a tree the apply is about to be made
+		 * on from the start, which is what a --continue from
+		 * that gate does anyway, where the other order would
+		 * leave a later gate's name over a tree that has gone
+		 * back to onto.
 		 */
+		put_phase(s.zfs, s.result, ZR_PHASE_DECIDED);
+		(void) snprintf(s.rb.phase, sizeof (s.rb.phase), "%s",
+		    ZR_PHASE_DECIDED);
 		if (zr_zfs_rollback(s.zfs, s.result, s.rb.presnap, s.err,
 		    sizeof (s.err)) != 0) {
 			rc = vfail(&s, EXIT_INTERNAL, "rollback");
 			goto done;
 		}
-		s.rb.phase[0] = '\0';
-		if (zr_zfs_clear_user(s.zfs, s.result, ZR_PROP_PHASE, s.err,
-		    sizeof (s.err)) != 0)
-			(void) fprintf(stderr, "zfs_rebase: %s on %s: %s\n",
-			    ZR_PROP_PHASE, s.result, s.err);
 		if (s.verbose)
 			(void) fprintf(stderr, "zfs_rebase: %s is %s again\n",
 			    s.result, s.rb.presnap);
@@ -5044,7 +5171,18 @@ zr_restart(const struct zr_verb_opts *o)
 		    s.rb.from, s.rb.onto, s.rb.tag);
 		goto done;
 	}
-	s.rb.phase[0] = '\0';
+	/*
+	 * And the gate the fresh clone stands at, which is the
+	 * decision it is about to have applied to it: the create
+	 * carries the manifest and the tag and no phase, so this is
+	 * the one write that puts it back. A kill in the moment
+	 * between them leaves a clone whose record has no phase --
+	 * born and not decided, by the rule -- and --abort, which
+	 * that refusal names, takes it away with the header in hand.
+	 */
+	put_phase(s.zfs, s.result, ZR_PHASE_DECIDED);
+	(void) snprintf(s.rb.phase, sizeof (s.rb.phase), "%s",
+	    ZR_PHASE_DECIDED);
 	if (s.verbose)
 		(void) fprintf(stderr, "zfs_rebase: %s is a fresh clone of "
 		    "%s again\n", s.result, s.rb.onto);
@@ -5265,6 +5403,10 @@ abort_dataset(struct zr_zfs *z, const char *result, const char *snap,
  * result is at it, and the record is taken off, which frees the name
  * for another rebase.
  *
+ * Since the birth manifest there is no gate at which a record exists
+ * and its file does not, so this is for a file that was actually
+ * lost -- removed by a hand, or unreadable -- and for nothing else.
+ *
  * The result is not destroyed and nothing is rolled back. Which form
  * the run was in, and what the pre-apply snapshot was called, were
  * the manifest's to say, and a tool that guessed would be destroying
@@ -5348,9 +5490,10 @@ abort_lost(struct zr_zfs *z, const char *result, const char *tag,
 		(void) fprintf(stderr, "zfs_rebase: mountpoint on %s: %s\n",
 		    result, err);
 	clear_record(z, result, verbose);
-	(void) fprintf(stderr, "zfs_rebase: the manifest is gone, so this "
-	    "abort cannot tell the clone form from the dataset form: %s was "
-	    "not destroyed and nothing was rolled back\n", result);
+	(void) fprintf(stderr, "zfs_rebase: the manifest file is gone, and "
+	    "with it the form, the pre-apply snapshot and the two properties "
+	    "to put back: %s was not destroyed and nothing was rolled back\n",
+	    result);
 	if (home[0] != '\0' && strcmp(home, ZR_MOUNTPOINT_NONE) != 0) {
 		if (rc > 0)
 			(void) fprintf(stderr, "zfs_rebase: %s is mounted at "
@@ -5382,6 +5525,121 @@ abort_lost(struct zr_zfs *z, const char *result, const char *tag,
 }
 
 /*
+ * --abort on what a crash left before the record: a run directory
+ * whose result carries no record of ours (R25 of the code review;
+ * documents-design.md, sections 11.1 and 11.3). Two windows have
+ * that shape, and what is in the directory tells them apart.
+ *
+ *	Before the birth manifest, the directory and its mnt and
+ *	nothing else: no hold, no record, nothing that says which
+ *	rebase this was. The directory goes, and saying so is all
+ *	there is to say.
+ *
+ *	Between the birth manifest and the record, the directory and
+ *	a header with no actions and no conflicts. Still no hold and
+ *	nothing written to the result: the one thing to undo is the
+ *	snapshot the run took of from before the record, which #made
+ *	names, and then the documents and the directory go.
+ *
+ * The pre-apply snapshot of the dataset form is named and not
+ * destroyed. A result with no record is either one of these windows
+ * or a rebase that reached done, and done keeps that snapshot as the
+ * user's before-image; a tool that cannot tell the two apart does
+ * not destroy what one of them means to keep.
+ *
+ * Anything else in the directory -- a manifest that will not parse,
+ * or one that declares a decision, which is a rebase whose result
+ * was destroyed under it or a done whose unlink failed -- is left
+ * where it is, with its tag named so the holds under it can be found
+ * by hand, and the rmdir then refuses the directory and says so.
+ * Returns EXIT_CLEAN.
+ */
+static int
+abort_leftover(struct zr_zfs *z, const char *result, const char *dir,
+    int verbose)
+{
+	char path[ZR_NAME_MAX], res[ZR_NAME_MAX], err[512];
+	struct zr_parsed p;
+	const char *snap;
+	FILE *fp;
+	int hasman = 0, parsed = 0, birth = 0, rmerr;
+
+	memset(&p, 0, sizeof (p));
+	(void) snprintf(path, sizeof (path), "%s/manifest", dir);
+	fp = fopen(path, "r");
+	if (fp != NULL) {
+		hasman = 1;
+		if (zr_manifest_parse(fp, &p, err, sizeof (err)) == 0)
+			parsed = 1;
+		else
+			(void) fprintf(stderr, "zfs_rebase: %s: %s\n", path,
+			    err);
+		(void) fclose(fp);
+	}
+	if (parsed != 0)
+		birth = p.zp_actions_declared == 0 &&
+		    p.zp_conflicts_declared == 0;
+	if (hasman == 0) {
+		(void) fprintf(stderr, "zfs_rebase: %s carries no record and "
+		    "%s holds no manifest: what is left is the directory a "
+		    "run made before it wrote anything\n", result, dir);
+	} else if (birth != 0) {
+		(void) fprintf(stderr, "zfs_rebase: %s carries no record, and "
+		    "%s is the header of a run that was killed before it "
+		    "wrote one\n", result, path);
+	} else {
+		if (parsed != 0 && p.zp_tag != NULL)
+			(void) fprintf(stderr, "zfs_rebase: %s names the tag "
+			    "%s; zfs holds and zfs release find what is still "
+			    "filed under it\n", path, p.zp_tag);
+		(void) fprintf(stderr, "zfs_rebase: %s carries no record and "
+		    "%s is not a header this abort can act on; it is left "
+		    "where it is\n", result, path);
+		zr_parsed_fini(&p);
+		return (EXIT_CLEAN);
+	}
+	/*
+	 * The snapshot the run took of from before the record, which
+	 * belongs to the rebase and goes with it. It was never held,
+	 * so nothing is in the way; one that is already gone is not a
+	 * failure.
+	 */
+	snap = p.zp_made != NULL && strcmp(p.zp_made, "from") == 0 ?
+	    p.zp_from : NULL;
+	if (snap != NULL && zr_zfs_exists(z, snap, err, sizeof (err)) > 0) {
+		if (zr_zfs_destroy_snap(z, snap, err, sizeof (err)) != 0)
+			(void) fprintf(stderr, "zfs_rebase: destroy %s: %s\n",
+			    snap, err);
+		else
+			(void) fprintf(stderr, "zfs_rebase: destroyed %s, "
+			    "which the tool took itself\n", snap);
+	}
+	if (p.zp_form == ZR_HFORM_DATASET &&
+	    p.zp_presnap != NULL && strcmp(p.zp_presnap, ZR_NO_BASE) != 0 &&
+	    zr_zfs_exists(z, p.zp_presnap, err, sizeof (err)) > 0)
+		(void) fprintf(stderr, "zfs_rebase: %s is the pre-apply "
+		    "snapshot that run took and is yours: zfs destroy %s "
+		    "takes it away\n", p.zp_presnap, p.zp_presnap);
+	if (hasman != 0) {
+		unlink_doc(path);
+		resolution_path(res, sizeof (res), result);
+		unlink_doc(res);
+	}
+	rmerr = rmdir_run(result);
+	if (rmerr == 0)
+		(void) fprintf(stderr, "zfs_rebase: removed %s\n", dir);
+	else
+		(void) fprintf(stderr, "zfs_rebase: %s: %s\n", dir,
+		    strerror(rmerr));
+	if (verbose)
+		(void) fprintf(stderr, "zfs_rebase: %s was no rebase to "
+		    "undo; nothing was released and nothing was rolled "
+		    "back\n", result);
+	zr_parsed_fini(&p);
+	return (EXIT_CLEAN);
+}
+
+/*
  * --abort: take one rebase away and nothing else. "As if the run
  * never happened": the holds are released, the result is put back --
  * the clone destroyed, or the dataset rolled back to its pre-apply
@@ -5407,8 +5665,14 @@ abort_lost(struct zr_zfs *z, const char *result, const char *tag,
  * What the record buys is the manifest, and the manifest's header is
  * everything else: the form, the three snapshots to release, which
  * of them the tool made, and the pre-apply snapshot and the two
- * property values the dataset form puts back. Where the file is gone
- * or will not parse, abort_lost above is as far as this can go.
+ * property values the dataset form puts back. The file is there at
+ * every gate, since the run writes the header before the record
+ * (documents-design.md, section 11.1), so every --abort of a rebase
+ * that has one has all of that; where the file is gone or will not
+ * parse, abort_lost above is as far as this can go.
+ *
+ * A result with no record and a run directory of its own is the
+ * window before the record, which abort_leftover takes away.
  *
  * It can be run again. The holds are released first, so a destroy
  * that fails leaves nothing held that a second --abort would have
@@ -5473,6 +5737,19 @@ zr_abort(const struct zr_verb_opts *o)
 		rc = EXIT_PRECOND;
 		goto done;
 	}
+	if (hasds == 0) {
+		/*
+		 * The result is not there and its directory is: no
+		 * record can be read off a dataset that does not
+		 * exist, so what is left is whatever the directory
+		 * holds. In the clone form that is the window before
+		 * the record, where the clone had not been created
+		 * yet and the birth manifest names what the run was
+		 * going to be.
+		 */
+		rc = abort_leftover(z, result, dir, verbose);
+		goto done;
+	}
 	if (hasds != 0) {
 		got = zr_zfs_get_user(z, result, ZR_PROP_MANIFEST, manifest,
 		    sizeof (manifest), err, sizeof (err));
@@ -5493,6 +5770,17 @@ zr_abort(const struct zr_verb_opts *o)
 			}
 		}
 		if (got == 0) {
+			/*
+			 * No record. With a run directory of its own
+			 * that is the window before the record, which
+			 * is a rebase's leavings and goes; without one
+			 * the dataset is nobody's rebase and nothing
+			 * here touches it.
+			 */
+			if (hasdir) {
+				rc = abort_leftover(z, result, dir, verbose);
+				goto done;
+			}
 			(void) fprintf(stderr, "zfs_rebase: %s is not a "
 			    "zfs_rebase result; nothing was touched\n",
 			    result);

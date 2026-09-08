@@ -39,7 +39,7 @@
  * record exists from the result's first instant and no kill can
  * leave a result without one.
  *
- *	zfs_rebase:phase	applying1, conflicts or applying2
+ *	zfs_rebase:phase	decided, applying1, conflicts or applying2
  *	zfs_rebase:manifest	the manifest's absolute path
  *	zfs_rebase:tag		the hold tag of this rebase
  *	zfs_rebase:quiet	"yes", where --quiet was given at start
@@ -53,8 +53,11 @@
  * properties to give back (sprints/sprint-5/documents-design.md,
  * sections 2 and 3). None of that is on the dataset.
  *
- * There is no phase property at birth. The phase is written at the
- * gates the run passes, so that what a kill leaves is the last gate
+ * There is no phase property at birth: the record is written before
+ * the decision, and the manifest it names is then the header alone
+ * (documents-design.md, section 11.1), so an empty phase says the
+ * run was born and never decided. The phase is written at the gates
+ * the run passes, so that what a kill leaves is the last gate
  * reached and nothing else; done is no value at all, because at
  * done every zfs_rebase: property is cleared and a result that
  * carries any of them is therefore always an open rebase.

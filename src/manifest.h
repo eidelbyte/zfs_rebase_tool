@@ -92,6 +92,56 @@ int zr_manifest_emit(FILE *out, const struct zr_manifest_hdr *hdr,
     const struct zr_tree *base, const struct zr_tree *from,
     const struct zr_tree *onto, const struct zr_decision *d);
 
+/*
+ * The birth manifest: the whole header with "#actions 0" and
+ * "#conflicts 0" and an empty tree section, written before the
+ * record so that the file a record names exists from the record's
+ * first instant (documents-design.md, section 11.1). What it
+ * carries is the identity -- the form, the three snapshots and
+ * their guids, the tag, #made, #take and the dataset form's three
+ * -- which is known before a single tree is walked; what it does
+ * not carry is the decision, which is not made yet. The same run
+ * writes the whole document over it at the decision.
+ *
+ * It is a manifest like any other: it parses, it round trips, and a
+ * verb reading it finds nothing to apply. What says it is not a
+ * decision is the record beside it, whose phase is empty until the
+ * decision manifest is in place. Returns 0, or -1 on a write
+ * failure or a dataset-form header missing one of its three lines.
+ */
+int zr_manifest_birth(FILE *out, const struct zr_manifest_hdr *hdr);
+
+/*
+ * ---------------------------------------------------------------
+ * One document written whole or not at all (documents-design.md,
+ * section 11.2). Every manifest and every resolution this tool
+ * writes to a file goes through here.
+ * ---------------------------------------------------------------
+ */
+
+/*
+ * The bytes go to <path>.tmp -- a sibling in the destination's own
+ * directory, because rename(2) does not cross filesystems (EXDEV)
+ * and a -o manifest on another dataset is the ordinary case -- which
+ * is flushed to disk, closed and renamed over the destination. A
+ * reader therefore finds the document as it was or as it now is and
+ * never half of either, which matters most for the resolution: from
+ * the conflicts gate on that file holds a person's answers and the
+ * tool rewrites it whole at every --continue.
+ *
+ * emit writes the document to the stream it is given and returns 0,
+ * or -1 for a failure of its own; arg is handed to it untouched.
+ * Every failure unlinks the sibling and leaves the destination as it
+ * was, and nothing is left behind on success. A .tmp beside a -o
+ * file after a crash is the one thing this can leave, and is
+ * acceptable by ruling: the next write of that document truncates
+ * it, and nothing ever reads it.
+ *
+ * Returns 0, or -1 with one line in err.
+ */
+int zr_doc_write(const char *path, int (*emit)(FILE *, void *), void *arg,
+    char *err, size_t errlen);
+
 /* The five things a name line can say. */
 enum zr_act_kind {
 	ZR_ACT_RM,

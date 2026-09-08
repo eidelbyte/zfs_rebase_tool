@@ -540,14 +540,16 @@ A pair
 .Fl o
 named is the exception and stays where it was asked for, here exactly as
 at done: the tool removes no file outside the run directory.
-Which of those it does is the manifest's to say.
-Where that file has been lost,
+Which of those it does is the manifest's to say, and that file is there at
+every gate, since the run writes its header before its record.
+Where it has been lost all the same, removed by a hand,
 .Fl -abort
 gives the holds back by walking the result's pool for the record's tag,
 destroys the snapshot the run took for itself where it took one, which
 that walk finds held under the tag and named with it, undoes the private
 mount and takes the record off, and then says what it cannot do without
-the manifest: it cannot tell the clone form from the dataset form, so it
+the manifest: the form, the pre-apply snapshot and the two property values
+went with the file, so it
 destroys nothing else and rolls nothing back, and it cannot put
 .Sy readonly
 or
@@ -555,6 +557,11 @@ or
 back, for which it prints the two
 .Ic zfs set
 commands.
+A result with no record at all but a run directory of its own is the other
+half of this: that is what a crash before the record left, and
+.Fl -abort
+says what it found there, destroys the from snapshot the header names if
+one was taken, and removes the directory.
 The one thing it can still read is the
 .Sy mountpoint
 property, which the two forms never share: a path is a dataset of yours and
@@ -668,6 +675,7 @@ record of ours.
 .Bl -tag -width "zfs_rebase:manifest" -compact
 .It Sy zfs_rebase:phase
 the last gate the run passed:
+.Sy decided ,
 .Sy applying1 ,
 .Sy conflicts
 or
@@ -694,6 +702,23 @@ Either document names the run \(em the property points at the manifest and
 the header names the result \(em and nothing else is ever written to a
 dataset by this tool.
 .Pp
+The file that path names exists from the record's first instant: the run
+writes the whole header, with
+.Sy #actions 0
+and
+.Sy #conflicts 0
+and no body, before it writes the record, and writes the decision over it
+when it has one.
+So the order a run acquires things in is the pre-apply snapshot in the
+dataset form, the run directory, that header, the record, the holds, the
+snapshot it takes of from, the take, and then the walks, the decision and
+the skeleton beside it.
+Every document is written to a sibling
+.Pa <file>.tmp
+in the destination's own directory and renamed over the destination, which
+cannot cross a filesystem and so cannot be anywhere else; a reader finds
+the document whole or as it was and never half of either.
+.Pp
 .Fl -restart
 reads the header's
 .Sy #take
@@ -705,6 +730,14 @@ There is no phase property at birth, and no
 value at all: at done every one of these properties is taken off, so a
 result carrying any of them is an open rebase and one carrying none has no
 rebase, whatever its history.
+A record with no phase is a rebase that was born and never decided \(em the
+manifest it names is the header alone \(em which
+.Fl -continue
+and
+.Fl -restart
+refuse in those words, before they take the result over, and
+.Fl -abort
+takes away.
 Every verb keys on the record and on the manifest it names.
 A dataset carrying neither
 .Sy zfs_rebase:manifest
@@ -737,9 +770,14 @@ A rebase's progress is a sequence of gates, written to
 .Sy zfs_rebase:phase
 and nowhere else:
 .Bd -literal -offset indent
-applying1 -> conflicts -> applying2 -> done
-applying1 -> done                          (no conflicts)
+decided -> applying1 -> conflicts -> applying2 -> done
+decided -> applying1 -> done               (no conflicts)
 .Ed
+.Pp
+.Sy decided
+goes down the moment the decision has been renamed over the header the run
+was born with, and before the skeleton is written beside it: it is what
+says the manifest is the decision and not that header.
 .Pp
 .Sy applying1
 goes down immediately before the result stops being read-only, and the
@@ -811,7 +849,7 @@ and
 both take in their stride.
 .Pp
 What a kill leaves is the last gate reached and nothing else.
-There is no phase at all until the first gate, and a stop writes none:
+There is no phase at all until the decision, and a stop writes none:
 .Dv SIGINT ,
 .Dv SIGTERM
 and
@@ -937,7 +975,10 @@ the resolution, beside the manifest
 .El
 .Pp
 Making the directory is the lock: a leaf that is there already is another
-run of the same result, and the run is refused.
+run of the same result, and the run is refused; where that result carries
+no record the directory is what a crash left before the record, and
+.Fl -abort
+removes it.
 Removing it at done is what frees the name again.
 At done the run unlinks the two documents it wrote into that directory,
 and then

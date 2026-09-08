@@ -15,11 +15,13 @@
  * again on the line after that close.
  */
 
+#include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 #include "manifest.h"
 #include "name.h"
@@ -1121,6 +1123,86 @@ zm_hdr_ok(const struct zr_manifest_hdr *h)
 		return (1);
 	return (h->presnap != NULL && h->readonly != NULL &&
 	    h->canmount != NULL);
+}
+
+/*
+ * The header alone, with the two counts at zero and the empty tree
+ * section the parser wants for them: the root line and the two dots
+ * that close it, which is what zm_emit_tree writes for a decision
+ * with nothing in it and what zr_parsed_write writes for a parse of
+ * this. One writer for the bytes, here as everywhere.
+ */
+int
+zr_manifest_birth(FILE *out, const struct zr_manifest_hdr *hdr)
+{
+	if (out == NULL || hdr == NULL || zm_hdr_ok(hdr) == 0)
+		return (-1);
+	zm_header(out, hdr, 0, 0);
+	(void) fputs("/\n", out);
+	zm_indent(out, 1);
+	(void) fputs("..\n", out);
+	return (ferror(out) != 0 ? -1 : 0);
+}
+
+/*
+ * The sibling's name is the destination's and ".tmp", so one path
+ * and that suffix is what the buffer holds; a destination too long
+ * for it is refused here rather than by the open later. ZR_NAME_MAX
+ * of run.h, which is where every path this is handed comes from, is
+ * 1024.
+ */
+#define	ZM_TMPMAX	1088
+
+int
+zr_doc_write(const char *path, int (*emit)(FILE *, void *), void *arg,
+    char *err, size_t errlen)
+{
+	char tmp[ZM_TMPMAX];
+	FILE *out;
+	int rc = 0;
+
+	if (err != NULL && errlen > 0)
+		err[0] = '\0';
+	if (path == NULL || path[0] == '\0' || emit == NULL) {
+		(void) snprintf(err, errlen, "no document to write");
+		return (-1);
+	}
+	if ((size_t)snprintf(tmp, sizeof (tmp), "%s.tmp", path) >=
+	    sizeof (tmp)) {
+		(void) snprintf(err, errlen, "%s: %s", path,
+		    strerror(ENAMETOOLONG));
+		return (-1);
+	}
+	out = fopen(tmp, "w");
+	if (out == NULL) {
+		(void) snprintf(err, errlen, "%s: %s", tmp, strerror(errno));
+		return (-1);
+	}
+	if (emit(out, arg) != 0) {
+		rc = -1;
+		(void) snprintf(err, errlen, "%s: write failed", tmp);
+	}
+	/*
+	 * On disk before the rename, so that what the rename makes
+	 * visible is the whole document and not a name pointing at
+	 * bytes a crash never wrote.
+	 */
+	if (rc == 0 && (fflush(out) != 0 || fsync(fileno(out)) != 0)) {
+		rc = -1;
+		(void) snprintf(err, errlen, "%s: %s", tmp, strerror(errno));
+	}
+	if (fclose(out) != 0 && rc == 0) {
+		rc = -1;
+		(void) snprintf(err, errlen, "%s: %s", tmp, strerror(errno));
+	}
+	if (rc == 0 && rename(tmp, path) != 0) {
+		rc = -1;
+		(void) snprintf(err, errlen, "%s to %s: %s", tmp, path,
+		    strerror(errno));
+	}
+	if (rc != 0)
+		(void) unlink(tmp);
+	return (rc);
 }
 
 int

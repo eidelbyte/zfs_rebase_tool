@@ -1180,7 +1180,9 @@ case "$fixture" in
 	# cleared, and nothing is destroyed or rolled back, because
 	# the form of the run was one of the things the manifest was
 	# carrying. probe.zrt stops at conflicts, so there is a rebase
-	# standing here to lose the manifest of.
+	# standing here to lose the manifest of. Since the run writes
+	# its header before its record, this is the only way to reach
+	# that path at all: a file somebody took away.
 	"$bin" $flag -o "$tmp/got-l" --from "$POOL/from@work" \
 	    --onto "$POOL/onto@work" --result "$POOL/result" \
 	    > "$tmp/l1" 2>&1
@@ -1188,6 +1190,9 @@ case "$fixture" in
 	[ $st -eq 1 ] || { cat "$tmp/l1"; fail "the run for 5a exited $st, want 1"; }
 	ltag=$(recval zfs_rebase:tag "$POOL/result")
 	[ "$(holdcount)" = 3 ] || fail "5a: $(holdcount) holds, want 3"
+	# 5b below builds a birth manifest out of this one's header,
+	# so keep a copy before the file goes.
+	cp "$tmp/got-l" "$tmp/hdr-l" || fail "cannot copy the manifest"
 	rm -f "$tmp/got-l" "$tmp/got-l.resolution" || fail "cannot unlink the manifest"
 	"$bin" --abort --result "$POOL/result" > "$tmp/l2" 2>&1
 	st=$?
@@ -1200,7 +1205,7 @@ case "$fixture" in
 	    { cat "$tmp/l2"; fail "--abort without the manifest left a record"; }
 	[ "$(zfs list -H -o name "$POOL/result" 2>/dev/null)" = "$POOL/result" ] || \
 	    fail "--abort destroyed a result whose form it could not know"
-	grep -q 'cannot tell the clone form from the dataset form' "$tmp/l2" || \
+	grep -q 'the manifest file is gone' "$tmp/l2" || \
 	    { cat "$tmp/l2"; fail "--abort did not say what it could not do"; }
 	# The mountpoint property is the one thing left that tells the
 	# two forms apart: none is a clone of the tool's, and a clone
@@ -1224,6 +1229,51 @@ case "$fixture" in
 	    fail "--abort without the manifest left the run directory $RUNDIR"
 	echo "ok   --abort without the manifest: the tag released by a"
 	echo "     walk of the pool, the record cleared, nothing destroyed"
+
+	say "5b. --abort on what a crash left before the record"
+	# The run makes its directory, writes its header into it and
+	# then writes the record, and a crash has two windows there:
+	# the directory alone, and the directory with a manifest that
+	# declares no action and no conflict. Neither can be caught by
+	# a signal -- they are between two system calls -- so both are
+	# made here by hand. --abort on such a name has no record to
+	# read, so what it acts on is the directory: it says what it
+	# found and takes it away, which is what the "a run for X is
+	# in place" message promises.
+	LEFT=$POOL/leftover
+	LDIR=/var/db/zfs_rebase/$LEFT
+	rm -rf "$LDIR"
+	mkdir -p "$LDIR/mnt" || fail "cannot make the leftover run directory"
+	"$bin" --abort --result "$LEFT" > "$tmp/l3" 2>&1
+	st=$?
+	[ $st -eq 0 ] || \
+	    { cat "$tmp/l3"; fail "--abort on an empty run directory exited $st, want 0"; }
+	grep -q 'holds no manifest' "$tmp/l3" || \
+	    { cat "$tmp/l3"; fail "--abort did not say what it found"; }
+	[ ! -e "$LDIR" ] || fail "--abort left the empty run directory $LDIR"
+	# And the window one write later. The document is built out of
+	# the header of the manifest 5a's run wrote, so every byte
+	# above #mode is a real run's; what makes it a birth manifest
+	# is the two counts at zero and the empty tree section.
+	mkdir -p "$LDIR/mnt" || fail "cannot make the leftover directory again"
+	sed -n '1,/^#conflicts /p' "$tmp/hdr-l" | \
+	    sed -e 's/^#actions .*/#actions 0/' \
+	        -e 's/^#conflicts .*/#conflicts 0/' > "$LDIR/manifest" || \
+	    fail "cannot write the birth manifest"
+	printf '/\n    ..\n' >> "$LDIR/manifest" || \
+	    fail "cannot write the birth manifest"
+	"$bin" --abort --result "$LEFT" > "$tmp/l4" 2>&1
+	st=$?
+	[ $st -eq 0 ] || \
+	    { cat "$tmp/l4"; fail "--abort on a birth manifest exited $st, want 0"; }
+	grep -q 'killed before it wrote one' "$tmp/l4" || \
+	    { cat "$tmp/l4"; fail "--abort did not name the window it found"; }
+	[ ! -e "$LDIR" ] || \
+	    { cat "$tmp/l4"; fail "--abort left the run directory $LDIR"; }
+	[ "$(holdcount)" = 0 ] || \
+	    { cat "$tmp/l4"; fail "--abort on a leftover took a hold"; }
+	echo "ok   --abort on a crash leftover: the directory and the header"
+	echo "     it held are gone, and nothing else was touched"
 	;;
 esac
 

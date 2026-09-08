@@ -229,17 +229,22 @@ ignores the variable.
 A gate is a point where the thing it names has just happened and the
 next thing has not started:
 
-    held        the three holds are taken (a fresh run)
+    held        the three holds are taken (a fresh run). The run
+                directory, the manifest's whole header and the
+                record are already there: the header goes down
+                before the record, so every gate from this one on
+                has a manifest to read
     cloned      the clone is there, or the dataset is the run's own
                 at its private mount, before any walk
     read        the walks and the pruning are done, before anything
                 is decided
-    manifest    the manifest is written and recorded, before the
-                skeleton of the resolution is written beside it:
+    manifest    the decision is written over the header the run was
+                born with and zfs_rebase:phase says "decided", before
+                the skeleton of the resolution is written beside it:
                 the one window in which a rebase has one of its two
                 documents and not the other
-    decided     the manifest and the resolution are written and
-                recorded, before applying1 is written
+    decided     the manifest and the resolution are both written and
+                the phase is "decided", before applying1 is written
     applying1   that state is written and readonly is off, before
                 the first action (a fresh run or --continue)
     conflicts   that state is written, before the hand-back and the

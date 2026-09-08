@@ -492,6 +492,16 @@ tests/box/run-fixture.sh -- compare from #mode on, so nothing here
 is proved by them; the run part is proved by the cells below and, on
 the box, by the verbs that read a header back.
 
+Two more dimensions came in with the birth manifest of
+documents-design.md section 11.1: which of a run's two writes made
+the document {birth, decision}, and how it reached the disk {the
+atomic write's sibling and rename, or a stream the caller owns}.
+They are ZH39 to ZH45. A birth document is a header with "#actions
+0", "#conflicts 0" and the empty tree section, so every row above
+holds of it as it holds of any manifest; what is new is that it
+parses and round trips with no body at all, and that both writes go
+through zr_doc_write.
+
 | cell | scenario | disposition |
 |------|----------|-------------|
 | ZH1 | a fixture's expect block and an emitted manifest are one decision under two headers | covered: check_manifest.c |
@@ -532,6 +542,13 @@ the box, by the verbs that read a header back.
 | ZH36 | the emitter refuses a dataset form with no #presnap, #readonly or #canmount | covered: check_roundtrip.c |
 | ZH37 | a run's own header: the result, the tag it holds under, the time it wrote, the guids of the three snapshots | planned: box, tests/box/run-fixture.sh cases 1 and 2 (the #base line and its guid) and run-replay.sh |
 | ZH38 | a resolution whose name matches and whose guid does not is refused, with both guids | planned: box, tests/box/run-resolution.sh; the check is read_resolution in src/run.c, which only a real record reaches |
+| ZH39 | the birth document: the whole header, #actions 0, #conflicts 0, the empty tree section, and a parse that finds no action and no record | covered: check_manifest.c |
+| ZH40 | a birth document round trips -- emit, parse, write back, byte for byte -- in the clone form and in the dataset form | covered: check_manifest.c, check_roundtrip.c |
+| ZH41 | the birth document carries #written like any other, and the decision written over it carries the time of that write | covered: check_manifest.c; box, tests/box/run-kills.sh, where the two writes are two gates |
+| ZH42 | a dataset-form birth document carries #presnap, #readonly and #canmount, and the writer refuses one that does not | covered: check_manifest.c |
+| ZH43 | the atomic write: the destination holds the bytes the emitter wrote and no .tmp is left beside it, on the first write and on the write that goes over it | covered: check_roundtrip.c |
+| ZH44 | a write that cannot be made leaves the destination as it was and no .tmp behind, whether the emitter failed or the file could not be opened at all | covered: check_roundtrip.c, which fails an emitter and then makes the destination's directory unwritable; the second half is skipped with a line when the tests run as root, since root writes anyway |
+| ZH45 | the sibling is in the destination's own directory, so a -o manifest on another filesystem renames without EXDEV | covered: check_roundtrip.c, which writes into a directory of its own and looks for the sibling there and nowhere else; the cross-filesystem half is box, tests/box/run-fixture.sh's -o passes, whose -o pair is under TMPDIR and whose run directory is under /var/db |
 
 ## ZA -- apply (check_apply.c)
 
@@ -688,7 +705,7 @@ again.
 | ZX35 | the three guids of the manifest's header equal zfs get guid on the snapshots | planned: box, box/run-fixture.sh |
 | ZX36 | every record property has source local | planned: box, box/run-fixture.sh |
 | ZX37 | an inherited record is none: --abort exits 2, touches nothing | planned: box, box/run-fixture.sh |
-| ZX38 | the phases: applying1, conflicts, applying2, none at birth, and no property at all at done | planned: box, box/run-fixture.sh and box/run-kills.sh |
+| ZX38 | the phases: decided, applying1, conflicts, applying2, none at birth, and no property at all at done | planned: box, box/run-fixture.sh and box/run-kills.sh |
 | ZX39 | --abort releases the holds, and runs again after a half abort | planned: box, box/run-fixture.sh |
 | ZX40 | the final check is made by the invocation that reaches done, under no flag, and records nothing | planned: box, box/run-fixture.sh steps 2 and 5 |
 | ZX41 | applying1 applies the clean actions before the conflicts gate | planned: box, box/run-fixture.sh |
@@ -730,9 +747,9 @@ again.
 | ZX77 | a base that is a snapshot of onto is read through the private mount | deferred: needs a from cloned out of onto, which the fixtures do not build; by hand on the box |
 | ZX78 | a snapshot newer than the pre-apply one: --restart and --abort refuse rather than destroy it | deferred: needs a snapshot taken during a rebase; by hand on the box |
 | ZX84 | the pause hook stops the tool at every gate and SIGCONT takes it on from exactly there | planned: box, box/run-kills.sh |
-| ZX85 | SIGINT and SIGTERM before applying1 (held, cloned, read, decided): nothing has been written, so the run takes itself away whole -- exit 3, no record, no hold, no run directory, the dataset home -- and there is nothing left to continue | planned: box, box/run-kills.sh |
-| ZX86 | SIGKILL at held, cloned or read: the record and the three holds stand with no state and no manifest, and --continue exits 2 naming the manifest it cannot do without | planned: box, box/run-kills.sh |
-| ZX87 | SIGKILL at decided: no state, the manifest written and recorded, and --continue applies it from the first gate | planned: box, box/run-kills.sh |
+| ZX85 | SIGINT and SIGTERM before applying1 (held, cloned, read, decided): nothing has been applied, so the run takes itself away whole -- exit 3, no record, no hold, no run directory, neither of its documents, the dataset home -- and there is nothing left to continue | planned: box, box/run-kills.sh |
+| ZX86 | SIGKILL at held, cloned or read: the record, the three holds and the birth manifest stand with no phase at all, and --continue exits 2 saying the run never reached its decision | planned: box, box/run-kills.sh; ZX205 and ZX206 are the two halves of it now |
+| ZX87 | SIGKILL at decided: the phase "decided", the manifest written and recorded, and --continue applies it from the first gate | planned: box, box/run-kills.sh |
 | ZX88 | a stop inside applying1, at the gate and before the second action alike: the state is applying1, readonly is back on after a caught signal and off after a SIGKILL, and the holds are all three | planned: box, box/run-kills.sh |
 | ZX89 | a stop at conflicts or at applying2 leaves that state, the three holds and the manifest; a caught signal at conflicts is no stop at all, since nothing looks at the flag past that gate | planned: box, box/run-kills.sh |
 | ZX90 | a stop at the done gate: SIGKILL leaves the phase of the stage that ran before it and the three holds, and --continue redoes that stage and finishes; a caught signal lets the run finish, release the holds and clear the record | planned: box, box/run-kills.sh |
@@ -772,18 +789,18 @@ again.
 | ZX131 | an incomplete resolution stops, and says by how much: the fresh run's count, the same count of the same total from a --continue, and what is left after one line of it is answered | planned: box, box/run-resolution.sh case 3 |
 | ZX132 | a plain --continue at the conflicts gate with the conflicts still unanswered: the drift line is written into the document and the gate stops all the same, and the line survives the answering to be the name's word at done | planned: box, box/run-resolution.sh case 6 |
 | ZX133 | a drift line whose choice is flipped from keep to onto puts the name back as onto had it | planned: box, box/run-resolution.sh case 6 |
-| ZX134 | the manifest gate: a SIGKILL between the manifest and the skeleton leaves a manifest, no resolution, no state and three holds, and the rebase's exits are --abort and --restart | planned: box, box/run-resolution.sh case 7; the gate is run.c's zr_pause("manifest") |
+| ZX134 | the manifest gate: a SIGKILL between the manifest and the skeleton leaves a manifest, no resolution, the phase "decided" and three holds, and the rebase's exits are --abort and --restart | planned: box, box/run-resolution.sh case 7; the gate is run.c's zr_pause("manifest") |
 | ZX135 | the choice:<n> gate: a SIGKILL inside applying2's choices leaves applying2 with readonly off, and --continue redoes the whole document and reaches done with nothing for a second pass to do | planned: box, box/run-resolution.sh case 7; the gate is apply.c's zr_apply_choice_pause_at |
 | ZX136 | an ACL put on a clean directory at the conflicts gate and chosen onto: the choice strips it back, and the stage's own second pass finds the directory unchanged | planned: box, box/run-resolution.sh case 8, which is the box's answer to the macOS-only strip hole apply-choices recorded beside ZA52 |
 | ZX137 | -q parses as --quiet on a fresh run, both spellings, and neither spelling given reads as 0 | covered: check_args.c |
 | ZX138 | -q on --continue, --restart, --abort, the --verify verb and --dry-run is refused, both spellings | covered: check_args.c |
 | ZX139 | -w and --overwrite are unknown options wherever they are given | covered: check_args.c |
 | ZX140 | the record at birth is zfs_rebase:manifest and zfs_rebase:tag and nothing else, both of them the result's own local values, in both forms | planned: box, box/run-fixture.sh step 3 and its dataset pass |
-| ZX141 | zfs_rebase:phase reads applying1, conflicts and applying2 at those gates and is absent before the first | planned: box, box/run-kills.sh, which stops at every gate, and box/run-fixture.sh at conflicts |
+| ZX141 | zfs_rebase:phase reads decided, applying1, conflicts and applying2 at those gates and is absent before the decision | planned: box, box/run-kills.sh, which stops at every gate, and box/run-fixture.sh at conflicts |
 | ZX142 | zfs_rebase:quiet is absent from a record no --quiet asked for, and present as a local value where -q was given | planned: box, box/run-fixture.sh step 3 for the absence and step 5's -q run for the presence |
 | ZX143 | at done no zfs_rebase: property is left on the result, in either form and by either path (the run's own done and a --continue's) | planned: box, box/run-fixture.sh, box/run-kills.sh and box/run-resolution.sh, each of which now asserts the empty list where it asserted state=done |
 | ZX144 | a settled result is free: a second run over that dataset is taken with no flag, and --continue, --restart, --abort and --verify on it exit 2 as on any dataset with no record | planned: box, box/run-fixture.sh D2 and step 3a; done-cleanup took away the run directory that used to stand in D2's way |
-| ZX145 | --abort with the manifest gone: the holds are released by walking the pool for the tag, the private mount is undone, the record is cleared, the one snapshot the run took for itself -- held under the tag and named with it -- is destroyed, the result is not destroyed and nothing is rolled back, and the two commands are printed | planned: box, box/run-fixture.sh 5a (clone form, both sides given: nothing was taken) and box/run-kills.sh (dataset form killed before the manifest: from's snapshot was the run's own, and --abort takes it away); nothing on the Mac reaches zr_zfs_release_tag |
+| ZX145 | --abort with the manifest gone: the holds are released by walking the pool for the tag, the private mount is undone, the record is cleared, the one snapshot the run took for itself -- held under the tag and named with it -- is destroyed, the result is not destroyed and nothing is rolled back, and the two commands are printed | planned: box, box/run-fixture.sh 5a, which unlinks the -o manifest by hand: with the header written before the record there is no gate that leaves a record without its file, so a file somebody took away is the only way into this path, and the kills harness no longer reaches it; nothing on the Mac reaches zr_zfs_release_tag |
 | ZX158 | the mountpoint property of the result is never a path in the clone form: none at the create, none at every gate, none at done and none after --abort without a manifest | planned: box, box/run-fixture.sh steps 3, 3c and 5a |
 | ZX159 | the clone stays at the private mount through every gate, the conflicts gate included, since it has no home to be handed to | planned: box, box/run-fixture.sh step 3b and box/run-kills.sh |
 | ZX160 | the per-stage readonly flips of the clone form reach the kernel at the private mount, with no remount attempted at a stale path | planned: box; the probe of 2026-09-06 answered it directly (tools/probe-mount.c 2a-2d, sprints/sprint-5/probe-mount.txt), and every harness reads readonly per gate after it |
@@ -797,14 +814,14 @@ again.
 | ZX168 | a caught signal at a gate leaves the dataset privately mounted, as a SIGKILL does, and --continue finds it there | planned: box, box/run-kills.sh, every gate crossed with INT and TERM |
 | ZX169 | a run that gives up before it has written anything puts the dataset home with both properties back, as an --abort would | planned: box, box/run-kills.sh, the torn cases |
 | ZX170 | a dataset form onto whose canmount is off is refused at precondition, exit 2, with nothing taken and nothing written; the property is read before the mounted question so the message names it | planned: box, box/run-precond.sh 1c |
-| ZX171 | --abort with the manifest gone tells the forms apart by the mountpoint property alone: a path is mounted home, none is left unmounted, and neither readonly nor canmount is guessed at | planned: box, box/run-fixture.sh 5a |
+| ZX171 | --abort with the manifest gone tells the forms apart by the mountpoint property alone: a path is mounted home, none is left unmounted, and neither readonly nor canmount is guessed at | planned: box, box/run-fixture.sh 5a for the "none" half, which is a clone; the "path" half is deferred, since the dataset-form case that used to reach it -- a kill before the manifest in box/run-kills.sh -- now finds the birth manifest and takes the whole abort, and reaching abort_lost in that form means unlinking a dataset-form run's -o manifest by hand |
 | ZX172 | an edit made at the conflicts gate in the dataset form is made at the private mount, where only root can reach it | planned: box, box/run-strays.sh and box/run-resolution.sh, whose gate cases now edit there |
 | ZX173 | done removes the run directory: the two documents the run wrote there unlinked, then mnt, the directory and every empty parent up to /var/db/zfs_rebase by rmdir and never recursively, in both forms | planned: box, box/run-fixture.sh (clone_placed, settled_clone and the dataset pass), box/run-replay.sh step 3 |
 | ZX174 | a --continue that reaches done removes it exactly as the fresh run's own done does, and a verb that stops short of done leaves every bit of it, since that is where the next verb reads the rebase from | planned: box, box/run-fixture.sh 3d through clone_placed, box/run-kills.sh reset_pool and box/run-strays.sh and box/run-resolution.sh end_case, each of which now asserts the directory rather than removing it |
 | ZX175 | a -o manifest and the resolution beside it survive done: only documents inside the run directory are unlinked, and the decision is that directory's path as a prefix of the recorded one | planned: box, box/run-fixture.sh step 3 and the dataset pass, both of which run with -o; the no--o half is ZX173, where the directory could not go if the two were still in it |
 | ZX176 | a -o manifest and its resolution survive --abort too, which still removes the run directory and the two documents the run wrote into it | planned: box, box/run-fixture.sh step 4 and the dataset pass's --abort |
 | ZX177 | a second rebase of the same result after done finds no run directory: the dataset form goes through, and the clone form is refused before make_rundir because the clone is still there | planned: box, box/run-fixture.sh D2 for the dataset form; the clone form's refusal is ZX16's result_ok and is asserted in step 3 |
-| ZX178 | make_rundir still refuses an EEXIST leaf: the directory is the lock for as long as a run is open | deferred: with done removing it, the only way to a leftover directory is to make one by hand; by hand on the box |
+| ZX178 | make_rundir still refuses an EEXIST leaf: the directory is the lock for as long as a run is open, and the refusal names the other thing such a leaf can be -- a crash before the record, which --abort removes | deferred for the refusal itself: with done removing the directory, the only way to a leftover leaf under an open rebase is to make one by hand; the crash-leftover half is ZX210 and ZX211 |
 | ZX179 | the two documents a run wrote into its own directory are unlinked at done, in the no--o form, before the directory goes | planned: box, box/run-kills.sh, whose caught signal at the done gate lets the run finish, and which then asserts no manifest, no resolution and no run directory |
 | ZX180 | each of the four verbs names its run by --result, by MANIFEST, by both, and by neither, which is refused | covered: check_args.c; box, box/run-fixture.sh 3a for --continue and --verify by manifest and step 4 for --abort by manifest |
 | ZX181 | the operand stands anywhere among the flags, and a second one is refused: one manifest names one rebase | covered: check_args.c |
@@ -843,6 +860,14 @@ again.
 | ZX155 | zfs_rebase:verify is written by nothing and there is no request at all, recorded or on the command line: the invocation that reaches done makes the check | covered: the grep over src, tests and the two documents; box, box/run-fixture.sh step 5 and box/run-kills.sh |
 | ZX156 | zfs_rebase:state is written by nothing: zfs_rebase:phase replaces it and never takes the value done | covered: the grep; box, every harness |
 | ZX157 | the pre-apply snapshot a --restart or an --abort rolls back to is the header's #presnap and no property | covered: src/run.c; box, box/run-fixture.sh dataset pass |
+| ZX205 | the birth manifest is there before the record: at held, cloned and read the manifest the record names exists and declares no action and no conflict, and no resolution is beside it yet | planned: box, box/run-kills.sh, whose three pre-decision gates now assert the file and its two counts |
+| ZX206 | a record with no phase is a rebase born and not decided: --continue and --restart refuse it with that reason, exit 2, before either takes the result over, and name --abort | planned: box, box/run-kills.sh at held, cloned and read; the refusal is undecided() in src/run.c, made in resume_open before resume_trees |
+| ZX207 | zfs_rebase:phase reads "decided" from the moment the decision manifest is renamed into place: at the manifest gate, which is before the skeleton, and at the decided gate | planned: box, box/run-kills.sh's decided gate and box/run-resolution.sh case 7, the window between the two documents |
+| ZX208 | --abort at held, cloned or read in the dataset form, with the header in hand: the three holds released, the dataset rolled back to #presnap and that snapshot destroyed, readonly and canmount put back as the header kept them, the dataset mounted home, the record off, the tool's own from snapshot destroyed and the run directory gone | planned: box, box/run-kills.sh; it is what replaces the by-hand "zfs set canmount=on" that the manifest-less abort needed before the birth manifest |
+| ZX209 | --abort at held, cloned or read in the clone form: the clone destroyed whatever gate it was at, the holds released and the run directory gone | planned: box, box/run-kills.sh |
+| ZX210 | --abort on a run directory whose result carries no record and which holds no manifest -- the window before the birth manifest -- removes mnt and the directory, says what it found and exits 0 | planned: box, box/run-fixture.sh 5b, which makes that directory by hand: no kill can be timed inside a mkdir |
+| ZX211 | --abort on a run directory holding a birth manifest with no record on the result -- the window between the two writes -- destroys the from snapshot #made names, leaves the dataset form's #presnap and says so, unlinks both documents and removes the directory | planned: box, box/run-fixture.sh 5b, which builds the document from the header of a manifest the tool wrote; a kill in the live window is deferred, since no pause gate sits between the birth manifest and the record and adding one is a change to the gate vocabulary |
+| ZX212 | every document a run writes lands whole: the manifest at birth and at the decision, the skeleton, the drift lines and --restart's rewrite all go through the sibling and the rename, and no .tmp is left in the run directory or beside a -o file at any gate | planned: box, box/run-kills.sh and box/run-resolution.sh, whose gate assertions now hold over the directory's contents; the primitive itself is ZH43 to ZH45 on the Mac |
 
 ZX96 to ZX99 are no cells: the numbering skips to a round one so
 that the command line's own rows read as the block they are. ZX100
@@ -944,6 +969,16 @@ count held against tests/box/replay-expect.txt, and the manifest still
 equal to the fixture's expect block. ZX3 is what run-fixture.sh says
 beside it, which is only that a tree built from nothing prunes
 nothing.
+
+ZX205 to ZX212 are the birth manifest's: the header written before
+the record, the phase "decided" that says a decision is in place,
+what the verbs do with a record that has neither, and the two
+windows before the record that --abort now clears. All but the two
+leftover rows are reached by the pause hook at gates the harnesses
+already stop at, so they cost no new machinery; the leftover rows
+are made by hand in run-fixture.sh because the window they name is
+between two system calls. The atomic write under all of it is the
+Mac's, ZH43 to ZH45: it is a file in a directory and wants no pool.
 
 Note on ZX23: securelevel cannot be raised without a reboot of the
 box, so the refusal path stays deferred. Unblocking work is a

@@ -1245,6 +1245,36 @@ test_res_rejections(void)
 #define	H_BODY	"#mode strict\n#actions 1\n#conflicts 0\n/\n    a rm\n    ..\n"
 
 /*
+ * And the body of a birth document, which is the two counts at zero
+ * and the empty tree section: the root line and the two dots that
+ * close it (documents-design.md, section 11.1).
+ */
+#define	H_BIRTH	"#mode strict\n#actions 0\n#conflicts 0\n/\n    ..\n"
+
+/* The dataset form's header as the emitter is handed it, H_DATASET. */
+static void
+dataset_hdr(struct zr_manifest_hdr *h)
+{
+	memset(h, 0, sizeof (*h));
+	h->result = "tank/main@pre";
+	h->form = ZR_HFORM_DATASET;
+	h->base = "tank/proj@v1";
+	h->base_guid = 12345678901234567890ULL;
+	h->from = "tank/dev@v2";
+	h->from_guid = 0;
+	h->onto = "tank/main@v3";
+	h->onto_guid = 18446744073709551615ULL;
+	h->presnap = "tank/main@pre";
+	h->readonly = "off";
+	h->canmount = "noauto";
+	h->made = "from";
+	h->tag = H_TAG;
+	h->take = "onto";
+	h->written = H_WRITTEN;
+	h->mode = ZR_MODE_STRICT;
+}
+
+/*
  * ZH1 to ZH14: a clone-form header parses, and every line of it is
  * the value it carried. The result, the form, the three names with
  * their guids, made, the tag, take and the time of the write are the
@@ -1546,6 +1576,72 @@ test_header_resolution(void)
 	zr_parsed_fini(&p);
 }
 
+/*
+ * ZH39 to ZH42: the birth document, which is the header a run writes
+ * before its record and rewrites whole at the decision. It is a
+ * manifest like any other -- the same thirteen lines, sixteen in the
+ * dataset form -- with the two counts at zero and nothing in the
+ * tree section, and it must parse, hold nothing to apply and be
+ * written back byte for byte in either form.
+ */
+static void
+test_header_birth(void)
+{
+	struct zr_manifest_hdr h;
+	struct zr_parsed p;
+	FILE *f;
+	char *got;
+	size_t gotlen = 0;
+
+	clone_hdr(&h, "b", "f", "o", ZR_MODE_STRICT);
+	f = tmpfile();
+	CHECK(f != NULL);
+	CHECK(zr_manifest_birth(f, &h) == 0);
+	got = slurp(f, &gotlen);
+	compare("birth clone", got, gotlen, H_CLONE("b", "f", "o") H_BIRTH);
+	free(got);
+	parse_ok("birth clone", H_CLONE("b", "f", "o") H_BIRTH, &p);
+	CHECK(p.zp_nactions == 0);
+	CHECK(p.zp_nrecords == 0);
+	CHECK(p.zp_actions_declared == 0);
+	CHECK(p.zp_conflicts_declared == 0);
+	CHECK(strcmp(p.zp_result, H_RESULT) == 0);
+	CHECK(p.zp_form == ZR_HFORM_CLONE);
+	CHECK(strcmp(p.zp_tag, H_TAG) == 0);
+	/* ZH41: the time of the write is on it, as on any manifest */
+	CHECK(strcmp(p.zp_written, H_WRITTEN) == 0);
+	zr_parsed_fini(&p);
+	/* ZH40: and the parse is written back as the emitter wrote it */
+	roundtrip("birth clone", H_CLONE("b", "f", "o") H_BIRTH);
+	roundtrip("birth dataset", H_DATASET H_BIRTH);
+	/*
+	 * ZH42: the dataset form's three lines are on the birth
+	 * document too -- they are what an --abort at a gate before
+	 * the decision reads to put the dataset back -- and a header
+	 * claiming that form without them is refused here as it is
+	 * refused by the emitter (ZH36).
+	 */
+	dataset_hdr(&h);
+	f = tmpfile();
+	CHECK(f != NULL);
+	CHECK(zr_manifest_birth(f, &h) == 0);
+	got = slurp(f, &gotlen);
+	compare("birth dataset", got, gotlen, H_DATASET H_BIRTH);
+	free(got);
+	parse_ok("birth dataset", H_DATASET H_BIRTH, &p);
+	CHECK(p.zp_form == ZR_HFORM_DATASET);
+	CHECK(strcmp(p.zp_presnap, "tank/main@pre") == 0);
+	CHECK(strcmp(p.zp_readonly, "off") == 0);
+	CHECK(strcmp(p.zp_canmount, "noauto") == 0);
+	CHECK(p.zp_actions_declared == 0);
+	zr_parsed_fini(&p);
+	h.canmount = NULL;
+	f = tmpfile();
+	CHECK(f != NULL);
+	CHECK(zr_manifest_birth(f, &h) == -1);
+	CHECK(fclose(f) == 0);
+}
+
 int
 main(void)
 {
@@ -1570,6 +1666,7 @@ main(void)
 	test_header_form_lines();
 	test_header_stamp();
 	test_header_resolution();
+	test_header_birth();
 	printf("check_manifest: %d checks passed\n", checks);
 	return (0);
 }

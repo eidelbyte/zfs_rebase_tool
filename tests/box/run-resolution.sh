@@ -82,17 +82,18 @@
 #    Cells: ZX132, ZX133 (ZY94 is run-strays.sh's).
 #
 # 7. Kills. The pause hook (tests/box/README.md) has two gates this
-#    script is the only user of. At "manifest" the manifest is
-#    written and recorded and the skeleton is not: the one window in
-#    which a rebase has one of its two documents, and a SIGKILL there
-#    leaves a rebase whose exits are --restart, which writes the
-#    skeleton again from the recorded manifest, and --abort. At
+#    script is the only user of. At "manifest" the decision is
+#    written, the phase says "decided" and the skeleton is not
+#    written yet: the one window in which a rebase has one of its two
+#    documents, and a SIGKILL there leaves a rebase whose exits are
+#    --restart, which writes the skeleton again from the recorded
+#    manifest, and --abort. At
 #    "choice:1" the applying2 stage is part way through carrying the
 #    choices out: a SIGKILL there leaves applying2 with readonly off,
 #    --no-merge is refused from there, and --continue redoes the
 #    whole document -- which is idempotent -- and reaches done with
 #    nothing left for a second pass to do. Cells: ZX134, ZX135,
-#    ZA56, ZX126.
+#    ZA56, ZX126, ZX207.
 #
 # 8. The ACL strip under a choice. A non-trivial NFSv4 ACL is put on
 #    a clean directory of the result while the rebase waits; the gate
@@ -1005,8 +1006,12 @@ case_killwindow() {
 	[ "$st" -eq 137 ] || { cat "$log"; fail "the kill left exit $st, want 137"; }
 	[ -f "$man" ] || fail "no manifest at $man"
 	[ -e "$res" ] && fail "a resolution at $res before the skeleton was written"
-	[ -z "$(phasenow "$rds")" ] || \
-	    fail "the phase is '$(phasenow "$rds")', want none"
+	[ -e "$man.tmp" ] && fail "a .tmp left beside the manifest $man"
+	# The decision is in place, and the phase says so: it goes down
+	# the moment the manifest is renamed over the header the run
+	# was born with, which is before the skeleton beside it.
+	[ "$(phasenow "$rds")" = decided ] || \
+	    fail "the phase is '$(phasenow "$rds")', want decided"
 	[ "$(holdcount)" = 3 ] || fail "$(holdcount) holds after the kill, want 3"
 	# The record is the manifest's path and the tag, and the
 	# resolution is beside the manifest by rule: what the kill

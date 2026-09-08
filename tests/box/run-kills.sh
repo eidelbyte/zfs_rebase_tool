@@ -39,9 +39,11 @@
 #
 #   kept   -- every SIGKILL, and SIGINT and SIGTERM from applying1
 #      on. The rebase is left standing at the gate it had reached:
-#      the record with that phase (or no phase at all before
-#      applying1, when the record is the manifest's path and the tag
-#      alone), the three holds, the manifest from "decided" on, and
+#      the record with that phase (or no phase at all before the
+#      decision, when the record is the manifest's path and the tag
+#      alone), the three holds, the manifest -- which is there at
+#      every gate, since the run writes its whole header before the
+#      record and the decision over that header later -- and
 #      the result, which is at the run's private mount in both forms:
 #      the clone with its mountpoint property none, the dataset with
 #      canmount noauto. In the clone form readonly is back on
@@ -85,9 +87,17 @@
 #   unmounted with mountpoint none, which the harness places to read
 #   its tree the way the tool's own last line says. Where it stopped
 #   at conflicts the result is at the private mount, in both forms. A
-#   kill before the manifest was written is the exception: there is
-#   nothing to continue from, --continue exits 2 naming the file it
-#   wanted, and the result is left exactly where the kill left it.
+#   kill before the decision is the exception: what the record names
+#   is the header the run was born with, so there is nothing to
+#   apply, --continue and --restart both refuse in those words and
+#   exit 2, and the result is left exactly where the kill left it.
+#   That case ends in --abort instead, which has the whole header
+#   from the birth manifest: it releases the three holds, destroys
+#   the clone or rolls the dataset back to the pre-apply snapshot
+#   and destroys that, puts readonly and canmount back as the header
+#   kept them, destroys the snapshot the run took of from, and takes
+#   the record and the run directory away. Nothing is put back by
+#   hand any more.
 #
 #   A --continue makes the final check itself if it reaches the done
 #   gate, under no flag at all: the check is standard, made by
@@ -158,8 +168,10 @@ trap cleanup EXIT
 say() { printf '\n== %s\n' "$*"; prog_note "$*"; }
 fail() { echo "FAIL: $case_id: $*"; exit 1; }
 recval() { zfs get -H -o value "$1" "$2" 2>/dev/null; }
-# The phase, with "" for a record that has passed no gate yet and for
-# a result with no record at all, which is what done leaves.
+# The phase: decided, applying1, conflicts or applying2, with "" for a
+# record that has passed no gate yet -- born and not decided, before
+# the decision manifest was renamed into place -- and for a result
+# with no record at all, which is what done leaves.
 phasenow() {
 	v=$(zfs get -H -o value zfs_rebase:phase "$1" 2>/dev/null)
 	[ "$v" = - ] && v=""
@@ -388,15 +400,22 @@ kill_case() {
 	res=$rundir/resolution
 	log=$tmp/case.log
 
-	# What this gate and this signal must leave.
+	# What this gate and this signal must leave. wman is the
+	# manifest, which the run writes before the record and so has
+	# at every gate; wres is the resolution, written at the
+	# decision; and wdecided says whether the decision is in
+	# place, which is what the phase says and what --continue
+	# needs.
 	resumed=no
+	wres=yes
+	wdecided=yes
 	case "$gate" in
 	held|cloned|read|decided)
 		if [ "$sig" = KILL ]; then
-			out=kept; wstate=""; wexit=137
+			out=kept; wexit=137; wman=yes
 			case "$gate" in
-			decided) wman=yes ;;
-			*) wman=no ;;
+			decided) wstate=decided ;;
+			*) wstate=""; wres=no; wdecided=no ;;
 			esac
 			# The dataset is not the run's own until the
 			# clone gate: at held it is still at home with
@@ -407,8 +426,8 @@ kill_case() {
 				wro=on; wmnt=priv
 			fi
 		else
-			out=torn; wexit=3; wstate=""; wman=no
-			wro=off; wmnt=home
+			out=torn; wexit=3; wstate=""; wman=no; wres=no
+			wdecided=no; wro=off; wmnt=home
 		fi ;;
 	applying1|action:*)
 		# A kept rebase holds the result at the private mount
@@ -507,9 +526,10 @@ kill_case() {
 	# are there its inputs cannot be destroyed. Checked at the
 	# first gate that has them, which is where they were taken.
 	if [ "$gate" = held ]; then
-		# The record names the manifest and the tag, and at
-		# this gate the manifest is not written yet: what is
-		# held is read off the pool instead, which is the only
+		# The record names the manifest and the tag, and the
+		# manifest at this gate is the header the run was born
+		# with, which says nothing about what is held: that is
+		# read off the pool instead, which is the only
 		# question here anyway.
 		tag=$(recval zfs_rebase:tag "$rds")
 		[ "$(holdcount)" = 3 ] || \
@@ -574,8 +594,8 @@ kill_case() {
 	fi
 
 	# A rebase is still there: the record, the phase it reached,
-	# the three holds unless it reached done, and the manifest
-	# from the decision on.
+	# the three holds unless it reached done, and the manifest,
+	# which the run wrote before the record.
 	[ "$(phasenow "$rds")" = "$wstate" ] || \
 	    fail "the phase is '$(phasenow "$rds")', want '$wstate'"
 	if [ $out = finished ]; then
@@ -606,11 +626,32 @@ kill_case() {
 		[ ! -d "$rundir" ] || fail "done left the run directory $rundir"
 	elif [ $wman = yes ]; then
 		[ -f "$man" ] || fail "no manifest at $man"
-		[ -f "$res" ] || fail "no resolution at $res"
+		if [ $wres = yes ]; then
+			[ -f "$res" ] || fail "no resolution at $res"
+		else
+			# Before the decision the manifest is the header
+			# the run was born with: everything that says
+			# what this rebase is, and nothing to apply. The
+			# skeleton is written at the decision, so there
+			# is none beside it yet.
+			[ -e "$res" ] && \
+			    fail "a resolution at $res before the decision"
+			grep -q '^#actions 0$' "$man" || \
+			    { sed -n '1,20p' "$man"; fail "the birth manifest declares actions"; }
+			grep -q '^#conflicts 0$' "$man" || \
+			    { sed -n '1,20p' "$man"; fail "the birth manifest declares conflicts"; }
+			[ "$(hdr tag "$man")" = "$(recval zfs_rebase:tag "$rds")" ] || \
+			    fail "the birth manifest's #tag is not the record's"
+		fi
 	else
 		[ -e "$man" ] && fail "a manifest at $man before the decision"
 		[ -e "$res" ] && fail "a resolution at $res before the decision"
 	fi
+	# Every document is written to a sibling and renamed over its
+	# destination, so a gate is never a moment at which one is
+	# half written and never leaves a .tmp behind.
+	[ -e "$man.tmp" ] && fail "a .tmp left beside the manifest $man"
+	[ -e "$res.tmp" ] && fail "a .tmp left beside the resolution $res"
 	# Where the stop left the result, which is the private mount in
 	# both forms unless the run reached done or never took the
 	# dataset over at all.
@@ -637,52 +678,71 @@ kill_case() {
 	fi
 
 	# --- and then --continue ---
-	if [ $wman = no ]; then
-		# Killed before the decision: the record and the holds
-		# are there, but the manifest the record names is not,
-		# and that is the one thing no verb can do without.
+	if [ $wdecided = no ]; then
+		# Killed before the decision: the record, the holds and
+		# the birth manifest are there, and that manifest is
+		# the header alone. There is nothing to apply, so the
+		# two verbs that would apply it refuse and say so, and
+		# --abort is the way out.
 		"$bin" --continue --result "$rds" > "$tmp/cont" 2>&1
 		st=$?
 		[ $st -eq 2 ] || \
-		    { cat "$tmp/cont"; fail "--continue without a manifest exited $st, want 2"; }
-		grep -q "$man" "$tmp/cont" || \
-		    { cat "$tmp/cont"; fail "--continue did not name the manifest"; }
+		    { cat "$tmp/cont"; fail "--continue before the decision exited $st, want 2"; }
+		grep -q 'never reached its decision' "$tmp/cont" || \
+		    { cat "$tmp/cont"; fail "--continue did not say the run never decided"; }
+		grep -q -- '--abort' "$tmp/cont" || \
+		    { cat "$tmp/cont"; fail "--continue did not point at --abort"; }
+		"$bin" --restart --result "$rds" > "$tmp/rest" 2>&1
+		st=$?
+		[ $st -eq 2 ] || \
+		    { cat "$tmp/rest"; fail "--restart before the decision exited $st, want 2"; }
+		grep -q 'never reached its decision' "$tmp/rest" || \
+		    { cat "$tmp/rest"; fail "--restart did not say the run never decided"; }
 		[ "$(phasenow "$rds")" = "$wstate" ] || \
-		    fail "the failed --continue moved the phase"
-		# It was refused before it took the result over, so
-		# the result is exactly where the kill left it.
+		    fail "a refused verb moved the phase"
+		[ "$(holdcount)" = 3 ] || \
+		    fail "a refused verb changed the holds"
+		# They were refused before they took the result over,
+		# so the result is exactly where the kill left it.
 		where_is $wmnt
+		# And --abort, which the birth manifest gives every
+		# fact it needs: the form, the pre-apply snapshot, the
+		# two properties to put back and the snapshot the run
+		# took of from, which only the dataset pass gives as a
+		# dataset. Nothing is put back by hand.
+		made=$POOL/from@zfs_rebase-$tag
 		if [ "$form" = dataset ]; then
-			# The run took from's snapshot itself, and the
-			# manifest that would say so is not written:
-			# --abort finds it all the same, by the hold
-			# under the tag and the name the run gave it,
-			# and destroys it with the holds given back.
-			made=$POOL/from@zfs_rebase-$tag
 			hassnap "$made" || fail "the kill left no $made"
-			"$bin" --abort --result "$rds" > "$tmp/abort" 2>&1
-			st=$?
-			[ $st -eq 0 ] || \
-			    { cat "$tmp/abort"; fail "--abort without a manifest exited $st, want 0"; }
+		fi
+		"$bin" --abort --result "$rds" > "$tmp/abort" 2>&1
+		st=$?
+		[ $st -eq 0 ] || \
+		    { cat "$tmp/abort"; fail "--abort before the decision exited $st, want 0"; }
+		[ "$(holdcount)" = 0 ] || \
+		    { cat "$tmp/abort"; fail "--abort left $(holdcount) holds"; }
+		[ -e "$rundir" ] && \
+		    { cat "$tmp/abort"; fail "--abort left the run directory $rundir"; }
+		if [ "$form" = dataset ]; then
 			hassnap "$made" && \
 			    { cat "$tmp/abort"; fail "--abort left the run's own $made"; }
-			grep -q "$made was this run's own snapshot" "$tmp/abort" || \
-			    { cat "$tmp/abort"; fail "--abort did not say it destroyed $made"; }
-			[ "$(holdcount)" = 0 ] || \
-			    fail "--abort without a manifest left $(holdcount) holds"
-			# What the abort cannot put back without the
-			# manifest it says plainly: canmount went to
-			# noauto at the take, which a kill past the held
-			# gate came after, and what it was before is the
-			# header's to say. It prints the command; the
-			# harness knows the fixture's value and runs it.
-			grep -q "zfs set canmount=VALUE $rds" "$tmp/abort" || \
-			    { cat "$tmp/abort"; fail "--abort did not print the canmount command"; }
-			zfs set canmount=on "$rds" || \
-			    fail "cannot put canmount back on $rds"
-			echo "ok   $case_id: at ${wstate:-no gate}, readonly $wro, 3 holds; no manifest to continue from; --abort destroyed the run's own $made and named the canmount command"
+			hassnap "$POOL/onto@pre" && \
+			    { cat "$tmp/abort"; fail "--abort left the pre-apply snapshot"; }
+			left=$(localprops "$POOL/onto")
+			[ -z "$left" ] || \
+			    { cat "$tmp/abort"; fail "--abort left $left on onto"; }
+			# The header kept both properties as the take
+			# found them, so the abort puts both back and
+			# the dataset goes home.
+			where_is home
+			[ "$(recval readonly "$POOL/onto")" = off ] || \
+			    { cat "$tmp/abort"; fail "--abort left onto read-only"; }
+			[ "$(recval canmount "$POOL/onto")" = on ] || \
+			    { cat "$tmp/abort"; fail "--abort left canmount at $(recval canmount "$POOL/onto")"; }
+			echo "ok   $case_id: born, not decided; --continue and --restart refused, --abort rolled onto back and put canmount and readonly back"
 		else
-			echo "ok   $case_id: at ${wstate:-no gate}, readonly $wro, 3 holds; no manifest to continue from"
+			zfs list -H -o name "$POOL/result" >/dev/null 2>&1 && \
+			    { cat "$tmp/abort"; fail "--abort left the clone $POOL/result"; }
+			echo "ok   $case_id: born, not decided; --continue and --restart refused, --abort destroyed the clone"
 		fi
 		reset_pool
 		return 0
@@ -694,7 +754,7 @@ kill_case() {
 	# pending actions and exits 3, and one past it has none. It
 	# writes nothing and moves no gate either way.
 	case "$wstate" in
-	""|applying1) wrep=3 ;;
+	decided|applying1) wrep=3 ;;
 	*) wrep=0 ;;
 	esac
 	# Except at the done gate itself, where every action has been
