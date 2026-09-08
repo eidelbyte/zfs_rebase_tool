@@ -65,13 +65,12 @@
 #
 # 3. A snapshot destroyed during a run. The persistent hold is what
 #    stops it, and proving that means destroying the snapshot while
-#    the run is between two gates. Nothing here can stop a run in the
-#    middle: that is the pause hook (an environment variable naming a
-#    gate at which the tool raises SIGSTOP on itself), which sprint 5
-#    has not built yet. Until it exists, what can be checked is what
-#    run-fixture.sh already checks -- that the holds are there at the
-#    conflicts gate and gone at done -- and the destroy-under-a-hold
-#    cell waits for the hook.
+#    the run is between two gates. That is the pause hook's work
+#    (ZFS_REBASE_PAUSE names a gate at which the tool raises SIGSTOP
+#    on itself), and run-kills.sh does it at the held gate in both
+#    forms: zfs destroy on each held input is refused and the
+#    snapshot stands. run-fixture.sh checks the holds at rest. This
+#    script repeats neither and says so.
 #
 # Three notes the box needs, which are not this script's to check.
 #
