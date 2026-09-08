@@ -101,9 +101,9 @@ import tempfile
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BIN = os.path.join(REPO, "zfs_rebase")
 
-FX_FILE, FX_LINK, FX_DIR, FX_SYMLINK = 0, 1, 2, 3
+FX_FILE, FX_LINK, FX_DIR, FX_SYMLINK, FX_SOCK = 0, 1, 2, 3, 4
 TYPES = {"file": FX_FILE, "link": FX_LINK, "dir": FX_DIR,
-         "symlink": FX_SYMLINK}
+         "symlink": FX_SYMLINK, "sock": FX_SOCK}
 
 # chflags(1) spells several flags more than one way and strtofflags(3),
 # which the fixture reader uses, reads the spellings as one bit. A name
@@ -236,7 +236,7 @@ class Fixture(object):
         path = vis_decode(f[0])
         etype = TYPES[f[1]]
         e = Entry(path, etype)
-        if etype == FX_DIR:
+        if etype in (FX_DIR, FX_SOCK):
             rest = f[2:]
         else:
             rest = f[3:]
@@ -309,7 +309,10 @@ def effective(tree, owner, cache):
         for name, value in e.xattrs:
             ef.xattrs[name] = value
     if ef.mode is None:
-        ef.mode = (DEF_MODE, tree.ents[owner].etype == FX_DIR)
+        # The builder's default for the type: 0755 for a directory,
+        # 0777 for a socket (bind takes no mode), 0644 for a file,
+        # each under the umask, which is one symbol per type here.
+        ef.mode = (DEF_MODE, tree.ents[owner].etype)
     if tree.ents[owner].etype == FX_SYMLINK:
         ef.mode = 0
     if ef.uid is None:
@@ -448,7 +451,7 @@ def side_plan(fx, side):
 def fresh_eff(tree, owner, cache):
     """fx_ed_newattr: what an object made here starts out as."""
     ef = Eff()
-    ef.mode = (DEF_MODE, tree.ents[owner].etype == FX_DIR)
+    ef.mode = (DEF_MODE, tree.ents[owner].etype)
     if tree.ents[owner].etype == FX_SYMLINK:
         ef.mode = 0
     ef.uid = DEF_UID
@@ -523,6 +526,9 @@ def scan(root):
             nlink = st.st_nlink
         elif stat.S_ISREG(st.st_mode):
             kind = FX_FILE
+            nlink = st.st_nlink
+        elif stat.S_ISSOCK(st.st_mode):
+            kind = FX_SOCK
             nlink = st.st_nlink
         else:
             raise ValueError("%s: not a file of any type the walk knows"

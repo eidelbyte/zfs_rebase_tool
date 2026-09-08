@@ -43,14 +43,25 @@
 #    zfs create -o canmount=off, which leaves it unmounted, and runs
 #    the tool over it in the dataset form.
 #
-# 2. securelevel. Above securelevel 0 the system immutable and
-#    append-only flags cannot be cleared, so src/run.c's
-#    securelevel_guard refuses before anything is written, naming the
-#    first object that carries schg or sappnd and would change. It
-#    cannot be checked in a reusable box session: securelevel can be
-#    raised at any time and only a reboot lowers it, and an schg file
-#    made under it cannot be removed again either. This script prints
-#    the procedure and raises nothing.
+# 1d. an schg file the manifest removes, at securelevel 0. The apply
+#    takes the immutable, append-only and no-unlink flags off an
+#    object before it removes, rewrites or changes it (src/apply.c,
+#    za_unlock_st), because ZFS refuses the unlink, the truncate and
+#    every other attribute change on one that carries them. Only
+#    root can set the system three and only securelevel 0 or less
+#    lets them off again, so this is the box's cell and not the
+#    Mac's: the check puts schg on an onto file the manifest removes
+#    and one it rewrites, runs the rebase for real, and wants exit 0
+#    with both objects as the manifest said.
+#
+# 2. securelevel. Above securelevel 0 the system flags cannot be
+#    cleared at all, so src/run.c's securelevel_guard refuses before
+#    anything is written, naming the first object that carries schg,
+#    sappnd or sunlnk and would change. It cannot be checked in a
+#    reusable box session: securelevel can be raised at any time and
+#    only a reboot lowers it, and an schg file made under it cannot
+#    be removed again either. This script prints the procedure and
+#    raises nothing.
 #
 # 3. A snapshot destroyed during a run. The persistent hold is what
 #    stops it, and proving that means destroying the snapshot while
@@ -237,6 +248,67 @@ zfs destroy "$POOL/nohome" || fail "cannot destroy $POOL/nohome"
 echo "ok   canmount=off refused (exit 2), naming the property, with"
 echo "     no snapshot, no record and no run directory left"
 
+say "1d. schg on onto objects the manifest removes and rewrites"
+# The trees are made here rather than out of a fixture, because a
+# fixture builder cannot set schg on a file it then has to edit: the
+# base carries the flag, the two sides are clones of it, and the from
+# side has the flag taken off again by hand along with its edits.
+# base   /keep k  /gone g (schg)  /w x (schg)
+# from   /keep k                  /w y          (gone removed)
+# onto   base's, untouched, so nothing conflicts: the decision is one
+#        rm and one write, both over an object the result holds under
+#        schg, and the apply has to take it off to do either.
+if [ "$(sysctl -n kern.securelevel)" -gt 0 ]; then
+	echo "skip securelevel is above 0: schg cannot be cleared, which"
+	echo "     is section 2's refusal and not this check"
+else
+	zfs create "$POOL/fbase" || fail "cannot create $POOL/fbase"
+	printf 'k\n' > "$MNT/fbase/keep" || fail "write keep"
+	printf 'g\n' > "$MNT/fbase/gone" || fail "write gone"
+	printf 'x\n' > "$MNT/fbase/w" || fail "write w"
+	chflags schg "$MNT/fbase/gone" "$MNT/fbase/w" || \
+	    fail "cannot set schg (root and securelevel 0 are needed)"
+	zfs snapshot "$POOL/fbase@fbase" || exit 2
+	for side in ffrom fonto; do
+		zfs clone "$POOL/fbase@fbase" "$POOL/$side" || exit 2
+	done
+	# from's edits: the flag off first, since nothing else can be
+	# done to an object that carries it -- which is the whole of
+	# what the apply now does for itself.
+	chflags noschg "$MNT/ffrom/gone" "$MNT/ffrom/w" || fail "chflags noschg"
+	rm "$MNT/ffrom/gone" || fail "rm gone"
+	printf 'y\n' > "$MNT/ffrom/w" || fail "write w on from"
+	zfs snapshot "$POOL/ffrom@work" "$POOL/fonto@work" || exit 2
+	"$bin" -v -o "$tmp/flags-manifest" --off-of "$POOL/ffrom@work" \
+	    --onto "$POOL/fonto@work" --result "$POOL/fresult" \
+	    > "$tmp/flags.run" 2>&1
+	st=$?
+	[ $st -eq 0 ] || { cat "$tmp/flags.run"; fail "the schg run exited $st, want 0"; }
+	grep -q '^#conflicts 0$' "$tmp/flags-manifest" || \
+	    { fail "the schg run found conflicts, which these trees have none of"; }
+	grep -q 'rm$' "$tmp/flags-manifest" || \
+	    { cat "$tmp/flags-manifest"; fail "the manifest has no rm"; }
+	grep -q 'write /w$' "$tmp/flags-manifest" || \
+	    { cat "$tmp/flags-manifest"; fail "the manifest has no write of /w"; }
+	# done left the clone unmounted with mountpoint none; place it
+	# the way the tool's own last line says to, and read the tree.
+	zfs set mountpoint="$MNT/fresult" "$POOL/fresult" || \
+	    fail "cannot place $POOL/fresult"
+	[ -e "$MNT/fresult/gone" ] && \
+	    fail "the apply left /gone, which the manifest removes"
+	[ "$(cat "$MNT/fresult/w")" = y ] || \
+	    fail "/w does not hold from's bytes"
+	fl=$(stat -f %Sf "$MNT/fresult/w")
+	case "$fl" in
+	*schg*) fail "/w still carries schg, which from does not have: $fl" ;;
+	esac
+	[ "$(cat "$MNT/fresult/keep")" = k ] || fail "/keep was disturbed"
+	fl=$(stat -f %Sf "$MNT/fresult/keep")
+	echo "ok   exit 0: the immutable /gone removed, the immutable /w"
+	echo "     rewritten as from has it and without the flag, /keep"
+	echo "     untouched (flags now '$fl')"
+fi
+
 say "2. securelevel: the manual procedure, not run here"
 cat <<'PROCEDURE'
 securelevel can be raised and not lowered, and an schg file made
@@ -261,8 +333,8 @@ is run by this script.
          zfs_rebase --from POOL/from@work --onto POOL/onto@work \
              --result POOL/result
   4. Expect exit 2 and, on stderr,
-         zfs_rebase: precondition: securelevel 1: /A carries schg
-         or sappnd and would change
+         zfs_rebase: precondition: securelevel 1: /A carries schg,
+         sappnd or sunlnk and would change
      as one line, naming the first such object. Nothing is created,
      nothing is held, and the result dataset does not exist.
   5. Destroy the VM or the jail. The schg file cannot be unlinked

@@ -117,6 +117,7 @@ tests/fixtures/h-yw-row18.zrt 1 1
 tests/fixtures/h-yw-row19.zrt 1 2
 tests/fixtures/healed-split-two-groups.zrt 0 0
 tests/fixtures/probe.zrt 2 6
+tests/fixtures/sock-copy.zrt 1 2
 tests/fixtures/two-healed-splits.zrt 0 0
 tests/fixtures/type-change.zrt 0 3
 tests/fixtures/wide-pool.zrt 4 6
@@ -130,6 +131,7 @@ tests/fixtures/freebsd/acl-nfsv4.zrt 1 2
 tests/fixtures/freebsd/acl-same-both.zrt 1 1
 tests/fixtures/freebsd/acl-strip.zrt 1 2
 tests/fixtures/freebsd/flags-conflict.zrt 1 1
+tests/fixtures/freebsd/flags-onto-rm.zrt 1 4
 tests/fixtures/freebsd/mixed-attrs.zrt 1 2
 tests/fixtures/freebsd/sysxattr-add.zrt 1 2
 tests/fixtures/freebsd/sysxattr-conflict.zrt 1 1

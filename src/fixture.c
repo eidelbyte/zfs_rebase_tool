@@ -21,8 +21,10 @@
 #define	_DARWIN_C_SOURCE
 #endif
 
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/un.h>
 
 #include <dirent.h>
 #include <errno.h>
@@ -42,6 +44,8 @@
 #define	FX_LINK		1
 #define	FX_DIR		2
 #define	FX_SYMLINK	3
+#define	FX_SOCK		4
+#define	FX_NTYPE	5
 
 /* PATH TYPE ARG mode uid gid flags acl, and sixteen xattrs */
 #define	FX_MAXFIELD	24
@@ -416,6 +420,7 @@ struct fx_line {
 struct fx_deflt {
 	uint32_t	fd_filemode;
 	uint32_t	fd_dirmode;
+	uint32_t	fd_sockmode;
 	uint32_t	fd_uid;
 	uint32_t	fd_gid;
 };
@@ -443,7 +448,9 @@ struct fx_buf {
 };
 
 static const char *const fx_treename[3] = { "base", "from", "onto" };
-static const char *const fx_typename[4] = { "file", "link", "dir", "symlink" };
+static const char *const fx_typename[FX_NTYPE] = {
+	"file", "link", "dir", "symlink", "sock"
+};
 static const char *const fx_attrname[FX_A_N] = {
 	"mode=", "uid=", "gid=", "flags=", "xattr=", "acl="
 };
@@ -1010,17 +1017,17 @@ fx_parse_entry(struct zr_fixture *fx, struct fx_tree *t,
 		}
 	}
 	type = -1;
-	for (i = 0; i < 4; i++) {
+	for (i = 0; i < FX_NTYPE; i++) {
 		if (fx_is(fl, 1, fx_typename[i]))
 			type = (int)i;
 	}
 	if (type < 0) {
 		free(p);
 		return (fx_errf(err, errlen, line, "\"%.*s\" is not a type; "
-		    "the types are file, link, dir and symlink",
+		    "the types are file, link, dir, symlink and sock",
 		    (int)fl->fl_len[1], fl->fl_f[1]));
 	}
-	need = type == FX_DIR ? 2 : 3;
+	need = (type == FX_DIR || type == FX_SOCK) ? 2 : 3;
 	if (fl->fl_n < need) {
 		free(p);
 		return (fx_errf(err, errlen, line, "%s takes an argument",
@@ -1050,7 +1057,7 @@ fx_parse_entry(struct zr_fixture *fx, struct fx_tree *t,
 			return (fx_errf(err, errlen, line, "out of memory"));
 		return (0);
 	}
-	if (type == FX_DIR)
+	if (type == FX_DIR || type == FX_SOCK)
 		return (0);
 
 	switch (fx_decode(fl->fl_f[2], fl->fl_len[2], &arg, &arglen)) {
@@ -1100,6 +1107,14 @@ fx_defaults(struct fx_deflt *dv)
 	(void) umask(m);
 	dv->fd_filemode = 0644u & ~(uint32_t)m;
 	dv->fd_dirmode = 0755u & ~(uint32_t)m;
+	/*
+	 * bind(2) makes a socket with ACCESSPERMS under the umask and
+	 * takes no mode of its own: FreeBSD's uipc_bindat computes
+	 * mode = unp_mode & ~cmask with unp_mode set to ACCESSPERMS
+	 * (sys/kern/uipc_usrreq.c), and the Mac lands on the same
+	 * number.
+	 */
+	dv->fd_sockmode = 0777u & ~(uint32_t)m;
 	dv->fd_uid = (uint32_t)getuid();
 	dv->fd_gid = (uint32_t)getgid();
 }
@@ -1236,8 +1251,12 @@ fx_effective(const struct fx_tree *t, uint32_t owner,
 		}
 	}
 	if (!ef->ef_has_mode) {
-		ef->ef_mode = o->fe_type == FX_DIR ? dv->fd_dirmode :
-		    dv->fd_filemode;
+		if (o->fe_type == FX_DIR)
+			ef->ef_mode = dv->fd_dirmode;
+		else if (o->fe_type == FX_SOCK)
+			ef->ef_mode = dv->fd_sockmode;
+		else
+			ef->ef_mode = dv->fd_filemode;
 	}
 	if (o->fe_type == FX_SYMLINK)
 		ef->ef_mode = 0;	/* nothing here honours one */
@@ -1636,6 +1655,43 @@ fx_write_file(const char *full, const char *tok, size_t toklen, int oflags)
 }
 
 /*
+ * A socket at full, made the way src/apply.c makes one and the only
+ * way there is: bind(2), whose address is a path, with the
+ * descriptor closed straight after. What is left is the inode, which
+ * is what a socket in a tree is. bind takes no mode -- the kernel
+ * gives it ACCESSPERMS under the umask -- so an absent mode= on a
+ * sock line means that number, which fd_sockmode holds.
+ */
+static int
+fx_mksock(const char *full)
+{
+	struct sockaddr_un sun;
+	size_t len;
+	int fd, rc, saved;
+
+	len = strlen(full);
+	if (len >= sizeof (sun.sun_path)) {
+		errno = ENAMETOOLONG;
+		return (-1);
+	}
+	memset(&sun, 0, sizeof (sun));
+	sun.sun_family = AF_UNIX;
+	memcpy(sun.sun_path, full, len);
+	fd = socket(AF_UNIX, SOCK_STREAM, 0);
+	if (fd < 0)
+		return (-1);
+	rc = bind(fd, (const struct sockaddr *)&sun,
+	    (socklen_t)sizeof (sun));
+	saved = errno;
+	if (close(fd) != 0 && rc == 0) {
+		rc = -1;
+		saved = errno;
+	}
+	errno = saved;
+	return (rc);
+}
+
+/*
  * Everything but the file flags, in the order apply.c uses and for
  * the same reasons: chown before chmod, because chown may drop the
  * set-id bits a mode just asked for; the extended attributes and the
@@ -1780,6 +1836,9 @@ zr_fixture_build_err(const struct zr_fixture *fx, enum zr_fixture_tree which,
 		case FX_SYMLINK:
 			rc = symlink(e->fe_arg, full);
 			break;
+		case FX_SOCK:
+			rc = fx_mksock(full);
+			break;
 		default:
 			tgt = fx_join(rootdir, rootlen,
 			    t->ft_ents[e->fe_pool].fe_path,
@@ -1829,6 +1888,8 @@ fx_zrtype(int type)
 		return (ZR_T_DIR);
 	if (type == FX_SYMLINK)
 		return (ZR_T_SYMLINK);
+	if (type == FX_SOCK)
+		return (ZR_T_SOCK);
 	return (ZR_T_FILE);
 }
 
@@ -2389,8 +2450,12 @@ fx_ed_newattr(const struct fx_ed *ed, uint32_t owner, struct zr_attr *at)
 	int type = ed->ed_t->ft_ents[owner].fe_type;
 
 	memset(at, 0, sizeof (*at));
-	at->za_mode = type == FX_DIR ? (mode_t)ed->ed_dv.fd_dirmode :
-	    (mode_t)ed->ed_dv.fd_filemode;
+	if (type == FX_DIR)
+		at->za_mode = (mode_t)ed->ed_dv.fd_dirmode;
+	else if (type == FX_SOCK)
+		at->za_mode = (mode_t)ed->ed_dv.fd_sockmode;
+	else
+		at->za_mode = (mode_t)ed->ed_dv.fd_filemode;
 	at->za_uid = (uid_t)ed->ed_dv.fd_uid;
 	at->za_gid = (gid_t)ed->ed_igid[owner];
 }
@@ -2761,6 +2826,9 @@ fx_ed_make(struct fx_ed *ed, char *err, size_t errlen)
 				    ed->ed_fx->zf_tok.ft_len[e->fe_token],
 				    O_CREAT | O_EXCL);
 				break;
+			case FX_SOCK:
+				rc = fx_mksock(full);
+				break;
 			default:
 				rc = symlink(e->fe_arg, full);
 				break;
@@ -2769,6 +2837,7 @@ fx_ed_make(struct fx_ed *ed, char *err, size_t errlen)
 				return (fx_ed_fail(err, errlen, full,
 				    e->fe_type == FX_DIR ? "mkdir" :
 				    e->fe_type == FX_FILE ? "create" :
+				    e->fe_type == FX_SOCK ? "bind" :
 				    "symlink"));
 			}
 		} else {

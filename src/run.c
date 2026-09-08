@@ -1986,10 +1986,23 @@ read_trees(struct run *r)
 }
 
 /*
- * Above securelevel 0 the system immutable and append-only flags
- * cannot be cleared, so an object carrying them that the decision
- * would remove, rewrite or re-pool is refused before anything is
- * touched, naming the first such name. Only FreeBSD has the flags.
+ * The apply takes an object's immutable, append-only and no-unlink
+ * flags off before it removes, rewrites or changes it, and puts back
+ * what the decision asks for afterwards (src/apply.c, za_unlock_st).
+ * Above securelevel 0 that is not possible for the system three:
+ * zfs_freebsd_setattr calls securelevel_gt(cred, 0) before it will
+ * change the flags of an object that carries schg, sappnd or sunlnk,
+ * and returns EPERM. So an object of onto's -- the side the result
+ * is written over -- that carries one of them and that the decision
+ * would remove, rewrite or re-pool is refused here, before anything
+ * is touched, naming the first such name; a run that went ahead
+ * would stop part way through the apply with a half-written tree.
+ *
+ * Only the system flags enter this. The user three (uchg, uappnd,
+ * uunlnk) come off at any securelevel for the owner, and this tool
+ * runs as root; ZFS refuses to set them at all (EOPNOTSUPP), so on
+ * the target they can only arrive on a tree from another
+ * filesystem. Only FreeBSD has any of it.
  */
 static int
 securelevel_guard(struct run *r)
@@ -2008,7 +2021,8 @@ securelevel_guard(struct run *r)
 		const struct zr_attr *a = &r->wo.zw_attrs[i];
 		int touched = 0;
 
-		if ((a->za_flags & (SF_IMMUTABLE | SF_APPEND)) == 0)
+		if ((a->za_flags & (SF_IMMUTABLE | SF_APPEND |
+		    SF_NOUNLINK)) == 0)
 			continue;
 		for (j = 0; j < q->zp_nnames && !touched; j++) {
 			zr_name_t n = q->zp_names[j];
@@ -2024,8 +2038,8 @@ securelevel_guard(struct run *r)
 			size_t l;
 
 			(void) snprintf(r->err, sizeof (r->err),
-			    "securelevel %d: %s carries schg or sappnd and "
-			    "would change", level,
+			    "securelevel %d: %s carries schg, sappnd or "
+			    "sunlnk and would change", level,
 			    zr_names_str(r->names, q->zp_names[0], &l));
 			return (-1);
 		}

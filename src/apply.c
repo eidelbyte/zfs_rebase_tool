@@ -2,8 +2,12 @@
  * apply: write the actions of a parsed manifest into the onto tree.
  * The root is opened once and every operation is relative to that
  * descriptor with the link never followed, so no path built here can
- * leave the tree. Actions run in manifest order; only the removal of
- * a directory waits, until the last action under it has run. Bytes
+ * leave the tree. The exceptions are the calls that have no
+ * descriptor-relative form at all: the extended attributes, the ACL
+ * and the file flags, and the bind(2) that makes a socket, each of
+ * which is handed the root's own path with the action's path
+ * appended. Actions run in manifest order; only the removal of a
+ * directory waits, until the last action under it has run. Bytes
  * and attributes come from the walked from tree. Extended
  * attributes, the ACL and the file flags are the only writes POSIX
  * never standardised; they live in the one platform section below.
@@ -34,8 +38,10 @@
 #define	_GNU_SOURCE
 #endif
 
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/un.h>
 
 #include <errno.h>
 #include <fcntl.h>
@@ -122,6 +128,35 @@ zr_apply_choice_pause_at(unsigned int n)
 
 #if defined(__FreeBSD__) || defined(__APPLE__)
 #define	ZA_HAVE_ST_FLAGS	1	/* struct stat carries st_flags */
+
+/*
+ * The flags that stop an unlink, a truncate, a write or an
+ * attribute change, in both families the BSDs spell them in. On the
+ * target these are ZFS_IMMUTABLE, ZFS_APPENDONLY and ZFS_NOUNLINK:
+ * zfs_zaccess_delete refuses to remove a name on an object carrying
+ * the first or the last, zfs_zaccess_aces_check refuses a write to
+ * an immutable one, zfs_write refuses a non-appending write to an
+ * append-only one, and zfs_setattr lets an immutable object change
+ * nothing but its own flags and its atime. zfs_freebsd_setattr
+ * takes the three system flags and refuses a user immutable
+ * outright (EOPNOTSUPP), so on ZFS only the SF_ half can ever be
+ * set; the UF_ half is the Mac's and UFS's, and is here because the
+ * stand-in is where this is tested. A platform that does not spell
+ * one of them has nothing to clear for it: macOS defines no
+ * UF_NOUNLINK.
+ */
+#ifdef UF_NOUNLINK
+#define	ZA_UF_NOUNLINK	((uint32_t)UF_NOUNLINK)
+#else
+#define	ZA_UF_NOUNLINK	0u
+#endif
+#ifdef SF_NOUNLINK
+#define	ZA_SF_NOUNLINK	((uint32_t)SF_NOUNLINK)
+#else
+#define	ZA_SF_NOUNLINK	0u
+#endif
+#define	ZA_LOCKED	((uint32_t)(SF_IMMUTABLE | SF_APPEND | UF_IMMUTABLE | \
+			UF_APPEND) | ZA_SF_NOUNLINK | ZA_UF_NOUNLINK)
 #endif
 #if defined(__FreeBSD__) || defined(__APPLE__) || defined(__linux__)
 #define	ZA_HAVE_XATTRS		1
@@ -721,6 +756,72 @@ za_full(struct za_ctx *c, const unsigned char *path, size_t len)
 	return (c->zc_full);
 }
 
+/*
+ * Clear the way for an action, from a stat the caller already has.
+ * An object carrying an immutable, append-only or no-unlink flag
+ * refuses the unlink, the truncate, the write and every attribute
+ * change but its own flags with EPERM, so the flags come off before
+ * the action and whatever the action sets goes on afterwards, last
+ * of all, in za_attrs. What the filesystem keeps for itself -- the
+ * archive bit ZFS sets on every write -- is left exactly as it
+ * stands, which is why the word written here is the one the stat
+ * read and not the walk's masked one.
+ *
+ * An object with none of them is not written to at all, so the
+ * common case costs one comparison. Above securelevel 0 the system
+ * flags will not come off; a run that would need that is refused
+ * before it writes anything, in run.c's securelevel_guard.
+ */
+static int
+za_unlock_st(struct za_ctx *c, const unsigned char *path, size_t len,
+    const struct stat *st)
+{
+#ifdef ZA_HAVE_ST_FLAGS
+	const char *full;
+	uint32_t fl = (uint32_t)st->st_flags;
+
+	if ((fl & ZA_LOCKED) == 0)
+		return (0);
+	full = za_full(c, path, len);
+	if (full == NULL) {
+		errno = ENOMEM;
+		return (za_failp(c, path, "memory"));
+	}
+	if (za_setflags(full, fl & ~(uint32_t)ZA_LOCKED) != 0)
+		return (za_failp(c, path, "clearing the flags in the way"));
+#else
+	(void) c;
+	(void) path;
+	(void) len;
+	(void) st;
+#endif
+	return (0);
+}
+
+/*
+ * The same for a caller with no stat in hand. A name that is not
+ * there has no flags to clear and is not this step's to complain
+ * about: a removal of it is the state the action asks for, and a
+ * create at it is what the caller is about to do.
+ */
+static int
+za_unlock(struct za_ctx *c, const unsigned char *path, size_t len)
+{
+#ifdef ZA_HAVE_ST_FLAGS
+	struct stat st;
+
+	if (fstatat(c->zc_rootfd, za_rel(path), &st,
+	    AT_SYMLINK_NOFOLLOW) != 0)
+		return (errno == ENOENT ? 0 : za_failp(c, path, "stat"));
+	return (za_unlock_st(c, path, len, &st));
+#else
+	(void) c;
+	(void) path;
+	(void) len;
+	return (0);
+#endif
+}
+
 static int
 za_type(mode_t m, zr_type_t *out)
 {
@@ -890,6 +991,10 @@ za_chmod(struct za_ctx *c, const struct zr_action *a, mode_t mode,
  * extended attributes and the ACL, each of which touches the times;
  * then the times themselves; then the flags, last, because one of
  * them is immutable and nothing can be written after it.
+ *
+ * The object reaches this either newly made or with its own flags
+ * already cleared by za_unlock_st, so nothing here is refused by a
+ * flag the result carried before the action.
  */
 static int
 za_attrs(struct za_ctx *c, const struct zr_action *a,
@@ -1007,6 +1112,13 @@ za_clear(struct za_ctx *c, const struct zr_action *a, zr_type_t want)
 			return (0);
 		return (za_fail(c, a, "stat"));
 	}
+	/*
+	 * Whatever is here is about to be unlinked, or is the
+	 * directory the action keeps and whose attributes it is about
+	 * to write; both want the flags off first.
+	 */
+	if (za_unlock_st(c, a->za_path, a->za_pathlen, &st) != 0)
+		return (-1);
 	if (!S_ISDIR(st.st_mode)) {
 		if (unlinkat(c->zc_rootfd, rel, 0) != 0)
 			return (za_fail(c, a, "unlink"));
@@ -1040,6 +1152,60 @@ za_pour(struct za_ctx *c, const struct zr_action *a,
 	c->zc_st->zs_bytes += nb;
 	*size = (uint64_t)fst->st_size;
 	return (rc);
+}
+
+/*
+ * A socket, made the one way there is to make one: bind(2) at the
+ * path. The descriptor is closed straight afterwards -- nothing here
+ * listens or accepts -- and the inode it made stays, which is the
+ * whole of what a socket in a tree is; its attributes are then
+ * written like any other object's. tar(1) and cp(1) do not do this,
+ * but this tool copies system trees, where a socket at a well known
+ * path is a name something else is waiting to connect to.
+ *
+ * This is the one call outside the platform section that takes a
+ * path rather than the root descriptor and a name: there is no
+ * bindat(2) everywhere (FreeBSD has one, macOS and Linux do not),
+ * and sockaddr_un has nowhere to put a descriptor. So the path is
+ * built from the root the way the attribute writes build theirs, and
+ * it rests on the same guarantee they do -- the 0700 chain to the
+ * run directory and the mount policy, not a resolved descriptor per
+ * component (R17 of the code review, filed in
+ * sprints/future-features.md). sun_path is about a hundred bytes, so
+ * a path too long for it is refused in its own words rather than
+ * silently truncated into a name nothing expects.
+ */
+static int
+za_mksock(struct za_ctx *c, const struct zr_action *a)
+{
+	struct sockaddr_un sun;
+	const char *full;
+	size_t len;
+	int fd, rc, saved;
+
+	full = za_full(c, a->za_path, a->za_pathlen);
+	if (full == NULL) {
+		errno = ENOMEM;
+		return (za_fail(c, a, "memory"));
+	}
+	len = strlen(full);
+	if (len >= sizeof (sun.sun_path))
+		return (za_failx(c, a, "the path is too long for a socket"));
+	memset(&sun, 0, sizeof (sun));
+	sun.sun_family = AF_UNIX;
+	memcpy(sun.sun_path, full, len);
+	fd = socket(AF_UNIX, SOCK_STREAM, 0);
+	if (fd < 0)
+		return (za_fail(c, a, "socket"));
+	rc = bind(fd, (const struct sockaddr *)&sun, (socklen_t)sizeof (sun));
+	saved = errno;
+	if (close(fd) != 0 && rc == 0)
+		return (za_fail(c, a, "close"));
+	if (rc != 0) {
+		errno = saved;
+		return (za_fail(c, a, "bind"));
+	}
+	return (0);
 }
 
 /*
@@ -1110,8 +1276,15 @@ za_do_cp(struct za_ctx *c, const struct zr_action *a,
 		if (za_from_stat(c, a, w, &fst) != 0)
 			return (-1);
 		break;
+	case ZR_T_SOCK:
+		if (za_mksock(c, a) != 0)
+			return (-1);
+		if (za_from_stat(c, a, w, &fst) != 0)
+			return (-1);
+		break;
 	default:
-		return (za_failx(c, a, "cannot recreate a socket"));
+		return (za_failx(c, a, "an object of a type this apply "
+		    "cannot make"));
 	}
 	if (za_attrs(c, a, &src, &fst) != 0 ||
 	    za_verify(c, a, &src, what, size) != 0)
@@ -1190,6 +1363,12 @@ za_do_write(struct za_ctx *c, const struct zr_action *a)
 	if (za_type(st.st_mode, &type) != 0 || type != src.zs_type)
 		return (za_failx(c, a, "a write cannot change the type of "
 		    "an object"));
+	/*
+	 * Before the truncate, the relink and the attributes below:
+	 * an object under any of the three refuses all of them.
+	 */
+	if (za_unlock_st(c, a->za_path, a->za_pathlen, &st) != 0)
+		return (-1);
 	if (type == ZR_T_FILE) {
 		fd = openat(c->zc_rootfd, rel, O_WRONLY | O_TRUNC |
 		    O_NOFOLLOW | O_CLOEXEC);
@@ -1292,6 +1471,8 @@ za_do_ln(struct za_ctx *c, const struct zr_action *a)
 		if (S_ISDIR(st.st_mode))
 			return (za_failx(c, a, "a directory is in the way of "
 			    "a link"));
+		if (za_unlock_st(c, a->za_path, a->za_pathlen, &st) != 0)
+			return (-1);
 		if (unlinkat(c->zc_rootfd, rel, 0) != 0)
 			return (za_fail(c, a, "unlink"));
 	} else if (errno != ENOENT) {
@@ -1375,6 +1556,8 @@ za_close_to(struct za_ctx *c, const unsigned char *path, size_t len)
 		dirlen = c->zc_pendlen[c->zc_npend - 1];
 		if (path != NULL && za_under(dir, dirlen, path, len))
 			break;
+		if (za_unlock(c, dir, dirlen) != 0)
+			return (-1);
 		if (unlinkat(c->zc_rootfd, za_rel(dir), AT_REMOVEDIR) != 0) {
 			if ((errno == ENOTEMPTY || errno == EEXIST) &&
 			    zr_verify_blocked(c->zc_m, dir, dirlen) != 0) {
@@ -1401,6 +1584,8 @@ za_do_rm(struct za_ctx *c, const struct zr_action *a)
 {
 	if (a->za_isdir != 0)
 		return (za_pend(c, a));
+	if (za_unlock(c, a->za_path, a->za_pathlen) != 0)
+		return (-1);
 	if (unlinkat(c->zc_rootfd, za_rel(a->za_path), 0) != 0 &&
 	    errno != ENOENT)
 		return (za_fail(c, a, "unlink"));
@@ -1707,6 +1892,8 @@ za_rm_one(struct za_ctx *c, const struct zr_action *a)
 		return (za_fail(c, a, "stat"));
 	}
 	isdir = S_ISDIR(st.st_mode);
+	if (za_unlock_st(c, a->za_path, a->za_pathlen, &st) != 0)
+		return (-1);
 	if (unlinkat(c->zc_rootfd, rel, isdir ? AT_REMOVEDIR : 0) != 0 &&
 	    errno != ENOENT)
 		return (za_fail(c, a, isdir ? "rmdir" : "unlink"));
@@ -2115,7 +2302,8 @@ za_late_rmdirs(struct za_ctx *c, const struct zr_parsed *m)
 		if (a->za_kind != ZR_ACT_RM || a->za_isdir == 0)
 			continue;
 		if (za_stopped(c) != 0 ||
-		    za_path_ok(c, a, a->za_path, a->za_pathlen) != 0)
+		    za_path_ok(c, a, a->za_path, a->za_pathlen) != 0 ||
+		    za_unlock(c, a->za_path, a->za_pathlen) != 0)
 			return (-1);
 		if (unlinkat(c->zc_rootfd, za_rel(a->za_path),
 		    AT_REMOVEDIR) == 0) {

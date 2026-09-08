@@ -43,13 +43,14 @@ const char *zr_fixture_platform(const struct zr_fixture *fx);
 /*
  * Create one tree under rootdir, which must already exist and be
  * empty: mkdir(2) for a directory, the token and a newline for a
- * file, link(2) for a link, symlink(2) for a symlink, then the
- * entry's attributes, and the file flags of every object last of
- * all. Returns 0, or -1 at the first failure with errno set by the
- * call that failed. A fixture whose platform line names another
- * platform than this one is refused with ENOTSUP: the _err form says
- * so in words, naming the line, and is what a caller with a message
- * to print should use. The two are otherwise the same call.
+ * file, link(2) for a link, symlink(2) for a symlink, bind(2) for a
+ * socket, then the entry's attributes, and the file flags of every
+ * object last of all. Returns 0, or -1 at the first failure with
+ * errno set by the call that failed. A fixture whose platform line
+ * names another platform than this one is refused with ENOTSUP: the
+ * _err form says so in words, naming the line, and is what a caller
+ * with a message to print should use. The two are otherwise the same
+ * call.
  */
 int zr_fixture_build(const struct zr_fixture *fx, enum zr_fixture_tree which,
     const char *rootdir);

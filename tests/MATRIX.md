@@ -540,7 +540,12 @@ dir, symlink, chr, blk, fifo, sock}; attribute order {chown,
 chmod, xattrs, ACL, times, flags last}; rm timing {leaf, at
 directory close}; ln {new name, replacing a name, bad
 destination}; write {in place, through every name}; the re-stat
-check; the copy path {copy_file_range, read/write}.
+check; the copy path {copy_file_range, read/write}; and the flags
+the live object carries before the action {none, immutable,
+append-only, no-unlink} crossed with what the action does to it
+{removed, rewritten, attributes alone} and with the family the
+flag is in {user, system}, since only the system ones are beyond
+clearing above securelevel 0.
 
 And, from ZA40 on, the other document: choice {keep, onto, from,
 "-"}; the chosen side {has the name, has it not}; line kind
@@ -558,7 +563,7 @@ removal {freed by the choices, held by one of them}; the pass
 | ZA4 | cp of a character device: mknod, rdev | deferred: mknod needs root; box-probe |
 | ZA5 | cp of a block device | deferred: mknod needs root; box-probe |
 | ZA6 | cp of a fifo | covered: check_apply.c |
-| ZA7 | cp of a socket | deferred: no portable socket create; box-probe |
+| ZA7 | cp of a socket | covered: check_apply.c, which binds an AF_UNIX socket at the path |
 | ZA8 | write in place: same object, new bytes | covered: check_apply.c |
 | ZA9 | write is seen through every name | covered: check_apply.c |
 | ZA10 | write preserves st_ino and st_nlink | covered: check_apply.c |
@@ -600,6 +605,12 @@ removal {freed by the choices, held by one of them}; the pass
 | ZA55 | a choice still "-": refused, and nothing is written | covered: check_apply.c |
 | ZA56 | applying2 end to end: the gate, readonly, the self-check | planned: box, box/run-resolution.sh, cases 1 and 7 (the kill at choice:1 leaves applying2 with readonly off, and the --continue after it redoes the whole document) |
 | ZA57 | a choice over a name carrying an ACL | planned: box, box/run-resolution.sh, case 1 over tests/fixtures/freebsd/acl-conflict.zrt, where the name's ACL is held against the chosen side's, and case 8, which is the strip |
+| ZA58 | rm of an object carrying an immutable flag: the flag comes off first | covered: check_apply.c (uchg, the Mac's stand-in for schg); box for schg, tests/fixtures/freebsd/flags-onto-rm.zrt |
+| ZA59 | a write over an object carrying an immutable flag | covered: check_apply.c; box for schg, run-precond.sh 1d |
+| ZA60 | an attributes-only write over an object carrying an immutable flag (a fifo, which has no bytes) | covered: check_apply.c |
+| ZA61 | an append-only flag on a rewrite | covered: check_apply.c (uappnd where a user one exists, else a skip line) |
+| ZA62 | the guard refuses when a system flag on onto's side cannot be cleared | deferred: securelevel cannot be raised without a reboot; ZX23 and run-precond.sh 2 hold the procedure |
+| ZA63 | a socket put back by the repair | covered: check_apply.c, the repair over an onto tree holding one |
 
 ## ZX -- the ZFS layer (zfs ops, driver, guards)
 
@@ -937,20 +948,25 @@ nothing.
 Note on ZX23: securelevel cannot be raised without a reboot of the
 box, so the refusal path stays deferred. Unblocking work is a
 box-probe run started at securelevel 1, which is also the only way
-to prove the schg/sappnd name listing.
+to prove the schg/sappnd/sunlnk name listing. The guard reads the
+three system flags off onto's side against the decision (the user
+flags are always clearable by root, so they never enter it), and
+what it refuses is a run the apply could not finish; at
+securelevel 0 or less the apply clears them itself, which is ZA58
+to ZA61 and run-precond.sh 1d.
 
 ## ZF -- the fixture format (check_fixture.c, run-fixtures.sh)
 
 Not an engine phase but the input every other family's end to end
 level reads: one .zrt file, parsed, built as three directory trees
 and built again as pools in memory, where the two builders must
-agree. Dimensions: syntax element {tree lines, the four types, the
+agree. Dimensions: syntax element {tree lines, the five types, the
 escapes, mode, uid, gid, flags, xattr, acl, the platform line,
-expect}; what it acts on {file, dir, symlink, a link line, the pool
-two names share}; builder {directories, pools, one directory edited
-into another}; the edit's decision {removed, created, relinked,
-rewritten, attrs, untouched}; rejection {every rule the format
-names}; platform {portable, box only}.
+expect}; what it acts on {file, dir, symlink, sock, a link line,
+the pool two names share}; builder {directories, pools, one
+directory edited into another}; the edit's decision {removed,
+created, relinked, rewritten, attrs, untouched}; rejection {every
+rule the format names}; platform {portable, box only}.
 
 Rows for the attributes were added with the attributes themselves
 (issue fixture-attrs). A row that only FreeBSD can reach names the
@@ -961,7 +977,7 @@ FreeBSD.
 
 | cell | scenario | disposition |
 |------|----------|-------------|
-| ZF1 | the four types, tokens, links and escapes parse | covered: check_fixture.c |
+| ZF1 | the types, tokens, links and escapes parse | covered: check_fixture.c (file, link, dir, symlink; sock is ZF61) |
 | ZF2 | mode, uid and gid on a file, a dir and a symlink | covered: check_fixture.c |
 | ZF3 | a build into a directory that is not empty is refused | covered: check_fixture.c |
 | ZF4 | to_tree: pools, synthetic inos, nlink, handles | covered: check_fixture.c |
@@ -1021,6 +1037,8 @@ FreeBSD.
 | ZF58 | sysxattr-conflict.zrt: a system-namespace xattr set differently on both sides -> changed-both | planned (box: run-suite.sh) |
 | ZF59 | mixed-attrs.zrt: a user xattr, a system xattr, an ACL and a flag on one object, through a write and through a cp | planned (box: run-suite.sh) |
 | ZF60 | flags-conflict.zrt: hidden on from and nodump on onto -> changed-both (uchg is not a ZFS flag: EOPNOTSUPP) | planned (box: run-suite.sh) |
+| ZF61 | sock: the fifth type parses, builds with bind(2), walks back as a socket, and its absent mode= resolves to what bind leaves (0777 under the umask) | covered: run-fixtures.sh and check_roundtrip.c over sock-copy.zrt, which build the three trees and walk them; the apply of one is ZA7 |
+| ZF62 | flags-onto-rm.zrt: schg on an onto file an action removes -> the apply clears it and removes the file | planned (box: run-suite.sh; schg needs root, and comes off again only while securelevel is 0 or less) |
 
 ZF33 to ZF49 are --edit-fixture, added with the mode itself (issue
 fixture-edit) and all of them Mac cells: the mode is plain POSIX

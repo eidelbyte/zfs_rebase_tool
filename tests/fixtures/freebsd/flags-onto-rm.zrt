@@ -1,0 +1,55 @@
+platform freebsd
+
+# The onto side holds two objects under schg, the system immutable
+# flag: one the decision removes and one it rewrites. Neither side
+# changed the flag -- base carries it too, so the flag is not what
+# either side did -- and the manifest is the plain pair, one rm and
+# one write, over objects ZFS will let nobody unlink, truncate or
+# chown while the flag is on. The apply takes it off first
+# (src/apply.c, za_unlock_st) and then does what the action says;
+# without that step this fixture stops the rebase part way through
+# with EPERM, which is what finding R7 of the code review was.
+#
+# Box only, and root's: schg is one of the three flags ZFS holds
+# that only root can set, and it comes off again only while
+# securelevel is 0 or less, which is what tests/box/prereqs.sh
+# checks. There is no user immutable flag on ZFS to say this with
+# instead (zfs_freebsd_setattr answers uchg with EOPNOTSUPP), so
+# the Mac says it with uchg in tests/check_apply.c and this fixture
+# says it on the target. A harness clears the flags before it
+# removes the built trees, as tests/fixtures/FORMAT.md tells it to.
+#
+# Cells ZA58 and ZA59 on the box, and ZF62.
+
+tree base
+	/A file x
+	/gone file g flags=schg
+	/w file p flags=schg
+
+tree from
+	/A file x
+	/w file q
+
+tree onto
+	/A file x
+	/gone file g flags=schg
+	/w file p flags=schg
+
+expect
+#rebase-manifest 5
+#result -
+#form posix
+#base base 0
+#from from 0
+#onto onto 0
+#made -
+#tag -
+#take -
+#written -
+#mode strict
+#actions 2
+#conflicts 0
+/
+    gone rm
+    w write /w
+    ..

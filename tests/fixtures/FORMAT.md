@@ -72,7 +72,7 @@ listed, and every other entry's parent must be an earlier "dir" entry
 of the same tree. A tree lists no name twice. The three trees are
 independent and may mention any names they like.
 
-TYPE is one of four words, with the argument it takes:
+TYPE is one of five words, with the argument it takes:
 
     file TOKEN      a regular file whose bytes are TOKEN followed by
                     a newline. The token is opaque: nothing reads it
@@ -89,6 +89,13 @@ TYPE is one of four words, with the argument it takes:
                     vis-encoded like a name. The target is a string,
                     not a reference: nothing has to exist at it. It
                     is not empty and, like a path, holds no NUL.
+    sock            a unix-domain socket, made with bind(2), which
+                    is the only way one is made. It takes no
+                    argument and has no content of its own: what it
+                    is, is its type and its attributes. bind takes
+                    no mode either, so an absent mode= on a sock
+                    line means what the kernel gives one, 0777 under
+                    the umask, and not a file's 0644.
 
 A token is a run of ASCII 0x21-0x7e with no whitespace in it. It is
 not vis-decoded, having no structure to protect.
@@ -97,9 +104,9 @@ not vis-decoded, having no structure to protect.
 
 The optional attributes come last, in the order shown, each at most
 once but xattr=. What is absent is the builder's default: 0755 for a
-directory, 0644 for a file, both under the umask, the building
-process's own owner and group, no file flags, no extended attributes
-and no ACL.
+directory, 0644 for a file and 0777 for a socket, all of them under
+the umask, the building process's own owner and group, no file
+flags, no extended attributes and no ACL.
 
     mode=OCTAL      one to four octal digits.
     uid=N           a decimal number.
@@ -314,8 +321,8 @@ src/fixture.h loads one:
     zr_fixture_platform()  the platform line's platform, or NULL
     zr_fixture_build()     write one tree under an existing empty
                            directory, with mkdir(2), link(2),
-                           symlink(2) and the platform's own calls
-                           for the attributes POSIX never
+                           symlink(2), bind(2) and the platform's
+                           own calls for the attributes POSIX never
                            standardised
     zr_fixture_build_err() the same, with a message; a fixture off
                            its platform is refused here in words
@@ -332,7 +339,8 @@ The two builders agree by construction. zr_fixture_to_tree gives each
 pool a synthetic inode number, an nlink equal to its name count, and
 one content handle standing for everything the content oracle
 compares: the type, the bytes -- a file's token, a symlink's target
-string -- and the whole attribute set the pool ends up with, every
+string, and nothing at all for a directory or a socket -- and the
+whole attribute set the pool ends up with, every
 name of it folded in and every absent attribute resolved to what the
 builder would have left behind. Two pools carry the same handle
 exactly when all of that agrees, in one tree and across all three,

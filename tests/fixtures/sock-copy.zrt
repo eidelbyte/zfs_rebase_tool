@@ -1,0 +1,33 @@
+# A from-only unix-domain socket. The walk reads a socket like any
+# other object, so the copy is an ordinary cp: apply makes it with
+# bind(2), which is the only way a socket is made, and then writes
+# the attributes as it would for a fifo or a device. The file beside
+# it is there so that the tree is not one name alone.
+
+tree base
+	/A file x
+
+tree from
+	/A file x
+	/s sock
+
+tree onto
+	/A file x
+
+expect
+#rebase-manifest 5
+#result -
+#form posix
+#base base 0
+#from from 0
+#onto onto 0
+#made -
+#tag -
+#take -
+#written -
+#mode strict
+#actions 1
+#conflicts 0
+/
+    s cp /s
+    ..

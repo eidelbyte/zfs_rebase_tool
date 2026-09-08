@@ -27,14 +27,21 @@
  * not by what the choices left inside it.
  *
  * The family is ZA of tests/MATRIX.md. Covered here: ZA1, ZA2, ZA3,
- * ZA6, ZA8, ZA9, ZA10, ZA11, ZA12, ZA13, ZA14, ZA15, ZA16, ZA17,
- * ZA19, ZA20, ZA22, ZA24, ZA25, ZA26, ZA27, ZA28, ZA30, and ZA40 to
- * ZA55. ZA4 and ZA5 need mknod, which needs root; ZA7 is a socket,
- * which has no portable create; ZA18 cannot see the chown at all,
- * since an apply run by the tree's own owner skips it; ZA21 wants an
- * immutable file and ZA23 a forced re-stat mismatch, both of which
- * need root; ZA29 and ZA57 are the ACL cells already deferred in the
- * matrix, and ZA56 is applying2 itself, which needs the box.
+ * ZA6, ZA7, ZA8, ZA9, ZA10, ZA11, ZA12, ZA13, ZA14, ZA15, ZA16,
+ * ZA17, ZA19, ZA20, ZA22, ZA24, ZA25, ZA26, ZA27, ZA28, ZA30, ZA40
+ * to ZA55, and ZA58 to ZA61 and ZA63. ZA4 and ZA5 need mknod, which
+ * needs root; ZA18 cannot see the chown at all, since an apply run
+ * by the tree's own owner skips it; ZA21 wants an immutable file and
+ * ZA23 a forced re-stat mismatch, both of which need root; ZA29 and
+ * ZA57 are the ACL cells already deferred in the matrix; ZA56 is
+ * applying2 itself, which needs the box; and ZA62 is the securelevel
+ * refusal, which needs a box booted above securelevel 0.
+ *
+ * ZA58 to ZA61 are the flags in the way of an action, which the Mac
+ * says with uchg and uappnd where the target would say it with schg
+ * and sappnd: ZFS has no user immutable flag, so on the box those
+ * cases are root's and the probe says so with a skip line where
+ * neither flag can be set.
  */
 
 #define	_XOPEN_SOURCE	700
@@ -45,8 +52,13 @@
 #define	_DARWIN_C_SOURCE
 #endif
 
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/un.h>
+#ifdef __FreeBSD__
+#include <sys/sysctl.h>
+#endif
 
 #include <dirent.h>
 #include <errno.h>
@@ -215,6 +227,15 @@ rmtree(const char *root)
 	scan_tree(&s, root);
 	for (i = s.s_n - 1; i >= 0; i--) {
 		join(full, sizeof (full), root, s.s_path[i]);
+#ifdef TESTFLAG
+		/*
+		 * A test that set an immutable or append-only flag and
+		 * failed before its apply cleared it would hold its own
+		 * tree down; the shell harnesses clear the flags the
+		 * same way before they remove a built tree.
+		 */
+		(void) lchflags(full, 0);
+#endif
 		if (s.s_isdir[i])
 			CHECK(rmdir(full) == 0);
 		else
@@ -319,6 +340,32 @@ mkdirp(const char *root, const char *rel, mode_t mode)
 
 	join(full, sizeof (full), root, rel);
 	CHECK(mkdir(full, mode) == 0);
+	CHECK(chmod(full, mode) == 0);
+}
+
+/*
+ * A unix-domain socket at one name, made the way src/apply.c makes
+ * one: bind(2), and then the mode, since bind takes none.
+ */
+static void
+mksock(const char *root, const char *rel, mode_t mode)
+{
+	struct sockaddr_un sun;
+	char full[PATHMAX];
+	size_t len;
+	int fd;
+
+	join(full, sizeof (full), root, rel);
+	len = strlen(full);
+	CHECK(len < sizeof (sun.sun_path));
+	memset(&sun, 0, sizeof (sun));
+	sun.sun_family = AF_UNIX;
+	memcpy(sun.sun_path, full, len);
+	fd = socket(AF_UNIX, SOCK_STREAM, 0);
+	CHECK(fd >= 0);
+	CHECK(bind(fd, (const struct sockaddr *)&sun,
+	    (socklen_t)sizeof (sun)) == 0);
+	CHECK(close(fd) == 0);
 	CHECK(chmod(full, mode) == 0);
 }
 
@@ -633,6 +680,87 @@ check_cp_fifo(void)
 }
 
 /*
+ * ZA7: a socket copied as a socket. There is no mknod for one and
+ * no portable bindat, so the apply binds an AF_UNIX socket at the
+ * path built from the root; what the result holds afterwards is a
+ * socket with from's mode, and the walk reads it back as one.
+ */
+static void
+check_cp_sock(void)
+{
+	struct zr_apply_stats st;
+	struct zr_walk w;
+	struct shape sh;
+	struct stat s;
+	zr_name_t nm;
+	zr_pool_t po;
+	char err[256];
+
+	shape_init(&sh);
+	mksock(sh.sh_from, "/k", 0660);
+	shape_ok(&sh, "    k cp /k\n", 1, &st);
+	CHECK(st.zs_cp == 1);
+	lstat_at(sh.sh_onto, "/k", &s);
+	CHECK(S_ISSOCK(s.st_mode));
+	CHECK((s.st_mode & 07777) == 0660);
+	/* and the tool's own reader calls it one */
+	err[0] = '\0';
+	CHECK(zr_walk(sh.sh_onto, sh.sh_ns, &w, err, sizeof (err)) == 0);
+	nm = zr_names_lookup(w.zw_tree.zt_names, "/k", 2);
+	CHECK(nm != ZR_NAME_NONE);
+	po = zr_tree_pool(&w.zw_tree, nm);
+	CHECK(po != ZR_POOL_NONE);
+	CHECK(w.zw_tree.zt_pools[po].zp_type == ZR_T_SOCK);
+	zr_walk_fini(&w);
+	shape_fini(&sh);
+}
+
+/*
+ * ZA63: the repair puts a socket back. The result lost a name the
+ * manifest never spoke for, and the repair copies it out of onto
+ * again -- which for a socket is the same bind the cp does, through
+ * the same code.
+ */
+static void
+check_repair_sock(void)
+{
+	struct zr_apply_stats st;
+	struct zr_walk wo, wf;
+	struct zr_parsed p;
+	struct shape sh;
+	struct stat s;
+	char res[PATHMAX], full[PATHMAX], err[512];
+
+	shape_init(&sh);
+	/* onto is the anchor: a file and a socket beside it */
+	mkfile(sh.sh_onto, "/A", "kept", 0644);
+	mksock(sh.sh_onto, "/sk", 0600);
+	/* and the result, which somebody left without the socket */
+	join(res, sizeof (res), sh.sh_root, "/res");
+	CHECK(mkdir(res, 0755) == 0);
+	mkfile(res, "/A", "kept", 0644);
+	parse_body(&p, "", 0);
+	err[0] = '\0';
+	CHECK(zr_walk(sh.sh_onto, sh.sh_ns, &wo, err, sizeof (err)) == 0);
+	CHECK(zr_walk(sh.sh_from, sh.sh_ns, &wf, err, sizeof (err)) == 0);
+	err[0] = '\0';
+	if (zr_apply_check(&p, res, sh.sh_ns, &wo, &wf, 0, 1, &st, err,
+	    sizeof (err)) != 0)
+		printf("  check: %s\n", err);
+	CHECK(err[0] == '\0');
+	CHECK(st.zs_restored == 1);
+	join(full, sizeof (full), res, "/sk");
+	CHECK(lstat(full, &s) == 0);
+	CHECK(S_ISSOCK(s.st_mode));
+	CHECK((s.st_mode & 07777) == 0600);
+	zr_walk_fini(&wf);
+	zr_walk_fini(&wo);
+	zr_parsed_fini(&p);
+	rmtree(res);
+	shape_fini(&sh);
+}
+
+/*
  * ZA11, ZA12: an ln over a name that at this moment belongs to
  * another file. The old file loses its only name; the new one is the
  * anchor's own object.
@@ -800,6 +928,216 @@ check_flag(void)
 	CHECK(lchflags(full, 0) == 0);
 	join(full, sizeof (full), sh.sh_from, "/g");
 	CHECK(lchflags(full, 0) == 0);
+	shape_fini(&sh);
+}
+
+/*
+ * The flag of this pair that this filesystem and this user can put
+ * on a file and take off again: the user one where there is a user
+ * one (the Mac, UFS), the system one where this is root and
+ * securelevel is 0 or less (ZFS, which has no user immutable flag at
+ * all: zfs_freebsd_setattr answers uchg with EOPNOTSUPP), and zero
+ * where there is neither. check_fixture.c probes the same way, for
+ * the same reason; the caller says what it skipped. The probe file
+ * is made and removed here, so it is never one of the shape's names.
+ */
+static uint32_t
+settable_flag(const char *dir, uint32_t uflag, uint32_t sflag)
+{
+	char full[PATHMAX];
+	uint32_t got = 0;
+	FILE *fp;
+#ifdef __FreeBSD__
+	int level = 0;
+	size_t len = sizeof (level);
+#endif
+
+	join(full, sizeof (full), dir, "/flag-probe");
+	fp = fopen(full, "w");
+	CHECK(fp != NULL);
+	CHECK(fclose(fp) == 0);
+	if (uflag != 0 && lchflags(full, (unsigned long)uflag) == 0)
+		got = uflag;
+#ifdef __FreeBSD__
+	else if (sflag != 0 && geteuid() == 0 &&
+	    sysctlbyname("kern.securelevel", &level, &len, NULL, 0) == 0 &&
+	    level <= 0 && lchflags(full, (unsigned long)sflag) == 0)
+		got = sflag;
+#else
+	(void) sflag;
+#endif
+	CHECK(lchflags(full, 0) == 0);
+	CHECK(unlink(full) == 0);
+	return (got);
+}
+
+static uint32_t
+immutable_flag(const char *dir)
+{
+#ifdef UF_IMMUTABLE
+	return (settable_flag(dir, (uint32_t)UF_IMMUTABLE,
+	    (uint32_t)SF_IMMUTABLE));
+#else
+	return (settable_flag(dir, 0, (uint32_t)SF_IMMUTABLE));
+#endif
+}
+
+static uint32_t
+append_flag(const char *dir)
+{
+#ifdef UF_APPEND
+	return (settable_flag(dir, (uint32_t)UF_APPEND, (uint32_t)SF_APPEND));
+#else
+	return (settable_flag(dir, 0, (uint32_t)SF_APPEND));
+#endif
+}
+
+/* What one name of the result carries just now. */
+static uint32_t
+flags_at(const char *root, const char *rel)
+{
+	struct stat s;
+
+	lstat_at(root, rel, &s);
+	return ((uint32_t)s.st_flags);
+}
+
+/*
+ * ZA58: an object the manifest removes is under an immutable flag,
+ * which on ZFS refuses the unlink outright (zfs_zaccess_delete
+ * returns EPERM for ZFS_IMMUTABLE and ZFS_NOUNLINK). The apply takes
+ * the flag off first and the name goes.
+ */
+static void
+check_rm_immutable(void)
+{
+	struct zr_apply_stats st;
+	char full[PATHMAX];
+	struct shape sh;
+	uint32_t fl;
+
+	shape_init(&sh);
+	fl = immutable_flag(sh.sh_onto);
+	if (fl == 0) {
+		printf("  skip ZA58: no immutable flag this filesystem and "
+		    "user can set; ZFS has no uchg, and schg is root's\n");
+		shape_fini(&sh);
+		return;
+	}
+	mkfile(sh.sh_onto, "/g", "held down", 0644);
+	join(full, sizeof (full), sh.sh_onto, "/g");
+	CHECK(lchflags(full, (unsigned long)fl) == 0);
+	shape_ok(&sh, "    g rm\n", 1, &st);
+	CHECK(st.zs_rm == 1);
+	CHECK(absent(sh.sh_onto, "/g"));
+	shape_fini(&sh);
+}
+
+/*
+ * ZA59: the same flag on an object a write rewrites. Without the
+ * clearing step the open for truncation is EPERM; with it the bytes
+ * are from's, and so are the flags, since the flags an action sets
+ * are still written last and from's object carries none.
+ */
+static void
+check_write_immutable(void)
+{
+	struct zr_apply_stats st;
+	char full[PATHMAX], onto[PATHMAX];
+	struct shape sh;
+	uint32_t fl;
+
+	shape_init(&sh);
+	fl = immutable_flag(sh.sh_onto);
+	if (fl == 0) {
+		printf("  skip ZA59: no immutable flag this filesystem and "
+		    "user can set\n");
+		shape_fini(&sh);
+		return;
+	}
+	mkfile(sh.sh_from, "/w", "the new bytes", 0644);
+	mkfile(sh.sh_onto, "/w", "the old bytes", 0644);
+	join(full, sizeof (full), sh.sh_onto, "/w");
+	CHECK(lchflags(full, (unsigned long)fl) == 0);
+	shape_ok(&sh, "    w write /w\n", 1, &st);
+	CHECK(st.zs_write == 1);
+	join(onto, sizeof (onto), sh.sh_from, "/w");
+	same_bytes(full, onto);
+	CHECK((flags_at(sh.sh_onto, "/w") & fl) == 0);
+	shape_fini(&sh);
+}
+
+/*
+ * ZA60: a write with no bytes in it -- a fifo, whose write is its
+ * attributes and nothing else -- over an object under an immutable
+ * flag. That is the attribute half of the same refusal: an immutable
+ * object takes no chown, no chmod and no times either (zfs_setattr).
+ */
+static void
+check_attrs_immutable(void)
+{
+	struct zr_apply_stats st;
+	char full[PATHMAX];
+	struct shape sh;
+	struct stat s;
+	uint32_t fl;
+
+	shape_init(&sh);
+	fl = immutable_flag(sh.sh_onto);
+	if (fl == 0) {
+		printf("  skip ZA60: no immutable flag this filesystem and "
+		    "user can set\n");
+		shape_fini(&sh);
+		return;
+	}
+	join(full, sizeof (full), sh.sh_from, "/p");
+	CHECK(mkfifo(full, 0640) == 0);
+	CHECK(chmod(full, 0640) == 0);
+	join(full, sizeof (full), sh.sh_onto, "/p");
+	CHECK(mkfifo(full, 0600) == 0);
+	CHECK(chmod(full, 0600) == 0);
+	CHECK(lchflags(full, (unsigned long)fl) == 0);
+	shape_ok(&sh, "    p write /p\n", 1, &st);
+	CHECK(st.zs_write == 1);
+	lstat_at(sh.sh_onto, "/p", &s);
+	CHECK(S_ISFIFO(s.st_mode));
+	CHECK((s.st_mode & 07777) == 0640);
+	CHECK(((uint32_t)s.st_flags & fl) == 0);
+	shape_fini(&sh);
+}
+
+/*
+ * ZA61: an append-only flag on an object a write rewrites. ZFS
+ * refuses a non-appending write to one (zfs_write returns EPERM for
+ * ZFS_APPENDONLY without O_APPEND), and a truncating open is exactly
+ * that, so this is the second flag family and not a spelling of the
+ * first.
+ */
+static void
+check_write_append_only(void)
+{
+	struct zr_apply_stats st;
+	char full[PATHMAX], src[PATHMAX];
+	struct shape sh;
+	uint32_t fl;
+
+	shape_init(&sh);
+	fl = append_flag(sh.sh_onto);
+	if (fl == 0) {
+		printf("  skip ZA61: no append-only flag this filesystem and "
+		    "user can set; sappnd is root's\n");
+		shape_fini(&sh);
+		return;
+	}
+	mkfile(sh.sh_from, "/a", "the new bytes", 0644);
+	mkfile(sh.sh_onto, "/a", "the old bytes", 0644);
+	join(full, sizeof (full), sh.sh_onto, "/a");
+	CHECK(lchflags(full, (unsigned long)fl) == 0);
+	shape_ok(&sh, "    a write /a\n", 1, &st);
+	CHECK(st.zs_write == 1);
+	join(src, sizeof (src), sh.sh_from, "/a");
+	same_bytes(full, src);
+	CHECK((flags_at(sh.sh_onto, "/a") & fl) == 0);
 	shape_fini(&sh);
 }
 
@@ -1965,6 +2303,8 @@ main(void)
 	check_cp_symlink();
 	check_cp_dir();
 	check_cp_fifo();
+	check_cp_sock();
+	check_repair_sock();
 	check_ln_replace();
 	check_write_links();
 	check_rm_deep();
@@ -1972,6 +2312,10 @@ main(void)
 	check_mtime();
 #ifdef TESTFLAG
 	check_flag();
+	check_rm_immutable();
+	check_write_immutable();
+	check_attrs_immutable();
+	check_write_append_only();
 #endif
 	check_ln_missing();
 	check_ln_over_dir();
