@@ -2328,6 +2328,148 @@ settled_run(struct vshape *v, unsigned miss, struct zr_parsed *p,
 }
 
 /*
+ * ZY104: the resolution's outcomes are the fourth input of the
+ * verdict, and the only place a resolved name can show at all. A
+ * name answered onto and then edited by hand after applying2 is one
+ * drifted line and nothing else: the manifest has a conflict mark
+ * there and not an action, so no action outcome moves, and a chosen
+ * name is in no entry of the name list. A verdict blind to this
+ * would call a drifted result clean.
+ */
+static void
+check_choice_verdict(void)
+{
+	struct zr_verify_report rep;
+	struct zr_resolution res;
+	struct zr_parsed p;
+	struct vshape v;
+	static const char rbody[] = "    x conflict 1 onto\n";
+
+	vshape_init(&v);
+	mkfile(v.vs_onto, "/x", "onto bytes\n", 0644);
+	mkfile(v.vs_from, "/x", "from bytes\n", 0644);
+	/* applying2 made the name onto's, and the check said done */
+	mkfile(v.vs_res, "/x", "onto bytes\n", 0644);
+	parse_res(&res, rbody, 1, 0);
+	vshape_run_res(&v, one_conflict, 0, 1, one_record, &res, &p, &rep);
+	CHECK(rep.zv_rcount[ZR_OC_DONE] == 1);
+	CHECK(rep.zv_rcount[ZR_OC_DRIFTED] == 0);
+	CHECK(rep.zv_count[ZR_OC_PENDING] == 0);
+	CHECK(rep.zv_count[ZR_OC_DRIFTED] == 0);
+	CHECK(rep.zv_ndiffs == 0);
+	zr_verify_report_fini(&rep);
+	zr_parsed_fini(&p);
+	/* and the hand edit after it, which nothing else can see */
+	mkfile(v.vs_res, "/x", "edited since\n", 0644);
+	vshape_run_res(&v, one_conflict, 0, 1, one_record, &res, &p, &rep);
+	CHECK(rep.zv_rline[0] == ZR_OC_DRIFTED);
+	CHECK(rep.zv_rcount[ZR_OC_DRIFTED] == 1);
+	CHECK(rep.zv_rfirst[ZR_OC_DRIFTED] == 0);
+	CHECK(rep.zv_count[ZR_OC_PENDING] == 0);
+	CHECK(rep.zv_count[ZR_OC_DRIFTED] == 0);
+	CHECK(rep.zv_ndiffs == 0);
+	zr_verify_report_fini(&rep);
+	zr_parsed_fini(&p);
+	zr_resolution_fini(&res);
+	vshape_fini(&v);
+}
+
+/*
+ * ZY107: a conflict line for a name the manifest never marked is the
+ * person's own instruction, added by hand. It is held against the
+ * side it names like any other line, and its group number is not
+ * read: a name of "group 1" that onto pools with the marked name is
+ * still its own object here, because nothing pools it.
+ */
+static void
+check_choice_unmarked(void)
+{
+	struct zr_verify_report rep;
+	struct zr_resolution res;
+	struct zr_parsed p;
+	struct vshape v;
+	static const char rbody[] =
+	    "    x conflict 1 onto\n"
+	    "    z conflict 1 onto\n";
+
+	vshape_init(&v);
+	mkfile(v.vs_onto, "/x", "one object\n", 0644);
+	mklink(v.vs_onto, "/z", "/x");
+	mkfile(v.vs_from, "/x", "from bytes\n", 0644);
+	/* the choices copied each of them, which is two objects */
+	mkfile(v.vs_res, "/x", "one object\n", 0644);
+	mkfile(v.vs_res, "/z", "one object\n", 0644);
+	parse_res(&res, rbody, 2, 0);
+	vshape_run_res(&v, one_conflict, 0, 1, one_record, &res, &p, &rep);
+	CHECK(rep.zv_nrlines == 2);
+	CHECK(rep.zv_rline[0] == ZR_OC_DONE);
+	CHECK(rep.zv_rline[1] == ZR_OC_DONE);
+	CHECK(rep.zv_rcount[ZR_OC_DRIFTED] == 0);
+	CHECK(rep.zv_ndiffs == 0);
+	zr_verify_report_fini(&rep);
+	zr_parsed_fini(&p);
+	/* the marked name of that group is pooled as onto pools it */
+	rmname(v.vs_res, "/z");
+	mklink(v.vs_res, "/z", "/x");
+	vshape_run_res(&v, one_conflict, 0, 1, one_record, &res, &p, &rep);
+	CHECK(rep.zv_rline[0] == ZR_OC_DONE);
+	CHECK(rep.zv_rline[1] == ZR_OC_DONE);
+	zr_verify_report_fini(&rep);
+	zr_parsed_fini(&p);
+	zr_resolution_fini(&res);
+	vshape_fini(&v);
+}
+
+/*
+ * ZY108: a directory line whose chosen side has no such directory
+ * while a line under it says keep. The removal cannot be made -- the
+ * kept name holds the directory open -- so after the choices the
+ * line still reads not done: drifted where onto never had the
+ * directory either, pending where onto did. That is the choice's
+ * form of blocked, which choices_hold passes and the done gate
+ * counts, and zr_resolution_held is the one predicate both the apply
+ * and the check ask.
+ */
+static void
+check_choice_blocked(void)
+{
+	struct zr_verify_report rep;
+	struct zr_resolution res;
+	struct zr_parsed p;
+	struct vshape v;
+	static const char rbody[] =
+	    "    e/ drift onto\n"
+	    "        f drift keep\n"
+	    "        ..\n";
+
+	vshape_init(&v);
+	mkdirp(v.vs_res, "/e", 0755);
+	mkfile(v.vs_res, "/e/f", "the person's\n", 0644);
+	parse_res(&res, rbody, 2, 0);
+	CHECK(zr_resolution_held(&res, 0) == 1);
+	CHECK(zr_resolution_held(&res, 1) == 0);
+	vshape_run_res(&v, "", 0, 0, "", &res, &p, &rep);
+	CHECK(rep.zv_nrlines == 2);
+	CHECK(rep.zv_rline[0] == ZR_OC_DRIFTED);
+	CHECK(rep.zv_rcount[ZR_OC_DRIFTED] == 1);
+	CHECK(rep.zv_ndiffs == 0);
+	zr_verify_report_fini(&rep);
+	zr_parsed_fini(&p);
+	/* onto holding the directory is the same state, read pending */
+	mkdirp(v.vs_onto, "/e", 0755);
+	zr_resolution_fini(&res);
+	parse_res(&res, "    e/ drift from\n        f drift keep\n"
+	    "        ..\n", 2, 0);
+	vshape_run_res(&v, "", 0, 0, "", &res, &p, &rep);
+	CHECK(rep.zv_rline[0] == ZR_OC_PENDING);
+	CHECK(rep.zv_rcount[ZR_OC_PENDING] == 1);
+	zr_verify_report_fini(&rep);
+	zr_parsed_fini(&p);
+	zr_resolution_fini(&res);
+	vshape_fini(&v);
+}
+
+/*
  * ZY100, ZY101: the shape a settled check exits 0 on. Every action
  * of the manifest is done, the one name no action spoke for is as
  * onto had it, and the conflicted name is the person's by a keep --
@@ -2451,6 +2593,9 @@ main(void)
 	check_choice_dir();
 	check_choice_miss();
 	check_choice_roundtrip();
+	check_choice_verdict();
+	check_choice_unmarked();
+	check_choice_blocked();
 	check_settled_clean();
 	check_settled_drift();
 

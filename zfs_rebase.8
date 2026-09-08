@@ -540,10 +540,14 @@ and prints what it found: how every action of
 the document stands, how every answered name of the resolution stands
 against the side it names, and what the result holds outside them both.
 It writes nothing into the tree, and the only document it writes is the
-resolution, at the
+resolution: at the
 .Sy conflicts
 gate, where the drift it found becomes lines with the choice
-.Sy keep .
+.Sy keep ,
+and at the done gate, where what the last check found is written with the
+choice
+.Sy \-
+as the record of it.
 What mends a result is the
 .Sy applying1
 stage's own self-check, which redoes any clean action that did not land and
@@ -932,7 +936,8 @@ was applied to
 .It Sy applying1
 apply the manifest again and go on
 .It Sy conflicts
-check first and write the drift found into the resolution, then go on when
+check first, write the drift found into the resolution and put back any
+conflict line the manifest marks that it no longer has, then go on when
 the resolution is complete, else say how many of its names are
 still unanswered and exit 1; with
 .Fl -no-merge ,
@@ -978,6 +983,11 @@ work from a stray, so nothing here touches it.
 reported, and the exit status is 3;
 .Sy done
 is written all the same.
+What was found is written into the resolution with the choice
+.Sy \- ,
+which is the record of it: a choice that was not carried out set back to
+that, a name outside the manifest that drifted taken as a drift line, and a
+conflict line the manifest marks that the document no longer has put back.
 The check is made by whichever invocation reaches that gate, the fresh run's
 own or a
 .Fl -continue Ns 's,
@@ -985,7 +995,7 @@ and
 .Fl -quiet
 silences its report and nothing else.
 .It a settled result
-reported, and the exit status is 3.
+reported, and the exit status is 3, and nothing is written.
 The
 .Fl -verify
 verb given the manifest a
@@ -1010,6 +1020,28 @@ The
 .Fl -verify
 verb is the same check asked for on its own, at whatever gate the rebase is
 waiting and after it is over: it reports and writes nothing at all.
+.Pp
+From the
+.Sy conflicts
+gate on the resolution is the authority.
+Every line is carried out by its path and its choice, whoever wrote it: a
+line the tool wrote, a line the person changed and a line the person added
+alike, and a conflict line added by hand for a name the manifest never
+marked has its group number ignored, since it belongs to no group.
+What a hand edit cannot do is take a conflict away: a conflict line the
+manifest marks that the document no longer has is put back at the next gate
+with the take mode's answer \(em
+.Sy onto
+under
+.Fl -take-onto ,
+.Sy from
+under
+.Fl -take-from ,
+and
+.Sy \-
+where the run was given neither.
+Two lines for one name are refused when the file is read: they are two
+instructions for one object.
 .Sh FILES
 Each run keeps its own directory, 0700 throughout, named for the dataset
 carrying the record with its slashes kept as directories.
@@ -1098,9 +1130,10 @@ to take away.
 The
 .Fl -verify
 verb exits 0 when nothing has drifted and 3 when something has: an action
-pending or drifted, or a name the manifest never spoke for that the result
-no longer holds as onto had it.
-Blocked and unchecked are states and not faults.
+pending or drifted, a line of the resolution pending or drifted, or a name
+the manifest never spoke for that the result no longer holds as onto had it.
+Blocked and unchecked are states and not faults, and a keep is never
+compared.
 .Sh EXAMPLES
 Rebase a topic snapshot onto the current main, in the clone form:
 .Bd -literal -offset indent

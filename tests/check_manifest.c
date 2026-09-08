@@ -1092,9 +1092,7 @@ test_res_drift(void)
 	CHECK(zr_resolution_unanswered(&r) == 4);
 	CHECK(r.zs_names_declared == 6);
 	CHECK(r.zs_unanswered_declared == 4);
-	/* a drift line is never unanswered, and a path is absolute */
-	CHECK(zr_resolution_add_drift(&r, (const unsigned char *)"/n", 2, 0,
-	    ZR_CH_NONE) == -1);
+	/* a path is absolute and carries no trailing slash */
 	CHECK(zr_resolution_add_drift(&r, (const unsigned char *)"n", 1, 0,
 	    ZR_CH_KEEP) == -1);
 	CHECK(zr_resolution_add_drift(&r, (const unsigned char *)"/n/", 3, 1,
@@ -1120,6 +1118,56 @@ test_res_drift(void)
 	check_rline(&back, 3, ZR_RL_DRIFT, "/e/deep", 1, 0, ZR_CH_KEEP);
 	check_rline(&back, 5, ZR_RL_DRIFT, "/n", 0, 0, ZR_CH_ONTO);
 	zr_resolution_fini(&back);
+	free(got);
+}
+
+/*
+ * ZM88: a conflict line put back, which is what the conflicts gate
+ * does with a mark the document no longer has. The group, the
+ * directory flag and the take mode's answer are all on it, the two
+ * header counts move with it, and the line reads as the skeleton's
+ * own would.
+ */
+static void
+test_res_conflict(void)
+{
+	struct zr_resolution r;
+	struct zr_parsed p;
+	char *got;
+	size_t gotlen = 0;
+
+	parse_ok("conflict base", man_conf, &p);
+	CHECK(zr_resolution_skeleton(&p, ZR_CH_ONTO, &r) == 0);
+	zr_parsed_fini(&p);
+	CHECK(r.zs_nlines == 4);
+	/* the two a line cannot carry: no group, and no such choice */
+	CHECK(zr_resolution_add_conflict(&r, (const unsigned char *)"/z", 2,
+	    0, 0, ZR_CH_ONTO) == -1);
+	CHECK(zr_resolution_add_conflict(&r, (const unsigned char *)"z", 1,
+	    0, 3, ZR_CH_ONTO) == -1);
+	CHECK(zr_resolution_add_conflict(&r, (const unsigned char *)"/z", 2,
+	    1, 3, ZR_CH_NONE) == 0);
+	CHECK(r.zs_nlines == 5);
+	CHECK(r.zs_names_declared == 5);
+	CHECK(r.zs_unanswered_declared == 1);
+	CHECK(zr_resolution_unanswered(&r) == 1);
+	got = res_write(&r, &gotlen);
+	zr_resolution_fini(&r);
+	compare("put back", got, gotlen,
+	    R_BFO "#mode strict\n#names 5\n#unanswered 1\n"
+	    "/\n"
+	    "    a conflict 1 onto\n"
+	    "    d/ conflict 2 onto\n"
+	    "        f conflict 2 onto\n"
+	    "        ..\n"
+	    "    e/\n"
+	    "        deep/\n"
+	    "            x conflict 2 onto\n"
+	    "            ..\n"
+	    "        ..\n"
+	    "    z/ conflict 3 -\n"
+	    "        ..\n"
+	    "    ..\n");
 	free(got);
 }
 
@@ -1185,9 +1233,6 @@ test_res_rejections(void)
 	/* ZM74: a choice outside the four */
 	res_reject("choice", RR("1", "0") "/\n    a drift base\n    ..\n",
 	    "line 9: ");
-	/* ZM75: only a conflict line is unanswered */
-	res_reject("drift dash", RR("1", "1") "/\n    a drift -\n    ..\n",
-	    "line 9: ");
 	/* ZM76: a conflict line without its group number */
 	res_reject("no group", RR("1", "0") "/\n    a conflict keep\n"
 	    "    ..\n", "line 9: ");
@@ -1217,6 +1262,120 @@ test_res_rejections(void)
 	    "    ..\n", "line 9: ");
 	res_reject("no root", RR("1", "0") "    a drift keep\n    ..\n",
 	    "line 8: ");
+}
+
+/*
+ * ZM75: a drift line may read "-". Only a conflict line starts that
+ * way, and this is the one way a drift line comes to be: the done
+ * gate writes what it found over a rebase that is already over. The
+ * count of what is unanswered takes it in like any other.
+ */
+static void
+test_res_dash(void)
+{
+	struct zr_resolution r;
+
+	res_roundtrip("done gate dash",
+	    RR("2", "2") "/\n    a conflict 1 -\n    k drift -\n    ..\n");
+	res_parse_ok("done gate dash",
+	    RR("2", "2") "/\n    a conflict 1 -\n    k drift -\n    ..\n",
+	    &r);
+	check_rline(&r, 1, ZR_RL_DRIFT, "/k", 0, 0, ZR_CH_NONE);
+	CHECK(zr_resolution_unanswered(&r) == 2);
+	zr_resolution_fini(&r);
+	CHECK(zr_resolution_add_drift(&r, (const unsigned char *)"/k", 2, 0,
+	    ZR_CH_NONE) == 0);
+	CHECK(r.zs_unanswered_declared == 1);
+	zr_resolution_fini(&r);
+}
+
+/*
+ * ZM85: two lines for one name are refused at parse, in a
+ * resolution as in a manifest -- they are two instructions for one
+ * object, and the writer would fold them into a file whose #names
+ * miscounts, which the next read would refuse with a count error
+ * naming nothing. A directory that only scopes is a line too: it
+ * cannot be repeated either, whether by another scope or by a line
+ * carrying a choice.
+ */
+static void
+test_res_dup(void)
+{
+	struct zr_resolution r;
+
+	res_reject("two lines",
+	    RR("2", "0") "/\n    a drift keep\n    a drift onto\n    ..\n",
+	    "line 10: ");
+	res_reject("two kinds",
+	    RR("2", "1") "/\n    a conflict 1 -\n    a drift keep\n"
+	    "    ..\n", "line 10: ");
+	res_reject("scope twice",
+	    RR("2", "0") "/\n    d/\n        x drift keep\n        ..\n"
+	    "    d/\n        y drift keep\n        ..\n    ..\n",
+	    "line 12: ");
+	res_reject("scope and choice",
+	    RR("2", "0") "/\n    d/ drift keep\n        x drift keep\n"
+	    "        ..\n    d/\n        ..\n    ..\n", "line 12: ");
+	/* and the same name under two different scopes is two names */
+	res_parse_ok("same leaf twice",
+	    RR("2", "0") "/\n    c/\n        a drift keep\n        ..\n"
+	    "    d/\n        a drift keep\n        ..\n    ..\n", &r);
+	CHECK(r.zs_nlines == 2);
+	zr_resolution_fini(&r);
+}
+
+/*
+ * ZM86: a name is one plain component. The escaping can spell ".",
+ * ".." and "/" -- every byte may be written \NNN -- and the tree
+ * section means none of them, so both parsers refuse them where
+ * they are written and not where they are used.
+ */
+static void
+test_components(void)
+{
+	/* the manifest */
+	reject("dot name", RJ("1", "0") "/\n    . rm\n    ..\n",
+	    "line 15: ");
+	reject("dot dir", RJ("0", "0") "/\n    ./\n    ..\n    ..\n",
+	    "line 15: ");
+	reject("dotdot name",
+	    RJ("1", "0") "/\n    \\056\\056 rm\n    ..\n", "line 15: ");
+	reject("slash name", RJ("1", "0") "/\n    a\\057b rm\n    ..\n",
+	    "line 15: ");
+	/* and the resolution, by the same two functions */
+	res_reject("dot name", RR("1", "0") "/\n    . drift keep\n    ..\n",
+	    "line 9: ");
+	res_reject("dotdot name",
+	    RR("1", "0") "/\n    \\056\\056 drift keep\n    ..\n",
+	    "line 9: ");
+	res_reject("slash name",
+	    RR("1", "0") "/\n    a\\057b drift keep\n    ..\n", "line 9: ");
+	res_reject("dot dir", RR("0", "0") "/\n    ./\n    ..\n    ..\n",
+	    "line 9: ");
+}
+
+/*
+ * ZM87: and the argument of an ln, a cp or a write, which is a free
+ * path out of the document and goes to the apply as it stands. The
+ * parse refuses what the apply would have refused part way through
+ * a tree it had already written into.
+ */
+static void
+test_arguments(void)
+{
+	reject("arg dotdot", RJ("1", "0") "/\n    a cp /\\056\\056/x\n"
+	    "    ..\n", "line 15: ");
+	reject("arg dot",
+	    RJ("1", "0") "/\n    a write /x/\\056/y\n    ..\n",
+	    "line 15: ");
+	reject("arg empty", RJ("1", "0") "/\n    a cp //x\n    ..\n",
+	    "line 15: ");
+	reject("arg trailing", RJ("1", "0") "/\n    a cp /x/\n    ..\n",
+	    "line 15: ");
+	reject("arg relative", RJ("1", "0") "/\n    a cp x\n    ..\n",
+	    "line 15: ");
+	reject("arg root", RJ("1", "0") "/\n    a cp /\n    ..\n",
+	    "line 15: ");
 }
 
 /*
@@ -1657,7 +1816,12 @@ main(void)
 	test_res_skeleton();
 	test_res_drift();
 	test_res_escapes();
+	test_res_conflict();
 	test_res_rejections();
+	test_res_dash();
+	test_res_dup();
+	test_components();
+	test_arguments();
 	test_header_clone();
 	test_header_dataset();
 	test_header_posix();

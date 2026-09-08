@@ -228,6 +228,17 @@ const char *zr_outcome_str(enum zr_outcome oc);
 const char *zr_diff_str(enum zr_diff df);
 
 /*
+ * Does the manifest mark this exact name conflict? A resolution line
+ * for a name it does not mark is the person's own instruction, added
+ * by hand, and is carried out like a drift line with that choice:
+ * the group number on it is not read, so it pools with nobody. The
+ * classifier and the apply both ask it, so that one document means
+ * one thing in both.
+ */
+int zr_verify_marked(const struct zr_parsed *m, const unsigned char *path,
+    size_t len);
+
+/*
  * Does the manifest mark a name under this directory conflict? That
  * is the one thing that can stop the removal of a directory the
  * manifest says to remove. The classifier and the apply both ask it,

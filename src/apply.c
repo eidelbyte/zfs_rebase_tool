@@ -1098,8 +1098,12 @@ za_verify(struct za_ctx *c, const struct zr_action *a,
  * written below. A directory where the action wants anything else is
  * the type-change shape, where the rm of the old directory closed on
  * the line before this one -- so what is left is empty and rmdir
- * takes it, and anything still inside is a manifest that did not
- * remove its children.
+ * takes it. A directory that still holds something will not go, and
+ * that is not this apply's failure: something under it is being kept
+ * by a choice or by a manifest that did not remove its children, and
+ * za_late_rmdirs treats the same errno the same way. Returns 0 for a
+ * way that is clear, 1 for a directory that stayed -- the caller
+ * leaves the action alone and counts it -- or -1 with err set.
  */
 static int
 za_clear(struct za_ctx *c, const struct zr_action *a, zr_type_t want)
@@ -1126,8 +1130,13 @@ za_clear(struct za_ctx *c, const struct zr_action *a, zr_type_t want)
 	}
 	if (want == ZR_T_DIR)
 		return (0);
-	if (unlinkat(c->zc_rootfd, rel, AT_REMOVEDIR) != 0)
-		return (za_fail(c, a, "rmdir of the directory in the way"));
+	if (unlinkat(c->zc_rootfd, rel, AT_REMOVEDIR) != 0) {
+		if (errno == ENOTEMPTY || errno == EEXIST)
+			return (1);
+		if (errno != ENOENT)
+			return (za_fail(c, a,
+			    "rmdir of the directory in the way"));
+	}
 	return (0);
 }
 
@@ -1228,9 +1237,16 @@ za_do_cp(struct za_ctx *c, const struct zr_action *a,
 	int fd, rc;
 
 	if (za_path_ok(c, a, a->za_arg, a->za_arglen) != 0 ||
-	    za_source(c, a, w, &src) != 0 ||
-	    za_clear(c, a, src.zs_type) != 0)
+	    za_source(c, a, w, &src) != 0)
 		return (-1);
+	rc = za_clear(c, a, src.zs_type);
+	if (rc < 0)
+		return (-1);
+	if (rc > 0) {
+		/* a directory in the way that something is holding open */
+		c->zc_st->zs_skipped++;
+		return (0);
+	}
 	rel = za_rel(a->za_path);
 	mode = src.zs_at->za_mode & ZA_CREAT;
 	switch (src.zs_type) {
@@ -1895,8 +1911,19 @@ za_rm_one(struct za_ctx *c, const struct zr_action *a)
 	if (za_unlock_st(c, a->za_path, a->za_pathlen, &st) != 0)
 		return (-1);
 	if (unlinkat(c->zc_rootfd, rel, isdir ? AT_REMOVEDIR : 0) != 0 &&
-	    errno != ENOENT)
-		return (za_fail(c, a, isdir ? "rmdir" : "unlink"));
+	    errno != ENOENT) {
+		/*
+		 * A directory that still holds something stays, counted
+		 * as left alone: a name inside it is being kept, which
+		 * is a state and no fault of this apply, and the check
+		 * after the choices is what judges it. za_late_rmdirs
+		 * has read the same errno that way from the start.
+		 */
+		if (isdir == 0 || (errno != ENOTEMPTY && errno != EEXIST))
+			return (za_fail(c, a, isdir ? "rmdir" : "unlink"));
+		c->zc_st->zs_skipped++;
+		return (0);
+	}
 	if (c->zc_by == ZA_BY_CHOICE)
 		c->zc_st->zs_dropped++;
 	else
@@ -2224,6 +2251,7 @@ struct za_pick {
 	zr_pool_t		zk_pool;	/* in that side's tree */
 	uint32_t		zk_anchor;	/* an earlier line, or none */
 	int			zk_drop;	/* the side has no such name */
+	int			zk_blocked;	/* a drop a keep holds open */
 };
 
 /*
@@ -2321,10 +2349,17 @@ za_late_rmdirs(struct za_ctx *c, const struct zr_parsed *m)
 	return (0);
 }
 
-/* Every line's pick, and the pooling that ties some of them together. */
+/*
+ * Every line's pick, and the pooling that ties some of them
+ * together. The whole document is read here, before a byte of the
+ * tree is touched, so that the apply asks nothing of the disk while
+ * it acts: a directory line whose chosen side has no such directory
+ * while a line under it says keep is marked blocked and is left
+ * alone, because the removal cannot be made and will not be tried.
+ */
 static void
-za_picks(const struct zr_resolution *res, struct za_pick *picks,
-    struct zr_walk *onto, struct zr_walk *from)
+za_picks(const struct zr_resolution *res, const struct zr_parsed *m,
+    struct za_pick *picks, struct zr_walk *onto, struct zr_walk *from)
 {
 	const struct zr_rline *l, *al;
 	struct za_pick *p;
@@ -2338,6 +2373,7 @@ za_picks(const struct zr_resolution *res, struct za_pick *picks,
 		p->zk_pool = ZR_POOL_NONE;
 		p->zk_anchor = ZA_NO_ANCHOR;
 		p->zk_drop = 0;
+		p->zk_blocked = 0;
 		if (l->zl_choice == ZR_CH_KEEP)
 			continue;
 		p->zk_side = l->zl_choice == ZR_CH_ONTO ? onto : from;
@@ -2345,15 +2381,20 @@ za_picks(const struct zr_resolution *res, struct za_pick *picks,
 		if (za_side_pool(p->zk_side, l->zl_path, l->zl_pathlen,
 		    &p->zk_pool) == 0) {
 			p->zk_drop = 1;
+			p->zk_blocked = zr_resolution_held(res, i);
 			continue;
 		}
 		/*
 		 * The anchor is the first line of this same group that
 		 * chose this same side and that the side holds in this
 		 * same pool. A drift line has no group and is never
-		 * anybody's anchor, and never has one.
+		 * anybody's anchor, and never has one; neither is a
+		 * conflict line for a name the manifest never marked,
+		 * which is the person's own instruction and whose group
+		 * number is not read (documents-design.md, section 11.5).
 		 */
-		if (l->zl_kind != ZR_RL_CONFLICT)
+		if (l->zl_kind != ZR_RL_CONFLICT ||
+		    zr_verify_marked(m, l->zl_path, l->zl_pathlen) == 0)
 			continue;
 		for (j = 0; j < i; j++) {
 			al = &res->zs_lines[j];
@@ -2361,7 +2402,9 @@ za_picks(const struct zr_resolution *res, struct za_pick *picks,
 			    al->zl_group != l->zl_group ||
 			    al->zl_choice != l->zl_choice ||
 			    picks[j].zk_drop != 0 ||
-			    picks[j].zk_pool != p->zk_pool)
+			    picks[j].zk_pool != p->zk_pool ||
+			    zr_verify_marked(m, al->zl_path,
+			    al->zl_pathlen) == 0)
 				continue;
 			p->zk_anchor = picks[j].zk_anchor == ZA_NO_ANCHOR ?
 			    j : picks[j].zk_anchor;
@@ -2447,7 +2490,7 @@ zr_apply_choices(const struct zr_resolution *res, const struct zr_parsed *m,
 			(void) za_failp(&c, self, "memory");
 			goto out;
 		}
-		za_picks(res, picks, onto, from);
+		za_picks(res, m, picks, onto, from);
 	}
 	if (za_root_copy(&c, root) != 0) {
 		errno = ENOMEM;
@@ -2522,6 +2565,17 @@ zr_apply_choices(const struct zr_resolution *res, const struct zr_parsed *m,
 		l = &res->zs_lines[i - 1];
 		if (picks[i - 1].zk_drop == 0)
 			continue;
+		/*
+		 * The one removal a choice cannot ask for: a name under
+		 * this directory is the person's by a keep, and it holds
+		 * the directory open. The pre-scan said so, so nothing is
+		 * asked of the disk; the check after the choices judges
+		 * it, and it is no fault of this apply.
+		 */
+		if (picks[i - 1].zk_blocked != 0) {
+			c.zc_st->zs_skipped++;
+			continue;
+		}
 		if (za_stopped(&c) != 0)
 			goto out;
 		if (za_stash(&pb, (const char *)l->zl_path,

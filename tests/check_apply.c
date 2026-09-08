@@ -431,6 +431,51 @@ parse_body(struct zr_parsed *p, const char *body, int nactions)
 	CHECK(fclose(f) == 0);
 }
 
+/*
+ * And the same text refused, which is where a path that climbs out
+ * of the root is now stopped: the parse reads the components the
+ * apply would have refused, so no tree is touched at all (ZM86,
+ * ZM87).
+ */
+static void
+parse_body_refused(const char *body, int nactions, const char *word)
+{
+	char text[TEXTMAX], err[256];
+	struct zr_parsed p;
+	FILE *f;
+	int n;
+
+	n = snprintf(text, sizeof (text),
+	    "#rebase-manifest 5\n"
+	    "#result -\n"
+	    "#form posix\n"
+	    "#base b 0\n"
+	    "#from f 0\n"
+	    "#onto o 0\n"
+	    "#made -\n"
+	    "#tag -\n"
+	    "#take -\n"
+	    "#written -\n"
+	    "#mode strict\n"
+	    "#actions %d\n"
+	    "#conflicts 0\n"
+	    "/\n"
+	    "%s"
+	    "..\n", nactions, body);
+	CHECK(n > 0 && (size_t)n < sizeof (text));
+	f = tmpfile();
+	CHECK(f != NULL);
+	CHECK(fputs(text, f) != EOF);
+	rewind(f);
+	err[0] = '\0';
+	CHECK(zr_manifest_parse(f, &p, err, sizeof (err)) == -1);
+	if (strstr(err, word) == NULL)
+		printf("  message lacks \"%s\": %s\n", word, err);
+	CHECK(strstr(err, word) != NULL);
+	CHECK(fclose(f) == 0);
+	zr_parsed_fini(&p);
+}
+
 /* One targeted shape: a from tree, an onto tree and the walk between. */
 struct shape {
 	char		sh_root[PATHMAX];
@@ -1188,16 +1233,25 @@ check_rm_nonempty(void)
 	shape_fini(&sh);
 }
 
-/* ZA25, ZA26: a path that tries to climb out of the root. */
+/*
+ * ZA25, ZA26: a path that tries to climb out of the root. The parse
+ * is where it is refused now, so the apply is never reached and the
+ * tree is never opened: za_path_ok stays as the second line, for the
+ * paths the apply builds itself.
+ */
 static void
 check_escape(void)
 {
+	struct zr_apply_stats st;
 	struct shape sh;
 
+	parse_body_refused("    x ln /../a\n", 1, "\"..\"");
+	parse_body_refused("    x ln /\\056\\056/a\n", 1, "\"..\"");
 	shape_init(&sh);
 	mkfile(sh.sh_onto, "/a", "anchor", 0644);
-	shape_refused(&sh, "    x ln /../a\n", 1, "\"..\"");
-	CHECK(absent(sh.sh_onto, "/x"));
+	mkfile(sh.sh_onto, "/x", "onto's own", 0644);
+	shape_ok(&sh, "    x ln /a\n", 1, &st);
+	CHECK(!absent(sh.sh_onto, "/x"));
 	shape_fini(&sh);
 }
 
@@ -1351,6 +1405,23 @@ doc_drift(struct doc *d, const char *path, enum zr_choice ch)
 {
 	CHECK(zr_resolution_add_drift(&d->dc_r, (const unsigned char *)path,
 	    strlen(path), 0, ch) == 0);
+}
+
+/* The same on a directory, which is what scopes the lines under it. */
+static void
+doc_drift_dir(struct doc *d, const char *path, enum zr_choice ch)
+{
+	CHECK(zr_resolution_add_drift(&d->dc_r, (const unsigned char *)path,
+	    strlen(path), 1, ch) == 0);
+}
+
+/* One line the manifest never marked, added by hand as a person can. */
+static void
+doc_add_conflict(struct doc *d, const char *path, uint32_t group,
+    enum zr_choice ch)
+{
+	CHECK(zr_resolution_add_conflict(&d->dc_r, (const unsigned char *)path,
+	    strlen(path), 0, group, ch) == 0);
 }
 
 /*
@@ -1953,6 +2024,159 @@ check_choice_holds_dir(void)
 }
 
 /*
+ * ZA64: a directory line whose chosen side has no such directory
+ * while a line under it says keep. The removal cannot be made -- the
+ * kept name holds the directory open -- and the pre-scan is what
+ * knows it, so nothing is asked of the disk: the line is skipped and
+ * counted, the run does not die on an ENOTEMPTY, and the check after
+ * the choices is what judges it.
+ */
+static void
+check_choice_blocked_dir(void)
+{
+	struct zr_apply_stats st;
+	struct pick p;
+	struct doc d;
+
+	pick_init(&p);
+	mkdirp(p.pk_res, "/e", 0755);
+	mkfile(p.pk_res, "/e/f", "the person's\n", 0644);
+	doc_build(&d, "", 0, 0, "");
+	doc_drift_dir(&d, "/e", ZR_CH_ONTO);
+	doc_drift(&d, "/e/f", ZR_CH_KEEP);
+	pick_ok(&p, &d, &st);
+	CHECK(st.zs_kept == 1);
+	CHECK(st.zs_dropped == 0);
+	CHECK(st.zs_skipped == 1);
+	CHECK(st.zs_line == ZR_LINE_NONE);
+	CHECK(!absent(p.pk_res, "/e"));
+	has_bytes(p.pk_res, "/e/f", "the person's\n");
+	pick_stable(&p, &d);
+	doc_fini(&d);
+	pick_fini(&p);
+
+	/* and with nothing kept under it the same directory goes */
+	pick_init(&p);
+	mkdirp(p.pk_res, "/e", 0755);
+	mkfile(p.pk_res, "/e/f", "a stray\n", 0644);
+	doc_build(&d, "", 0, 0, "");
+	doc_drift_dir(&d, "/e", ZR_CH_ONTO);
+	doc_drift(&d, "/e/f", ZR_CH_ONTO);
+	pick_ok(&p, &d, &st);
+	CHECK(st.zs_dropped == 2);
+	CHECK(absent(p.pk_res, "/e"));
+	pick_stable(&p, &d);
+	doc_fini(&d);
+	pick_fini(&p);
+}
+
+/*
+ * ZA65: one document with a choice of each kind on it. keep leaves
+ * the name exactly as the person left it, onto makes it onto's
+ * object and from makes it from's, and the three do not disturb one
+ * another.
+ */
+static void
+check_choice_each(void)
+{
+	struct zr_apply_stats st;
+	struct stat before, after;
+	struct pick p;
+	struct doc d;
+	static const char body[] =
+	    "    k conflict 1\n"
+	    "    o conflict 2\n"
+	    "    r conflict 3\n";
+	static const char records[] =
+	    "\n"
+	    "conflict 1 changed-both\n"
+	    "  why  /k changed on both sides\n"
+	    "  base ()\n"
+	    "  from ({/k}a)\n"
+	    "  onto ({/k}b)\n"
+	    "conflict 2 changed-both\n"
+	    "  why  /o changed on both sides\n"
+	    "  base ()\n"
+	    "  from ({/o}c)\n"
+	    "  onto ({/o}d)\n"
+	    "conflict 3 changed-both\n"
+	    "  why  /r changed on both sides\n"
+	    "  base ()\n"
+	    "  from ({/r}e)\n"
+	    "  onto ({/r}f)\n";
+
+	pick_init(&p);
+	mkfile(p.pk_onto, "/k", "onto k\n", 0644);
+	mkfile(p.pk_onto, "/o", "onto o\n", 0644);
+	mkfile(p.pk_onto, "/r", "onto r\n", 0644);
+	mkfile(p.pk_from, "/k", "from k\n", 0644);
+	mkfile(p.pk_from, "/o", "from o\n", 0644);
+	mkfile(p.pk_from, "/r", "from r\n", 0644);
+	mkfile(p.pk_res, "/k", "the hand merge\n", 0644);
+	mkfile(p.pk_res, "/o", "the hand merge\n", 0644);
+	mkfile(p.pk_res, "/r", "the hand merge\n", 0644);
+	doc_build(&d, body, 0, 3, records);
+	doc_choose(&d, "/k", ZR_CH_KEEP);
+	doc_choose(&d, "/o", ZR_CH_ONTO);
+	doc_choose(&d, "/r", ZR_CH_FROM);
+	lstat_at(p.pk_res, "/k", &before);
+	pick_ok(&p, &d, &st);
+	CHECK(st.zs_kept == 1);
+	CHECK(st.zs_made == 2);
+	CHECK(st.zs_dropped == 0);
+	lstat_at(p.pk_res, "/k", &after);
+	CHECK(before.st_ino == after.st_ino);
+	has_bytes(p.pk_res, "/k", "the hand merge\n");
+	has_bytes(p.pk_res, "/o", "onto o\n");
+	has_bytes(p.pk_res, "/r", "from r\n");
+	pick_stable(&p, &d);
+	doc_fini(&d);
+	pick_fini(&p);
+}
+
+/*
+ * ZA66: a conflict line for a name the manifest never marked. It is
+ * the person's own instruction and is carried out like a drift line
+ * with that choice; its group number is not read, so a name onto
+ * pools with the marked name of "that group" is still its own object
+ * here.
+ */
+static void
+check_choice_unmarked(void)
+{
+	struct zr_apply_stats st;
+	struct pick p;
+	struct doc d;
+	static const char body[] = "    x conflict 1\n";
+	static const char records[] =
+	    "\n"
+	    "conflict 1 changed-both\n"
+	    "  why  /x changed on both sides\n"
+	    "  base ()\n"
+	    "  from ({/x}y)\n"
+	    "  onto ({/x,/z}z)\n";
+
+	pick_init(&p);
+	mkfile(p.pk_onto, "/x", "one object\n", 0644);
+	mklink(p.pk_onto, "/x", "/z");
+	mkfile(p.pk_from, "/x", "from bytes\n", 0644);
+	mkfile(p.pk_res, "/x", "the hand merge\n", 0644);
+	mkfile(p.pk_res, "/z", "a stray\n", 0644);
+	doc_build(&d, body, 0, 1, records);
+	doc_choose(&d, "/x", ZR_CH_ONTO);
+	doc_add_conflict(&d, "/z", 1, ZR_CH_ONTO);
+	pick_ok(&p, &d, &st);
+	CHECK(st.zs_made == 2);
+	CHECK(st.zs_linked == 0);
+	has_bytes(p.pk_res, "/x", "one object\n");
+	has_bytes(p.pk_res, "/z", "one object\n");
+	CHECK(!one_object(p.pk_res, "/x", "/z"));
+	pick_stable(&p, &d);
+	doc_fini(&d);
+	pick_fini(&p);
+}
+
+/*
  * ZA55: a document with a choice still "-" is refused, and refused
  * before anything is written: the name that was answered is left as
  * the result had it.
@@ -2334,6 +2558,9 @@ main(void)
 	check_choice_frees_dir();
 	check_choice_holds_dir();
 	check_choice_unanswered();
+	check_choice_blocked_dir();
+	check_choice_each();
+	check_choice_unmarked();
 
 	printf("check_apply: %d checks passed\n", checks);
 	return (0);

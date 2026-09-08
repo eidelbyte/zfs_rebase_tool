@@ -444,7 +444,9 @@ name where the manifest has an action. Dimensions: line kind
 onto, from}; scoping {root only, nested, a directory carrying a
 choice, on-the-way directories}; escaping; header {version,
 datasets, mode, #names, #unanswered}; builders {skeleton with each
-default, add_drift}; parse rejections; round trip.
+default, add_drift, add_conflict}; the name a line spells {one
+plain component, ".", "..", empty, one holding a slash};
+repeated names; parse rejections; round trip.
 
 | cell | scenario | disposition |
 |------|----------|-------------|
@@ -463,7 +465,7 @@ default, add_drift}; parse rejections; round trip.
 | ZM72 | parse refuses a raw action word | covered: check_manifest.c |
 | ZM73 | parse refuses a word that is neither conflict nor drift | covered: check_manifest.c |
 | ZM74 | parse refuses a choice outside the four | covered: check_manifest.c |
-| ZM75 | parse refuses "-" on a drift line | covered: check_manifest.c |
+| ZM75 | a drift line may read "-": only a conflict line starts that way, and the done gate writes it over what it found | covered: check_manifest.c |
 | ZM76 | parse refuses a conflict line with no group | covered: check_manifest.c |
 | ZM77 | parse refuses #names that miscounts | covered: check_manifest.c |
 | ZM78 | parse refuses #unanswered that miscounts | covered: check_manifest.c |
@@ -473,6 +475,10 @@ default, add_drift}; parse rejections; round trip.
 | ZM82 | the skeleton beside the manifest, the record naming it, --restart putting it back | planned: box, tests/box/run-fixture.sh for the unanswered skeleton, tests/box/run-resolution.sh case 5 for the answered one a --take record puts back |
 | ZM83 | an unanswered skeleton stops at conflicts, an answered one goes on | planned: box, tests/box/run-fixture.sh and run-kills.sh, and run-resolution.sh cases 1 and 3, which add the count the stop names and a document answered in part |
 | ZM84 | a conflicted name only from holds is a conflict mark in the tree section, with the directories on the way opened; the skeleton then has it to answer, and an rm above it is blocked | covered: run-fixtures.sh over h-s2-trap-dead-vs-edit.zrt and the five fixtures regenerated with it (tools/regen-expect.sh); box: run-replay.sh case 2 |
+| ZM85 | two lines for one name in a resolution are refused at parse, as a repeated name is in a manifest: they are two instructions for one object, and the writer would fold them into a file whose #names miscounts | covered: check_manifest.c |
+| ZM86 | both parsers refuse a decoded name that is ".", ".." or empty, or that holds a "/": the escaping can spell all four and the tree section means none of them | covered: check_manifest.c |
+| ZM87 | both parsers validate the argument of an ln, a cp and a write the same way -- absolute, no trailing slash, no empty, "." or ".." component -- so the apply never stops part way for a reason the parse could have given | covered: check_manifest.c |
+| ZM88 | add_conflict: a conflict line put back with its group, its directory flag and the take mode's answer, and the two header counts moving with it | covered: check_manifest.c |
 
 ## ZH -- the manifest header, the rebase's identity (check_manifest.c, check_roundtrip.c)
 
@@ -569,7 +575,9 @@ And, from ZA40 on, the other document: choice {keep, onto, from,
 {conflict with a group, drift with none}; the group's pooling
 {one side and one pool there, one side and two, two sides}; the
 chosen type {file, directory, symlink}; the blocked directory
-removal {freed by the choices, held by one of them}; the pass
+removal {freed by the choices, held by one of them}; a directory
+line the chosen side lacks {empty in the result, held open by a
+keep line under it}; the line the manifest never marked; the pass
 {first, second}.
 
 | cell | scenario | disposition |
@@ -628,6 +636,9 @@ removal {freed by the choices, held by one of them}; the pass
 | ZA61 | an append-only flag on a rewrite | covered: check_apply.c (uappnd where a user one exists, else a skip line) |
 | ZA62 | the guard refuses when a system flag on onto's side cannot be cleared | deferred: securelevel cannot be raised without a reboot; ZX23 and run-precond.sh 2 hold the procedure |
 | ZA63 | a socket put back by the repair | covered: check_apply.c, the repair over an onto tree holding one |
+| ZA64 | a directory line whose chosen side has no such directory while a line under it says keep: the pre-scan marks it blocked and the drop loop skips it, counted as left alone, so the apply asks nothing of the disk while it acts and the run does not die on the ENOTEMPTY | covered: check_apply.c; box: run-resolution.sh case 9 |
+| ZA65 | applying2 leaves every keep line exactly as it is and carries out every onto and from line, in one document | covered: check_apply.c |
+| ZA66 | a conflict line for a name the manifest never marked is the person's instruction and is carried out like a drift line with that choice: its group number is not read, so it pools with nobody | covered: check_apply.c; box: run-resolution.sh case 10 |
 
 ## ZX -- the ZFS layer (zfs ops, driver, guards)
 
@@ -834,7 +845,7 @@ again.
 | ZX188 | --verify beside --continue, --restart or --abort is refused, exit 2: two verbs are two commands, and the check the flag used to ask for is standard | covered: check_args.c; box, box/run-fixture.sh 0b |
 | ZX189 | the starting set beside any verb is refused, exit 2 -- --from, --onto and --result together, and for --verify also --dry-run, the other spelling of a start -- while --from or --onto alone stands on the verb and is checked against the header | covered: check_args.c; box, box/run-fixture.sh 0b, which also asserts the refused command read nothing, created nothing and held nothing |
 | ZX190 | every --continue that arrives at the conflicts gate checks first, under no flag: the drift it finds becomes lines of the resolution with the choice keep, printed and never fixed; a --continue that arrives there from applying1 in the same invocation is not checked twice, since the self-check it has just made is that check | planned: box, box/run-strays.sh case 5 and box/run-resolution.sh case 6, which are the drift-line cases with the flag dropped; the writing itself is src/run.c's add_drift, which wants a real resolution beside a real record |
-| ZX191 | the final check at the done gate in every invocation that reaches it, fresh run or --continue: drift is reported and the exit status is 3, and done is written all the same -- the record cleared, the result settled and the run directory gone -- while a check that cannot be made at all leaves the gate unpassed and the rebase standing | planned: box, box/run-strays.sh case 6 (a stray made at the applying2 gate, exit 3 with done reached) and box/run-fixture.sh step 5 (the clean pass, exit 0 with the report printed); the unmakeable check is ZX30's, and the verdict rule itself -- an action pending or drifted, or any entry of the name list -- is found_drift in src/run.c, static and read by the done gate and the --verify verb alike, deferred on the Mac because nothing here builds a report against a real result |
+| ZX191 | the final check at the done gate in every invocation that reaches it, fresh run or --continue: drift is reported and the exit status is 3, and done is written all the same -- the record cleared, the result settled and the run directory gone -- while a check that cannot be made at all leaves the gate unpassed and the rebase standing | planned: box, box/run-strays.sh case 6 (a stray made at the applying2 gate, exit 3 with done reached) and box/run-fixture.sh step 5 (the clean pass, exit 0 with the report printed); the unmakeable check is ZX30's, and the verdict rule itself -- an action pending or drifted, a line of the resolution pending or drifted, or any entry of the name list -- is found_drift in src/run.c, static and read by the done gate and the --verify verb alike, deferred on the Mac because nothing here builds a report against a real result |
 | ZX192 | -q silences the final check's report and nothing else: the check is still made, the exit status still stands, done is still done, and the report of the conflicts gate and of the --verify verb are printed as always | planned: box, box/run-fixture.sh step 5, which runs the same rebase twice, once plain and once under -q |
 | ZX193 | --verify --result on a settled result: there is no record to read a rebase off, so it says to give the manifest instead, exit 2, and touches nothing | planned: box, box/run-fixture.sh 3a and its dataset pass, box/run-strays.sh verify_open and case 5 |
 | ZX194 | --verify MANIFEST on a settled result: the record is what tells a rebase in flight from one that is over, and a settled result takes its inputs from the header alone -- exit 0 with the counts on a tree that is what the manifest says | planned: box, box/run-fixture.sh 3a (the clone form) and its dataset pass (the dataset form), box/run-strays.sh cases 5, 7 and 8 |
@@ -1266,10 +1277,15 @@ snapshot, a clone and a kill need the box.
 | ZY95 | the invocation that reaches the done gate makes the final check there, whether it is the fresh run or a --continue, and no flag is given or needed: there is no recorded request (record-slim took the property away) and no request form left (verify-schedule took the flag away) | planned: box, box/run-kills.sh, whose --continue after every kill reaches it, and box/run-resolution.sh cases 1, 4 and 6, which read the report out of the invocation that reaches done |
 | ZY96 | a type change (rm and a make on one name): before the apply both lines pending | covered: check_verify.c |
 | ZY97 | a type change after the apply: the name holds the later line's product, the removal reads done and not drifted; a name with no later line that holds something else stays drifted (ZY2) | covered: check_verify.c; box: run-replay.sh over type-change.zrt |
-| ZY100 | the shape a settled check exits 0 on: every action of the manifest done, the one name no action spoke for as onto had it, and the conflicted name the person's by a keep -- the verdict rule's three inputs all at zero | covered: check_verify.c |
+| ZY100 | the shape a settled check exits 0 on: every action of the manifest done, the one name no action spoke for as onto had it, and the conflicted name the person's by a keep -- the verdict rule's four inputs all at zero | covered: check_verify.c |
 | ZY101 | the same with the from side gone, which is what #made from leaves at done: the cp comes back unchecked rather than drifted, the rm still reads done, the name list is unchanged, and the verdict does not move | covered: check_verify.c |
 | ZY102 | the first shape a settled check exits 3 on: an edit to a name the manifest never spoke for is one entry of the name list, and onto is what says so, so the from side being gone takes nothing from it | covered: check_verify.c |
 | ZY103 | the second: an edit over an action's own name is that action drifted -- and there the answer rests on from's bytes, so with from gone it is unchecked and nobody can say, which is the limit of a check made long after the rebase | covered: check_verify.c |
+| ZY104 | the verdict reads the resolution's outcomes as well: a resolved name edited by hand after applying2 is one drifted line and nothing else -- no action pending or drifted, no entry of the name list -- so a verdict blind to that fourth input calls a drifted result clean | covered: check_verify.c; box: run-resolution.sh case 4, which asks it of the settled result |
+| ZY105 | what a new line is written as, by phase: applying1 resets the drift and writes none, the conflicts gate writes keep, the done gate writes "-" | planned: box, run-strays.sh cases 5 and 6 and run-resolution.sh case 6 for the first two, case 9 for the done gate |
+| ZY106 | a conflict line the manifest marks that a hand edit removed is put back at the conflicts gate with the take mode's answer -- onto, from, or "-" in standard mode -- and the header counts move with it | planned: box, run-resolution.sh case 10, under each take mode |
+| ZY107 | a conflict line for a name the manifest never marked is carried out like a drift line with that choice, and the classification holds it against the side it names | covered: check_apply.c and check_verify.c; box: run-resolution.sh case 10 |
+| ZY108 | a directory line the chosen side lacks that a keep line under it holds open reads pending or drifted after the choices: choices_hold passes it, the done gate counts it, the exit is 3 and done is reached all the same | covered: check_verify.c; box: run-resolution.sh case 9 |
 
 ZY40 to ZY45 are the post-done verify's: a tree that is not there
 any more is walked as the empty tree and named in the missing mask,
@@ -1289,6 +1305,20 @@ ZY60 to ZY69 are the one verify of the plan's 2026-09-04 revision:
 one algorithm at every gate, a per-name list beside the per-action
 outcomes, and a fix only at applying1, where the result is the
 run's own and anything off the expected tree is a stray.
+
+ZY104 to ZY108 are review-resolution's: the resolution as the
+authority (documents-design.md, section 11.5). The verdict has four
+inputs, not three -- an action pending or drifted, a line of the
+resolution pending or drifted, and any entry of the name list -- and
+the resolution's own outcomes are the only place a resolved name can
+show at all, since a conflict mark is counted in no action outcome
+and a chosen name is in no entry of the name list. What a new line
+is written as goes by phase and not by the take mode: reset at
+applying1, keep at the conflicts gate, "-" at the done gate; the
+take mode is read for one thing only, the conflict line a hand edit
+removed and the gate puts back. The Mac rows are the classifier's;
+the writing is run.c's and is the box's, since a gate is a walk of
+three real trees.
 
 ## Positive-proof cells
 

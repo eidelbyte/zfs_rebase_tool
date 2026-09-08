@@ -126,6 +126,25 @@ zv_same(struct zv_ctx *c, int ta, zr_pool_t pa, int tb, zr_pool_t pb)
 	    c->zc_errlen));
 }
 
+/* Does the manifest mark this exact name conflict? */
+int
+zr_verify_marked(const struct zr_parsed *m, const unsigned char *path,
+    size_t len)
+{
+	const struct zr_action *a;
+	uint32_t i;
+
+	if (m == NULL || path == NULL || len == 0)
+		return (0);
+	for (i = 0; i < m->zp_nactions; i++) {
+		a = &m->zp_actions[i];
+		if (a->za_kind == ZR_ACT_CONFLICT && a->za_pathlen == len &&
+		    memcmp(a->za_path, path, len) == 0)
+			return (1);
+	}
+	return (0);
+}
+
 /* Is any name of the manifest's conflict marks inside this directory? */
 int
 zr_verify_blocked(const struct zr_parsed *m, const unsigned char *dir,
@@ -597,7 +616,11 @@ zv_names(struct zv_ctx *c, struct zr_verify_report *out)
  *
  * A drift line is nobody's group: it is one name a verify found
  * changed, and group 0 is not a group, so nothing is asked of it.
- * Absence has no pool either, and there is nothing to ask there.
+ * Neither is a conflict line for a name the manifest never marked:
+ * that line is the person's own instruction, carried out like a
+ * drift line, and its group number is not read (documents-design.md,
+ * section 11.5). Absence has no pool either, and there is nothing to
+ * ask there.
  */
 static int
 zv_group_pooled(const struct zv_ctx *c, uint32_t li, int side, zr_pool_t ps,
@@ -610,13 +633,15 @@ zv_group_pooled(const struct zv_ctx *c, uint32_t li, int side, zr_pool_t ps,
 	uint32_t i;
 
 	if (ps == ZR_POOL_NONE || l->zl_kind != ZR_RL_CONFLICT ||
-	    l->zl_group == 0)
+	    l->zl_group == 0 ||
+	    zr_verify_marked(c->zc_m, l->zl_path, l->zl_pathlen) == 0)
 		return (1);
 	for (i = 0; i < res->zs_nlines; i++) {
 		o = &res->zs_lines[i];
 		if (i == li || o->zl_kind != ZR_RL_CONFLICT ||
 		    o->zl_group != l->zl_group ||
-		    o->zl_choice != l->zl_choice)
+		    o->zl_choice != l->zl_choice ||
+		    zr_verify_marked(c->zc_m, o->zl_path, o->zl_pathlen) == 0)
 			continue;
 		nm = zv_name(c, o->zl_path, o->zl_pathlen);
 		if (zv_pool(c, side, nm) != ps)

@@ -91,6 +91,13 @@
 #    gate said, drifted 1 with that name and exit 3, and leave the
 #    result exactly as it stands. Conflicted fixtures only, for the
 #    gate it stops at.
+#    The same window is where the other half of this case is made:
+#    the resolution on disk is rewritten there, every keep flipped to
+#    onto, and this invocation must not see it. The document was read
+#    when the verb opened the rebase, and the copy applied is the
+#    copy checked -- one parse of it and never two -- so the choices
+#    carried out and the report printed are the keeps that were
+#    answered, whatever the file says by then.
 #
 # 7. The onto snapshot destroyed after done, which is the one thing a
 #    settled check has no answer for: gone by name is exit 2 naming
@@ -837,6 +844,10 @@ case_donedrift() {
 	# conflicts gate's own check has already been made, so this is
 	# a stray no check but the last one can see.
 	printf 'late\n' >> "$wmnt$tgt" || fail "cannot edit $tgt"
+	# And the document rewritten in the same window: one parse, so
+	# this invocation goes on with what it read before the pause.
+	sed 's/ keep$/ onto/' "$res" > "$res.flip" || fail "cannot flip $res"
+	mv "$res.flip" "$res" || fail "cannot flip $res"
 	kill -CONT "$pid" || fail "cannot continue the stopped tool"
 	wait "$pid"
 	st=$?
@@ -847,6 +858,17 @@ case_donedrift() {
 	    { cat "$tmp/late"; fail "the final check did not name the drifted $tgt"; }
 	grep -q 'done does not block on' "$tmp/late" || \
 	    { cat "$tmp/late"; fail "the run did not say done was reached all the same"; }
+	# The document flipped at the pause was not read again: every
+	# line was carried out and reported as the keep this case
+	# answered with, which is the one copy of it this verb had.
+	grep -q "the resolution: drifted 0\$" "$tmp/late" || \
+	    { cat "$tmp/late"; fail "the verb read the resolution a second time"; }
+	grep -q ' keep done$' "$tmp/late" || \
+	    { cat "$tmp/late"; fail "no line of the resolution was carried out as keep"; }
+	# And the file is put back to what the run was answered with, so
+	# that the settled check below reads the document the rebase had.
+	sed 's/ onto$/ keep/' "$res" > "$res.flip" || fail "cannot flip $res"
+	mv "$res.flip" "$res" || fail "cannot flip $res"
 	# And done was reached: no record, no run directory, and the
 	# result settled where its form puts it.
 	[ -z "$(localprops "$rds")" ] || \

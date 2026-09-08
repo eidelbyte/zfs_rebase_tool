@@ -1506,6 +1506,64 @@ zp_path_cmp(const unsigned char *a, size_t alen, const unsigned char *b,
 	return (0);
 }
 
+/*
+ * One decoded name of a tree line. The scoping is what says where a
+ * name sits, so a name is one plain component: "." and ".." close a
+ * scope and climb out of one, a "/" would join a path no emitter
+ * ever wrote, and an empty name is no name at all. Every byte may be
+ * escaped, so a hand edit can spell all four and the parse is where
+ * they are refused -- not the apply, which would refuse them part
+ * way through a tree it had already written into.
+ */
+static int
+zp_name_ok(struct zp *p, const unsigned char *name, size_t len)
+{
+	size_t i;
+
+	if (len == 0)
+		return (zp_errf(p, "a name line needs a name"));
+	for (i = 0; i < len; i++) {
+		if (name[i] == '/')
+			return (zp_errf(p, "a name cannot hold a \"/\""));
+	}
+	if (len == 1 && name[0] == '.')
+		return (zp_errf(p, "a name cannot be \".\""));
+	if (len == 2 && name[0] == '.' && name[1] == '.')
+		return (zp_errf(p, "a name cannot be \"..\""));
+	return (0);
+}
+
+/*
+ * And one argument of an action, which is a free path out of the
+ * document and goes to the apply as it stands. The same three
+ * components are refused, with the two ways a whole path can be
+ * wrong on its own, so that the apply's own za_path_ok is a second
+ * line and never the first.
+ */
+static int
+zp_arg_ok(struct zp *p, const unsigned char *path, size_t len)
+{
+	size_t i, seg;
+
+	if (len < 2 || path[0] != '/')
+		return (zp_errf(p, "the path must be absolute"));
+	if (path[len - 1] == '/')
+		return (zp_errf(p, "the path ends in a \"/\""));
+	seg = 1;
+	for (i = 1; i <= len; i++) {
+		if (i != len && path[i] != '/')
+			continue;
+		if (i == seg)
+			return (zp_errf(p, "the path has an empty component"));
+		if (i - seg == 1 && path[seg] == '.')
+			return (zp_errf(p, "the path has a \".\" component"));
+		if (i - seg == 2 && path[seg] == '.' && path[seg + 1] == '.')
+			return (zp_errf(p, "the path has a \"..\" component"));
+		seg = i + 1;
+	}
+	return (0);
+}
+
 /* The absolute path of a name line: its scope and its own name. */
 static int
 zp_join(struct zp *p, const unsigned char *dir, size_t dirlen,
@@ -2055,6 +2113,10 @@ zp_name_line(struct zp *p, const char *s, size_t len)
 		return (zp_errf(p, "a name line needs a name"));
 	if (zp_decode(p, f0, f0len, "name", &name, &namelen) != 0)
 		return (-1);
+	if (zp_name_ok(p, name, namelen) != 0) {
+		free(name);
+		return (-1);
+	}
 	if (zp_join(p, p->zp_stack[p->zp_depth - 1].zs_path,
 	    p->zp_stack[p->zp_depth - 1].zs_len, name, namelen, &path,
 	    &pathlen) != 0) {
@@ -2113,6 +2175,11 @@ zp_name_line(struct zp *p, const char *s, size_t len)
 		if (zp_decode(p, f2, f2len, "path", &a.za_arg,
 		    &a.za_arglen) != 0) {
 			free(path);
+			return (-1);
+		}
+		if (zp_arg_ok(p, a.za_arg, a.za_arglen) != 0) {
+			free(path);
+			free(a.za_arg);
 			return (-1);
 		}
 	}
@@ -2255,6 +2322,10 @@ zr_name_line(struct zp *p, const char *s, size_t len)
 		return (zp_errf(p, "a name line needs a name"));
 	if (zp_decode(p, f, flen, "name", &name, &namelen) != 0)
 		return (-1);
+	if (zp_name_ok(p, name, namelen) != 0) {
+		free(name);
+		return (-1);
+	}
 	rc = zp_join(p, p->zp_stack[p->zp_depth - 1].zs_path,
 	    p->zp_stack[p->zp_depth - 1].zs_len, name, namelen, &path,
 	    &pathlen);
@@ -2266,6 +2337,10 @@ zr_name_line(struct zp *p, const char *s, size_t len)
 			free(path);
 			return (zp_errf(p, "a name with no choice needs a "
 			    "trailing slash"));
+		}
+		if (zp_add_seen(p, path, pathlen, 0) != 0) {
+			free(path);
+			return (-1);
 		}
 		rc = zp_push(p, path, pathlen, 0);
 		free(path);
@@ -2300,13 +2375,13 @@ zr_name_line(struct zp *p, const char *s, size_t len)
 		return (zp_errf(p, "\"%.*s\" is no choice: -, keep, onto "
 		    "or from", (int)flen, f));
 	}
-	if (l.zl_kind == ZR_RL_DRIFT && l.zl_choice == ZR_CH_NONE) {
-		free(path);
-		return (zp_errf(p, "only a conflict line is unanswered"));
-	}
 	if (zp_field(s, len, &pos, &f, &flen) != 0) {
 		free(path);
 		return (zp_errf(p, "too many fields on a name line"));
+	}
+	if (zp_add_seen(p, path, pathlen, 0) != 0) {
+		free(path);
+		return (-1);
 	}
 	l.zl_path = path;
 	l.zl_pathlen = pathlen;
@@ -2987,6 +3062,8 @@ zr_finish(struct zp *p)
 	struct zr_resolution *o = p->zp_res;
 	uint32_t n;
 
+	if (zp_repeats(p) != 0)
+		return (-1);
 	if (o->zs_nlines != o->zs_names_declared) {
 		p->zp_lineno = p->zp_aline;
 		return (zp_errf(p, "#names says %u but the tree has %u",
@@ -3042,6 +3119,7 @@ zr_resolution_parse(FILE *in, struct zr_resolution *out, char *err,
     size_t errlen)
 {
 	struct zp p;
+	uint32_t i;
 	int rc;
 
 	if (out == NULL)
@@ -3067,6 +3145,9 @@ zr_resolution_parse(FILE *in, struct zr_resolution *out, char *err,
 		rc = zr_finish(&p);
 	while (p.zp_depth > 0)
 		free(p.zp_stack[--p.zp_depth].zs_path);
+	for (i = 0; i < p.zp_nseen; i++)
+		free(p.zp_seen[i].zn_path);
+	free(p.zp_seen);
 	free(p.zp_closed);
 	free(p.zp_stack);
 	free(p.zp_line);
@@ -3308,19 +3389,21 @@ zr_resolution_skeleton(const struct zr_parsed *m, enum zr_choice def,
 	return (0);
 }
 
-int
-zr_resolution_add_drift(struct zr_resolution *r, const unsigned char *path,
-    size_t len, int isdir, enum zr_choice ch)
+/* One line taken, whatever kind it is: the two builders below share it. */
+static int
+zs_add_line(struct zr_resolution *r, enum zr_rline_kind kind,
+    const unsigned char *path, size_t len, int isdir, uint32_t group,
+    enum zr_choice ch)
 {
 	struct zr_rline l;
 
 	if (r == NULL || path == NULL || len == 0 || path[0] != '/' ||
-	    (len > 1 && path[len - 1] == '/') || ch == ZR_CH_NONE ||
-	    (size_t)ch >= ZR_NCHOICE)
+	    (len > 1 && path[len - 1] == '/') || (size_t)ch >= ZR_NCHOICE)
 		return (-1);
 	memset(&l, 0, sizeof (l));
-	l.zl_kind = ZR_RL_DRIFT;
+	l.zl_kind = kind;
 	l.zl_choice = ch;
+	l.zl_group = group;
 	l.zl_isdir = isdir != 0;
 	l.zl_pathlen = len;
 	l.zl_path = zs_path_dup(path, len);
@@ -3329,5 +3412,46 @@ zr_resolution_add_drift(struct zr_resolution *r, const unsigned char *path,
 		return (-1);
 	}
 	zr_res_counts(r);
+	return (0);
+}
+
+int
+zr_resolution_add_drift(struct zr_resolution *r, const unsigned char *path,
+    size_t len, int isdir, enum zr_choice ch)
+{
+	return (zs_add_line(r, ZR_RL_DRIFT, path, len, isdir, 0, ch));
+}
+
+int
+zr_resolution_add_conflict(struct zr_resolution *r, const unsigned char *path,
+    size_t len, int isdir, uint32_t group, enum zr_choice ch)
+{
+	if (group == 0)
+		return (-1);
+	return (zs_add_line(r, ZR_RL_CONFLICT, path, len, isdir, group, ch));
+}
+
+int
+zr_resolution_held(const struct zr_resolution *r, uint32_t i)
+{
+	const struct zr_rline *l, *o;
+	uint32_t j;
+
+	if (r == NULL || i >= r->zs_nlines)
+		return (0);
+	l = &r->zs_lines[i];
+	if (l->zl_isdir == 0)
+		return (0);
+	for (j = 0; j < r->zs_nlines; j++) {
+		if (j == i)
+			continue;
+		o = &r->zs_lines[j];
+		if (o->zl_choice != ZR_CH_KEEP ||
+		    o->zl_pathlen <= l->zl_pathlen ||
+		    o->zl_path[l->zl_pathlen] != '/' ||
+		    memcmp(o->zl_path, l->zl_path, l->zl_pathlen) != 0)
+			continue;
+		return (1);
+	}
 	return (0);
 }

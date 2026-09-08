@@ -4269,15 +4269,20 @@ out:
 
 /*
  * What one classification is worth as a verdict: 0 clean, and 1
- * where anything drifted. An action still pending or drifted at a
- * check is one the tree does not carry, and so is a name the
- * manifest never spoke for that the result no longer holds as onto
- * had it -- the second axis of the check, and what applying1's own
- * repair works from. Blocked and unchecked are states and not
- * faults, a keep is never compared, and a line still unanswered is a
- * conflict nobody has answered rather than a difference. One rule,
- * read by the done gate and by the --verify verb alike, so that
- * "drift" means one thing wherever the tool says it.
+ * where anything drifted. Four inputs, which are the two documents
+ * and the tree between them. An action still pending or drifted at a
+ * check is one the tree does not carry; a line of the resolution
+ * pending or drifted is a choice the tree does not carry, and it is
+ * the only place a resolved name can show at all, since a conflict
+ * mark is counted in no action outcome and a chosen name is in no
+ * entry of the name list; and a name the manifest never spoke for
+ * that the result no longer holds as onto had it is the second axis
+ * of the check, and what applying1's own repair works from. Blocked
+ * and unchecked are states and not faults, a keep is never compared,
+ * and a line still unanswered is a conflict nobody has answered
+ * rather than a difference. One rule, read by the done gate and by
+ * the --verify verb alike, so that "drift" means one thing wherever
+ * the tool says it (documents-design.md, section 11.5).
  */
 static int
 found_drift(const struct zr_verify_report *rep)
@@ -4285,46 +4290,15 @@ found_drift(const struct zr_verify_report *rep)
 	int i;
 
 	if (rep->zv_count[ZR_OC_PENDING] != 0 ||
-	    rep->zv_count[ZR_OC_DRIFTED] != 0)
+	    rep->zv_count[ZR_OC_DRIFTED] != 0 ||
+	    rep->zv_rcount[ZR_OC_PENDING] != 0 ||
+	    rep->zv_rcount[ZR_OC_DRIFTED] != 0)
 		return (1);
 	for (i = 0; i < ZR_DF_COUNT; i++) {
 		if (rep->zv_dcount[i] != 0)
 			return (1);
 	}
 	return (0);
-}
-
-/*
- * The final check, at the done gate: one document held against the
- * result, reported, and its verdict in *drift. Nothing here writes
- * and nothing here fails on what it finds. Drift at this gate is
- * reported and not blocked on -- an edit made while the conflicts
- * were being answered is the person's work, and a gate that failed
- * on it would block done for good -- so the only failure is a
- * classification that could not be made at all, which is this
- * program's and not the tree's.
- *
- * The report goes to stderr unless the start was given --quiet,
- * which the record carries for the whole run: this one report is
- * what that flag silences, and it silences nothing else, not the
- * verdict and not the exit status (documents-design.md, section 7).
- */
-static int
-final_check(struct resume *s, const struct zr_parsed *m, const char *what,
-    int *drift)
-{
-	struct zr_verify_report rep;
-	int rc;
-
-	memset(&rep, 0, sizeof (rep));
-	rc = classify(s, m, &rep);
-	if (rc == 0) {
-		if (s->rb.quiet == 0)
-			print_report(s, m, &rep, what);
-		*drift = found_drift(&rep);
-	}
-	zr_verify_report_fini(&rep);
-	return (rc);
 }
 
 /* Does the resolution already have a line on this exact name? */
@@ -4382,15 +4356,40 @@ name_isdir(const struct resume *s, zr_name_t nm)
  * only --restart could replace -- with the answers it exists to
  * discard (documents-design.md, section 11.2).
  *
+ * A conflict line the manifest marks that the document no longer has
+ * is put back here too, with the take mode's answer -- onto under
+ * --take-onto, from under --take-from, and "-" where the run was
+ * given neither, which puts the name back among the unanswered. The
+ * manifest is what says a name is conflicted, and a hand edit cannot
+ * take a conflict away by deleting the line that speaks for it
+ * (documents-design.md, section 11.5).
+ *
  * Returns 0, or -1 with err set.
  */
 static int
 add_drift(struct resume *s, const struct zr_verify_report *rep)
 {
+	const struct zr_action *a;
 	const char *nm;
 	size_t len;
-	uint32_t i, n = 0;
+	uint32_t i, n = 0, back = 0;
 
+	for (i = 0; i < s->man.zp_nactions; i++) {
+		a = &s->man.zp_actions[i];
+		if (a->za_kind != ZR_ACT_CONFLICT ||
+		    covered(&s->res, (const char *)a->za_path,
+		    a->za_pathlen) != 0)
+			continue;
+		if (zr_resolution_add_conflict(&s->res, a->za_path,
+		    a->za_pathlen, a->za_isdir, a->za_conflict,
+		    take_choice(s->rb.take)) != 0) {
+			(void) snprintf(s->err, sizeof (s->err), "%s: cannot "
+			    "put back the conflict line %s", s->respath,
+			    (const char *)a->za_path);
+			return (-1);
+		}
+		back++;
+	}
 	for (i = 0; i < rep->zv_ndiffs; i++) {
 		len = 0;
 		nm = zr_names_str(s->names, rep->zv_diffs[i].zn_name, &len);
@@ -4406,14 +4405,157 @@ add_drift(struct resume *s, const struct zr_verify_report *rep)
 		}
 		n++;
 	}
+	if (n == 0 && back == 0)
+		return (0);
+	if (zr_doc_write(s->respath, emit_resolution, &s->res, s->err,
+	    sizeof (s->err)) != 0)
+		return (-1);
+	if (n != 0)
+		(void) fprintf(stderr, "zfs_rebase: %u drift line%s added to "
+		    "the resolution %s\n", n, n == 1 ? "" : "s", s->respath);
+	if (back != 0)
+		(void) fprintf(stderr, "zfs_rebase: %u conflict line%s the "
+		    "manifest marks put back into the resolution %s\n", back,
+		    back == 1 ? "" : "s", s->respath);
+	return (0);
+}
+
+/*
+ * What the final check found, written into the resolution as the
+ * record of it: a line the check calls pending or drifted set back
+ * to "-", a name outside the manifest that drifted taken as a drift
+ * line with that same "-", and a conflict line the manifest marks
+ * that the document no longer has put back with it. The rebase is
+ * over at this gate, so "-" is not a question waiting for an answer
+ * any more: it is the tool saying that this name is nobody's word,
+ * and a later --verify of the settled result reads these lines as
+ * the record of what drifted (documents-design.md, section 11.5).
+ *
+ * *np is what changed, and anything at all is drift: a mark with no
+ * line is a conflict nobody answered, which the done gate must not
+ * call clean. The write is the atomic one every other write of this
+ * document makes; a document that is not there is left alone, since
+ * this gate writes a record and never a file.
+ *
+ * Returns 0, or -1 with err set.
+ */
+static int
+done_lines(struct resume *s, const struct zr_verify_report *rep, uint32_t *np)
+{
+	const struct zr_action *a;
+	const char *nm;
+	size_t len;
+	uint32_t i, n = 0;
+
+	*np = 0;
+	if (s->hasres <= 0)
+		return (0);
+	for (i = 0; i < rep->zv_nrlines && i < s->res.zs_nlines; i++) {
+		if (rep->zv_rline[i] != ZR_OC_PENDING &&
+		    rep->zv_rline[i] != ZR_OC_DRIFTED)
+			continue;
+		if (s->res.zs_lines[i].zl_choice == ZR_CH_NONE)
+			continue;
+		s->res.zs_lines[i].zl_choice = ZR_CH_NONE;
+		n++;
+	}
+	for (i = 0; i < rep->zv_ndiffs; i++) {
+		len = 0;
+		nm = zr_names_str(s->names, rep->zv_diffs[i].zn_name, &len);
+		if (nm == NULL || len == 0 || covered(&s->res, nm, len) != 0)
+			continue;
+		if (zr_resolution_add_drift(&s->res,
+		    (const unsigned char *)nm, len,
+		    name_isdir(s, rep->zv_diffs[i].zn_name),
+		    ZR_CH_NONE) != 0) {
+			(void) snprintf(s->err, sizeof (s->err), "%s: cannot "
+			    "take the drift line %s", s->respath, nm);
+			return (-1);
+		}
+		n++;
+	}
+	for (i = 0; i < s->man.zp_nactions; i++) {
+		a = &s->man.zp_actions[i];
+		if (a->za_kind != ZR_ACT_CONFLICT ||
+		    covered(&s->res, (const char *)a->za_path,
+		    a->za_pathlen) != 0)
+			continue;
+		if (zr_resolution_add_conflict(&s->res, a->za_path,
+		    a->za_pathlen, a->za_isdir, a->za_conflict,
+		    ZR_CH_NONE) != 0) {
+			(void) snprintf(s->err, sizeof (s->err), "%s: cannot "
+			    "put back the conflict line %s", s->respath,
+			    (const char *)a->za_path);
+			return (-1);
+		}
+		n++;
+	}
 	if (n == 0)
 		return (0);
 	if (zr_doc_write(s->respath, emit_resolution, &s->res, s->err,
 	    sizeof (s->err)) != 0)
 		return (-1);
-	(void) fprintf(stderr, "zfs_rebase: %u drift line%s added to the "
-	    "resolution %s\n", n, n == 1 ? "" : "s", s->respath);
+	*np = n;
 	return (0);
+}
+
+/*
+ * The final check, at the done gate: one document held against the
+ * result, reported, and its verdict in *drift. Nothing here touches
+ * the tree and nothing here fails on what it finds. Drift at this
+ * gate is reported and not blocked on -- an edit made while the
+ * conflicts were being answered is the person's work, and a gate
+ * that failed on it would block done for good -- so the only failure
+ * is a classification that could not be made at all, which is this
+ * program's and not the tree's.
+ *
+ * record says this is the done gate itself and not a report of it:
+ * what the check found is then written into the resolution as the
+ * record of it (done_lines), and what that write finds is drift too.
+ * A write that fails is said and does not stop the gate, for the
+ * same reason drift does not. The --verify verb passes 0 and writes
+ * nothing anywhere.
+ *
+ * The report goes to stderr unless the start was given --quiet,
+ * which the record carries for the whole run: this one report is
+ * what that flag silences, and it silences nothing else, not the
+ * verdict and not the exit status (documents-design.md, section 7).
+ */
+static int
+final_check(struct resume *s, const struct zr_parsed *m, const char *what,
+    int *drift, int record)
+{
+	struct zr_verify_report rep;
+	uint32_t wrote = 0;
+	int rc;
+
+	memset(&rep, 0, sizeof (rep));
+	rc = classify(s, m, &rep);
+	if (rc == 0) {
+		if (s->rb.quiet == 0)
+			print_report(s, m, &rep, what);
+		*drift = found_drift(&rep);
+		/*
+		 * The record of what was found, which done does not
+		 * block on either: a write that failed is said and the
+		 * gate is passed, because a rebase nothing could close
+		 * for want of a file is the thing this gate must never
+		 * become. What was found stands in the exit status
+		 * whether or not it could be written down.
+		 */
+		if (record != 0) {
+			if (done_lines(s, &rep, &wrote) != 0) {
+				(void) fprintf(stderr, "zfs_rebase: the final "
+				    "check could not be written down: %s\n",
+				    s->err);
+				*drift = 1;
+			} else if (wrote != 0) {
+				*drift = 1;
+			}
+		}
+	}
+	zr_verify_report_fini(&rep);
+	return (rc);
 }
 
 /*
@@ -4541,7 +4683,7 @@ done_gate(struct resume *s)
 	char e[512];
 	int drift = 0;
 
-	if (final_check(s, &s->man, "the manifest", &drift) != 0)
+	if (final_check(s, &s->man, "the manifest", &drift, 1) != 0)
 		return (vfail(s, EXIT_INTERNAL, "verify"));
 	if (drift && s->rb.quiet == 0)
 		(void) fprintf(stderr, "zfs_rebase: the final check found "
@@ -4659,19 +4801,55 @@ apply_choices(struct resume *s, const struct zr_resolution *res)
 }
 
 /*
- * applying2: the choices of the resolution, carried out. The document
- * is read again here, because this is a gate a --continue can arrive
- * at on its own, and a stage cannot begin without the document it is
- * the stage of.
+ * The resolution read again off the file, into the one copy this
+ * verb goes on with -- the rule reset_resolution keeps and the rule
+ * every stage keeps: what is applied and what is checked must be one
+ * document, so there is one parse of it and never two
+ * (documents-design.md, section 11.5). Returns 1 read, 0 gone, -1
+ * with reserr set.
  */
+static int
+reread_resolution(struct resume *s)
+{
+	zr_resolution_fini(&s->res);
+	s->hasres = read_resolution(s, &s->res);
+	if (s->hasres < 0)
+		(void) snprintf(s->reserr, sizeof (s->reserr), "%s", s->err);
+	return (s->hasres);
+}
+
+/*
+ * Does the side this line named have no such name? That is what
+ * makes a line a removal, and the one shape a removal can fail to
+ * be made in is a directory something is still inside.
+ */
+static int
+side_lacks(const struct resume *s, const struct zr_rline *l)
+{
+	const struct zr_walk *w;
+	zr_name_t nm;
+
+	w = &s->w[l->zl_choice == ZR_CH_FROM ? ZS_FROM : ZS_ONTO];
+	nm = zr_names_lookup(s->names, (const char *)l->zl_path,
+	    l->zl_pathlen);
+	if (nm == ZR_NAME_NONE)
+		return (1);
+	return (zr_tree_pool(&w->zw_tree, nm) == ZR_POOL_NONE);
+}
+
 /*
  * After the choices: the classification the second pass already
  * implies, made anyway, so that applying2 is checked the way
  * applying1 is -- by the one verify. Every onto and from line must
- * be done. The one exception is a directory line that reads
- * pending: its side has no such directory, and a name kept beneath
- * it holds it open, which is the choice's form of blocked and no
- * fault of the apply.
+ * be done. The one exception is a directory line whose side has no
+ * such directory and that is still there: something inside it is
+ * being kept, so the removal could not be made, which is the
+ * choice's form of blocked and no fault of the apply. It reads
+ * pending where onto still holds the directory and drifted where
+ * onto never had it either, and both are that same state
+ * (documents-design.md, section 11.5). The done gate is where it is
+ * counted: it goes into the exit status and into the document, and
+ * it does not stop the rebase here.
  */
 static int
 choices_hold(struct resume *s)
@@ -4693,7 +4871,9 @@ choices_hold(struct resume *s)
 
 		if (rep.zv_rline[i] == ZR_OC_DONE)
 			continue;
-		if (rep.zv_rline[i] == ZR_OC_PENDING && l->zl_isdir)
+		if ((rep.zv_rline[i] == ZR_OC_PENDING ||
+		    rep.zv_rline[i] == ZR_OC_DRIFTED) && l->zl_isdir != 0 &&
+		    side_lacks(s, l) != 0)
 			continue;
 		(void) snprintf(s->err, sizeof (s->err), "after the choices, "
 		    "%s reads %s", (const char *)l->zl_path,
@@ -4706,25 +4886,27 @@ out:
 	return (rc);
 }
 
+/*
+ * applying2: the choices of the resolution, carried out. The document
+ * is read again here, because this is a gate a --continue can arrive
+ * at on its own, and a stage cannot begin without the document it is
+ * the stage of. It is read into s->res and nowhere else, so that the
+ * copy the choices are made from is the copy choices_hold and the
+ * done gate are then made against.
+ */
 static int
 stage2(struct resume *s)
 {
-	struct zr_resolution res;
 	uint32_t left;
 	int rc;
 
-	rc = read_resolution(s, &res);
-	if (rc < 0) {
-		zr_resolution_fini(&res);
+	rc = reread_resolution(s);
+	if (rc < 0)
 		return (vfail(s, EXIT_PRECOND, "resolution"));
-	}
-	if (rc == 0) {
-		zr_resolution_fini(&res);
+	if (rc == 0)
 		return (no_resolution(s));
-	}
-	left = zr_resolution_unanswered(&res);
+	left = zr_resolution_unanswered(&s->res);
 	if (left != 0) {
-		zr_resolution_fini(&res);
 		(void) snprintf(s->err, sizeof (s->err), "%s is at applying2 "
 		    "and %u name%s of %s went back to unanswered", s->result,
 		    left, left == 1 ? "" : "s", s->respath);
@@ -4735,7 +4917,7 @@ stage2(struct resume *s)
 	if (ro_off(s) != 0)
 		goto out;
 	zr_pause(ZR_PHASE_APPLYING2);
-	if (apply_choices(s, &res) != 0)
+	if (apply_choices(s, &s->res) != 0)
 		goto out;
 	/*
 	 * And the trees this verb goes on with, which the choices have
@@ -4746,7 +4928,6 @@ stage2(struct resume *s)
 		goto out;
 	rc = 0;
 out:
-	zr_resolution_fini(&res);
 	if (ro_on(s) != 0)
 		rc = EXIT_INTERNAL;
 	if (rc != 0)
@@ -5236,13 +5417,8 @@ reset_resolution(struct resume *s)
 	 * this one makes must be against the document on disk, not
 	 * against the answers the restart has just discarded.
 	 */
-	if (rc == 0) {
-		zr_resolution_fini(&s->res);
-		s->hasres = read_resolution(s, &s->res);
-		if (s->hasres < 0)
-			(void) snprintf(s->reserr, sizeof (s->reserr), "%s",
-			    s->err);
-	}
+	if (rc == 0)
+		(void) reread_resolution(s);
 	return (rc);
 }
 

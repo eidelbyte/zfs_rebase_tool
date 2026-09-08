@@ -315,10 +315,22 @@ changes and none can skip:
 
 | when | what becomes of the drift |
 |------|---------------------------|
-| end of applying1 | fixed, by the stage's own self-check: up to the conflicts gate the result is the run's own, so a name that is not what the expected tree says is a stray |
+| end of applying1 | fixed, by the stage's own self-check: up to the conflicts gate the result is the run's own, so a name that is not what the expected tree says is a stray, and no line is written |
 | entering conflicts, and every --continue that arrives at that gate | written into the resolution as lines with the choice keep, printed, and never fixed: from this gate on the tree is being edited by hand, and nothing can tell that work from a stray |
-| end of applying2, before done is written | reported, exit 3, and done written all the same; --quiet prints nothing and the exit status stands |
-| a settled result, --verify MANIFEST | reported, exit 3; the same check with no gate, against the header's identity |
+| end of applying2, before done is written | reported, exit 3, and done written all the same; what was found is written into the resolution with the choice `-`, which is the record of it; --quiet prints nothing and the exit status stands |
+| a settled result, --verify MANIFEST | reported, exit 3; the same check with no gate, against the header's identity, and nothing written |
+
+The resolution is the authority from the conflicts gate on. Every
+line is carried out by its path and its choice, whoever wrote it: a
+line the tool wrote, a line the person changed and a line the person
+added alike, and a conflict line added by hand for a name the
+manifest never marked has its group number ignored, since it belongs
+to no group. What a hand edit cannot do is take a conflict away: a
+conflict line the manifest marks that the document no longer has is
+put back at the next gate, with the take mode's answer -- `onto`
+under `--take-onto`, `from` under `--take-from`, `-` where the run
+was given neither. Two lines for one name are refused when the file
+is read, since they are two instructions for one object.
 
 done never blocks on drift. What the last check finds is said and
 carried out in the exit status, and the gate is passed regardless:
@@ -415,10 +427,12 @@ action of the manifest and every answered name of the resolution
 stands -- done, pending, blocked, drifted or unchecked -- and what
 the result holds outside them both. It repairs nothing: the one fix
 in the tool is the applying1 stage's own self-check. The one
-document it writes is the resolution, at the conflicts gate, where
+document it writes is the resolution: at the conflicts gate, where
 the drift it found becomes lines with the choice keep for the person
-to answer. --no-merge stops it at that gate however the resolution
-reads, and is refused from a record already past the merge.
+to answer, and at the done gate, where what the last check found is
+written with the choice `-` as the record of it. --no-merge stops it
+at that gate however the resolution reads, and is refused from a
+record already past the merge.
 
     zfs_rebase --restart (--result DATASET | MANIFEST)
 
@@ -440,9 +454,10 @@ beside a start, beside --dry-run and beside --continue, --restart or
 --abort it is a usage error, because the checks are standard and
 there is nothing left for the word to ask for. It exits 0 when
 nothing has drifted and 3 when something has -- an action pending or
-drifted, or a name the manifest never spoke for that the result no
-longer holds as onto had it; blocked and unchecked are states and
-not faults. On a rebase in flight it is best effort: each input
+drifted, a line of the resolution pending or drifted, or a name the
+manifest never spoke for that the result no longer holds as onto had
+it; blocked and unchecked are states and not faults, and a keep is
+never compared. On a rebase in flight it is best effort: each input
 is looked for by name and then by guid across the pool, which is
 what survives a rename or a promote, each one it finds is held for
 the length of the report and not a moment longer, and what it cannot

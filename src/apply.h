@@ -125,13 +125,28 @@ int zr_apply_with(const struct zr_parsed *m, const char *onto_root,
  *	"-"	refused: the caller proves the document complete
  *		before it calls, and nothing is written when one is met
  *
- * The names of one conflict group that chose the same side and that
- * that side pools together are one object in the result too: the
- * first of them in document order is copied and the rest are linked
- * onto it. Names of a group that chose different sides, names that
- * side keeps apart, and drift lines, which have no group, are each
- * their own. The removals wait for the makes and then run backwards,
- * children before parents.
+ * The document is the authority: every line is carried out by its
+ * path and its choice, whoever wrote it. A conflict line for a name
+ * the manifest never marked is the person's own instruction and is
+ * carried out like a drift line -- its group number is not read, so
+ * it pools with nobody (documents-design.md, section 11.5).
+ *
+ * The names of one conflict group the manifest marks that chose the
+ * same side and that that side pools together are one object in the
+ * result too: the first of them in document order is copied and the
+ * rest are linked onto it. Names of a group that chose different
+ * sides, names that side keeps apart, and drift lines, which have no
+ * group, are each their own. The removals wait for the makes and
+ * then run backwards, children before parents.
+ *
+ * The whole document is read before a byte of the tree is touched,
+ * so that this asks nothing of the disk while it acts. One thing
+ * that pre-scan settles is the removal it must not try: a directory
+ * line whose chosen side has no such directory while a line under it
+ * says keep is marked blocked, left alone and counted in zs_skipped,
+ * because a name inside it is the person's by their own word. The
+ * check after the choices judges it; it is never this apply's fault
+ * (zr_resolution_held).
  *
  * Last come the directory removals of the manifest that a conflict
  * blocked, in reverse manifest order: one goes if the choices left

@@ -107,6 +107,30 @@
 #    one -- answered on the platform whose za_setacl strips.
 #    Cells: ZX136, ZA57.
 #
+# 9. The blocked directory line. A directory the person makes in the
+#    result with a file in it becomes two drift lines at the gate;
+#    the directory is flipped to onto, which has no such name, and
+#    the file under it is left at keep. The removal cannot be made --
+#    the kept name holds the directory open -- and the apply's
+#    pre-scan is what knows it, so nothing is asked of the disk and
+#    the run does not die on an ENOTEMPTY. The check after the
+#    choices passes it and the done gate is where it is counted: exit
+#    3, done reached all the same, the directory and its file still
+#    there, and the line written back as "-", which is what the done
+#    gate records of a choice that was not carried out.
+#    Cells: ZA64, ZY105, ZY108.
+#
+# 10. The resolution as the authority. A conflict line the manifest
+#    marks that a hand edit removed is put back by the next gate with
+#    the take mode's answer -- onto under --take-onto, from under
+#    --take-from, and "-" where the run was given neither -- and the
+#    header counts move with it: a hand edit cannot take a conflict
+#    away by deleting the line that speaks for it. And a conflict
+#    line for a name the manifest never marked is the person's own
+#    instruction, carried out like a drift line with that choice,
+#    its group number of no record never read.
+#    Cells: ZY106, ZY107, ZA66.
+#
 # Every case ends by taking the rebase away -- --abort where one is
 # still open, and by hand where it reached done, since done takes the
 # record off and leaves --abort nothing to find -- and the pool is
@@ -472,6 +496,66 @@ answered_all_as() {		# FILE CHOICE COUNT
 	[ "$n" = "$3" ] || \
 	    { cat "$1"; fail "$n of $3 lines read $2"; }
 	return 0
+}
+
+# One conflicted name whose line scopes nothing, so that taking that
+# line out by hand leaves the tree section well formed: a directory
+# line is followed by the two dots that close it, and removing the
+# line alone would close the root early.
+leaf_conflict() {
+	actions "$1" | awk '$2 == "conflict" && $3 == 0 { print $1; exit }'
+}
+
+# A file at the root of the tree at $2 that the manifest at $1 says
+# nothing about: the one shape a line can be added by hand without
+# opening a scope for it.
+kept_top() {
+	actions "$1" | awk '{ print $1 }' | sort -u > "$tmp/acted"
+	(cd "$2" && find . -maxdepth 1 -type f -links 1 | sed 's/^\.//') | \
+	    sort > "$tmp/tops"
+	comm -23 "$tmp/tops" "$tmp/acted" | head -1
+}
+
+# One line taken out by hand, with both header counts moved with it,
+# which is what the parser demands of any hand edit. The count of
+# what is unanswered moves only if the line that went was a "-".
+drop_line() {			# FILE PATH
+	leaf=$(basename "$2")
+	awk -v leaf="$leaf" '
+	{ lines[NR] = $0 }
+	/^#names / { names = $2 }
+	/^#unanswered / { unans = $2 }
+	$1 == leaf && $2 == "conflict" { gone = NR; if ($NF == "-") u = 1 }
+	END {
+		if (!gone) exit 1
+		for (i = 1; i <= NR; i++) {
+			if (i == gone) continue
+			if (lines[i] ~ /^#names /) {
+				print "#names " names - 1
+				continue
+			}
+			if (lines[i] ~ /^#unanswered /) {
+				print "#unanswered " unans - u
+				continue
+			}
+			print lines[i]
+		}
+	}' "$1" > "$1.new" || fail "no conflict line for $2 in $1"
+	mv "$1.new" "$1" || fail "cannot rewrite $1"
+}
+
+# And one line put in by hand, at the root's own scope, with #names
+# moved with it. The choice is made on it, so nothing is added to
+# what is unanswered.
+add_line() {			# FILE PATH GROUP CHOICE
+	leaf=$(basename "$2")
+	n=$(res_names "$1")
+	awk -v leaf="$leaf" -v grp="$3" -v ch="$4" -v n="$((n + 1))" '
+	/^#names / { print "#names " n; next }
+	{ print }
+	$1 == "/" && !added { print "    " leaf " conflict " grp " " ch; added = 1 }' \
+	    "$1" > "$1.new" || fail "cannot add a line to $1"
+	mv "$1.new" "$1" || fail "cannot add a line to $1"
 }
 
 # --- the pool -------------------------------------------------------
@@ -1150,6 +1234,129 @@ case_aclstrip() {
 	end_case
 }
 
+# --- 9. a directory line a keep holds open --------------------------
+# The one removal a choice cannot ask for. The person makes a
+# directory in the result with a file in it; the gate writes both as
+# drift keep lines; the directory is flipped to onto, which has no
+# such name, and the file under it is left the person's. The apply's
+# pre-scan marks the removal blocked and skips it, so nothing is
+# asked of the disk and no ENOTEMPTY reaches the run; the check after
+# the choices passes it; and the done gate counts it -- exit 3, done
+# all the same, and the line written back as "-".
+case_blockeddir() {
+	case_id="$fixture $form a directory line a keep holds open"
+	at_conflicts
+	ro_off
+	mkdir "$hmnt/zrblocked" || { ro_back; fail "cannot make /zrblocked"; }
+	printf 'mine\n' > "$hmnt/zrblocked/f" || \
+	    { ro_back; fail "cannot make /zrblocked/f"; }
+	ro_back
+	"$bin" --continue --result "$rds" > "$tmp/bd1" 2>&1
+	st=$?
+	[ $st -eq 1 ] || \
+	    { cat "$tmp/bd1"; fail "--continue at the gate exited $st, want 1"; }
+	grep -q "^ *zrblocked/ drift keep\$" "$res" || \
+	    { cat "$res"; fail "$res has no drift line for the directory"; }
+	grep -q "^ *f drift keep\$" "$res" || \
+	    { cat "$res"; fail "$res has no drift line for /zrblocked/f"; }
+	# onto has no such directory, and the file under it stays.
+	sed 's|^\( *\)zrblocked/ drift keep$|\1zrblocked/ drift onto|' \
+	    "$res" > "$res.new" || fail "cannot flip the directory line"
+	mv "$res.new" "$res" || fail "cannot flip the directory line"
+	answer_all "$res" keep
+	"$bin" --continue -v --result "$rds" > "$tmp/bd2" 2>&1
+	st=$?
+	[ $st -eq 3 ] || \
+	    { cat "$tmp/bd2"; fail "--continue over the blocked line exited $st, want 3"; }
+	grep -q "the resolution: drifted 1, first /zrblocked\$" "$tmp/bd2" || \
+	    { cat "$tmp/bd2"; fail "the done gate did not count the blocked line"; }
+	grep -q 'done does not block on' "$tmp/bd2" || \
+	    { cat "$tmp/bd2"; fail "the run did not say done was reached all the same"; }
+	at_done "$rds"
+	[ "$(holdcount)" = 0 ] || fail "done left holds behind"
+	[ -d "$hmnt/zrblocked" ] || fail "the blocked directory went after all"
+	grep -q mine "$hmnt/zrblocked/f" || \
+	    fail "the kept name under the blocked directory did not stand"
+	# What the done gate records of a choice not carried out.
+	grep -q "^ *zrblocked/ drift -\$" "$res" || \
+	    { cat "$res"; fail "the done gate did not write the line back as -"; }
+	echo "ok   $case_id: it stayed, exit 3, done reached, the line reads -"
+	# The harness made the directory, so the harness takes it away:
+	# end_case proves the pool is the fixture again.
+	ro_off
+	rm -rf "$hmnt/zrblocked" || { ro_back; fail "cannot clear /zrblocked"; }
+	ro_back
+	end_case
+}
+
+# --- 10. the resolution as the authority ----------------------------
+# A conflict line the manifest marks that a hand edit removed is put
+# back by the next gate with the take mode's answer, and the header
+# counts move with it. --no-merge holds the gate whatever the
+# document says, so the check that writes runs and the case can then
+# read what it wrote.
+case_putback() {
+	side=$1
+	case_id="$fixture $form a conflict line removed, put back as $side"
+	if [ "$side" = "-" ]; then
+		at_conflicts
+	else
+		fresh "--take-$side" --no-merge
+		st=$?
+		[ $st -eq 1 ] || \
+		    { cat "$log"; fail "--take-$side --no-merge exited $st, want 1"; }
+		sethere
+	fi
+	one=$(leaf_conflict "$man")
+	[ -n "$one" ] || fail "the fixture marks no conflict on a leaf"
+	n0=$(res_names "$res")
+	drop_line "$res" "$one"
+	[ "$(res_names "$res")" = "$((n0 - 1))" ] || \
+	    { head -8 "$res"; fail "the hand edit did not take"; }
+	"$bin" --continue --no-merge --result "$rds" > "$tmp/pb" 2>&1
+	st=$?
+	[ $st -eq 1 ] || \
+	    { cat "$tmp/pb"; fail "--continue at the gate exited $st, want 1"; }
+	grep -q '1 conflict line the manifest marks put back' "$tmp/pb" || \
+	    { cat "$tmp/pb"; fail "the gate did not put the line back"; }
+	leaf=$(basename "$one")
+	grep -q "^ *$leaf conflict [0-9][0-9]* $side\$" "$res" || \
+	    { cat "$res"; fail "$one did not come back reading $side"; }
+	[ "$(res_names "$res")" = "$n0" ] || \
+	    { head -8 "$res"; fail "#names is $(res_names "$res"), want $n0"; }
+	[ "$(phasenow "$rds")" = conflicts ] || \
+	    fail "the gate moved while it was putting a line back"
+	echo "ok   $case_id: $one came back reading $side"
+	end_case
+}
+
+# And the other half: a conflict line for a name the manifest never
+# marked, added by hand. It is the person's own instruction and is
+# carried out like a drift line with that choice; the group number on
+# it is of no record and is never read.
+case_handadded() {
+	case_id="$fixture $form a conflict line added by hand"
+	at_conflicts
+	top=$(kept_top "$man" "$hmnt")
+	[ -n "$top" ] || fail "the fixture has no untouched file at the root"
+	ro_off
+	printf 'edited\n' >> "$hmnt$top" || { ro_back; fail "cannot edit $top"; }
+	ro_back
+	add_line "$res" "$top" 99 onto
+	answer_all "$res" keep
+	"$bin" --continue -v --result "$rds" > "$tmp/ha" 2>&1
+	st=$?
+	[ $st -eq 0 ] || \
+	    { cat "$tmp/ha"; fail "--continue over the added line exited $st, want 0"; }
+	at_done "$rds"
+	[ "$(holdcount)" = 0 ] || fail "done left holds behind"
+	same_as "$ontodir" "$hmnt" "$top"
+	grep -q "^zfs_rebase:     $top onto done\$" "$tmp/ha" || \
+	    { cat "$tmp/ha"; fail "$top is not under the resolution as onto done"; }
+	echo "ok   $case_id: $top was carried out on the person's word alone"
+	end_case
+}
+
 # ---------------------------------------------------------------
 # One fixture in one form: the cases above, each ending in --abort.
 # The ones that want more of a fixture than it has say so and are
@@ -1216,6 +1423,16 @@ res_pass() {
 	case_killwindow abort
 	case_killwindow restart
 	case_killchoice
+	case_blockeddir
+	case_putback onto
+	case_putback from
+	case_putback -
+	if [ -n "$hastop" ]; then
+		case_handadded
+	else
+		echo "skip $fixture $form the hand-added line: no untouched"
+		echo "     file at the root of this fixture"
+	fi
 	if [ -n "$hasdir" ]; then
 		case_aclstrip
 	else
@@ -1249,6 +1466,7 @@ one_fixture() {
 	# no action names.
 	haskept=$(kept_name "$fdir/expect" "$fdir/onto")
 	hasdir=$(kept_dir "$fdir/expect" "$fdir/onto")
+	hastop=$(kept_top "$fdir/expect" "$fdir/onto")
 	make_pool
 	res_pass clone
 	res_pass dataset

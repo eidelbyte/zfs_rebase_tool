@@ -232,9 +232,12 @@ int zr_parsed_write(FILE *out, const struct zr_parsed *p);
  * conflicts stage hands back. The tool writes it beside the manifest
  * at the same moment, as a skeleton with one line per conflicted
  * name, and the person -- or a picker acting for them, or --take-onto
- * and --take-from at the start -- changes one field per line. Lines
- * are never added by hand and never removed: the file is the record
- * of what was chosen, and it is complete when nothing is unanswered.
+ * and --take-from at the start -- changes one field per line. The
+ * document is then the authority: a line the tool wrote, a line the
+ * person changed and a line the person added are all carried out
+ * alike, a conflict line the person removed is put back by the next
+ * gate, and two lines for one name are refused. It is complete when
+ * nothing is unanswered.
  *
  * It is the manifest's own tree grammar, so it shares the escaping,
  * the scoped directories and the two dots that close them; what it
@@ -308,8 +311,11 @@ struct zr_resolution {
  * Read one resolution. Returns 0 with *out filled, or -1 with err
  * holding "line L: reason" and *out left safe to hand to
  * zr_resolution_fini. An action word where a choice belongs, a header
- * that is not a resolution's, a count that does not match the lines
- * and a drift line left unanswered are all refusals.
+ * that is not a resolution's, a count that does not match the lines,
+ * a name that is ".", ".." or holds a "/", and two lines for one name
+ * are all refusals. The last is the manifest's own repeat rule: two
+ * lines for one name are two instructions for one object, and a
+ * writer would fold them into a file whose #names miscounts.
  */
 int zr_resolution_parse(FILE *in, struct zr_resolution *out, char *err,
     size_t errlen);
@@ -339,11 +345,38 @@ int zr_resolution_skeleton(const struct zr_parsed *m, enum zr_choice def,
 /*
  * Add one drift line: a clean name a verify found changed, with the
  * choice the picker is offered. The path is the decoded bytes,
- * absolute and without a trailing slash. Returns 0, or -1 out of
- * memory or on a path or a choice a drift line cannot carry.
+ * absolute and without a trailing slash. The conflicts gate writes
+ * ZR_CH_KEEP here and the done gate ZR_CH_NONE, which is the record
+ * of a name that drifted with the rebase already over: only a
+ * conflict line *starts* unanswered, and this is the one way a drift
+ * line comes to be. Returns 0, or -1 out of memory or on a path a
+ * line cannot carry.
  */
 int zr_resolution_add_drift(struct zr_resolution *r, const unsigned char *path,
     size_t len, int isdir, enum zr_choice ch);
+
+/*
+ * Add one conflict line, which is what puts back a line a hand edit
+ * removed: the group is the manifest's own conflict number and must
+ * not be 0, and the choice is the take mode's answer at the
+ * conflicts gate and ZR_CH_NONE at the done gate
+ * (documents-design.md, section 11.5). Returns 0, or -1 out of
+ * memory or on a path, a group or a choice a line cannot carry.
+ */
+int zr_resolution_add_conflict(struct zr_resolution *r,
+    const unsigned char *path, size_t len, int isdir, uint32_t group,
+    enum zr_choice ch);
+
+/*
+ * Is line i a directory line that another line of this document
+ * holds open -- a line under it whose choice is keep? That is the
+ * one state a choice of a side that has no such directory cannot
+ * reach: the directory cannot go while a name inside it is the
+ * person's by their own word. The apply's pre-scan marks it and
+ * skips it, and the check after judges it, so blocked means one
+ * thing in both.
+ */
+int zr_resolution_held(const struct zr_resolution *r, uint32_t i);
 
 /* How many lines are still unanswered. The document is complete at 0. */
 uint32_t zr_resolution_unanswered(const struct zr_resolution *r);
