@@ -210,8 +210,10 @@ dir, symlink, device}; verdict {equal, differ}; handle source
 local group}. The pruning adds its own: the field that moved
 {object number, generation number, ctime seconds, ctime
 nanoseconds, link count, type, name count, a name in another
-pool, none}; and what the change was {bytes through a name, a
-name added, an object added, an entry added to a directory}.
+pool, an extended attribute, an ACL, a default ACL, none}; and
+what the change was {bytes through a name, a name added, an
+object added, an entry added to a directory, an attribute set
+where ZFS moves no ctime}.
 
 | cell | scenario | disposition |
 |------|----------|-------------|
@@ -255,6 +257,9 @@ name added, an object added, an entry added to a directory}.
 | ZC38 | pruning refused: --posix, and an unrelated base | planned: run.c has the flag; box, allow-unrelated |
 | ZC39 | the pruning over real snapshots, positively | planned: box, box/run-replay.sh |
 | ZC40 | the count that harness asserts, held against the tool itself | covered: tools/replay-expect.py --check |
+| ZC41 | a pruned pair differs only in an extended attribute | covered: check_yellow.c |
+| ZC42 | a pruned pair differs only in an ACL, and only in a default ACL | covered: check_yellow.c |
+| ZC43 | a from side on xattr=dir whose only change is an attribute | planned: box, box/run-fixture.sh case 5b |
 
 ZC20 and ZC26 to ZC37 are the unchanged set, which sprint 5 took
 off zfs diff and put on the walk (sprints/sprint-5/string-audit.md
@@ -284,6 +289,27 @@ The oracle asks zr_acl_equal for za_acl and za_dacl, so ZC9 is that
 function on two pools of a live filesystem: the comparison itself is
 ZW30's, and what attr-cells adds is a non-trivial NFSv4 ACL that the
 walk really read and apply really wrote back.
+
+ZC41 to ZC43 are the other half of the rule, added with the review's
+R1 (sprints/sprint-5/code-review-2026-09-07.md): the pruning
+compares the extended attributes and the two ACLs as well, because
+the ctime does not report a change to every one of them. An
+extended attribute in the directory storage is set by writing a
+child of a hidden directory and the file's own znode is never
+touched (module/os/freebsd/zfs/zfs_vnops_os.c, zfs_setextattr_dir),
+so a from side whose only change was such an attribute used to be
+declared unchanged and dropped in silence; src/yellow.h lists the
+sources for that and for what the ctime is still trusted with.
+ZC41 sets a real attribute between the base walk and the side walks
+and then puts the ctime back in the walk the rule reads, which is
+the one thing the Mac cannot reproduce -- there setxattr does move
+the ctime. ZC42 plants an ACL in that same walk, as ZW30 builds its
+ACLs in memory, because no filesystem the unit tests may write to
+hands an ACL back the same way on all three platforms. ZC43 is the
+whole of it on ZFS, where nothing has to be simulated: a dataset
+with xattr=dir, a clone of it with one attribute changed and
+nothing else touched, and the run must emit the attrs action and
+put the from value in the result.
 
 ## ZD -- decide (check_battery.c)
 

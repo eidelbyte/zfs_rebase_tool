@@ -2,10 +2,11 @@
  * The content oracle's tests: small trees built as directories,
  * walked into one shared name table and handed to the oracle, then
  * read back as handles and as a count of the bytes it took to reach
- * them. Cells ZC1, ZC3 to ZC8, ZC10, ZC12 to ZC20, ZC23, ZC24 and
- * ZC26 to ZC37. ZC20 is the oracle's own half of the fast path, the
- * word taken without a read; ZC26 onwards are where that word comes
- * from, the pruning rule over one tree walked twice.
+ * them. Cells ZC1, ZC3 to ZC8, ZC10, ZC12 to ZC20, ZC23, ZC24,
+ * ZC26 to ZC37, ZC41 and ZC42. ZC20 is the oracle's own half of the
+ * fast path, the word taken without a read; ZC26 onwards are where
+ * that word comes from, the pruning rule over one tree walked
+ * twice.
  * ZC2 (uid, gid, flags) and ZC11 (device numbers)
  * want root, so they stay deferred to the box probe with ZC9, the
  * ACL, whose two models differ; ZC21 is the driver's and ZC22 the
@@ -1080,6 +1081,186 @@ check_prune_fields(void)
 	trees_close(&t);
 }
 
+/*
+ * An ACL of the platform's own kind, made in memory and written to
+ * no filesystem, as check_walk.c makes the ACLs of ZW30: what the
+ * pruning has to tell apart here is a pool that carries one from a
+ * pool that carries none, so one entry is enough. Nothing the unit
+ * tests may write to hands an ACL back the same way on all three
+ * platforms, and a real one read off a pool is ZC9, which is the
+ * box's.
+ */
+#if defined(__FreeBSD__)
+static zr_acl_t
+mkacl(void)
+{
+	acl_permset_t ps;
+	acl_entry_t e;
+	acl_t a;
+
+	/* the everyone@ tag is what brands it NFSv4, so it goes first */
+	a = acl_init(1);
+	CHECK(a != NULL);
+	CHECK(acl_create_entry(&a, &e) == 0);
+	CHECK(acl_set_tag_type(e, ACL_EVERYONE) == 0);
+	CHECK(acl_set_entry_type_np(e, ACL_ENTRY_TYPE_ALLOW) == 0);
+	CHECK(acl_get_permset(e, &ps) == 0);
+	CHECK(acl_clear_perms(ps) == 0);
+	CHECK(acl_add_perm(ps, ACL_READ_DATA) == 0);
+	CHECK(acl_set_permset(e, ps) == 0);
+	return (a);
+}
+#else
+static zr_acl_t
+mkacl(void)
+{
+	static const char txt[] = "user::rw-\n";
+	char *p;
+
+	p = malloc(sizeof (txt));
+	CHECK(p != NULL);
+	memcpy(p, txt, sizeof (txt));
+	return (p);
+}
+#endif
+
+/*
+ * ZC41: every field of the rule agrees and an extended attribute
+ * does not. The attribute is really set, between the base walk and
+ * the two side walks, so the walk reads it as it reads any other.
+ * What no filesystem here can do is leave the ctime standing while
+ * that happens -- on the Mac, and on ZFS with the attributes in the
+ * system attribute area, setting one moves it. On ZFS with the
+ * attributes in the file's own hidden directory it does not move at
+ * all (src/yellow.h names the sources), and that is the case this
+ * cell is for, so the ctime the rule reads is put back by hand in
+ * the two side walks. What the rule is then offered is exactly what
+ * such a set offers it: every number the same and one attribute
+ * more. The pool must stay out of the unchanged set, and the
+ * comparison that follows must part it from base.
+ */
+static void
+check_prune_xattr(void)
+{
+	char tmpl[256];
+	char full[PATHMAX];
+	char err[256];
+	struct trees t;
+	const struct zr_pool *bp, *sp;
+	const struct zr_attr *ba;
+	struct zr_attr *sa;
+	uint32_t npools, marked;
+	int k;
+
+	tmp_template(tmpl, sizeof (tmpl), "zryellowx.XXXXXX");
+	prune_open(&t, tmpl);
+	npools = t.t_w[0].zw_tree.zt_npools;
+	CHECK(npools == PRUNE_POOLS);
+
+	join(full, sizeof (full), t.t_dir[0], "/keep");
+	CHECK(setx(full, XA1, "1", 1) == 0);
+	prune_sides(&t);
+
+	ba = attrof(&t, 0, "/keep");
+	CHECK(ba->za_nxattrs == 0);
+	for (k = 1; k < 3; k++) {
+		sa = &t.t_w[k].zw_attrs[poolof(&t, k, "/keep")];
+		CHECK(sa->za_nxattrs == 1);
+		sa->za_ctime = ba->za_ctime;
+	}
+	/*
+	 * And everything else about the pool really does agree, or
+	 * this cell would be proving nothing at all.
+	 */
+	bp = &t.t_w[0].zw_tree.zt_pools[poolof(&t, 0, "/keep")];
+	sp = &t.t_w[1].zw_tree.zt_pools[poolof(&t, 1, "/keep")];
+	CHECK(bp->zp_ino == sp->zp_ino);
+	CHECK(bp->zp_type == sp->zp_type);
+	CHECK(bp->zp_nlink == sp->zp_nlink);
+	CHECK(bp->zp_nnames == sp->zp_nnames);
+	CHECK(ba->za_gen == attrof(&t, 1, "/keep")->za_gen);
+	CHECK(ba->za_ctime.tv_sec == attrof(&t, 1, "/keep")->za_ctime.tv_sec);
+	CHECK(ba->za_ctime.tv_nsec ==
+	    attrof(&t, 1, "/keep")->za_ctime.tv_nsec);
+
+	marked = 0;
+	CHECK(zr_oracle_prune(t.t_o, 1, &marked) == 0);
+	CHECK(marked == npools - 1);
+	marked = 0;
+	CHECK(zr_oracle_prune(t.t_o, 2, &marked) == 0);
+	CHECK(marked == npools - 1);
+
+	err[0] = 'x';
+	CHECK(zr_oracle_assign(t.t_o, err, sizeof (err)) == 0);
+	CHECK(err[0] == '\0');
+	CHECK(hand(&t, 0, "/keep") != hand(&t, 1, "/keep"));
+	CHECK(hand(&t, 1, "/keep") == hand(&t, 2, "/keep"));
+	/*
+	 * The one pair that was read is the two sides against each
+	 * other, which the attributes do not part: five bytes twice.
+	 * base against either side stopped at the attributes.
+	 */
+	CHECK(zr_oracle_bytes_read(t.t_o) == 2 * 5);
+	check_dense(&t);
+	trees_close(&t);
+}
+
+/*
+ * ZC42: the same for the two ACLs, the access one on a file and the
+ * default one on a directory, which is the pair zo_attrs_equal
+ * compares. Nothing is written to the filesystem at all here: the
+ * ACL is planted in the walk the rule reads, the way ZC31 to ZC37
+ * move their one field, because a real ACL wants a filesystem that
+ * carries one and the three platforms do not agree on what one is.
+ * The third pass plants nothing, so the two before it are shown to
+ * have been the only reason the pool stayed out.
+ */
+static void
+check_prune_acl(void)
+{
+	char tmpl[256];
+	struct trees t;
+	struct zr_attr *fa, *da;
+	uint32_t npools, marked, want;
+	int i;
+
+	tmp_template(tmpl, sizeof (tmpl), "zryellowa.XXXXXX");
+	prune_open(&t, tmpl);
+	prune_sides(&t);
+	zr_oracle_fini(t.t_o);
+	t.t_o = NULL;
+	npools = t.t_w[1].zw_tree.zt_npools;
+	CHECK(npools == PRUNE_POOLS);
+	fa = &t.t_w[1].zw_attrs[poolof(&t, 1, "/keep")];
+	da = &t.t_w[1].zw_attrs[poolof(&t, 1, "/sub")];
+	/* a tree built by a test carries neither, on any platform */
+	CHECK(fa->za_acl == NULL);
+	CHECK(da->za_dacl == NULL);
+	for (i = 0; i < 3; i++) {
+		if (i == 0)
+			fa->za_acl = mkacl();
+		else if (i == 1)
+			da->za_dacl = mkacl();
+		CHECK(zr_oracle_init(&t.t_o, &t.t_w[0], &t.t_w[1],
+		    &t.t_w[2]) == 0);
+		want = i == 2 ? npools : npools - 1;
+		marked = 0;
+		CHECK(zr_oracle_prune(t.t_o, 1, &marked) == 0);
+		CHECK(marked == want);
+		/* the other side was never touched and prunes whole */
+		marked = 0;
+		CHECK(zr_oracle_prune(t.t_o, 2, &marked) == 0);
+		CHECK(marked == npools);
+		zr_oracle_fini(t.t_o);
+		t.t_o = NULL;
+		zr_acl_free(fa->za_acl);
+		fa->za_acl = NULL;
+		zr_acl_free(da->za_dacl);
+		da->za_dacl = NULL;
+	}
+	trees_close(&t);
+}
+
 int
 main(void)
 {
@@ -1093,6 +1274,8 @@ main(void)
 	check_prune_all();
 	check_prune_changed();
 	check_prune_fields();
+	check_prune_xattr();
+	check_prune_acl();
 	printf("check_yellow: %d checks passed\n", checks);
 	return (0);
 }

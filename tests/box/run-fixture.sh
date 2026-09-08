@@ -147,6 +147,19 @@
 #      status is the same and done is the same, and the report is
 #      not printed. A conflicted fixture stops at the conflicts gate
 #      before the final check is due;
+#  5b. for probe.zrt, the pruning against a change ZFS does not
+#      report in the ctime. Three datasets of its own on the same
+#      pool, base with xattr=dir and two clones of it, where from's
+#      only change is one extended attribute of one file: the
+#      harness first asserts that the attribute set moved no ctime,
+#      which is the ZFS fact the case exists for, and then the run
+#      must declare that one write, report three pools unchanged and
+#      not four, and leave from's value on the result. Such a set
+#      writes a child of the file's hidden directory and never the
+#      file's own znode, so the object number, the generation and
+#      the ctime are all silent about it and the pruning has to see
+#      it in the attributes it compares (src/yellow.h; R1 of
+#      sprints/sprint-5/code-review-2026-09-07.md);
 #
 # and then, in the dataset form:
 #  D0. for probe.zrt, exclusivity: a file held open under onto makes
@@ -234,6 +247,8 @@ cleanup() {
 	# form's --result is the dataset itself.
 	"$bin" --abort --result "$POOL/result" >/dev/null 2>&1
 	"$bin" --abort --result "$POOL/onto" >/dev/null 2>&1
+	# 5b's own result, where a failure left its rebase open
+	"$bin" --abort --result "$POOL/xresult" >/dev/null 2>&1
 	zpool destroy -f "$POOL" 2>/dev/null
 	[ -n "$MD" ] && mdconfig -d -u "$MD" 2>/dev/null
 	rm -f "$IMG"
@@ -1209,6 +1224,82 @@ case "$fixture" in
 	    fail "--abort without the manifest left the run directory $RUNDIR"
 	echo "ok   --abort without the manifest: the tag released by a"
 	echo "     walk of the pool, the record cleared, nothing destroyed"
+	;;
+esac
+
+case "$fixture" in
+*/probe.zrt|probe.zrt)
+	say "5b. an attribute the ctime does not report (probe.zrt)"
+	# The pruning trusts the object number, the generation number
+	# and the ctime for the bytes of an object and compares every
+	# attribute the walk holds, because one way of changing an
+	# attribute moves no ctime: with the attributes in the file's
+	# own hidden directory, setting one opens a child of that
+	# directory and writes it, and the file's znode is never
+	# touched (module/os/freebsd/zfs/zfs_vnops_os.c,
+	# zfs_setextattr_dir; src/yellow.h has the whole list). That
+	# storage is what xattr=dir asks for -- xattr=on is the system
+	# attribute area in this tree and does move the ctime -- and
+	# these three datasets are the only ones here that use it.
+	XRUN=/var/db/zfs_rebase/$POOL/xresult
+	zfs create -o xattr=dir "$POOL/xbase" || fail "5b: cannot create $POOL/xbase"
+	echo hello > "$MNT/xbase/f" || fail "5b: cannot write $MNT/xbase/f"
+	setextattr user zr base "$MNT/xbase/f" || fail "5b: cannot set the attribute"
+	zfs snapshot "$POOL/xbase@base" || fail "5b: cannot snapshot xbase"
+	# The clones take their properties from the pool and not from
+	# the origin, so xattr=dir is given again: the set below has to
+	# take the directory path, which is the whole point.
+	zfs clone -o xattr=dir "$POOL/xbase@base" "$POOL/xfrom" || \
+	    fail "5b: cannot clone xfrom"
+	zfs clone -o xattr=dir "$POOL/xbase@base" "$POOL/xonto" || \
+	    fail "5b: cannot clone xonto"
+	# ctime is stored at tick resolution (run-replay.sh says why),
+	# so the edit waits until the tick the objects were made in has
+	# passed: without this an unmoved ctime would prove nothing.
+	sleep 1
+	setextattr user zr side "$MNT/xfrom/f" || fail "5b: cannot edit the attribute"
+	# The fact under test, before the tool is asked anything: the
+	# two clones are one object, and the attribute set left its
+	# ctime where onto's still is.
+	cf=$(stat -f %c "$MNT/xfrom/f") || fail "5b: cannot stat xfrom/f"
+	co=$(stat -f %c "$MNT/xonto/f") || fail "5b: cannot stat xonto/f"
+	[ "$cf" = "$co" ] || \
+	    fail "5b: the attribute set moved the ctime ($cf against $co); the case proves nothing as it stands"
+	echo "ok   an attribute in the directory storage moved no ctime"
+	zfs snapshot "$POOL/xfrom@work" "$POOL/xonto@work" || \
+	    fail "5b: cannot snapshot the sides"
+
+	"$bin" -v -o "$tmp/xman" --from "$POOL/xfrom@work" \
+	    --onto "$POOL/xonto@work" --result "$POOL/xresult" \
+	    > "$tmp/x1" 2>&1
+	st=$?
+	[ $st -eq 0 ] || { cat "$tmp/x1"; fail "5b: the run exited $st, want 0"; }
+	grep -q '^#actions 1$' "$tmp/xman" || \
+	    { cat "$tmp/xman"; fail "5b: the run did not declare the one action"; }
+	grep -q '^    f write /f$' "$tmp/xman" || \
+	    { cat "$tmp/xman"; fail "5b: the one action is not a write of /f"; }
+	# Two pools a side, the root and the file. onto is untouched
+	# and prunes whole; from's root prunes and its file must not,
+	# which is four if the attributes are not compared and three
+	# if they are.
+	grep -q '^zfs_rebase: 3 pools unchanged$' "$tmp/x1" || \
+	    { cat "$tmp/x1"; fail "5b: the unchanged count is not 3"; }
+	[ ! -d "$XRUN" ] || fail "5b: the run reached done and left $XRUN"
+	# done leaves the clone unmounted with no mountpoint of its
+	# own; placing it is the caller's, as everywhere else here.
+	zfs set mountpoint="$MNT/xresult" "$POOL/xresult" || \
+	    fail "5b: cannot place the result"
+	v=$(getextattr -q user zr "$MNT/xresult/f") || \
+	    fail "5b: the result has no such attribute"
+	[ "$v" = side ] || fail "5b: the result carries '$v', want 'side'"
+	echo "ok   the attribute reached the result: the pruning saw a"
+	echo "     change three numbers of ZFS's are silent about"
+
+	zfs destroy "$POOL/xresult" || fail "5b: cannot destroy the result"
+	rmdir "$MNT/xresult" 2>/dev/null
+	zfs destroy -r "$POOL/xfrom" || fail "5b: cannot destroy xfrom"
+	zfs destroy -r "$POOL/xonto" || fail "5b: cannot destroy xonto"
+	zfs destroy -r "$POOL/xbase" || fail "5b: cannot destroy xbase"
 	;;
 esac
 

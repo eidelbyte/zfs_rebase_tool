@@ -11,7 +11,10 @@
  * Before any of that a caller may say that a side pool holds what a
  * base pool holds, and zr_oracle_prune says it for every pool the
  * two walks agree on down to the object number, the generation
- * number and the change time. Those pairs are never read at all.
+ * number and the change time, and whose extended attributes and
+ * ACLs are equal besides -- ZFS does not report every change to an
+ * extended attribute in the ctime, and yellow.h says where. Those
+ * pairs are never read at all.
  */
 
 #define	_XOPEN_SOURCE	700
@@ -485,9 +488,20 @@ zr_oracle_unchanged(struct zr_oracle *o, int tree, zr_pool_t pool,
 /*
  * One side pool against the base pool holding its first name, by the
  * fields the walk kept. Every condition of the rule is here and in
- * this order: the cheap integers first, then the names, which is the
- * only part that costs a lookup per name. Returns 1 unchanged, 0
- * not.
+ * this order: the cheap integers first, then the names, which cost a
+ * lookup apiece, then the two attributes of zo_attrs_equal's that
+ * are more than a word, the extended attributes and the ACLs.
+ * Nothing here reads the disk. Returns 1 unchanged, 0 not.
+ *
+ * Why those and not the mode, the owner, the group or the flags:
+ * none of the latter can move without zfs_setattr writing
+ * SA_ZPL_CTIME, so the ctime speaks for them, while an extended
+ * attribute in the directory storage is set by writing a child of a
+ * hidden directory and leaves the file's own znode untouched, ctime
+ * and all. Setting an ACL does move the ctime, but comparing the two
+ * the walk holds costs nothing here, and it keeps this word from
+ * ever being looser than a read's would be. yellow.h has the
+ * sources.
  */
 static int
 zo_unmoved(const struct zr_walk *bw, zr_pool_t b, const struct zr_walk *sw,
@@ -515,7 +529,11 @@ zo_unmoved(const struct zr_walk *bw, zr_pool_t b, const struct zr_walk *sw,
 		if (zr_tree_pool(&bw->zw_tree, sp->zp_names[j]) != b)
 			return (0);
 	}
-	return (1);
+	if (zo_xattrs_equal(ba, sa) == 0)
+		return (0);
+	if (zr_acl_equal(ba->za_acl, sa->za_acl) == 0)
+		return (0);
+	return (zr_acl_equal(ba->za_dacl, sa->za_dacl));
 }
 
 int
