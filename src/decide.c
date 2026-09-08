@@ -432,6 +432,16 @@ pass_groups(struct ctx *c)
 /*
  * Conflict: "a base pool that fans out on one side's base face, two of
  * whose edges end up in the same face local group of step 3."
+ *
+ * Every group that has one is flagged, the way the other three
+ * conflict passes flag every instance they find. One flag for the
+ * whole pass is not enough, and neither is one per base pool: the
+ * edges of a single base pool can land in two groups -- base
+ * ({A B C D}), from ({A B X},{C D Y}), onto ({A},{B},{C},{D}) is two
+ * healed splits out of one pool -- and a group nobody flags is
+ * counted clean and given a result content. The break is all the
+ * pass may skip: every partner of a shares a's result class, hence
+ * its group, so a second partner would flag what a already did.
  */
 static void
 pass_healed(struct ctx *c)
@@ -463,7 +473,7 @@ pass_healed(struct ctx *c)
 					if (c->klass[a] == c->klass[b]) {
 						flag(c, a, ZR_CF_HEALED_SPLIT,
 						    a, b);
-						return;
+						break;
 					}
 				}
 			}

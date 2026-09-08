@@ -1,0 +1,67 @@
+# Two healed splits that share no name: two base pools, each one file
+# under two names, each broken in two by onto and held together by
+# from, which links a third name onto the pair. The added name is
+# what lumps the two halves into one result class, so each pool's two
+# edges end up in the same face local group and each is a conflict of
+# class healed-split. The two groups are disjoint, so the decision
+# must report both: a pass that stopped at the first would call the
+# /d /e /f group clean and quietly link /e and /f back onto /d.
+#
+# verdict: conflict healed-split, both modes (v4-greencheck.py)
+# covers ZD38
+
+tree base
+	/a file p
+	/b link /a
+	/d file q
+	/e link /d
+
+tree from
+	/a file p
+	/b link /a
+	/c link /a
+	/d file q
+	/e link /d
+	/f link /d
+
+tree onto
+	/a file p
+	/b file p
+	/d file q
+	/e file q
+
+expect
+#rebase-manifest 5
+#result -
+#form posix
+#base base 0
+#from from 0
+#onto onto 0
+#made -
+#tag -
+#take -
+#written -
+#mode strict
+#actions 0
+#conflicts 2
+/
+    a conflict 1
+    b conflict 1
+    c conflict 1
+    d conflict 2
+    e conflict 2
+    f conflict 2
+    ..
+
+# a pool is one file and all its names: {names}letter; same
+# letter, same bytes
+conflict 1 healed-split
+  why  /a and /b were split on one side and joined by the other
+  base ({/a /b}x)
+  from ({/a /b /c}x)
+  onto ({/a}x,{/b}x)
+conflict 2 healed-split
+  why  /d and /e were split on one side and joined by the other
+  base ({/d /e}x)
+  from ({/d /e /f}x)
+  onto ({/d}x,{/e}x)

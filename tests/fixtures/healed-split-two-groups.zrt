@@ -1,0 +1,71 @@
+# One base pool, four names on one file, fanning out into two face
+# local groups. from splits the pool in two and links a new name onto
+# each half; onto breaks all four names apart. /a and /b heal through
+# the from pool {a b x}, /c and /d through {c d y}, and the two from
+# pools share no surviving name, so they are two groups. Both are
+# healed splits of the one base pool, which is why the pass cannot
+# stop at one flag per base pool either.
+#
+# The second group's "base ()" is the conflict record's own limit,
+# not the decision's: a base pool is listed once, under the group of
+# its first name, so a pool whose names reach two groups appears in
+# only one of them.
+#
+# verdict: conflict healed-split, both modes (v4-greencheck.py)
+# covers ZD39
+
+tree base
+	/a file p
+	/b link /a
+	/c link /a
+	/d link /a
+
+tree from
+	/a file p
+	/b link /a
+	/x link /a
+	/c file p
+	/d link /c
+	/y link /c
+
+tree onto
+	/a file p
+	/b file p
+	/c file p
+	/d file p
+
+expect
+#rebase-manifest 5
+#result -
+#form posix
+#base base 0
+#from from 0
+#onto onto 0
+#made -
+#tag -
+#take -
+#written -
+#mode strict
+#actions 0
+#conflicts 2
+/
+    a conflict 1
+    b conflict 1
+    c conflict 2
+    d conflict 2
+    x conflict 1
+    y conflict 2
+    ..
+
+# a pool is one file and all its names: {names}letter; same
+# letter, same bytes
+conflict 1 healed-split
+  why  /a and /b were split on one side and joined by the other
+  base ({/a /b /c /d}x)
+  from ({/a /b /x}x)
+  onto ({/a}x,{/b}x)
+conflict 2 healed-split
+  why  /c and /d were split on one side and joined by the other
+  base ()
+  from ({/c /d /y}x)
+  onto ({/c}x,{/d}x)

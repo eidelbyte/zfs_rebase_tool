@@ -115,7 +115,9 @@ tests/fixtures/h-yw-row16.zrt 0 1
 tests/fixtures/h-yw-row17.zrt 1 1
 tests/fixtures/h-yw-row18.zrt 1 1
 tests/fixtures/h-yw-row19.zrt 1 2
+tests/fixtures/healed-split-two-groups.zrt 0 0
 tests/fixtures/probe.zrt 2 6
+tests/fixtures/two-healed-splits.zrt 0 0
 tests/fixtures/type-change.zrt 0 3
 tests/fixtures/wide-pool.zrt 4 6
 tests/fixtures/xattr-add.zrt 0 2

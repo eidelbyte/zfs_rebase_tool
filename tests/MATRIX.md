@@ -296,9 +296,13 @@ side, symmetry, fresh pool, contested placed}; permissive
 adoption {kept plus adopted, adoption meets an edit, two
 adoptions, cycle}. The named rows are the worked verdicts of the
 three notes, kept as readable cases; ZD35 to ZD37 are the
-exhaustive row, and they are what M1 means. The Python checkers
+exhaustive row, and they are what M1 means, with ZD40 saying which
+of those batteries the gate actually runs. The Python checkers
 already prove these properties by enumeration -- the battery is
-how that proof transfers to C, not a second opinion.
+how that proof transfers to C, not a second opinion. One thing
+they cannot prove: a battery line records the set of classes that
+fired and not how many groups carry them, so "every instance is
+reported" is a fixture's job, which is ZD38 and ZD39.
 
 | cell | scenario | disposition |
 |------|----------|-------------|
@@ -336,9 +340,12 @@ how that proof transfers to C, not a second opinion.
 | ZD32 | one verdict per face local group | planned: check_battery.c |
 | ZD33 | classes overlap: the checker's wins | planned: check_battery.c |
 | ZD34 | the culprit names for the why line | planned: check_manifest.c |
-| ZD35 | green battery, 3 and 4 names, both modes | planned: check_battery.c |
-| ZD36 | yellow battery 2n2c 3n2c 3n3c, both modes | planned: check_battery.c |
+| ZD35 | green battery, 3 and 4 names, both modes | covered: check_battery.c over tests/battery/green-3-*.txt and green-4-*.txt |
+| ZD36 | yellow battery 2n2c 3n2c 3n3c, both modes | covered for 2n2c and 3n2c: check_battery.c over tests/battery/yellow-2-2-*.txt and yellow-3-2-*.txt; 3n3c deferred: 88 MB a file, over GitHub's 50 MB warning, so it is exported on demand (review Q6) and not checked in |
 | ZD37 | green battery, 5 names | planned: check_battery.c, make battery-full |
+| ZD38 | two disjoint healed splits, one base pool each, are both reported: two conflict groups of class healed-split | covered: run-fixtures.sh over two-healed-splits.zrt |
+| ZD39 | one base pool fanning out into two face local groups: both healed splits are reported | covered: run-fixtures.sh over healed-split-two-groups.zrt |
+| ZD40 | the batteries the gate runs, both modes: green 3 and 4 names, yellow 2n2c and 3n2c, 498,274 cases in all | covered: make battery, which globs tests/battery/*.txt |
 
 ## ZM -- manifest emit and parse (check_manifest.c)
 
