@@ -140,7 +140,7 @@ bin=./zfs_rebase
 [ "$(uname)" = FreeBSD ] || { echo "FreeBSD only"; exit 2; }
 # The portable flavor answers every ZFS call with this line; the box
 # wants the freebsd flavor, and the Makefile keeps the two apart.
-if "$bin" --abort --result zr-flavor-probe/none 2>&1 |
+if "$bin" --abort zr-flavor-probe/none 2>&1 |
     grep -q 'not built with ZR_FREEBSD'; then
 	echo "$bin is the portable build: make clean && make freebsd"
 	exit 2
@@ -164,8 +164,8 @@ cleanup() {
 		echo "KEEP=1: pool $POOL, $IMG and $tmp left in place"
 		return
 	fi
-	"$bin" --abort --result "$POOL/result" >/dev/null 2>&1
-	"$bin" --abort --result "$POOL/onto" >/dev/null 2>&1
+	"$bin" --abort "$POOL/result" >/dev/null 2>&1
+	"$bin" --abort "$POOL/onto" >/dev/null 2>&1
 	zpool destroy -f "$POOL" 2>/dev/null
 	[ -n "$MD" ] && mdconfig -d -u "$MD" 2>/dev/null
 	rm -f "$IMG"
@@ -337,8 +337,8 @@ drop_pool() {
 # run directory is not among them -- done took it -- so the reset
 # asserts it is gone instead of removing it.
 reset_pool() {
-	"$bin" --abort --result "$POOL/result" >/dev/null 2>&1
-	"$bin" --abort --result "$POOL/onto" >/dev/null 2>&1
+	"$bin" --abort "$POOL/result" >/dev/null 2>&1
+	"$bin" --abort "$POOL/onto" >/dev/null 2>&1
 	if zfs list -H -o name "$POOL/result" >/dev/null 2>&1; then
 		zfs destroy "$POOL/result" || \
 		    fail "the reset cannot destroy the settled $POOL/result"
@@ -404,6 +404,13 @@ kill_case() {
 	else
 		rds=$POOL/onto
 	fi
+	# How this harness names the rebase to a verb: the last part
+	# of the result's name alone, which is step 2 of the
+	# identifier -- a dataset carrying the record whose name ends
+	# in "/result" -- found by the walk of every imported pool
+	# (ZX227). The other harnesses give the whole name, the
+	# pre-apply snapshot and a manifest's path.
+	ident=${rds##*/}
 	rundir=/var/db/zfs_rebase/$rds
 	man=$rundir/manifest
 	res=$rundir/resolution
@@ -515,7 +522,7 @@ kill_case() {
 		[ "$(phasenow "$rds")" = conflicts ] || \
 		    fail "that run did not stop at conflicts"
 		answer_resolution "$res"
-		ZFS_REBASE_PAUSE=$gate "$bin" --continue --result "$rds" \
+		ZFS_REBASE_PAUSE=$gate "$bin" --continue "$ident" \
 		    > "$log" 2>&1 &
 		pid=$!
 	elif [ "$form" = clone ]; then
@@ -593,7 +600,7 @@ kill_case() {
 		n=$(zfs list -H -o name -t snapshot -r "$POOL/from" | grep -c .)
 		[ "$n" -eq 1 ] || fail "a torn run left a snapshot on from"
 		[ -e "$rundir" ] && fail "a torn run left $rundir"
-		"$bin" --continue --result "$rds" > "$tmp/cont" 2>&1
+		"$bin" --continue "$ident" > "$tmp/cont" 2>&1
 		st=$?
 		[ $st -eq 2 ] || \
 		    { cat "$tmp/cont"; fail "--continue after a torn run exited $st, want 2"; }
@@ -669,7 +676,7 @@ kill_case() {
 		# It reached done, so there is no rebase left: every
 		# verb says so and the tree is the rebased tree.
 		for verb in --verify --continue --abort; do
-			"$bin" $verb --result "$rds" > "$tmp/cont" 2>&1
+			"$bin" $verb "$ident" > "$tmp/cont" 2>&1
 			st=$?
 			[ $st -eq 2 ] || \
 			    { cat "$tmp/cont"; fail "$verb on a settled result exited $st, want 2"; }
@@ -693,7 +700,7 @@ kill_case() {
 		# the header alone. There is nothing to apply, so the
 		# two verbs that would apply it refuse and say so, and
 		# --abort is the way out.
-		"$bin" --continue --result "$rds" > "$tmp/cont" 2>&1
+		"$bin" --continue "$ident" > "$tmp/cont" 2>&1
 		st=$?
 		[ $st -eq 2 ] || \
 		    { cat "$tmp/cont"; fail "--continue before the decision exited $st, want 2"; }
@@ -701,7 +708,7 @@ kill_case() {
 		    { cat "$tmp/cont"; fail "--continue did not say the run never decided"; }
 		grep -q -- '--abort' "$tmp/cont" || \
 		    { cat "$tmp/cont"; fail "--continue did not point at --abort"; }
-		"$bin" --restart --result "$rds" > "$tmp/rest" 2>&1
+		"$bin" --restart "$ident" > "$tmp/rest" 2>&1
 		st=$?
 		[ $st -eq 2 ] || \
 		    { cat "$tmp/rest"; fail "--restart before the decision exited $st, want 2"; }
@@ -723,7 +730,7 @@ kill_case() {
 		if [ "$form" = dataset ]; then
 			hassnap "$made" || fail "the kill left no $made"
 		fi
-		"$bin" --abort --result "$rds" > "$tmp/abort" 2>&1
+		"$bin" --abort "$ident" > "$tmp/abort" 2>&1
 		st=$?
 		[ $st -eq 0 ] || \
 		    { cat "$tmp/abort"; fail "--abort before the decision exited $st, want 0"; }
@@ -779,7 +786,7 @@ kill_case() {
 	if [ "$gate" = action:2 ] && [ "$sig" != KILL ] && [ "$nact" -eq 2 ]; then
 		wrep=0
 	fi
-	"$bin" --verify --result "$rds" > "$tmp/verify" 2>&1
+	"$bin" --verify "$ident" > "$tmp/verify" 2>&1
 	st=$?
 	[ $st -eq $wrep ] || \
 	    { cat "$tmp/verify"; fail "--verify after the stop exited $st, want $wrep"; }
@@ -804,7 +811,7 @@ kill_case() {
 	# the checks of the schedule are made wherever it passes a
 	# gate, and there is no flag left that would ask for one or
 	# skip one.
-	"$bin" --continue --result "$rds" > "$tmp/cont" 2>&1
+	"$bin" --continue "$ident" > "$tmp/cont" 2>&1
 	st=$?
 	[ $st -eq $wcont ] || \
 	    { cat "$tmp/cont"; fail "--continue exited $st, want $wcont"; }
@@ -954,7 +961,7 @@ run_to_done() {
 		[ $st -eq 1 ] || \
 		    { cat "$log"; fail "the run before the resolution exited $st, want 1"; }
 		answer_resolution "$res"
-		ZFS_REBASE_PAUSE=done "$bin" --continue --result "$rds" \
+		ZFS_REBASE_PAUSE=done "$bin" --continue "$rds" \
 		    > "$log" 2>&1 &
 		pid=$!
 	fi
@@ -1041,7 +1048,7 @@ settle_busy_done() {
 	    { cat "$log"; fail "the refused settle removed the manifest $man"; }
 	where_is priv
 	free_mount
-	"$bin" --continue --result "$rds" > "$tmp/cont" 2>&1
+	"$bin" --continue "$rds" > "$tmp/cont" 2>&1
 	st=$?
 	[ $st -eq 0 ] || \
 	    { cat "$tmp/cont"; fail "the --continue after the refused settle exited $st, want 0"; }
@@ -1073,7 +1080,7 @@ settle_busy_abort() {
 	names_for_form
 	leave_rebase_standing
 	hold_mount "$rundir/mnt"
-	"$bin" --abort --result "$rds" > "$tmp/abort" 2>&1
+	"$bin" --abort "$rds" > "$tmp/abort" 2>&1
 	st=$?
 	[ $st -ne 0 ] || \
 	    { cat "$tmp/abort"; fail "--abort with the mount busy exited 0"; }
@@ -1087,7 +1094,7 @@ settle_busy_abort() {
 	    { cat "$tmp/abort"; fail "--abort removed the run directory it could not empty"; }
 	where_is priv
 	free_mount
-	"$bin" --abort --result "$rds" > "$tmp/abort2" 2>&1
+	"$bin" --abort "$rds" > "$tmp/abort2" 2>&1
 	st=$?
 	[ $st -eq 0 ] || \
 	    { cat "$tmp/abort2"; fail "the second --abort exited $st, want 0"; }
@@ -1187,7 +1194,7 @@ settle_result_gone() {
 	# (e) first, over the same directory: a manifest that will not
 	# parse is the one thing this abort refuses.
 	printf 'this is not a manifest\n' > "$man" || fail "cannot spoil $man"
-	"$bin" --abort --result "$rds" > "$tmp/bad" 2>&1
+	"$bin" --abort "$rds" > "$tmp/bad" 2>&1
 	st=$?
 	[ $st -eq 2 ] || \
 	    { cat "$tmp/bad"; fail "--abort on an unreadable manifest exited $st, want 2"; }
@@ -1203,7 +1210,7 @@ settle_result_gone() {
 	# (d) with the header back: the tag it names is released on the
 	# three snapshots, the documents go and the directory goes.
 	cp "$tmp/gone-man" "$man" || fail "cannot put the manifest back"
-	"$bin" --abort --result "$rds" > "$tmp/gone" 2>&1
+	"$bin" --abort "$rds" > "$tmp/gone" 2>&1
 	st=$?
 	[ $st -eq 0 ] || \
 	    { cat "$tmp/gone"; fail "--abort with the result gone exited $st, want 0"; }
@@ -1222,9 +1229,11 @@ settle_result_gone() {
 # builds a path. --abort is the one verb that goes on where the
 # dataset does not exist, so a name that is no dataset name used to
 # read as "no such run" only after it had been made into a path:
-# --result "../../../../tmp/x" reached rmdir_run, which contains by
+# --abort "../../../../tmp/x" reached rmdir_run, which contains by
 # a prefix compare and not by a parse, and took an empty /tmp/x/mnt
-# and /tmp/x with it. The decoy below is exactly that shape. ZX219.
+# and /tmp/x with it. The decoy below is exactly that shape. The
+# identifier's resolution says it first now, with ZFS's own reason,
+# and rundir_of says it again where a path is built. ZX219, ZX234.
 settle_bad_name() {
 	case_id="$fixture a name that is no dataset name"
 	cases=$((cases + 1))
@@ -1235,12 +1244,12 @@ settle_bad_name() {
 	# dataset name.
 	for bad in "../../../..$tmp/outside" "$POOL/../../etc" \
 	    "$POOL/result with a space"; do
-		"$bin" --abort --result "$bad" > "$tmp/badname" 2>&1
+		"$bin" --abort "$bad" > "$tmp/badname" 2>&1
 		st=$?
 		[ $st -eq 2 ] || \
-		    { cat "$tmp/badname"; fail "--abort --result '$bad' exited $st, want 2"; }
+		    { cat "$tmp/badname"; fail "--abort '$bad' exited $st, want 2"; }
 		grep -q 'no name for a dataset' "$tmp/badname" || \
-		    { cat "$tmp/badname"; fail "--abort --result '$bad' did not say the name is no dataset name"; }
+		    { cat "$tmp/badname"; fail "--abort '$bad' did not say the name is no dataset name"; }
 	done
 	[ -d "$tmp/outside/mnt" ] || \
 	    fail "--abort removed $tmp/outside/mnt, which is no run directory"

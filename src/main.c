@@ -42,17 +42,21 @@ static const char usage[] =
 	"       zfs_rebase --dry-run [-p] [--manifest FILE]\n"
 	"                  --from SNAP|DATASET --onto SNAP|DATASET\n"
 	"       zfs_rebase --continue [--interactive] [--no-merge]\n"
-	"                  [--from SNAP] [--onto SNAP]\n"
-	"                  (--result NAME | MANIFEST)\n"
-	"       zfs_rebase --restart (--result NAME | MANIFEST)\n"
-	"       zfs_rebase --abort   (--result NAME | MANIFEST)\n"
-	"       zfs_rebase --verify  (--result NAME | MANIFEST)\n"
+	"                  [--from SNAP] [--onto SNAP] IDENT\n"
+	"       zfs_rebase --restart IDENT\n"
+	"       zfs_rebase --abort   IDENT\n"
+	"       zfs_rebase --verify  IDENT\n"
 	"       zfs_rebase --posix [-p] [-o FILE] BASEDIR FROMDIR ONTODIR\n"
 	"       zfs_rebase --build-fixture FIXTURE DIR\n"
 	"       zfs_rebase --edit-fixture FIXTURE TREE DIR\n"
-	"a verb names its rebase by --result, the dataset carrying the\n"
-	"record, or by MANIFEST, the path of that rebase's manifest; given\n"
-	"both, the two must name each other. A start takes no MANIFEST.\n"
+	"a verb names its rebase with IDENT, resolved in this order: an\n"
+	"absolute path to its manifest; the dataset carrying the record,\n"
+	"in full or by the last part of its name; the pre-apply snapshot,\n"
+	"as \"snap\" or \"pool/fs@snap\"; a relative path to its manifest;\n"
+	"its run directory under /var/db/zfs_rebase. Two rebases that\n"
+	"answer to one IDENT are refused, never chosen between, and the\n"
+	"record and the header must name each other. --result is a start\n"
+	"flag: a start takes no IDENT, and no verb takes --result.\n"
 	"every flag has both forms, and the two parse to the same run:\n"
 	"  -f, --from SNAP|DS      the side whose changes are replayed "
 	    "(--off-of)\n"
@@ -61,7 +65,8 @@ static const char usage[] =
 	"                          the thing that says which rebase it is\n"
 	"  -t, --onto SNAP|DS      the side they go onto (--to); it sets the "
 	    "form\n"
-	"  -r, --result NAME       the name the run makes; a verb's rebase\n"
+	"  -r, --result NAME       the name the run makes; a start flag "
+	    "only\n"
 	"  -p, --permissive-merge  permissive merge; strict is the default\n"
 	"  -v, --verbose           counts and steps on stderr\n"
 	"  -o, --manifest FILE     where the manifest goes, resolution beside "
@@ -333,13 +338,12 @@ main(int argc, char **argv)
 	if (zr_args_parse(argc, argv, &a, err, sizeof (err)) != 0)
 		return (die_usage(err));
 	/*
-	 * What a verb was given: the run it acts on, named by
-	 * --result or by its manifest or by both, and the two sides,
-	 * which it checks against the header and does not need.
+	 * What a verb was given: IDENT, the rebase it acts on, which
+	 * the driver resolves, and the two sides, which it checks
+	 * against the header and does not need.
 	 */
 	memset(&vo, 0, sizeof (vo));
-	vo.result = a.za_result;
-	vo.path = a.za_path;
+	vo.ident = a.za_ident;
 	vo.from = a.za_from;
 	vo.onto = a.za_onto;
 	vo.nomerge = a.za_nomerge;

@@ -216,12 +216,15 @@ set -u
 fixture=${1:?usage: run-fixture.sh FIXTURE.zrt}
 cd "$(dirname "$0")/../.." || exit 2
 bin=./zfs_rebase
+# The same binary by an absolute path, for the one case that runs it
+# from another directory (a relative identifier is step 4).
+abin=$(pwd)/zfs_rebase
 [ -x "$bin" ] || { echo "build first: make freebsd"; exit 2; }
 [ "$(id -u)" -eq 0 ] || { echo "run as root"; exit 2; }
 [ "$(uname)" = FreeBSD ] || { echo "FreeBSD only"; exit 2; }
 # The portable flavor answers every ZFS call with this line; the box
 # wants the freebsd flavor, and the Makefile keeps the two apart.
-if "$bin" --abort --result zr-flavor-probe/none 2>&1 |
+if "$bin" --abort zr-flavor-probe/none 2>&1 |
     grep -q 'not built with ZR_FREEBSD'; then
 	echo "$bin is the portable build: make clean && make freebsd"
 	exit 2
@@ -244,11 +247,11 @@ cleanup() {
 	# taken over, either one's persistent holds, and a directory
 	# under /var/db; --abort is what gives all of that back, and
 	# zpool destroy -f would not touch the directory. The dataset
-	# form's --result is the dataset itself.
-	"$bin" --abort --result "$POOL/result" >/dev/null 2>&1
-	"$bin" --abort --result "$POOL/onto" >/dev/null 2>&1
+	# form's rebase is on the dataset itself.
+	"$bin" --abort "$POOL/result" >/dev/null 2>&1
+	"$bin" --abort "$POOL/onto" >/dev/null 2>&1
 	# 5b's own result, where a failure left its rebase open
-	"$bin" --abort --result "$POOL/xresult" >/dev/null 2>&1
+	"$bin" --abort "$POOL/xresult" >/dev/null 2>&1
 	zpool destroy -f "$POOL" 2>/dev/null
 	[ -n "$MD" ] && mdconfig -d -u "$MD" 2>/dev/null
 	rm -f "$IMG"
@@ -322,7 +325,7 @@ placement_line() {		# LOGFILE
 # find and says so; what is left is the result itself, which is the
 # harness's to take away. The run directory went at done.
 settled_clone() {
-	"$bin" --abort --result "$POOL/result" > "$tmp/settled" 2>&1
+	"$bin" --abort "$POOL/result" > "$tmp/settled" 2>&1
 	hst=$?
 	[ $hst -eq 2 ] || \
 	    { cat "$tmp/settled"; fail "--abort on a settled result exited $hst, want 2"; }
@@ -464,7 +467,7 @@ case "$fixture" in
 	# place, because each of them is a command somebody may have
 	# written for the older meaning.
 	for coupling in -n --continue --restart --abort; do
-		"$bin" --verify "$coupling" --result "$POOL/vresult" \
+		"$bin" --verify "$coupling" "$POOL/vresult" \
 		    --from "$POOL/from@work" --onto "$POOL/onto@work" \
 		    > "$tmp/vcouple" 2>&1
 		st=$?
@@ -473,6 +476,22 @@ case "$fixture" in
 		grep -q -- "--verify" "$tmp/vcouple" || \
 		    { cat "$tmp/vcouple"; fail "--verify $coupling was refused for another reason"; }
 	done
+	# And --result beside each of the four verbs, which is the
+	# flag that names what a start makes: a usage error that says
+	# what a verb takes instead (ZX222), before anything is read.
+	for v in --continue --restart --abort --verify; do
+		"$bin" $v --result "$POOL/vresult" > "$tmp/vres" 2>&1
+		st=$?
+		[ $st -eq 2 ] || \
+		    { cat "$tmp/vres"; fail "$v --result exited $st, want 2"; }
+		grep -q -- "--result" "$tmp/vres" || \
+		    { cat "$tmp/vres"; fail "$v --result was refused for another reason"; }
+		grep -q "IDENT" "$tmp/vres" || \
+		    { cat "$tmp/vres"; fail "$v --result did not say what a verb takes"; }
+	done
+	echo "ok   --result beside each verb: exit 2, and the line says"
+	echo "     a verb takes IDENT"
+
 	# And the shape of a start, which is the two sides and a name
 	# for what they make.
 	"$bin" --verify -o "$tmp/got-v0" --from "$POOL/from@work" \
@@ -674,7 +693,7 @@ echo "ok   the header: the three snapshots and guids, the result,"
 echo "     the form, the mode, made, take and the tag"
 
 # A dataset that only inherits the properties is not a result.
-"$bin" --abort --result "$POOL/plain" > /dev/null 2>&1
+"$bin" --abort "$POOL/plain" > /dev/null 2>&1
 st=$?
 [ $st -eq 2 ] || fail "--abort on an inheriting dataset exited $st, want 2"
 [ "$(zfs list -H -o name "$POOL/plain" 2>/dev/null)" = "$POOL/plain" ] \
@@ -714,7 +733,7 @@ if [ $settled -eq 1 ]; then
 	# motional verbs find no rebase here: each of them says so and
 	# leaves the result standing.
 	for verb in --continue --restart --abort; do
-		"$bin" $verb --result "$POOL/result" > "$tmp/settled1" 2>&1
+		"$bin" $verb "$POOL/result" > "$tmp/settled1" 2>&1
 		st=$?
 		[ $st -eq 2 ] || \
 		    { cat "$tmp/settled1"; fail "$verb on a settled result exited $st, want 2"; }
@@ -722,12 +741,13 @@ if [ $settled -eq 1 ]; then
 		    { cat "$tmp/settled1"; fail "$verb did not say there is no record"; }
 	done
 	# --verify is the one verb a settled result still answers, and
-	# only by its manifest: --result reads a rebase off a record,
-	# and this dataset has none to read.
-	"$bin" --verify --result "$POOL/result" > "$tmp/settled1" 2>&1
+	# only by its manifest's path: no dataset carries a record
+	# under this name and no run directory is left, so the
+	# identifier answers to nothing and says which document does.
+	"$bin" --verify "$POOL/result" > "$tmp/settled1" 2>&1
 	st=$?
 	[ $st -eq 2 ] || \
-	    { cat "$tmp/settled1"; fail "--verify --result on a settled result exited $st, want 2"; }
+	    { cat "$tmp/settled1"; fail "--verify on a settled result exited $st, want 2"; }
 	grep -q 'give the manifest' "$tmp/settled1" || \
 	    { cat "$tmp/settled1"; fail "--verify did not ask for the manifest"; }
 	[ "$(zfs list -H -o name "$POOL/result" 2>/dev/null)" = "$POOL/result" ] || \
@@ -755,6 +775,13 @@ if [ $settled -eq 1 ]; then
 	    fail "the settled check left the clone away from $cmnt"
 	[ -z "$(localprops "$POOL/result")" ] || \
 	    fail "the settled check wrote a property on the result"
+	# A relative path to the same document is step 4, which is
+	# asked after the pools have answered: the same rebase.
+	( cd "$tmp" && "$abin" --verify "./got" ) > "$tmp/settledr" 2>&1
+	st=$?
+	[ $st -eq 0 ] || \
+	    { cat "$tmp/settledr"; fail "--verify ./got exited $st, want 0"; }
+	echo "ok   ./got, a relative path, is the same manifest (exit 0)"
 	echo "ok   --verify $tmp/got: exit 0 where the clone stands, no"
 	echo "     run directory made, nothing written"
 
@@ -803,7 +830,7 @@ else
 	# manifest must be done by now, because a conflicted run
 	# applies its clean actions too and the conflicts themselves
 	# are not actions; blocked is possible and is not a failure.
-	"$bin" --verify --result "$POOL/result" > "$tmp/verify1" 2>&1
+	"$bin" --verify "$POOL/result" > "$tmp/verify1" 2>&1
 	st=$?
 	[ $st -eq 0 ] || \
 	    { cat "$tmp/verify1"; fail "--verify exited $st, want 0"; }
@@ -820,7 +847,7 @@ else
 	# --continue on a rebase that is where it should be changes
 	# nothing: it waits at its skeleton, which nobody has
 	# answered, and says how much of it is unanswered.
-	"$bin" --continue --result "$POOL/result" > "$tmp/cont1" 2>&1
+	"$bin" --continue "$POOL/result" > "$tmp/cont1" 2>&1
 	st=$?
 	[ $st -eq 1 ] || \
 	    { cat "$tmp/cont1"; fail "--continue at conflicts exited $st, want 1"; }
@@ -835,20 +862,33 @@ else
 	idempotent "$tmp/again2" "$want_conf"
 	echo "ok   --continue: exit $st, the phase and the tree unchanged"
 
-	# --result names the dataset carrying the record, and a
-	# snapshot name is taken as its dataset: this one does not
-	# even exist, and the verb still finds the rebase.
-	"$bin" --verify --result "$POOL/result@nosuch" > /dev/null 2>&1
+	# A snapshot spelling is step 3 of the identifier and names a
+	# snapshot that has to be there: the clone form has none, so
+	# this one answers to nothing and is refused rather than read
+	# as its dataset (ZX229, which retires ZX59).
+	"$bin" --verify "$POOL/result@nosuch" > "$tmp/nosuch" 2>&1
+	st=$?
+	[ $st -eq 2 ] || \
+	    { cat "$tmp/nosuch"; fail "--verify $POOL/result@nosuch exited $st, want 2"; }
+	grep -q "no rebase answers to" "$tmp/nosuch" || \
+	    { cat "$tmp/nosuch"; fail "the refusal did not say nothing answers to it"; }
+	[ "$(recval zfs_rebase:phase "$POOL/result")" = "$phase" ] || \
+	    fail "a refused identifier moved the phase"
+	echo "ok   $POOL/result@nosuch answers to nothing (exit 2)"
+
+	# And the full dataset name, which is step 2 asked of that
+	# dataset alone: the same rebase the short name finds.
+	"$bin" --verify "$POOL/result" > "$tmp/vfull" 2>&1
 	st=$?
 	[ $st -eq 0 ] || \
-	    fail "--verify on a snapshot spelling exited $st, want 0"
-	echo "ok   --result $POOL/result@nosuch is the same rebase"
+	    { cat "$tmp/vfull"; fail "--verify $POOL/result exited $st, want 0"; }
+	echo "ok   $POOL/result names the rebase in full (exit 0)"
 
-	# And the other way of naming the same rebase: the manifest
-	# as the one operand. Its header names the result, the
-	# result's record names it back, and the verb does exactly
-	# what it did with --result -- waits at its unanswered
-	# skeleton, exit 1, the phase and the tree unmoved.
+	# And the other way of naming the same rebase: the manifest's
+	# path as the identifier, which is step 1. Its header names
+	# the result, the result's record names it back, and the verb
+	# does exactly what it did with the name -- waits at its
+	# unanswered skeleton, exit 1, the phase and the tree unmoved.
 	"$bin" --continue "$tmp/got" > "$tmp/cont1m" 2>&1
 	st=$?
 	[ $st -eq 1 ] || \
@@ -877,21 +917,22 @@ else
 	    fail "a refused --from moved the phase"
 	echo "ok   a --from that is not this rebase's: exit 2"
 
-	# The cross-check, both halves. A manifest of another run
-	# beside --result: the header names $POOL/plain and --result
-	# names $POOL/result, and two documents that do not name each
-	# other are not one rebase.
+	# The cross-check, both halves. A manifest whose header names
+	# another run: the identifier resolves through the header, so
+	# this one names $POOL/plain, which carries no record of ours
+	# and is left alone.
 	sed "s|^#result $POOL/result\$|#result $POOL/plain|" "$tmp/got" \
 	    > "$tmp/other-manifest"
 	grep -q "^#result $POOL/plain\$" "$tmp/other-manifest" || \
 	    fail "the harness could not write a manifest of another run"
-	"$bin" --continue --result "$POOL/result" "$tmp/other-manifest" \
-	    > "$tmp/x1" 2>&1
+	"$bin" --continue "$tmp/other-manifest" > "$tmp/x1" 2>&1
 	st=$?
 	[ $st -eq 2 ] || \
 	    { cat "$tmp/x1"; fail "a manifest of another run exited $st, want 2"; }
-	grep -q "$POOL/plain" "$tmp/x1" && grep -q "$POOL/result" "$tmp/x1" || \
-	    { cat "$tmp/x1"; fail "the refusal did not say both sides"; }
+	grep -q "$POOL/plain" "$tmp/x1" || \
+	    { cat "$tmp/x1"; fail "the refusal did not name the run the header names"; }
+	[ -z "$(localprops "$POOL/plain")" ] || \
+	    fail "a refused verb wrote a property on $POOL/plain"
 	# And a copy of this rebase's own manifest, which its header
 	# does name but its record does not: the record names the
 	# path the start recorded, and this is another file.
@@ -910,7 +951,7 @@ fi
 # A dataset that only inherits the record's properties is no result
 # of ours, whatever the verb is, and none of them may touch it.
 for verb in --verify --continue --restart; do
-	"$bin" $verb --result "$POOL/plain" > /dev/null 2>&1
+	"$bin" $verb "$POOL/plain" > /dev/null 2>&1
 	st=$?
 	[ $st -eq 2 ] || \
 	    fail "$verb on an inheriting dataset exited $st, want 2"
@@ -931,7 +972,7 @@ case "$fixture" in
 	zfs set readonly=off "$POOL/result" || fail "readonly=off"
 	printf 'stray\n' >> "$cmnt/n" || fail "cannot edit $cmnt/n"
 	zfs set readonly=on "$POOL/result" || fail "readonly=on"
-	"$bin" --verify --result "$POOL/result" > "$tmp/verify2" 2>&1
+	"$bin" --verify "$POOL/result" > "$tmp/verify2" 2>&1
 	st=$?
 	[ $st -eq 3 ] || \
 	    { cat "$tmp/verify2"; fail "--verify over drift exited $st, want 3"; }
@@ -943,7 +984,7 @@ case "$fixture" in
 	# hand and an edit cannot be told from a stray. The gate
 	# checks under no flag, reports and passes; --restart below is
 	# what puts the result back.
-	"$bin" --continue --result "$POOL/result" > "$tmp/cont2" 2>&1
+	"$bin" --continue "$POOL/result" > "$tmp/cont2" 2>&1
 	st=$?
 	want=1
 	[ $clean -eq 1 ] && want=0
@@ -951,7 +992,7 @@ case "$fixture" in
 	    { cat "$tmp/cont2"; fail "--continue exited $st, want $want"; }
 	grep -q 'drifted 1, first /n' "$tmp/cont2" || \
 	    { cat "$tmp/cont2"; fail "--continue did not report the drift"; }
-	"$bin" --verify --result "$POOL/result" > "$tmp/verify3" 2>&1
+	"$bin" --verify "$POOL/result" > "$tmp/verify3" 2>&1
 	st=$?
 	[ $st -eq 3 ] || \
 	    { cat "$tmp/verify3"; fail "--verify after it exited $st, want 3"; }
@@ -966,7 +1007,7 @@ case "$fixture" in
 	# snapshot with the same record; the holds are on the
 	# snapshots and are not touched by any of it. The stray edit
 	# of 3b goes with the clone, which is what --restart is for.
-	"$bin" --restart --result "$POOL/result" > "$tmp/rest" 2>&1
+	"$bin" --restart "$POOL/result" > "$tmp/rest" 2>&1
 	st=$?
 	want=1
 	[ $clean -eq 1 ] && want=0
@@ -1009,7 +1050,7 @@ case "$fixture" in
 	    { cat "$RES"; fail "the answers did not take"; }
 	[ "$(sed -n 's/^#names //p' "$RES")" = "$want_names" ] || \
 	    { cat "$RES"; fail "answering changed the count of names"; }
-	"$bin" --continue --result "$POOL/result" > "$tmp/cont3" 2>&1
+	"$bin" --continue "$POOL/result" > "$tmp/cont3" 2>&1
 	st=$?
 	[ $st -eq 0 ] || \
 	    { cat "$tmp/cont3"; fail "--continue over an answered resolution exited $st, want 0"; }
@@ -1055,7 +1096,8 @@ if [ $settled -eq 1 ]; then
 	echo "ok   settled: --abort exits 2, and the result was the"
 	echo "     harness's to take away"
 else
-	# By its manifest, which names this rebase as --result does:
+	# By its manifest's path, which names this rebase as its own
+	# name does:
 	# the header names $POOL/result and the record names this
 	# file back, so the abort that follows is the same abort.
 	"$bin" --abort "$tmp/got" || fail "abort exited $?"
@@ -1079,7 +1121,7 @@ else
 	if [ -e "/var/db/zfs_rebase/$POOL" ]; then
 		fail "/var/db/zfs_rebase/$POOL survived the abort"
 	fi
-	"$bin" --abort --result "$POOL/result" 2>/dev/null
+	"$bin" --abort "$POOL/result" 2>/dev/null
 	st=$?
 	[ $st -eq 2 ] || fail "a second abort exited $st, want 2"
 	echo "ok   abort: the holds, the result and the run directory are"
@@ -1161,7 +1203,7 @@ if [ $do5 -eq 1 ]; then
 		    fail "the second run reused the tag $tag"
 		[ "$(recsrc zfs_rebase:quiet "$POOL/result")" != local ] || \
 		    fail "zfs_rebase:quiet is set although no --quiet was given"
-		"$bin" --abort --result "$POOL/result" || fail "abort exited $?"
+		"$bin" --abort "$POOL/result" || fail "abort exited $?"
 		echo "ok   a conflicted run stops at the gate, before the"
 		echo "     final check is due, under its own tag $vtag"
 	fi
@@ -1194,7 +1236,7 @@ case "$fixture" in
 	# so keep a copy before the file goes.
 	cp "$tmp/got-l" "$tmp/hdr-l" || fail "cannot copy the manifest"
 	rm -f "$tmp/got-l" "$tmp/got-l.resolution" || fail "cannot unlink the manifest"
-	"$bin" --abort --result "$POOL/result" > "$tmp/l2" 2>&1
+	"$bin" --abort "$POOL/result" > "$tmp/l2" 2>&1
 	st=$?
 	[ $st -eq 0 ] || { cat "$tmp/l2"; fail "--abort without the manifest exited $st, want 0"; }
 	[ "$(holdcount)" = 0 ] || \
@@ -1244,7 +1286,7 @@ case "$fixture" in
 	LDIR=/var/db/zfs_rebase/$LEFT
 	rm -rf "$LDIR"
 	mkdir -p "$LDIR/mnt" || fail "cannot make the leftover run directory"
-	"$bin" --abort --result "$LEFT" > "$tmp/l3" 2>&1
+	"$bin" --abort "$LEFT" > "$tmp/l3" 2>&1
 	st=$?
 	[ $st -eq 0 ] || \
 	    { cat "$tmp/l3"; fail "--abort on an empty run directory exited $st, want 0"; }
@@ -1262,7 +1304,7 @@ case "$fixture" in
 	    fail "cannot write the birth manifest"
 	printf '/\n    ..\n' >> "$LDIR/manifest" || \
 	    fail "cannot write the birth manifest"
-	"$bin" --abort --result "$LEFT" > "$tmp/l4" 2>&1
+	"$bin" --abort "$LEFT" > "$tmp/l4" 2>&1
 	st=$?
 	[ $st -eq 0 ] || \
 	    { cat "$tmp/l4"; fail "--abort on a birth manifest exited $st, want 0"; }
@@ -1560,7 +1602,7 @@ dataset_pass() {
 		# there is no rebase on this dataset for a verb to
 		# find, and each of them says so and touches nothing.
 		for verb in --verify --continue --restart --abort; do
-			"$bin" $verb --result "$POOL/onto" > "$tmp/d-set" 2>&1
+			"$bin" $verb "$POOL/onto" > "$tmp/d-set" 2>&1
 			dst=$?
 			[ $dst -eq 2 ] || \
 			    { cat "$tmp/d-set"; dfail "$verb on a settled dataset exited $dst, want 2"; }
@@ -1597,7 +1639,7 @@ dataset_pass() {
 		echo "ok   a settled dataset: every verb exits 2, --verify"
 		echo "     $tmp/got-d exits 0 with onto read at home"
 	else
-		"$bin" --verify --result "$POOL/onto" > "$tmp/d-verify" 2>&1
+		"$bin" --verify "$POOL/onto" > "$tmp/d-verify" 2>&1
 		dst=$?
 		[ $dst -eq 0 ] || \
 		    { cat "$tmp/d-verify"; dfail "--verify exited $dst"; }
@@ -1609,12 +1651,26 @@ dataset_pass() {
 		    dfail "--verify did not leave the dataset at the private mount"
 		[ "$(recval zfs_rebase:phase "$POOL/onto")" = "$dphase" ] || \
 		    dfail "--verify moved the phase"
+		# And the same snapshot spelled out, which is the same
+		# step with the dataset part matched as well (ZX229),
+		# and the dataset carrying the record in full, which is
+		# step 2 asked of that dataset alone (ZX226).
+		"$bin" --verify "$POOL/onto@$dname" > "$tmp/d-verifyf" 2>&1
+		dst=$?
+		[ $dst -eq 0 ] || \
+		    { cat "$tmp/d-verifyf"; dfail "--verify $POOL/onto@$dname exited $dst, want 0"; }
+		"$bin" --verify "$POOL/onto" > "$tmp/d-verifyd" 2>&1
+		dst=$?
+		[ $dst -eq 0 ] || \
+		    { cat "$tmp/d-verifyd"; dfail "--verify $POOL/onto exited $dst, want 0"; }
+		echo "ok   $dname, $POOL/onto@$dname and $POOL/onto are one"
+		echo "     rebase: steps 3 short, 3 full and 2"
 		# The same rebase named by its manifest instead, which
 		# is the rule that differs in this form: the run's
 		# dataset is #onto's and not #result's, #result being
 		# the pre-apply snapshot. The record names this file
 		# back, so the cross-check passes and the verb does
-		# what it did with --result.
+		# what it did with the snapshot's name.
 		"$bin" --verify "$tmp/got-d" > "$tmp/d-verifym" 2>&1
 		dst=$?
 		[ $dst -eq 0 ] || \
@@ -1623,7 +1679,7 @@ dataset_pass() {
 		    { cat "$tmp/d-verifym"; dfail "--verify MANIFEST found drift"; }
 		[ "$(recval zfs_rebase:phase "$POOL/onto")" = "$dphase" ] || \
 		    dfail "--verify MANIFEST moved the phase"
-		"$bin" --continue --result "$POOL/onto" > "$tmp/d-cont" 2>&1
+		"$bin" --continue "$POOL/onto" > "$tmp/d-cont" 2>&1
 		dst=$?
 		[ $dst -eq 1 ] || \
 		    { cat "$tmp/d-cont"; dfail "--continue exited $dst, want 1"; }
@@ -1678,7 +1734,7 @@ dataset_pass() {
 		    dfail "cannot destroy @$dname"
 		rm -f "$tmp/got-d" "$DRES"
 	else
-		"$bin" --abort --result "$POOL/onto" > "$tmp/d-abort" 2>&1
+		"$bin" --abort "$POOL/onto" > "$tmp/d-abort" 2>&1
 		dst=$?
 		[ $dst -eq 0 ] || \
 		    { cat "$tmp/d-abort"; dfail "--abort exited $dst"; }

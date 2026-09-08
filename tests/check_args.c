@@ -9,17 +9,23 @@
  * Matrix cells (tests/MATRIX.md, family ZX): ZX100 to ZX121,
  * ZX137 to ZX139 for --quiet and for the --overwrite that is gone,
  * ZX188 and ZX189 for --verify as a verb and only a verb,
- * and ZX180 to ZX187 for the manifest as the one operand, -o at the
- * start alone, --allow-unrelated needing --base, and the two sides on
- * a verb. The last of those, ZX187, is src/run.c's rule for reading
- * a run's dataset out of a header: it takes a parsed header and
- * opens nothing, so it belongs with the rest of what a machine with
- * no ZFS can settle about naming a run.
+ * ZX180 to ZX187 for IDENT as the one operand, -o at the start
+ * alone, --allow-unrelated needing --base, and the two sides on a
+ * verb, and ZX221 to ZX225 for the identifier itself: the operand
+ * every verb takes, the --result that is a start's flag alone, and
+ * the two steps of the resolution that read a document.
+ *
+ * The last of those, and ZX187 with them, are src/run.c's rules for
+ * reading a run's dataset out of a header and for a manifest an
+ * identifier names: they take a parsed header, or a file, and open
+ * no pool, so they belong with the rest of what a machine with no
+ * ZFS can settle about naming a run.
  */
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "args.h"
 #include "manifest.h"
@@ -128,6 +134,27 @@ static const struct {
 	{ w_unrelated, s_unrelated },
 	{ w_base, s_base }
 };
+
+/*
+ * A template under TMPDIR, or /tmp without it, for the one test here
+ * that puts a document on disk: an identifier that is a path is
+ * resolved by reading the file at it.
+ */
+static void
+tmp_template(char *buf, size_t len, const char *leaf)
+{
+	const char *d = getenv("TMPDIR");
+
+	(void) snprintf(buf, len, "%s/%s", d != NULL && d[0] != '\0' ?
+	    d : "/tmp", leaf);
+}
+
+/* The whole header and no body, which is what a run writes at birth. */
+static int
+emit_birth(FILE *out, void *arg)
+{
+	return (zr_manifest_birth(out, arg));
+}
 
 /* This word as its letter, or the word itself where it has none. */
 static char *
@@ -241,12 +268,12 @@ test_pairs_run(void)
 static void
 test_pairs_verbs(void)
 {
-	char *cont[] = { w_prog, w_continue, w_result, v_result };
+	char *cont[] = { w_prog, w_continue, v_result };
 	char *contv[] = { w_prog, w_continue, w_interactive, w_nomerge,
-	    w_verbose, w_result, v_result };
-	char *rest[] = { w_prog, w_restart, w_result, v_result };
-	char *abrt[] = { w_prog, w_abort, w_verbose, w_result, v_result };
-	char *rep[] = { w_prog, w_verify, w_result, v_result };
+	    w_verbose, v_result };
+	char *rest[] = { w_prog, w_restart, v_result };
+	char *abrt[] = { w_prog, w_abort, w_verbose, v_result };
+	char *rep[] = { w_prog, w_verify, v_result };
 	struct zr_args a;
 
 	check_pair(cont, (int)NELEM(cont));
@@ -257,7 +284,7 @@ test_pairs_verbs(void)
 
 	a = parse_ok(cont, (int)NELEM(cont));
 	CHECK(a.za_verb == ZR_VERB_CONTINUE);
-	CHECK(a.za_result == v_result);
+	CHECK(a.za_ident == v_result && a.za_result == NULL);
 	a = parse_ok(contv, (int)NELEM(contv));
 	CHECK(a.za_verb == ZR_VERB_CONTINUE);
 	CHECK(a.za_verify == 0 && a.za_interactive == 1 && a.za_nomerge == 1);
@@ -276,15 +303,14 @@ test_pairs_verbs(void)
 	CHECK(a.za_verb == ZR_VERB_REPORT && a.za_verify == 1);
 	{
 		char *sole[] = { w_prog, w_verify, v_manifest };
-		char *side[] = { w_prog, w_verify, w_result, v_result,
-		    w_from, v_from };
-		char *loud[] = { w_prog, w_verify, w_verbose, w_result,
-		    v_result };
+		char *side[] = { w_prog, w_verify, v_result, w_from, v_from };
+		char *loud[] = { w_prog, w_verify, w_verbose, v_result };
 
 		a = parse_ok(sole, (int)NELEM(sole));
-		CHECK(a.za_verb == ZR_VERB_REPORT && a.za_path == v_manifest);
+		CHECK(a.za_verb == ZR_VERB_REPORT && a.za_ident == v_manifest);
 		a = parse_ok(side, (int)NELEM(side));
 		CHECK(a.za_verb == ZR_VERB_REPORT && a.za_from == v_from);
+		CHECK(a.za_ident == v_result);
 		a = parse_ok(loud, (int)NELEM(loud));
 		CHECK(a.za_verb == ZR_VERB_REPORT && a.za_verbose == 1);
 		check_pair(sole, (int)NELEM(sole));
@@ -423,10 +449,9 @@ test_take_on_verbs(void)
 		for (j = 0; j < NELEM(take); j++) {
 			cmd[0] = w_prog;
 			cmd[1] = verb[i];
-			cmd[2] = w_result;
-			cmd[3] = v_result;
-			cmd[4] = take[j];
-			parse_bad(cmd, 5);
+			cmd[2] = v_result;
+			cmd[3] = take[j];
+			parse_bad(cmd, 4);
 		}
 	}
 }
@@ -444,8 +469,8 @@ test_gate_flags_on_verbs(void)
 	char *cmd[6];
 	char *run[] = { w_prog, w_from, v_from, w_onto, v_onto,
 	    w_result, v_result, w_interactive, w_nomerge };
-	char *cont[] = { w_prog, w_continue, w_result, v_result,
-	    w_interactive, w_nomerge };
+	char *cont[] = { w_prog, w_continue, v_result, w_interactive,
+	    w_nomerge };
 	struct zr_args a;
 	size_t i, j;
 
@@ -453,10 +478,9 @@ test_gate_flags_on_verbs(void)
 		for (j = 0; j < NELEM(gate); j++) {
 			cmd[0] = w_prog;
 			cmd[1] = verb[i];
-			cmd[2] = w_result;
-			cmd[3] = v_result;
-			cmd[4] = gate[j];
-			parse_bad(cmd, 5);
+			cmd[2] = v_result;
+			cmd[3] = gate[j];
+			parse_bad(cmd, 4);
 		}
 	}
 	a = parse_ok(run, (int)NELEM(run));
@@ -587,24 +611,19 @@ test_take_choice(void)
 static void
 test_verb_flags(void)
 {
-	char *noresult[] = { w_prog, w_continue };
-	char *withman[] = { w_prog, w_continue, w_result, v_result,
-	    w_manifest, v_manifest };
-	char *withquiet[] = { w_prog, w_continue, w_result, v_result,
-	    w_quiet };
-	char *withmode[] = { w_prog, w_restart, w_result, v_result, w_perm };
-	char *withdry[] = { w_prog, w_abort, w_result, v_result, w_dryrun };
-	char *verifycont[] = { w_prog, w_continue, w_verify, w_result,
-	    v_result };
-	char *verifyrest[] = { w_prog, w_restart, w_verify, w_result,
-	    v_result };
-	char *verifyabrt[] = { w_prog, w_abort, w_verify, w_result,
-	    v_result };
-	char *two[] = { w_prog, w_continue, w_abort, w_result, v_result };
-	char *three[] = { w_prog, w_continue, w_restart, w_abort,
-	    w_result, v_result };
+	char *noident[] = { w_prog, w_continue };
+	char *withman[] = { w_prog, w_continue, v_result, w_manifest,
+	    v_manifest };
+	char *withquiet[] = { w_prog, w_continue, v_result, w_quiet };
+	char *withmode[] = { w_prog, w_restart, v_result, w_perm };
+	char *withdry[] = { w_prog, w_abort, v_result, w_dryrun };
+	char *verifycont[] = { w_prog, w_continue, w_verify, v_result };
+	char *verifyrest[] = { w_prog, w_restart, w_verify, v_result };
+	char *verifyabrt[] = { w_prog, w_abort, w_verify, v_result };
+	char *two[] = { w_prog, w_continue, w_abort, v_result };
+	char *three[] = { w_prog, w_continue, w_restart, w_abort, v_result };
 
-	parse_bad(noresult, (int)NELEM(noresult));
+	parse_bad(noident, (int)NELEM(noident));
 	parse_bad(withman, (int)NELEM(withman));
 	parse_bad(withquiet, (int)NELEM(withquiet));
 	parse_bad(withmode, (int)NELEM(withmode));
@@ -671,12 +690,11 @@ test_quiet_and_overwrite(void)
 	for (i = 0; i < NELEM(verb); i++) {
 		cmd[0] = w_prog;
 		cmd[1] = verb[i];
-		cmd[2] = w_result;
-		cmd[3] = v_result;
-		cmd[4] = w_quiet;
-		parse_bad(cmd, 5);
-		cmd[4] = s_quiet;
-		parse_bad(cmd, 5);
+		cmd[2] = v_result;
+		cmd[3] = w_quiet;
+		parse_bad(cmd, 4);
+		cmd[3] = s_quiet;
+		parse_bad(cmd, 4);
 	}
 	/* and on a dry run, which has no check to report. */
 	parse_bad(dry, (int)NELEM(dry));
@@ -700,22 +718,22 @@ test_quiet_and_overwrite(void)
 	parse_bad(cmd, 8);
 	cmd[0] = w_prog;
 	cmd[1] = w_continue;
-	cmd[2] = w_result;
-	cmd[3] = v_result;
-	cmd[4] = w_over;
-	parse_bad(cmd, 5);
+	cmd[2] = v_result;
+	cmd[3] = w_over;
+	parse_bad(cmd, 4);
 }
 
 /*
- * ZX180, ZX181, ZX182: a run is named by --result, by the manifest's
- * path as the one operand, or by both, which the driver
- * cross-checks; by neither it is refused. The operand stands
+ * ZX180, ZX181, ZX221, ZX222: a verb names its rebase with IDENT,
+ * its one operand, and with nothing else. The operand stands
  * wherever it is written among the flags, since the tool has no
- * end-of-options word, and one manifest names one rebase: a second
- * operand is a refusal and not a second run.
+ * end-of-options word; one identifier names one rebase, so a second
+ * operand is a refusal and not a second run; and --result, which
+ * names the result of a run you are starting, is refused beside
+ * every verb rather than read as the identifier.
  */
 static void
-test_manifest_operand(void)
+test_ident_operand(void)
 {
 	char *verb[] = { w_continue, w_restart, w_abort, w_verify };
 	enum zr_verb want[] = { ZR_VERB_CONTINUE, ZR_VERB_RESTART,
@@ -725,41 +743,55 @@ test_manifest_operand(void)
 	size_t i;
 
 	for (i = 0; i < NELEM(verb); i++) {
-		/* by --result, which is where the verbs began */
+		/* a name */
 		cmd[0] = w_prog;
 		cmd[1] = verb[i];
-		cmd[2] = w_result;
-		cmd[3] = v_result;
-		a = parse_ok(cmd, 4);
+		cmd[2] = v_result;
+		a = parse_ok(cmd, 3);
 		CHECK(a.za_verb == want[i]);
-		CHECK(a.za_result == v_result && a.za_path == NULL);
-		check_pair(cmd, 4);
-		/* by the manifest alone */
+		CHECK(a.za_ident == v_result && a.za_result == NULL);
+		check_pair(cmd, 3);
+		/* a path */
 		cmd[2] = v_manifest;
 		a = parse_ok(cmd, 3);
 		CHECK(a.za_verb == want[i]);
-		CHECK(a.za_path == v_manifest && a.za_result == NULL);
+		CHECK(a.za_ident == v_manifest);
 		check_pair(cmd, 3);
-		/* by both, and the operand before the flags too */
-		cmd[2] = w_result;
+		/* and before the flags as readily as after them */
+		cmd[2] = v_result;
+		cmd[3] = w_verbose;
+		a = parse_ok(cmd, 4);
+		CHECK(a.za_ident == v_result && a.za_verbose == 1);
+		cmd[2] = w_verbose;
 		cmd[3] = v_result;
-		cmd[4] = v_manifest;
-		a = parse_ok(cmd, 5);
-		CHECK(a.za_verb == want[i]);
-		CHECK(a.za_result == v_result && a.za_path == v_manifest);
-		cmd[2] = v_manifest;
-		cmd[3] = w_result;
-		cmd[4] = v_result;
-		a = parse_ok(cmd, 5);
-		CHECK(a.za_verb == want[i]);
-		CHECK(a.za_result == v_result && a.za_path == v_manifest);
+		a = parse_ok(cmd, 4);
+		CHECK(a.za_ident == v_result && a.za_verbose == 1);
 		/* by neither */
 		cmd[2] = w_verbose;
 		parse_bad(cmd, 3);
-		/* and two manifests are two rebases */
-		cmd[2] = v_manifest;
-		cmd[3] = v_base;
+		/* and two identifiers are two rebases */
+		cmd[2] = v_result;
+		cmd[3] = v_manifest;
 		parse_bad(cmd, 4);
+		/*
+		 * ZX222: --result beside the verb, alone, beside an
+		 * identifier and in both spellings. It is a start's
+		 * flag and a verb takes none of it.
+		 */
+		cmd[2] = w_result;
+		cmd[3] = v_result;
+		parse_bad(cmd, 4);
+		cmd[2] = s_result;
+		parse_bad(cmd, 4);
+		cmd[2] = w_result;
+		cmd[3] = v_result;
+		cmd[4] = v_manifest;
+		parse_bad(cmd, 5);
+		cmd[2] = w_result;
+		cmd[3] = v_result;
+		cmd[4] = w_from;
+		cmd[5] = v_from;
+		parse_bad(cmd, 6);
 	}
 }
 
@@ -780,14 +812,13 @@ test_manifest_flag_on_verbs(void)
 	for (i = 0; i < NELEM(verb); i++) {
 		cmd[0] = w_prog;
 		cmd[1] = verb[i];
-		cmd[2] = w_result;
-		cmd[3] = v_result;
-		cmd[4] = w_manifest;
-		cmd[5] = v_manifest;
-		parse_bad(cmd, 6);
-		cmd[4] = s_manifest;
-		parse_bad(cmd, 6);
-		/* and beside a manifest operand, which is not -o either */
+		cmd[2] = v_result;
+		cmd[3] = w_manifest;
+		cmd[4] = v_manifest;
+		parse_bad(cmd, 5);
+		cmd[3] = s_manifest;
+		parse_bad(cmd, 5);
+		/* and beside a path as the identifier, which is not -o */
 		cmd[2] = v_manifest;
 		cmd[3] = w_manifest;
 		cmd[4] = v_manifest;
@@ -802,16 +833,17 @@ test_manifest_flag_on_verbs(void)
 
 		a = parse_ok(run, (int)NELEM(run));
 		CHECK(a.za_verb == ZR_VERB_RUN);
-		CHECK(a.za_manifest == v_manifest && a.za_path == NULL);
+		CHECK(a.za_manifest == v_manifest && a.za_ident == NULL);
 		a = parse_ok(dry, (int)NELEM(dry));
 		CHECK(a.za_dryrun == 1 && a.za_manifest == v_manifest);
 	}
 }
 
 /*
- * ZX185: a start takes no operand, and neither does a dry run. A
- * start writes a manifest and reads none: what it has to say about
- * where its own goes it says with -o.
+ * ZX185: a start takes no operand, and neither does a dry run. An
+ * identifier names a rebase that exists and a start makes one: what
+ * a start has to say about where its manifest goes it says with -o,
+ * and what it calls what it makes it says with --result.
  */
 static void
 test_operand_on_a_start(void)
@@ -832,10 +864,9 @@ test_operand_on_a_start(void)
  * ZX186, ZX189: --from and --onto are accepted on a verb, where they
  * name no rebase and change nothing: the driver checks them against
  * the header by name and by guid. Every verb takes them the same
- * way -- beside a manifest, and beside --result where only one side
- * is given -- but --from, --onto and --result together are the
- * shape of a start, and no verb starts anything (ruled 2026-09-06:
- * the starting set is banned beside every verb, --verify included).
+ * way, one or both, beside the identifier that says which rebase
+ * this is. What no verb takes is --result, which is what a start
+ * calls the thing it makes (ZX222, and the loop above).
  */
 static void
 test_sides_on_verbs(void)
@@ -848,30 +879,28 @@ test_sides_on_verbs(void)
 	for (i = 0; i < NELEM(verb); i++) {
 		cmd[0] = w_prog;
 		cmd[1] = verb[i];
-		cmd[2] = w_result;
-		cmd[3] = v_result;
-		cmd[4] = w_from;
-		cmd[5] = v_from;
-		cmd[6] = w_onto;
-		cmd[7] = v_onto;
-		/* the starting set beside a verb is another command */
-		parse_bad(cmd, 8);
-		/* one side alone is a side and not a start */
-		cmd[6] = w_verbose;
-		a = parse_ok(cmd, 7);
-		CHECK(a.za_from == v_from && a.za_onto == NULL);
-		CHECK(a.za_result == v_result);
-		check_pair(cmd, 7);
-		/* and beside a manifest operand */
-		cmd[2] = v_manifest;
+		cmd[2] = v_result;
 		cmd[3] = w_from;
 		cmd[4] = v_from;
 		cmd[5] = w_onto;
 		cmd[6] = v_onto;
+		/* both sides beside the identifier */
 		a = parse_ok(cmd, 7);
-		CHECK(a.za_path == v_manifest && a.za_onto == v_onto);
+		CHECK(a.za_ident == v_result);
+		CHECK(a.za_from == v_from && a.za_onto == v_onto);
+		check_pair(cmd, 7);
+		/* and one side alone */
+		cmd[5] = w_verbose;
+		a = parse_ok(cmd, 6);
+		CHECK(a.za_from == v_from && a.za_onto == NULL);
+		CHECK(a.za_ident == v_result);
+		check_pair(cmd, 6);
+		/* the identifier written as a path takes them too */
+		cmd[2] = v_manifest;
+		a = parse_ok(cmd, 6);
+		CHECK(a.za_ident == v_manifest && a.za_from == v_from);
 	}
-	/* --verify on a manifest is the verb, sides or no sides. */
+	/* --verify on a path is the verb, sides or no sides. */
 	cmd[0] = w_prog;
 	cmd[1] = w_verify;
 	cmd[2] = v_manifest;
@@ -881,24 +910,25 @@ test_sides_on_verbs(void)
 	cmd[6] = v_onto;
 	a = parse_ok(cmd, 7);
 	CHECK(a.za_verb == ZR_VERB_REPORT && a.za_verify == 1);
-	CHECK(a.za_path == v_manifest && a.za_from == v_from);
-	/* and beside --result, where one side is a side and not a start */
+	CHECK(a.za_ident == v_manifest && a.za_from == v_from);
+	/* and beside a name, one side of it */
+	cmd[2] = v_result;
+	cmd[5] = w_verbose;
+	a = parse_ok(cmd, 6);
+	CHECK(a.za_verb == ZR_VERB_REPORT && a.za_from == v_from);
+	CHECK(a.za_ident == v_result);
+	/*
+	 * ZX189: the sides with --result is the command that used to
+	 * be a start with the flag, and it is refused rather than
+	 * read as the report: a person who wrote it meant to rebase,
+	 * and the checks they were asking for are standard now.
+	 */
 	cmd[2] = w_result;
 	cmd[3] = v_result;
-	cmd[4] = w_onto;
-	cmd[5] = v_onto;
-	a = parse_ok(cmd, 6);
-	CHECK(a.za_verb == ZR_VERB_REPORT && a.za_onto == v_onto);
-	CHECK(a.za_result == v_result && a.za_path == NULL);
-	/*
-	 * ZX189: the two sides and --result together are the command
-	 * that used to be a start with the flag, and it is refused
-	 * rather than read as the report: a person who wrote it meant
-	 * to rebase, and the checks they were asking for are standard
-	 * now.
-	 */
-	cmd[6] = w_from;
-	cmd[7] = v_from;
+	cmd[4] = w_from;
+	cmd[5] = v_from;
+	cmd[6] = w_onto;
+	cmd[7] = v_onto;
 	parse_bad(cmd, 8);
 	cmd[1] = s_verify;
 	parse_bad(cmd, 8);
@@ -915,23 +945,22 @@ static void
 test_verify_is_a_verb(void)
 {
 	char *start[] = { w_manifest, w_quiet, w_perm, w_takeonto,
-	    w_takefrom };
+	    w_takefrom, w_result };
 	char *cmd[8];
 	size_t i;
 
 	for (i = 0; i < NELEM(start); i++) {
 		cmd[0] = w_prog;
 		cmd[1] = w_verify;
-		cmd[2] = w_result;
-		cmd[3] = v_result;
-		cmd[4] = start[i];
-		cmd[5] = v_manifest;	/* only -o reads it */
-		parse_bad(cmd, start[i] == w_manifest ? 6 : 5);
+		cmd[2] = v_result;
+		cmd[3] = start[i];
+		cmd[4] = v_manifest;	/* only -o and --result read it */
+		parse_bad(cmd, start[i] == w_manifest ||
+		    start[i] == w_result ? 5 : 4);
 	}
 	/* --dry-run, with the sides it needs and without them */
 	{
-		char *dry[] = { w_prog, w_verify, w_dryrun, w_result,
-		    v_result };
+		char *dry[] = { w_prog, w_verify, w_dryrun, v_result };
 		char *dryf[] = { w_prog, w_verify, w_dryrun, w_from, v_from,
 		    w_onto, v_onto };
 
@@ -940,11 +969,127 @@ test_verify_is_a_verb(void)
 	}
 	/* and --allow-unrelated with the --base it needs */
 	{
-		char *unrel[] = { w_prog, w_verify, w_result, v_result,
-		    w_unrelated, w_base, v_base };
+		char *unrel[] = { w_prog, w_verify, v_result, w_unrelated,
+		    w_base, v_base };
 
 		parse_bad(unrel, (int)NELEM(unrel));
 	}
+}
+
+/*
+ * ZX223, ZX224, ZX225: the two steps of the identifier's resolution
+ * that read a document (zr_ident_manifest in src/run.c). A path is
+ * resolved with realpath, the file is parsed, and the header's own
+ * rule says which dataset carries the record; a path with no file at
+ * it, a file that is no manifest, and a document that names no
+ * rebase are each a refusal there, with the path in the line. The
+ * step opens a file and no pool, so the whole of it answers on a
+ * machine with no ZFS.
+ *
+ * The refusal is what makes step 1 an end and not a fall-through: an
+ * absolute path is a path, and the tool does not go looking in the
+ * pools for a dataset called /tmp/manifest.
+ */
+static void
+test_ident_manifest(void)
+{
+	static char pre[] = "pre";
+	char tmpl[256], path[512], gone[512], bent[512], real[512];
+	struct zr_manifest_hdr hdr;
+	struct zr_ident id;
+	char err[512];
+	FILE *fp;
+
+	tmp_template(tmpl, sizeof (tmpl), "zrident.XXXXXX");
+	CHECK(mkdtemp(tmpl) != NULL);
+	(void) snprintf(path, sizeof (path), "%s/manifest", tmpl);
+	(void) snprintf(bent, sizeof (bent), "%s/./manifest", tmpl);
+	(void) snprintf(gone, sizeof (gone), "%s/no-such-manifest", tmpl);
+	memset(&hdr, 0, sizeof (hdr));
+	hdr.result = v_result;
+	hdr.form = ZR_HFORM_CLONE;
+	hdr.base = "tank/proj@v1";
+	hdr.base_guid = 11;
+	hdr.from = v_from;
+	hdr.from_guid = 22;
+	hdr.onto = v_onto;
+	hdr.onto_guid = 33;
+	hdr.made = "-";
+	hdr.tag = "zr-0f1e2d3c4b5a";
+	hdr.take = "-";
+	hdr.written = "2026-09-08T10:11:12Z";
+	hdr.mode = ZR_MODE_STRICT;
+	err[0] = '\0';
+	CHECK(zr_doc_write(path, emit_birth, &hdr, err, sizeof (err)) == 0);
+
+	/* ZX223: the clone form, whose #result is the result itself */
+	err[0] = 'x';
+	CHECK(zr_ident_manifest(path, &id, err, sizeof (err)) == 0);
+	CHECK(strcmp(id.zi_result, v_result) == 0);
+	CHECK(id.zi_path[0] == '/' && strstr(id.zi_path, "/manifest") != NULL);
+	CHECK(id.zi_parsed == 1 && id.zi_rundir == 0);
+	CHECK(id.zi_man.zp_onto != NULL);
+	CHECK(strcmp(id.zi_man.zp_onto, v_onto) == 0);
+	(void) snprintf(real, sizeof (real), "%s", id.zi_path);
+	zr_ident_fini(&id);
+	CHECK(id.zi_parsed == 0);
+
+	/*
+	 * ZX223: and the path is resolved, not copied: the same file
+	 * named another way is the same manifest, which is what the
+	 * record is compared with afterwards.
+	 */
+	CHECK(zr_ident_manifest(bent, &id, err, sizeof (err)) == 0);
+	CHECK(strcmp(id.zi_path, real) == 0);
+	zr_ident_fini(&id);
+
+	/*
+	 * ZX223: and the dataset form, where #result is the pre-apply
+	 * snapshot and the dataset that carries the record is #onto's.
+	 * The same rule zr_run_dataset holds over a header in memory,
+	 * made here over a document on disk.
+	 */
+	hdr.form = ZR_HFORM_DATASET;
+	hdr.result = pre;
+	hdr.presnap = "tank/main@pre";
+	hdr.readonly = "off";
+	hdr.canmount = "on";
+	hdr.onto = "tank/main@now";
+	CHECK(zr_doc_write(path, emit_birth, &hdr, err, sizeof (err)) == 0);
+	CHECK(zr_ident_manifest(path, &id, err, sizeof (err)) == 0);
+	CHECK(strcmp(id.zi_result, "tank/main") == 0);
+	zr_ident_fini(&id);
+
+	/* ZX225: a dry run's document, which names no rebase */
+	hdr.form = ZR_HFORM_CLONE;
+	hdr.result = "-";
+	CHECK(zr_doc_write(path, emit_birth, &hdr, err, sizeof (err)) == 0);
+	err[0] = '\0';
+	CHECK(zr_ident_manifest(path, &id, err, sizeof (err)) == -1);
+	CHECK(err[0] != '\0' && strstr(err, real) != NULL);
+	CHECK(id.zi_result[0] == '\0');
+	zr_ident_fini(&id);
+
+	/* ZX224: a file that is no manifest at all */
+	fp = fopen(path, "w");
+	CHECK(fp != NULL);
+	CHECK(fputs("this is not a manifest\n", fp) != EOF);
+	CHECK(fclose(fp) == 0);
+	err[0] = '\0';
+	CHECK(zr_ident_manifest(path, &id, err, sizeof (err)) == -1);
+	CHECK(err[0] != '\0' && strstr(err, real) != NULL);
+	CHECK(id.zi_parsed == 0);
+	zr_ident_fini(&id);
+
+	/* ZX224: and a path with nothing at it, which is the refusal */
+	err[0] = '\0';
+	CHECK(zr_ident_manifest(gone, &id, err, sizeof (err)) == -1);
+	CHECK(err[0] != '\0' && strstr(err, gone) != NULL);
+	CHECK(id.zi_parsed == 0 && id.zi_result[0] == '\0');
+	zr_ident_fini(&id);
+
+	CHECK(unlink(path) == 0);
+	CHECK(rmdir(tmpl) == 0);
 }
 
 /*
@@ -1025,11 +1170,12 @@ main(void)
 	test_verb_flags();
 	test_run_flags();
 	test_quiet_and_overwrite();
-	test_manifest_operand();
+	test_ident_operand();
 	test_manifest_flag_on_verbs();
 	test_operand_on_a_start();
 	test_sides_on_verbs();
 	test_verify_is_a_verb();
+	test_ident_manifest();
 	test_run_dataset();
 	printf("check_args: %lu checks passed\n", checks);
 	return (0);

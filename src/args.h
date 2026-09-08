@@ -34,10 +34,13 @@ enum zr_verb {
  * every refusal below is reachable on a machine with no ZFS in it.
  * Every string points into argv, which outlives the run.
  *
- * za_path is the one operand of ordinary use: the path of a
- * manifest, which names a rebase to a verb exactly as --result does.
- * A start writes a manifest and reads none, so it takes no operand
- * at all, and a second one is a refusal rather than a second run.
+ * za_ident is the one operand of ordinary use: IDENT, which names
+ * the rebase a verb acts on -- the result, its pre-apply snapshot,
+ * the path of its manifest or its run directory, resolved by the
+ * driver (documents-design.md, section 11.4). --result is a start
+ * flag and nothing else, and is refused beside every verb. A start
+ * writes a manifest and reads none, so it takes no operand at all,
+ * and a second one is a refusal rather than a second run.
  *
  * za_arg holds the operands of the harness verbs, in the order they
  * were given: two for --build-fixture and three for the other two.
@@ -49,7 +52,7 @@ struct zr_args {
 	const char	*za_result;	/* -r, --result */
 	const char	*za_manifest;	/* -o, --manifest */
 	const char	*za_base;	/* -b, --base */
-	const char	*za_path;	/* MANIFEST, the one operand */
+	const char	*za_ident;	/* IDENT, the one operand */
 	const char	*za_arg[3];
 	zr_mode_t	za_mode;	/* -p, --permissive-merge */
 	int		za_dryrun;	/* -n, --dry-run */

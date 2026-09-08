@@ -130,6 +130,12 @@
 #    instruction, carried out like a drift line with that choice,
 #    its group number of no record never read.
 #    Cells: ZY106, ZY107, ZA66.
+# 11. A run directory with no record on any dataset, which is the
+#    fifth and last step of the identifier's resolution and what a
+#    crash before the record leaves. --continue, --restart and
+#    --verify say there is no rebase to move and name --abort, which
+#    takes the directory away. Made by hand: the window it stands for
+#    is between two system calls. Cells: ZX231.
 #
 # Every case ends by taking the rebase away -- --abort where one is
 # still open, and by hand where it reached done, since done takes the
@@ -158,7 +164,7 @@ bin=./zfs_rebase
 [ "$(uname)" = FreeBSD ] || { echo "FreeBSD only"; exit 2; }
 # The portable flavor answers every ZFS call with this line; the box
 # wants the freebsd flavor, and the Makefile keeps the two apart.
-if "$bin" --abort --result zr-flavor-probe/none 2>&1 |
+if "$bin" --abort zr-flavor-probe/none 2>&1 |
     grep -q 'not built with ZR_FREEBSD'; then
 	echo "$bin is the portable build: make clean && make freebsd"
 	exit 2
@@ -181,8 +187,8 @@ cleanup() {
 		echo "KEEP=1: pool $POOL, $IMG and $tmp left in place"
 		return
 	fi
-	"$bin" --abort --result "$POOL/result" >/dev/null 2>&1
-	"$bin" --abort --result "$POOL/onto" >/dev/null 2>&1
+	"$bin" --abort "$POOL/result" >/dev/null 2>&1
+	"$bin" --abort "$POOL/onto" >/dev/null 2>&1
 	zpool destroy -f "$POOL" 2>/dev/null
 	[ -n "$MD" ] && mdconfig -d -u "$MD" 2>/dev/null
 	rm -f "$IMG"
@@ -603,11 +609,11 @@ drop_pool() {
 # rebase left in it.
 end_case() {
 	if [ -n "$(localprops "$rds")" ]; then
-		"$bin" --abort --result "$rds" > "$tmp/abort" 2>&1
+		"$bin" --abort "$rds" > "$tmp/abort" 2>&1
 		st=$?
 		[ $st -eq 0 ] || { cat "$tmp/abort"; fail "--abort exited $st"; }
 	else
-		"$bin" --abort --result "$rds" > "$tmp/abort" 2>&1
+		"$bin" --abort "$rds" > "$tmp/abort" 2>&1
 		st=$?
 		[ $st -eq 2 ] || \
 		    { cat "$tmp/abort"; fail "--abort on a settled result exited $st, want 2"; }
@@ -807,7 +813,7 @@ case_nomerge() {
 	[ "$(holdcount)" = 3 ] || fail "$(holdcount) holds at the gate, want 3"
 	# The flag says not yet as often as it is given, and leaves
 	# the gate where it is for the next command without it.
-	"$bin" --continue --no-merge --result "$rds" > "$tmp/nm2" 2>&1
+	"$bin" --continue --no-merge "$rds" > "$tmp/nm2" 2>&1
 	st=$?
 	[ $st -eq 1 ] || \
 	    { cat "$tmp/nm2"; fail "--continue --no-merge exited $st, want 1"; }
@@ -816,7 +822,7 @@ case_nomerge() {
 	[ "$(phasenow "$rds")" = conflicts ] || \
 	    fail "--continue --no-merge moved the gate"
 	# And without it the same document takes the same rebase on.
-	"$bin" --continue --result "$rds" > "$tmp/nm3" 2>&1
+	"$bin" --continue "$rds" > "$tmp/nm3" 2>&1
 	st=$?
 	[ $st -eq 0 ] || \
 	    { cat "$tmp/nm3"; fail "--continue exited $st, want 0"; }
@@ -831,7 +837,7 @@ case_nomerge() {
 	# ("past the merge" is what a record at applying2 is told, and
 	# case 7 is where that is shown.)
 	ro0=$(recval readonly "$rds")
-	"$bin" --continue --no-merge --result "$rds" > "$tmp/nm4" 2>&1
+	"$bin" --continue --no-merge "$rds" > "$tmp/nm4" 2>&1
 	st=$?
 	[ $st -eq 2 ] || \
 	    { cat "$tmp/nm4"; fail "--no-merge at done exited $st, want 2"; }
@@ -855,7 +861,7 @@ case_incomplete() {
 	    { head -8 "$res"; fail "the skeleton is not wholly unanswered"; }
 	# The file being there is not the signal; its being complete
 	# is. A --continue over the untouched document says the same.
-	"$bin" --continue --result "$rds" > "$tmp/inc1" 2>&1
+	"$bin" --continue "$rds" > "$tmp/inc1" 2>&1
 	st=$?
 	[ $st -eq 1 ] || \
 	    { cat "$tmp/inc1"; fail "--continue over a skeleton exited $st, want 1"; }
@@ -871,7 +877,7 @@ case_incomplete() {
 		left=$((nconf - 1))
 		[ "$(res_left "$res")" = "$left" ] || \
 		    { head -8 "$res"; fail "answering one line left $(res_left "$res")"; }
-		"$bin" --continue --result "$rds" > "$tmp/inc2" 2>&1
+		"$bin" --continue "$rds" > "$tmp/inc2" 2>&1
 		st=$?
 		[ $st -eq 1 ] || \
 		    { cat "$tmp/inc2"; fail "a part-answered document exited $st, want 1"; }
@@ -920,7 +926,7 @@ case_hand() {
 	# flag, and -v is what adds the per-line list to it. There is
 	# no asking afterwards -- a settled result carries no record --
 	# until verify-settled names it by its manifest.
-	"$bin" --continue -v --result "$rds" \
+	"$bin" --continue -v "$rds" \
 	    > "$tmp/handv" 2>&1
 	st=$?
 	[ $st -eq 0 ] || \
@@ -973,7 +979,7 @@ case_restart() {
 	rechoose "$res" onto keep
 	[ "$(grep -c ' keep$' "$res" || true)" = "$nconf" ] || \
 	    { cat "$res"; fail "the re-answering did not take"; }
-	"$bin" --restart --result "$rds" > "$tmp/restart" 2>&1
+	"$bin" --restart "$rds" > "$tmp/restart" 2>&1
 	st=$?
 	[ $st -eq 0 ] || \
 	    { cat "$tmp/restart"; fail "--restart exited $st, want 0"; }
@@ -1007,7 +1013,7 @@ drift_line() {			# leaves $kept edited and its line written
 	# The conflicts are still unanswered, so the gate writes the
 	# line and waits: a document written to is not a document
 	# answered.
-	"$bin" --continue --result "$rds" > "$tmp/dr1" 2>&1
+	"$bin" --continue "$rds" > "$tmp/dr1" 2>&1
 	st=$?
 	[ $st -eq 1 ] || \
 	    { cat "$tmp/dr1"; fail "--continue at the gate exited $st, want 1"; }
@@ -1035,7 +1041,7 @@ case_driftkeep() {
 	# The check goes on this --continue, which is the invocation
 	# that reaches done: its report is the done gate's own, made
 	# after the choices and before the record goes.
-	"$bin" --continue -v --result "$rds" > "$tmp/dr3" 2>&1
+	"$bin" --continue -v "$rds" > "$tmp/dr3" 2>&1
 	st=$?
 	[ $st -eq 0 ] || \
 	    { cat "$tmp/dr3"; fail "--continue over the answered document exited $st, want 0"; }
@@ -1062,7 +1068,7 @@ case_driftflip() {
 	grep -q "^ *$leaf drift onto\$" "$res" || \
 	    { cat "$res"; fail "the flip to onto did not take"; }
 	answer_all "$res" keep
-	"$bin" --continue -v --result "$rds" > "$tmp/df3" 2>&1
+	"$bin" --continue -v "$rds" > "$tmp/df3" 2>&1
 	st=$?
 	[ $st -eq 0 ] || \
 	    { cat "$tmp/df3"; fail "--continue over the flipped document exited $st, want 0"; }
@@ -1111,7 +1117,7 @@ case_killwindow() {
 		# --restart writes the skeleton again from the
 		# recorded manifest, which is what makes it the way
 		# out of this window.
-		"$bin" --restart --result "$rds" > "$tmp/kw" 2>&1
+		"$bin" --restart "$rds" > "$tmp/kw" 2>&1
 		st=$?
 		[ $st -eq 1 ] || \
 		    { cat "$tmp/kw"; fail "--restart exited $st, want 1"; }
@@ -1150,7 +1156,7 @@ case_killchoice() {
 		    fail "onto is not at the private mount $rundir/mnt"
 	fi
 	# There is no gate left for --no-merge to stop at from here.
-	"$bin" --continue --no-merge --result "$rds" > "$tmp/kc0" 2>&1
+	"$bin" --continue --no-merge "$rds" > "$tmp/kc0" 2>&1
 	st=$?
 	[ $st -eq 2 ] || \
 	    { cat "$tmp/kc0"; fail "--no-merge at applying2 exited $st, want 2"; }
@@ -1161,7 +1167,7 @@ case_killchoice() {
 	# The stage begins again over the whole document, which is
 	# idempotent, and its own second pass must find nothing left:
 	# a line it had to change would fail the run here.
-	"$bin" --continue --result "$rds" > "$tmp/kc1" 2>&1
+	"$bin" --continue "$rds" > "$tmp/kc1" 2>&1
 	st=$?
 	[ $st -eq 0 ] || \
 	    { cat "$tmp/kc1"; fail "--continue after the kill exited $st, want 0"; }
@@ -1182,7 +1188,7 @@ case_killchoice() {
 	    { cat "$tmp/kc1"; fail "a choice drifted after the redo"; }
 	grep -q "the resolution: pending 0\$" "$tmp/kc1" || \
 	    { cat "$tmp/kc1"; fail "a choice is still pending after the redo"; }
-	"$bin" --continue --result "$rds" > "$tmp/kc2" 2>&1
+	"$bin" --continue "$rds" > "$tmp/kc2" 2>&1
 	st=$?
 	[ $st -eq 2 ] || \
 	    { cat "$tmp/kc2"; fail "--continue on a settled result exited $st, want 2"; }
@@ -1215,7 +1221,7 @@ case_aclstrip() {
 	ro_back
 	[ "$(aclof "$hmnt$kdir")" = "$(aclof "$ontodir$kdir")" ] && \
 	    fail "the ACL on $kdir did not change anything"
-	"$bin" --continue --result "$rds" > "$tmp/ac1" 2>&1
+	"$bin" --continue "$rds" > "$tmp/ac1" 2>&1
 	st=$?
 	[ $st -eq 1 ] || \
 	    { cat "$tmp/ac1"; fail "--continue at the gate exited $st, want 1"; }
@@ -1224,7 +1230,7 @@ case_aclstrip() {
 	    { cat "$res"; fail "$res has no drift line for the directory $kdir"; }
 	rechoose "$res" "drift keep" "drift onto"
 	answer_all "$res" keep
-	"$bin" --continue --result "$rds" > "$tmp/ac2" 2>&1
+	"$bin" --continue "$rds" > "$tmp/ac2" 2>&1
 	st=$?
 	[ $st -eq 0 ] || \
 	    { cat "$tmp/ac2"; fail "--continue over the flipped document exited $st, want 0"; }
@@ -1251,7 +1257,7 @@ case_blockeddir() {
 	printf 'mine\n' > "$hmnt/zrblocked/f" || \
 	    { ro_back; fail "cannot make /zrblocked/f"; }
 	ro_back
-	"$bin" --continue --result "$rds" > "$tmp/bd1" 2>&1
+	"$bin" --continue "$rds" > "$tmp/bd1" 2>&1
 	st=$?
 	[ $st -eq 1 ] || \
 	    { cat "$tmp/bd1"; fail "--continue at the gate exited $st, want 1"; }
@@ -1264,7 +1270,7 @@ case_blockeddir() {
 	    "$res" > "$res.new" || fail "cannot flip the directory line"
 	mv "$res.new" "$res" || fail "cannot flip the directory line"
 	answer_all "$res" keep
-	"$bin" --continue -v --result "$rds" > "$tmp/bd2" 2>&1
+	"$bin" --continue -v "$rds" > "$tmp/bd2" 2>&1
 	st=$?
 	[ $st -eq 3 ] || \
 	    { cat "$tmp/bd2"; fail "--continue over the blocked line exited $st, want 3"; }
@@ -1313,7 +1319,7 @@ case_putback() {
 	drop_line "$res" "$one"
 	[ "$(res_names "$res")" = "$((n0 - 1))" ] || \
 	    { head -8 "$res"; fail "the hand edit did not take"; }
-	"$bin" --continue --no-merge --result "$rds" > "$tmp/pb" 2>&1
+	"$bin" --continue --no-merge "$rds" > "$tmp/pb" 2>&1
 	st=$?
 	[ $st -eq 1 ] || \
 	    { cat "$tmp/pb"; fail "--continue at the gate exited $st, want 1"; }
@@ -1344,7 +1350,7 @@ case_handadded() {
 	ro_back
 	add_line "$res" "$top" 99 onto
 	answer_all "$res" keep
-	"$bin" --continue -v --result "$rds" > "$tmp/ha" 2>&1
+	"$bin" --continue -v "$rds" > "$tmp/ha" 2>&1
 	st=$?
 	[ $st -eq 0 ] || \
 	    { cat "$tmp/ha"; fail "--continue over the added line exited $st, want 0"; }
@@ -1355,6 +1361,43 @@ case_handadded() {
 	    { cat "$tmp/ha"; fail "$top is not under the resolution as onto done"; }
 	echo "ok   $case_id: $top was carried out on the person's word alone"
 	end_case
+}
+
+# --- 11. a run directory and nothing else, which is step 5 ---
+#
+# The last step of the identifier's resolution: a directory under
+# WORKDIR whose result carries no record, which is what a crash
+# before the record leaves. It is --abort's, and the three verbs that
+# move a rebase say there is no rebase to move and name --abort.
+# Made by hand, because the window it stands for is between two
+# system calls (run-fixture.sh 5b makes the same one for --abort's
+# own two branches).
+case_rundir() {
+	case_id="$fixture $form a run directory with no record"
+	left=$POOL/leftover
+	ldir=/var/db/zfs_rebase/$left
+	rm -rf "$ldir"
+	mkdir -p "$ldir/mnt" || fail "cannot make the leftover directory"
+	for verb in --continue --restart --verify; do
+		"$bin" $verb "$left" > "$tmp/lv" 2>&1
+		st=$?
+		[ $st -eq 2 ] || \
+		    { cat "$tmp/lv"; fail "$verb on a leftover directory exited $st, want 2"; }
+		grep -q "$ldir" "$tmp/lv" || \
+		    { cat "$tmp/lv"; fail "$verb did not name the directory"; }
+		grep -q -- '--abort' "$tmp/lv" || \
+		    { cat "$tmp/lv"; fail "$verb did not point at --abort"; }
+		[ -d "$ldir" ] || fail "$verb removed the directory"
+	done
+	"$bin" --abort "$left" > "$tmp/la" 2>&1
+	st=$?
+	[ $st -eq 0 ] || \
+	    { cat "$tmp/la"; fail "--abort on a leftover directory exited $st, want 0"; }
+	[ ! -e "$ldir" ] || fail "--abort left the directory $ldir"
+	[ "$(holdcount)" = 0 ] || fail "the leftover case left holds behind"
+	echo "ok   $case_id: the three verbs refuse and name --abort,"
+	echo "     --abort removes it (exit 0)"
+	cases=$((cases + 1))
 }
 
 # ---------------------------------------------------------------
@@ -1438,6 +1481,7 @@ res_pass() {
 	else
 		echo "skip $fixture $form the ACL strip: no untouched directory"
 	fi
+	case_rundir
 	return 0
 }
 

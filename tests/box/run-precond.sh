@@ -109,7 +109,7 @@ bin=./zfs_rebase
 [ "$(uname)" = FreeBSD ] || { echo "FreeBSD only"; exit 2; }
 # The portable flavor answers every ZFS call with this line; the box
 # wants the freebsd flavor, and the Makefile keeps the two apart.
-if "$bin" --abort --result zr-flavor-probe/none 2>&1 |
+if "$bin" --abort zr-flavor-probe/none 2>&1 |
     grep -q 'not built with ZR_FREEBSD'; then
 	echo "$bin is the portable build: make clean && make freebsd"
 	exit 2

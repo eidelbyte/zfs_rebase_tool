@@ -78,16 +78,29 @@ struct zr_run_opts {
 int zr_run(const struct zr_run_opts *);
 
 /*
- * What a verb was given (documents-design.md, section 6). A run is
- * named by result, the dataset carrying the record -- a snapshot
- * name is taken as its dataset, so both spellings of the dataset
- * form's --result find the same rebase -- or by path, the manifest
- * of that run, whose header names the dataset: zp_result in the
- * clone form, and the dataset of zp_onto in the dataset form, where
- * zp_result is the pre-apply snapshot as --result spelled it. Given
- * both, the two must name each other: the record's manifest property
- * must be that file and the header must name that dataset, and a
- * mismatch is a refusal that says both sides.
+ * What a verb was given (documents-design.md, section 11.4). One
+ * identifier names the rebase, and it is resolved in five steps, the
+ * first that matches winning:
+ *
+ *	1. an absolute path: the -o manifest at it, whose header
+ *	   names the dataset that carries the record (zr_run_dataset);
+ *	   a file that is not there is a refusal here and never a
+ *	   fall-through to a name;
+ *	2. a dataset carrying the record whose name is the identifier
+ *	   or ends in "/" and it: the clone form's result, in full or
+ *	   by its short name;
+ *	3. a snapshot of a dataset carrying the record whose name
+ *	   after the '@' is the identifier, or the whole snapshot
+ *	   spelled out: the dataset form's pre-apply snapshot;
+ *	4. a relative path to a manifest of the user's;
+ *	5. a run directory of that name, which is what a crash before
+ *	   the record leaves and what --abort takes away.
+ *
+ * Steps 2 and 3 search every imported pool, and more than one match
+ * at a step is refused with the matches printed and never chosen
+ * between. Whatever matched, the two halves are then cross-checked:
+ * the record must name the manifest and the header must name the
+ * dataset the record sits on.
  *
  * from and onto are optional and change nothing: a verb reads the
  * two sides from the header, and a person who names them is saying
@@ -97,13 +110,48 @@ int zr_run(const struct zr_run_opts *);
  * nomerge is --continue's alone; the others read it not at all.
  */
 struct zr_verb_opts {
-	const char	*result;	/* -r, or NULL */
-	const char	*path;		/* MANIFEST, or NULL */
+	const char	*ident;		/* IDENT, the one operand */
 	const char	*from;		/* -f, or NULL */
 	const char	*onto;		/* -t, or NULL */
 	int		nomerge;
 	int		verbose;
 };
+
+/*
+ * What an identifier resolved to. zi_result is the dataset that
+ * carries the rebase's record, which is what every verb works from;
+ * zi_path is the manifest the command named, empty where a name
+ * found the rebase; zi_man is that file's parse, kept so that the
+ * document is read once and not twice; and zi_rundir says the
+ * identifier found nothing but a run directory, which is a leftover
+ * for --abort and no rebase for anything else.
+ */
+struct zr_ident {
+	char			zi_result[ZR_NAME_MAX];
+	char			zi_path[ZR_NAME_MAX];
+	struct zr_parsed	zi_man;
+	int			zi_parsed;
+	int			zi_rundir;
+};
+
+/*
+ * Steps 1 and 4 of that resolution: the manifest at path, resolved
+ * with realpath -- which is what the start recorded, so a file named
+ * through a symlink or from another directory is the same file --
+ * parsed, and its header read for the dataset that carries the
+ * record. Returns 0 with out filled, or -1 with one line in err that
+ * names the path. It opens a file and no pool, which is what puts
+ * the path steps within reach of a machine with no ZFS in it.
+ *
+ * A parse it made is out's to free, which zr_ident_fini does; the
+ * struct is written whole either way, so a refusal leaves nothing
+ * half filled behind.
+ */
+int zr_ident_manifest(const char *path, struct zr_ident *out, char *err,
+    size_t errlen);
+
+/* The parse an identifier's resolution kept, given back. */
+void zr_ident_fini(struct zr_ident *id);
 
 /*
  * The dataset that carries the record of the run a manifest

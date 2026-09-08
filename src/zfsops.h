@@ -245,6 +245,49 @@ int zr_zfs_find_guid(struct zr_zfs *z, const char *pool, uint64_t guid,
     char *buf, size_t buflen, char *err, size_t errlen);
 
 /*
+ * What a search of the pools found. More than one match is a refusal
+ * for the caller to make and never a choice, so the names are kept
+ * and not only counted: zf_n is how many there were and zf_kept how
+ * many of them are here, which is all of them until there are more
+ * than a person would want printed.
+ *
+ * A row is ZFS's own maximum name, so no name a pool can hold is too
+ * long for one; one that will not fit all the same is counted and not
+ * kept, because a search that quietly dropped a match would let a
+ * verb pick between two rebases.
+ */
+#define	ZR_FOUND_MAX	8	/* names kept, of however many there are */
+#define	ZR_FOUND_NAME	256	/* ZFS_MAX_DATASET_NAME_LEN (sys/fs/zfs.h) */
+
+struct zr_zfs_found {
+	unsigned	zf_n;
+	unsigned	zf_kept;
+	char		zf_name[ZR_FOUND_MAX][ZR_FOUND_NAME];
+};
+
+/*
+ * The datasets of every imported pool that carry the record --
+ * zfs_rebase:tag and zfs_rebase:manifest, both as local values --
+ * and answer to what is asked for. This is how a verb finds the
+ * rebase an identifier names (sprints/sprint-5/documents-design.md,
+ * section 11.4), and it is a walk of every pool because a rebase is
+ * named by itself and not by where it lives.
+ *
+ *	name not NULL	the dataset's own name is name, or ends in
+ *			"/name", which is the short spelling;
+ *	name NULL	every dataset that carries the record;
+ *	snap not NULL	that dataset must also have a snapshot called
+ *			snap, and what is handed back is that
+ *			snapshot's full name rather than the
+ *			dataset's.
+ *
+ * One of name and snap must be given. Returns 0 with f filled -- zero
+ * matches is an answer and not a failure -- or -1 with err set.
+ */
+int zr_zfs_find_record(struct zr_zfs *z, const char *name, const char *snap,
+    struct zr_zfs_found *f, char *err, size_t errlen);
+
+/*
  * Mount dataset where its own mountpoint property says. For the
  * result clone after a reboot, or after anything else that unmounted
  * it; the caller looks at the mounted property first and calls this

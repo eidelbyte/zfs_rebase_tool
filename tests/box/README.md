@@ -81,7 +81,7 @@ the name of the clone:
     zfs_rebase -n -o FILE --from POOL/from@work --onto POOL/onto@work
     zfs_rebase -v -o FILE --off-of POOL/from@work \
         --onto POOL/onto@work --result POOL/result
-    zfs_rebase --abort --result POOL/result
+    zfs_rebase --abort POOL/result
 
 Then the dataset form, after that pass has been aborted and the pool
 is back to base, from and onto with their snapshots. Both sides are
@@ -89,13 +89,23 @@ given as datasets, so the tool takes its own snapshot of from and
 --result names the pre-apply snapshot of onto:
 
     zfs_rebase -v -o FILE --from POOL/from --onto POOL/onto --result pre
-    zfs_rebase --verify --result POOL/onto
-    zfs_rebase --continue --result POOL/onto
-    zfs_rebase --abort --result POOL/onto
+    zfs_rebase --verify pre
+    zfs_rebase --continue POOL/onto
+    zfs_rebase --abort POOL/onto
 
 and then the whole pass again with --result POOL/onto@pre, since the
 short name and the full one must name the same snapshot of the same
 dataset.
+
+A verb takes IDENT and no --result (documents-design.md, section
+11.4), and the harnesses spread the five steps of its resolution
+between them: run-fixture.sh gives the whole dataset name, the
+pre-apply snapshot short and in full, an absolute manifest path and a
+relative one; run-kills.sh gives the last part of the result's name
+alone, which is the walk of every pool; run-strays.sh names its
+rebase by the -o manifest's absolute path; run-resolution.sh and
+run-fixture.sh 5b give a run directory with no record behind it,
+which is --abort's alone.
 
 What that pass shows. The manifest is the clone form's manifest
 exactly, from the #mode line on, and derives the same base: one

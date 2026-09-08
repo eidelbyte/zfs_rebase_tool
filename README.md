@@ -12,10 +12,10 @@ which files it could not decide and why.
     zfs_rebase --dry-run [-p] [--manifest FILE] \
         --from SNAP|DATASET --onto SNAP|DATASET
     zfs_rebase --continue [--interactive] [--no-merge] \
-        [--from SNAP] [--onto SNAP] (--result DATASET | MANIFEST)
-    zfs_rebase --restart (--result DATASET | MANIFEST)
-    zfs_rebase --abort (--result DATASET | MANIFEST)
-    zfs_rebase --verify (--result DATASET | MANIFEST)
+        [--from SNAP] [--onto SNAP] IDENT
+    zfs_rebase --restart IDENT
+    zfs_rebase --abort IDENT
+    zfs_rebase --verify IDENT
 
 Every flag has a long form and a short form, and the two are the same
 flag: the table below gives both. --from may also be spelled --off-of
@@ -26,11 +26,27 @@ verb and only a verb: the checks run on a schedule of their own, no
 flag asks for one, and beside anything that starts or moves a rebase
 the word is a usage error.
 
-A verb names the rebase it acts on by --result, the dataset carrying
-the record, or by MANIFEST, the path of that rebase's manifest, which
-is the one thing a command line of this tool takes that is not a
-flag. A start writes a manifest and reads none, so it takes no
-MANIFEST at all.
+A verb names the rebase it acts on with IDENT, the one thing a
+command line of this tool takes that is not a flag. It is resolved in
+five steps, the first that matches winning:
+
+ 1. an absolute path: the manifest at it, whose header names the
+    result. A path with no file at it is refused there and never
+    looked for as a name;
+ 2. a dataset carrying the record whose name is IDENT, or ends in
+    `/IDENT`: the clone form's result, in full or by the last part of
+    its name;
+ 3. a snapshot of a dataset carrying the record, named `IDENT` after
+    the `@` or spelled out as `pool/fs@IDENT`: the dataset form's
+    pre-apply snapshot;
+ 4. a relative path to a manifest;
+ 5. a run directory, `/var/db/zfs_rebase/IDENT`, which is what a
+    crash before the record leaves for --abort to remove.
+
+Steps 2 and 3 search every imported pool. Two rebases that answer to
+one IDENT are refused with both printed and never chosen between.
+--result is a start's flag and no verb takes it; a start writes a
+manifest and reads none, so it takes no IDENT.
 
 ## Options
 
@@ -38,7 +54,7 @@ MANIFEST at all.
 |-----------|-------|--------------|
 | `--from`, `--off-of` | `-f` | the side whose changes are replayed: a snapshot, or a dataset the tool snapshots itself and destroys at done or --abort. On a verb it is optional and names no rebase: it is checked against the header, by name and by guid |
 | `--onto`, `--to` | `-t` | the side they are replayed onto, and the form of the run: a snapshot is cloned as --result, a dataset is rebased in place |
-| `--result` | `-r` | the clone's name in one form and the pre-apply snapshot's in the other; for every verb, the dataset carrying the record, which MANIFEST names instead |
+| `--result` | `-r` | the clone's name in one form and the pre-apply snapshot's in the other. A start's flag only: a verb names its rebase with IDENT, and --result beside one is a usage error |
 | `--permissive-merge` | `-p` | permissive merge; strict is the default, and the mode is recorded |
 | `--verbose` | `-v` | counts and steps on stderr |
 | `--manifest` | `-o` | where the manifest is written; the resolution goes beside it, and the record names the manifest. A start option, and a dry run's: the record names the path from then on, and done acts on it, so no later verb can choose |
@@ -152,17 +168,19 @@ either form: nothing at boot mounts a dataset whose `mountpoint` is
 half rebased tree is never in service after a reboot either, and the
 next --continue or --abort mounts it privately again from there.
 
---result for every verb is the dataset carrying the rebase's record
--- the clone in one form, onto itself in the other -- and a snapshot
-name is taken as its dataset, so both spellings find the same rebase.
-MANIFEST names the same rebase the other way about: the header names
-its run, which is #result in the clone form and the dataset of #onto
-in the dataset form, where #result is the pre-apply snapshot as
---result spelled it. Given both, the two must name each other -- the
-record's `zfs_rebase:manifest` must be that file, and the header must
-name that dataset -- and a mismatch is refused with exit 2, saying
-both sides. A manifest whose result has no record is "not a
-zfs_rebase result", as a --result naming that dataset would be.
+What every verb works from is the dataset carrying the rebase's
+record -- the clone in one form, onto itself in the other -- and
+IDENT is how it is found, by the five steps above. A path names it
+through the header, which names its run: #result in the clone form
+and the dataset of #onto in the dataset form, where #result is the
+pre-apply snapshot as --result spelled it. Whichever step matched,
+the two halves are then held against each other -- the record's
+`zfs_rebase:manifest` must be the file, and that file's header must
+name this result back -- and a mismatch is refused with exit 2,
+saying both sides. So two runs given the same `-o` path cannot be
+applied to each other's result. A manifest whose result carries no
+record is "not a zfs_rebase result", as a name that found no record
+is.
 
 A dataset given as a side is snapshotted by the tool under a
 generated name, named as tool-made in the manifest's header, and
@@ -318,7 +336,7 @@ changes and none can skip:
 | end of applying1 | fixed, by the stage's own self-check: up to the conflicts gate the result is the run's own, so a name that is not what the expected tree says is a stray, and no line is written |
 | entering conflicts, and every --continue that arrives at that gate | written into the resolution as lines with the choice keep, printed, and never fixed: from this gate on the tree is being edited by hand, and nothing can tell that work from a stray |
 | end of applying2, before done is written | reported, exit 3, and done written all the same; what was found is written into the resolution with the choice `-`, which is the record of it; --quiet prints nothing and the exit status stands |
-| a settled result, --verify MANIFEST | reported, exit 3; the same check with no gate, against the header's identity, and nothing written |
+| a settled result, --verify with its manifest's path | reported, exit 3; the same check with no gate, against the header's identity, and nothing written |
 
 The resolution is the authority from the conflicts gate on. Every
 line is carried out by its path and its choice, whoever wrote it: a
@@ -392,7 +410,7 @@ result is the dataset you already had, back at its own mountpoint
 with the rebase in it, its `readonly` and `canmount` as they were.
 
 Four verbs work on a rebase that already exists. Each names its run
--- --result, or MANIFEST, or both -- and takes -v and the two sides;
+with IDENT and takes -v and the two sides;
 --continue takes the flags of the gate as well, and nothing else is
 theirs. -o is not theirs: the start chose where the manifest goes,
 the record names it from then on and done acts on it, so there is no
@@ -409,13 +427,13 @@ another snapshot and these answers do not describe it.
 reads the two sides out of the header. What they do is say which
 rebase the person thinks this is, and each is checked against the
 header by name and by guid, both numbers printed on a mismatch. A
-side that does not match is exit 2 with nothing touched. One side
-beside --result, or both beside a manifest; --from, --onto and
---result together are the shape of a start, and beside any verb
-they are refused, exit 2.
+side that does not match is exit 2 with nothing touched. One or both
+of them stand beside IDENT; --result is what a start calls the thing
+it makes, and beside any verb it is refused, exit 2, saying what a
+verb takes instead.
 
     zfs_rebase --continue [--interactive] [--no-merge] \
-        [--from SNAP] [--onto SNAP] (--result DATASET | MANIFEST)
+        [--from SNAP] [--onto SNAP] IDENT
 
 takes the rebase on from the gate its record names, through the
 gates that are left, in one process. Applying is idempotent -- every
@@ -434,7 +452,7 @@ written with the choice `-` as the record of it. --no-merge stops it
 at that gate however the resolution reads, and is refused from a
 record already past the merge.
 
-    zfs_rebase --restart (--result DATASET | MANIFEST)
+    zfs_rebase --restart IDENT
 
 puts the result back as onto was -- destroying the clone and making
 it again from the onto snapshot the header names, with the same
@@ -446,7 +464,7 @@ is decided again: the manifest is the decision, a resolution's edits
 are discarded by definition, and the instruction the rebase was
 started with is not an edit.
 
-    zfs_rebase --verify (--result DATASET | MANIFEST)
+    zfs_rebase --verify IDENT
 
 reports and writes nothing at all, so a deliberate edit to a rebased
 file is shown and never overwritten. It is a verb and only a verb:
@@ -464,12 +482,13 @@ the length of the report and not a moment longer, and what it cannot
 find it names -- with every action that would have had to be read
 against that tree reported unchecked rather than guessed at.
 
-A result whose rebase reached done carries no record, so `--result`
-has nothing there to read a rebase off and says to give the manifest
-instead. The manifest is what names a settled rebase, and only a
-`--manifest` one can: the manifest a run writes for itself is
-unlinked at done with the run directory. Given it, `--verify` makes
-the final check over again, with no gate to make it at:
+A result whose rebase reached done carries no record, so its name
+answers to no step of the resolution: the tool says it is not a
+zfs_rebase result and asks for the manifest instead. The manifest is
+what names a settled rebase, and only a `--manifest` one can: the
+manifest a run writes for itself is unlinked at done with the run
+directory. Given its path, `--verify` makes the final check over
+again, with no gate to make it at:
 
 - it wants both documents, the manifest and the resolution beside
   it, since the expected tree is onto's names with the manifest's
@@ -494,7 +513,7 @@ the final check over again, with no gate to make it at:
 - exit 0 clean and 3 with drift, by the same rule as every other
   check.
 
-    zfs_rebase --abort (--result DATASET | MANIFEST)
+    zfs_rebase --abort IDENT
 
 puts the result back first -- destroying the clone, or rolling the
 dataset back to its pre-apply snapshot and mounting it where it
@@ -543,6 +562,14 @@ two forms never share: a path is a dataset of yours and is mounted at
 it, `none` is a clone of the tool's and is left unmounted for you to
 destroy or to place. It prints the command for each form and leaves the
 choice to you.
+
+--abort has one case of its own among the verbs: where the result
+carries no record and a run directory of that name is still standing,
+that directory is what a crash before the record left, and step 5 of
+the resolution is how IDENT reaches it. --abort reads the header in
+it if there is one, destroys the snapshot the run took for itself,
+unlinks the documents and removes the directory; the other three
+verbs say there is no rebase to move and name --abort.
 
 A dataset that carries any zfs_rebase: property of its own is an open
 rebase and is not rebased over: the tool says so and exits 2, and

@@ -657,7 +657,7 @@ self-check after an apply}; the run directory {made at start, held
 through every gate, gone at done, gone at --abort} crossed with
 where the documents live {inside it, or where -o put them};
 driver {flags, preconditions, exit status}; how a run is named to a
-verb {--result, the manifest as the one operand, both, neither};
+verb {IDENT in each of its five shapes, and no identifier at all};
 whether the rebase a verb is given is in flight or settled, crossed
 with what a settled check finds {the documents both there or one of
 them gone, the inputs all there or one gone or one worn by another
@@ -737,7 +737,7 @@ again.
 | ZX56 | a recorded snapshot that exists with another guid: every verb exits 2 | deferred: needs a destroy and a re-snapshot under the name; box, kill-tests |
 | ZX57 | a recorded snapshot gone: exit 2 for --continue and --restart, found by guid for --verify | deferred: needs a destroyed input, which the holds prevent until done; box, stray-tests |
 | ZX58 | the report's temporary hold is there while it runs and gone after, under its own tag | deferred: needs the pause hook to look during the run; box, pause-hook |
-| ZX59 | --result given as pool/fs@snap finds the same rebase as pool/fs | planned: box, box/run-fixture.sh |
+| ZX59 | (retired with --result on a verb: a snapshot spelling is step 3 of the identifier's resolution now and the snapshot has to be there, which is ZX229 and ZX230) | -- |
 | ZX60 | a result left unmounted (a reboot) is mounted again by a verb | deferred: a reboot, or zfs unmount by hand; box |
 | ZX61 | a dataset carrying no record, never rebased or settled alike: every verb exits 2 and touches nothing | planned: box, box/run-fixture.sh |
 | ZX62 | a fresh run's final check at the done gate, before the release, under no flag | planned: box, box/run-fixture.sh step 5 |
@@ -779,7 +779,7 @@ again.
 | ZX107 | -c parses as --continue, with the gate flags and -v on it | covered: check_args.c |
 | ZX108 | -R parses as --restart | covered: check_args.c |
 | ZX109 | -a parses as --abort | covered: check_args.c |
-| ZX110 | --verify is the verb always, in every shape it names a run: by --result, by a manifest, by both, and with one side given beside either | covered: check_args.c |
+| ZX110 | --verify is the verb always, in every shape it names a run: by an identifier of any shape, and with one side or both given beside it | covered: check_args.c |
 | ZX111 | --name VALUE and --name=VALUE are one flag; a flag that takes none refuses one | covered: check_args.c |
 | ZX112 | --posix, --build-fixture and --edit-fixture: long only, their operands, their counts, and --posix taking -p and -o alone | covered: check_args.c |
 | ZX113 | --take-onto with --take-from is refused, either spelling | covered: check_args.c |
@@ -789,7 +789,7 @@ again.
 | ZX117 | --base without --allow-unrelated is refused; with it, it parses | covered: check_args.c |
 | ZX118 | an unknown word, a bundled -nv, a bare - and --, an attached -fVALUE, a flag with no value, no command at all, and the retired --no-gui and -G | covered: check_args.c |
 | ZX119 | --take-onto reads onto, --take-from reads from, neither reads as "-" | covered: check_args.c |
-| ZX120 | a verb takes --result, the gate flags and -v; --manifest, --quiet, -p, -n and two verbs at once are refused | covered: check_args.c |
+| ZX120 | a verb takes IDENT, the gate flags and -v; --result, --manifest, --quiet, -p, -n and two verbs at once are refused | covered: check_args.c |
 | ZX121 | a fresh run needs --from and --onto, and --result unless -n | covered: check_args.c |
 | ZX122 | a fresh run with --take-onto over a conflicted fixture writes a complete skeleton and reaches done in one process | planned: box, box/run-resolution.sh case 1, under both --take flags |
 | ZX123 | --no-merge stops at the conflicts gate with a complete resolution, and the next --continue without it passes the gate | planned: box, box/run-resolution.sh case 2 |
@@ -834,20 +834,20 @@ again.
 | ZX177 | a second rebase of the same result after done finds no run directory: the dataset form goes through, and the clone form is refused before make_rundir because the clone is still there | planned: box, box/run-fixture.sh D2 for the dataset form; the clone form's refusal is ZX16's result_ok and is asserted in step 3 |
 | ZX178 | make_rundir still refuses an EEXIST leaf: the directory is the lock for as long as a run is open, and the refusal names the other thing such a leaf can be -- a crash before the record, which --abort removes | deferred for the refusal itself: with done removing the directory, the only way to a leftover leaf under an open rebase is to make one by hand; the crash-leftover half is ZX210 and ZX211 |
 | ZX179 | the two documents a run wrote into its own directory are unlinked at done, in the no--o form, before the directory goes | planned: box, box/run-kills.sh, whose caught signal at the done gate lets the run finish, and which then asserts no manifest, no resolution and no run directory |
-| ZX180 | each of the four verbs names its run by --result, by MANIFEST, by both, and by neither, which is refused | covered: check_args.c; box, box/run-fixture.sh 3a for --continue and --verify by manifest and step 4 for --abort by manifest |
-| ZX181 | the operand stands anywhere among the flags, and a second one is refused: one manifest names one rebase | covered: check_args.c |
-| ZX182 | the cross-check, both halves: the header must name the dataset the command names, and that dataset's record must name the file given, and either mismatch is exit 2 with both sides in the message | covered: run_named and check_given in src/run.c; box, box/run-fixture.sh 3a, which gives a manifest whose header names another run and then a copy of this rebase's own |
-| ZX183 | -o on each of the four verbs is refused, both spellings, beside --result and beside a manifest alike; on a start and on a dry run it is the flag it is | covered: check_args.c |
+| ZX180 | each of the four verbs names its run by IDENT, and by no identifier at all, which is refused | covered: check_args.c; box, box/run-fixture.sh 3a for --continue and --verify by a manifest's path and step 4 for --abort by one |
+| ZX181 | the operand stands anywhere among the flags, and a second one is refused: one identifier names one rebase | covered: check_args.c |
+| ZX182 | the cross-check, both halves: the record must name the file given, and the manifest the record names must name this result back, and either mismatch is exit 2 with both sides in the message | covered: read_manifest and check_given in src/run.c; box, box/run-fixture.sh 3a, which gives a copy of this rebase's own manifest and a manifest whose header names another run, and box/run-strays.sh case 9 for the swapped -o path |
+| ZX183 | -o on each of the four verbs is refused, both spellings, beside a name and beside a manifest's path alike; on a start and on a dry run it is the flag it is | covered: check_args.c |
 | ZX184 | --allow-unrelated without --base is refused, both spellings, on a start and on a dry run | covered: check_args.c; box, box/run-fixture.sh 0a, which also asserts that the refused run wrote no manifest |
 | ZX185 | a start takes no operand, and neither does a dry run, wherever it is written | covered: check_args.c |
 | ZX186 | --from and --onto are accepted on a verb and name no rebase: each is checked against the header by name and by guid, and a side that is not this rebase's is exit 2 with nothing touched | covered: check_args.c for the parse; box, box/run-fixture.sh 3a for the check and its refusal |
 | ZX187 | the rule that reads a run's dataset out of a header: #result in the clone form, the dataset of #onto in the dataset form with --result spelled short and spelled full, and a refusal for a --posix document and for a dry run's "-" | covered: check_args.c, over a parsed header zr_run_dataset takes and nothing else |
 | ZX188 | --verify beside --continue, --restart or --abort is refused, exit 2: two verbs are two commands, and the check the flag used to ask for is standard | covered: check_args.c; box, box/run-fixture.sh 0b |
-| ZX189 | the starting set beside any verb is refused, exit 2 -- --from, --onto and --result together, and for --verify also --dry-run, the other spelling of a start -- while --from or --onto alone stands on the verb and is checked against the header | covered: check_args.c; box, box/run-fixture.sh 0b, which also asserts the refused command read nothing, created nothing and held nothing |
+| ZX189 | what starts a rebase is refused beside any verb, exit 2 -- --result, which names what a start makes, and for --verify also --dry-run, the other spelling of a start -- while --from and --onto stand on the verb and are checked against the header | covered: check_args.c; box, box/run-fixture.sh 0b, which also asserts the refused command read nothing, created nothing and held nothing |
 | ZX190 | every --continue that arrives at the conflicts gate checks first, under no flag: the drift it finds becomes lines of the resolution with the choice keep, printed and never fixed; a --continue that arrives there from applying1 in the same invocation is not checked twice, since the self-check it has just made is that check | planned: box, box/run-strays.sh case 5 and box/run-resolution.sh case 6, which are the drift-line cases with the flag dropped; the writing itself is src/run.c's add_drift, which wants a real resolution beside a real record |
 | ZX191 | the final check at the done gate in every invocation that reaches it, fresh run or --continue: drift is reported and the exit status is 3, and done is written all the same -- the record cleared, the result settled and the run directory gone -- while a check that cannot be made at all leaves the gate unpassed and the rebase standing | planned: box, box/run-strays.sh case 6 (a stray made at the applying2 gate, exit 3 with done reached) and box/run-fixture.sh step 5 (the clean pass, exit 0 with the report printed); the unmakeable check is ZX30's, and the verdict rule itself -- an action pending or drifted, a line of the resolution pending or drifted, or any entry of the name list -- is found_drift in src/run.c, static and read by the done gate and the --verify verb alike, deferred on the Mac because nothing here builds a report against a real result |
 | ZX192 | -q silences the final check's report and nothing else: the check is still made, the exit status still stands, done is still done, and the report of the conflicts gate and of the --verify verb are printed as always | planned: box, box/run-fixture.sh step 5, which runs the same rebase twice, once plain and once under -q |
-| ZX193 | --verify --result on a settled result: there is no record to read a rebase off, so it says to give the manifest instead, exit 2, and touches nothing | planned: box, box/run-fixture.sh 3a and its dataset pass, box/run-strays.sh verify_open and case 5 |
+| ZX193 | --verify given the name of a settled result: no dataset carries a record under that name and no run directory is left, so the resolution says it is not a zfs_rebase result and to give the manifest instead, exit 2, and touches nothing | planned: box, box/run-fixture.sh 3a and its dataset pass, box/run-strays.sh verify_open and case 5 |
 | ZX194 | --verify MANIFEST on a settled result: the record is what tells a rebase in flight from one that is over, and a settled result takes its inputs from the header alone -- exit 0 with the counts on a tree that is what the manifest says | planned: box, box/run-fixture.sh 3a (the clone form) and its dataset pass (the dataset form), box/run-strays.sh cases 5, 7 and 8 |
 | ZX195 | a settled result that is mounted -- a dataset at home, or a clone a hand has placed -- is read where it stands, and the check makes no run directory at all | planned: box, box/run-fixture.sh 3a and its dataset pass, box/run-strays.sh cases 5, 6 and 7 |
 | ZX196 | a settled clone in the void is mounted at the run directory's mnt with the run's own zfs_mount_at, read there, then unmounted, with mnt, the directory and every empty parent taken away again -- whatever the check found | planned: box, box/run-fixture.sh 3a, which puts the placed clone back in the void for it, and box/run-strays.sh case 8, where done left it there |
@@ -885,8 +885,24 @@ again.
 | ZX216 | --abort with the result dataset gone and a decision manifest in its run directory: the tag released on the three snapshots the header names, the #made snapshot destroyed, the two documents unlinked and the directory removed, exit 0 -- the state a --restart whose second clone failed leaves, and the one where the holds used to be stranded (R2) | planned: box, box/run-kills.sh's settle case (d), which destroys the clone by hand at the conflicts gate |
 | ZX217 | --abort on a run directory holding a manifest that will not parse: the file says a rebase was here and nothing can be read out of it, so nothing is released, nothing is removed, the parse's reason is printed and the exit is 2 | planned: box, box/run-kills.sh's settle case (e), which truncates the manifest before the abort. A directory holding no manifest at all is the other thing and stays ZX210: exit 0 and removed, since that is the window before the birth write and there is nothing in it to read |
 | ZX218 | --abort on the birth-manifest window in the dataset form destroys #presnap: a run directory with a birth manifest and no record can only be the window between the two writes, because a done takes its directory away, so the pre-apply snapshot there is the run's and not a user's before-image | deferred: by hand on the box, as ZX211 is -- run-fixture.sh 5b builds the leftover from a clone-form header, which has no #presnap, and building a dataset-form one wants a dataset-form run's manifest kept back the same way; the branch is one line beside the branch 5b crosses |
-| ZX219 | every name a verb is given is held against zfs_name_valid before it builds a path: --abort --result "../../../../tmp/x" is exit 2 naming the name, and the directory that spells reachable is still there | planned: box, box/run-kills.sh's settle case (f), which makes that directory as a decoy and gives --abort four names ZFS would not take; the check is rundir_of in src/run.c, through which every WORKDIR path is built, and the portable build cannot answer it at all (the stub says "not built with ZR_FREEBSD") |
+| ZX219 | every name a verb is given is held against zfs_name_valid before it builds a path: --abort "../../../../tmp/x" is exit 2 naming the name, and the directory that spells reachable is still there | planned: box, box/run-kills.sh's settle case (f), which makes that directory as a decoy and gives --abort four names ZFS would not take; the check is rundir_of in src/run.c, through which every WORKDIR path is built, and the portable build cannot answer it at all (the stub says "not built with ZR_FREEBSD") |
 | ZX220 | WORKDIR is resolved with realpath once and the resolved prefix is what a recorded manifest path is compared against, so a symlink in /var/db would not make a run's own documents read as a -o pair | deferred: /var/db is a real directory on FreeBSD and making it a symlink is a box change no case can undo cleanly; the fix is workdir() in src/run.c and the every-trip proof is ZX173's no--o pass, whose documents are unlinked at done |
+| ZX221 | each of the four verbs takes IDENT as its one operand, in both spellings of the verb, and the parse hands it on whole | covered: check_args.c |
+| ZX222 | --result beside every verb is refused, both spellings, alone and beside a side: it names the result of a run you are starting, and the refusal says what a verb takes instead | covered: check_args.c |
+| ZX223 | step 1, an absolute path: the manifest at it, resolved with realpath, parsed, and its header read for the dataset that carries the record | covered: check_args.c, over documents the test writes; box, box/run-strays.sh, box/run-fixture.sh 3a |
+| ZX224 | step 1 is an end and not a fall-through: an absolute path with no file at it, or with a file that is no manifest, is refused there and never looked for as a name | covered: check_args.c; box, box/run-strays.sh |
+| ZX225 | a document that names no rebase -- a --posix one, or a dry run's "-" -- is refused with the header's own reason, whichever path step found it | covered: check_args.c |
+| ZX226 | step 2, the clone form in full: the result's whole dataset name, asked of that dataset alone and no pool walked | planned: box, box/run-fixture.sh 3a and step 4, box/run-resolution.sh |
+| ZX227 | step 2, the short name: a dataset carrying the record whose name ends in "/IDENT", found by the walk of every imported pool | planned: box, box/run-kills.sh, which names every verb's rebase by the last part of its name |
+| ZX228 | step 3, the dataset form: the pre-apply snapshot named by its short name alone, whose dataset carries the record | planned: box, box/run-fixture.sh dataset pass |
+| ZX229 | step 3 spelled out: DS@SNAP, the dataset part matched as in step 2, and a snapshot that is not there is no match rather than a rebase | planned: box, box/run-fixture.sh dataset pass and 3a |
+| ZX230 | step 4, a relative path to a manifest of the user's, which is looked at only after the pools have answered | planned: box, box/run-strays.sh |
+| ZX231 | step 5, a run directory of that name: --abort reaches abort_leftover through it, and --continue, --restart and --verify say there is no rebase to move and name --abort | planned: box, box/run-resolution.sh case 10 and box/run-fixture.sh 5b |
+| ZX232 | two rebases answering to one identifier at one step: refused with every match printed and never chosen between, whatever the verb | planned: box, box/run-strays.sh case 10, which gives a second dataset the record and the same short name |
+| ZX233 | an identifier that answers to nothing at all: refused naming the three places looked in; where a dataset of that name is there and carries no record, that is said instead and the manifest is asked for | planned: box, box/run-fixture.sh 3a and box/run-resolution.sh |
+| ZX234 | the identifier and every dataset name a header hands back are held against zfs_name_valid before either becomes a path | covered: ident_result_ok in src/run.c, the one gate every step leaves through; box, the name steps of every harness |
+| ZX235 | the manifest an identifier named is parsed once: the resolution's parse is what the verb reads, and --abort's too | covered: src/run.c, read_manifest and zr_abort adopting it (R12); box, every verb given a path |
+| ZX236 | no message of the tool tells a person to write --result on a verb: every printed command names IDENT | covered: the grep over src, README.md and zfs_rebase.8 |
 
 ZX96 to ZX99 are no cells: the numbering skips to a round one so
 that the command line's own rows read as the block they are. ZX100
@@ -948,12 +964,14 @@ already meet, and both are crossed by every conflicted pass on the
 box.
 
 ZX180 to ZX187 are cli-shape's: a run named to a verb by its
-manifest as well as by --result, the two cross-checked where both
-are given, --from and --onto taken on a verb and checked against the
-header, -o at the start alone, and --allow-unrelated needing --base.
-All but two are read off the parse. The two that are not are ZX182,
-the cross-check, which wants a record on a real dataset and a
-manifest the record names, and the box half of ZX180 and ZX186; and
+manifest as well as by its result, the two cross-checked, --from and
+--onto taken on a verb and checked against the header, -o at the
+start alone, and --allow-unrelated needing --base. ZX213 to ZX228
+took the naming itself over: what stands here is the shape of the
+command line. All but two are read off the parse. The two that are
+not are ZX182, the cross-check, which wants a record on a real
+dataset and a manifest the record names, and the box half of ZX180
+and ZX186; and
 ZX187, the rule that turns a header into the dataset that carries
 its record, is on the Mac because it is a function over a parsed
 header -- zr_run_dataset, exported for exactly that -- and opens no
@@ -1003,6 +1021,23 @@ behaviour: ZX219 is reachable on the box in one command, against a
 decoy directory the case makes for it, and ZX220 is not reachable at
 all without rebuilding /var/db, so it is carried by the code and by
 the no--o pass that would break the moment it were wrong.
+
+ZX221 to ZX236 are the identifier's: --result becomes a start flag
+only and the four verbs take IDENT, which is resolved in five steps
+(documents-design.md, section 11.4). The parse's own rows -- the
+operand, the refusal of --result beside a verb -- are check_args.c's,
+and so are the two path steps, because zr_ident_manifest opens a file
+and no pool: the test writes a manifest of its own and holds the
+resolution against it. Everything from step 2 on wants a real record
+on a real dataset and is box only, the two-match refusal included,
+which the harness builds by giving a second dataset in the same pool
+the record and a name ending in the same word. ZX59 retires into
+ZX229: a snapshot spelling used to be read as its dataset whatever it
+named, and now it is step 3 and the snapshot has to exist. ZX234 and
+the settle's own ZX219 meet at zfs_name_valid: the resolution holds
+the identifier and the name a header hands back against it, and
+rundir_of holds whatever is left against it again where a path is
+built.
 
 ZX205 to ZX212 are the birth manifest's: the header written before
 the record, the phase "decided" that says a decision is in place,

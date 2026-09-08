@@ -69,7 +69,7 @@
  * So a hard kill leaves the result, the manifest file and the three
  * holds, and
  *
- *	zfs_rebase --abort --result NAME
+ *	zfs_rebase --abort NAME
  *
  * releases the holds and takes the rest away -- destroying the clone
  * in one form, rolling the dataset back to its pre-apply snapshot
@@ -521,8 +521,8 @@ static void
 kept_hint(const struct run *r)
 {
 	(void) fprintf(stderr, "zfs_rebase: %s is kept; zfs_rebase --continue "
-	    "--result %s resumes it; zfs_rebase --abort --result %s removes "
-	    "it\n", r->rds, r->rds, r->rds);
+	    "%s resumes it; zfs_rebase --abort %s removes it\n", r->rds,
+	    r->rds, r->rds);
 }
 
 /*
@@ -1270,7 +1270,7 @@ make_rundir(struct run *r)
 			    "a run for %s is in place (%s); where %s carries "
 			    "no record that directory is what a crash left "
 			    "before the record was written, and zfs_rebase "
-			    "--abort --result %s removes either", r->rds,
+			    "--abort %s removes either", r->rds,
 			    r->rundir, r->rds, r->rds);
 		else
 			(void) snprintf(r->err, sizeof (r->err), "%s: %s",
@@ -2961,7 +2961,7 @@ done:
 		struct zr_verb_opts vo;
 
 		memset(&vo, 0, sizeof (vo));
-		vo.result = cont;
+		vo.ident = cont;
 		vo.verbose = o->verbose;
 		rc = zr_continue(&vo);
 	}
@@ -3089,8 +3089,8 @@ undecided(struct resume *s)
 {
 	(void) snprintf(s->err, sizeof (s->err), "%s never reached its "
 	    "decision: %s is the header it was born with and carries no "
-	    "actions to apply; zfs_rebase --abort --result %s takes the "
-	    "rebase away", s->result, s->rb.manifest, s->result);
+	    "actions to apply; zfs_rebase --abort %s takes the rebase away",
+	    s->result, s->rb.manifest, s->result);
 	return (vfail(s, EXIT_PRECOND, NULL));
 }
 
@@ -3226,88 +3226,310 @@ zr_run_dataset(const struct zr_parsed *p, char *buf, size_t buflen,
 }
 
 /*
- * The run a verb was given, as the dataset that carries its record.
- * --result names that dataset outright, a snapshot name taken as its
- * dataset; a manifest names it through its header, which is
- * zr_run_dataset's rule; given both, they must agree, and the
- * refusal says both sides, since two documents that do not name each
- * other are not one rebase.
- *
- * The path is resolved with realpath first, because that is what the
- * start recorded (record_path) and what the record is compared with
- * afterwards: a manifest named through a symlink, or from another
- * directory, is the same manifest.
- *
- * Nothing here opens a pool. Returns 0 with ds and path filled --
- * path empty where no manifest was given -- or -1 with the reason
- * already printed.
+ * Steps 1 and 4 of the identifier's resolution: the manifest at
+ * path. Exported because it opens a file and no pool, so a machine
+ * with no ZFS can hold the whole of it against a document.
  */
-static int
-run_named(const struct zr_verb_opts *o, char *ds, size_t dslen, char *path,
-    size_t pathlen)
+int
+zr_ident_manifest(const char *path, struct zr_ident *out, char *err,
+    size_t errlen)
 {
-	struct zr_parsed p;
-	char hds[ZR_NAME_MAX], err[512];
+	char reason[512];
 	char *real;
 	FILE *fp;
-	int rc = -1;
 
-	ds[0] = '\0';
-	path[0] = '\0';
-	if (o->path == NULL) {
-		if (o->result == NULL) {
-			(void) fprintf(stderr, "zfs_rebase: no rebase was "
-			    "named\n");
-			return (-1);
-		}
-		dataset_of(o->result, ds, dslen);
-		return (0);
-	}
-	real = realpath(o->path, NULL);
+	memset(out, 0, sizeof (*out));
+	/*
+	 * realpath first, because that is what the start recorded
+	 * (resolve_manifest) and what the record is compared with
+	 * afterwards: a manifest named through a symlink, or from
+	 * another directory, is the same manifest.
+	 */
+	real = realpath(path, NULL);
 	if (real == NULL) {
-		(void) fprintf(stderr, "zfs_rebase: %s: %s\n", o->path,
-		    strerror(errno));
+		(void) snprintf(err, errlen, "%s: %s", path, strerror(errno));
 		return (-1);
 	}
-	if ((size_t)snprintf(path, pathlen, "%s", real) >= pathlen) {
-		(void) fprintf(stderr, "zfs_rebase: %s: %s\n", real,
+	if ((size_t)snprintf(out->zi_path, sizeof (out->zi_path), "%s",
+	    real) >= sizeof (out->zi_path)) {
+		(void) snprintf(err, errlen, "%s: %s", real,
 		    strerror(ENAMETOOLONG));
 		free(real);
 		return (-1);
 	}
 	free(real);
-	memset(&p, 0, sizeof (p));
-	fp = fopen(path, "r");
+	fp = fopen(out->zi_path, "r");
 	if (fp == NULL) {
-		(void) fprintf(stderr, "zfs_rebase: %s: %s\n", path,
+		(void) snprintf(err, errlen, "%s: %s", out->zi_path,
 		    strerror(errno));
 		return (-1);
 	}
-	if (zr_manifest_parse(fp, &p, err, sizeof (err)) != 0) {
+	if (zr_manifest_parse(fp, &out->zi_man, reason,
+	    sizeof (reason)) != 0) {
 		(void) fclose(fp);
-		(void) fprintf(stderr, "zfs_rebase: %s: %s\n", path, err);
-		goto out;
+		zr_parsed_fini(&out->zi_man);
+		(void) snprintf(err, errlen, "%s: %s", out->zi_path, reason);
+		memset(out, 0, sizeof (*out));
+		return (-1);
 	}
 	(void) fclose(fp);
-	if (zr_run_dataset(&p, hds, sizeof (hds), err, sizeof (err)) != 0) {
-		(void) fprintf(stderr, "zfs_rebase: %s: %s\n", path, err);
-		goto out;
+	out->zi_parsed = 1;
+	/*
+	 * And the header's own half of the identity: which dataset
+	 * carries the record of the run this document describes.
+	 */
+	if (zr_run_dataset(&out->zi_man, out->zi_result,
+	    sizeof (out->zi_result), reason, sizeof (reason)) != 0) {
+		(void) snprintf(err, errlen, "%s: %s", out->zi_path, reason);
+		return (-1);
 	}
-	if (o->result == NULL) {
-		(void) snprintf(ds, dslen, "%s", hds);
+	return (0);
+}
+
+void
+zr_ident_fini(struct zr_ident *id)
+{
+	if (id->zi_parsed != 0) {
+		zr_parsed_fini(&id->zi_man);
+		memset(&id->zi_man, 0, sizeof (id->zi_man));
+		id->zi_parsed = 0;
+	}
+}
+
+/*
+ * More than one rebase answers to one identifier, which is refused
+ * and never chosen between: every match is printed and the caller
+ * gives up. Returns -1, the reason already on stderr.
+ */
+static int
+ident_many(const char *ident, const char *what, const struct zr_zfs_found *f)
+{
+	unsigned i;
+
+	(void) fprintf(stderr, "zfs_rebase: %u %s answer to %s, and one "
+	    "identifier names one rebase:\n", f->zf_n, what, ident);
+	for (i = 0; i < f->zf_kept; i++)
+		(void) fprintf(stderr, "zfs_rebase:     %s\n", f->zf_name[i]);
+	if (f->zf_n > f->zf_kept)
+		(void) fprintf(stderr, "zfs_rebase:     and %u more\n",
+		    f->zf_n - f->zf_kept);
+	(void) fprintf(stderr, "zfs_rebase: name one of them in full\n");
+	return (-1);
+}
+
+/*
+ * The name a step matched, held against ZFS's own rule for a
+ * dataset name before it is used to build a path
+ * (documents-design.md, section 11.3). Steps 2 and 3 bring it back
+ * from a pool and it can only be a name; steps 1 and 4 read it out
+ * of a document, where anything at all could be written.
+ */
+static int
+ident_result_ok(const struct zr_ident *id)
+{
+	char err[512];
+
+	if (zr_zfs_name_valid(id->zi_result, 0, err, sizeof (err)) == 1)
+		return (0);
+	(void) fprintf(stderr, "zfs_rebase: %s, so it names no rebase\n",
+	    err);
+	return (-1);
+}
+
+/*
+ * Steps 1 and 4, with the refusal printed and the parse given back
+ * where the document could not be made to name a rebase: the caller
+ * has nothing to free after a no.
+ */
+static int
+ident_path_step(const char *path, struct zr_ident *id)
+{
+	char err[512];
+
+	if (zr_ident_manifest(path, id, err, sizeof (err)) != 0)
+		(void) fprintf(stderr, "zfs_rebase: %s\n", err);
+	else if (ident_result_ok(id) == 0)
+		return (0);
+	zr_ident_fini(id);
+	return (-1);
+}
+
+/*
+ * Does this dataset carry the record: both properties, both local,
+ * which is what has_record asks of a result and what the walk of the
+ * pools asks of every dataset it meets. 1 or 0; a dataset that is
+ * not there carries nothing.
+ */
+static int
+ident_has_record(struct zr_zfs *z, const char *dataset)
+{
+	char buf[ZR_NAME_MAX], err[512];
+
+	if (zr_zfs_exists(z, dataset, err, sizeof (err)) <= 0)
+		return (0);
+	return (zr_zfs_get_user(z, dataset, ZR_PROP_TAG, buf, sizeof (buf),
+	    err, sizeof (err)) > 0 && zr_zfs_get_user(z, dataset,
+	    ZR_PROP_MANIFEST, buf, sizeof (buf), err, sizeof (err)) > 0);
+}
+
+/*
+ * The rebase an identifier names, in the five steps of
+ * documents-design.md section 11.4, the first that matches winning.
+ * Every refusal is printed here; the caller gives up with
+ * EXIT_PRECOND. Returns 0 with id filled, or -1.
+ *
+ * The pool is open before this is called, because steps 2 and 3 ask
+ * it what carries a record. Nothing is chosen between: where a step
+ * has two answers the verb stops, and where one has an answer the
+ * steps after it are never asked.
+ */
+static int
+resolve_ident(struct zr_zfs *z, const char *ident, struct zr_ident *id)
+{
+	struct zr_zfs_found f;
+	char ds[ZR_NAME_MAX], dir[ZR_NAME_MAX], err[512], nameerr[512];
+	const char *at, *snap;
+	struct stat sb;
+	int valid;
+
+	memset(id, 0, sizeof (*id));
+	if (ident == NULL || ident[0] == '\0') {
+		(void) fprintf(stderr, "zfs_rebase: no rebase was named\n");
+		return (-1);
+	}
+	/*
+	 * 1. An absolute path is a path and nothing else: a file that
+	 * is not there is a refusal here, because the alternative is
+	 * to go looking in the pools for a dataset named /tmp/x.
+	 */
+	if (ident[0] == '/')
+		return (ident_path_step(ident, id));
+	valid = zr_zfs_name_valid(ident, 0, nameerr, sizeof (nameerr)) == 1;
+	at = strchr(ident, '@');
+	if (at != NULL) {
+		dataset_of(ident, ds, sizeof (ds));
+		snap = at + 1;
 	} else {
-		dataset_of(o->result, ds, dslen);
-		if (strcmp(ds, hds) != 0) {
-			(void) fprintf(stderr, "zfs_rebase: %s is the "
-			    "manifest of %s and --result names %s: they are "
-			    "two rebases\n", path, hds, ds);
-			goto out;
+		(void) snprintf(ds, sizeof (ds), "%s", ident);
+		snap = ident;
+	}
+	/*
+	 * 2. A dataset carrying the record whose name is the
+	 * identifier or ends in it: the clone form's result, spelled
+	 * in full or short. A name with an '@' in it is no dataset
+	 * name and this step is not asked.
+	 */
+	if (at == NULL) {
+		/*
+		 * The whole name first, asked of that dataset alone.
+		 * A full dataset name is unique in ZFS and there is
+		 * nothing for the walk to add to it: it is the rebase
+		 * or it is not one, and a dataset somewhere else whose
+		 * name happens to end in this one cannot make the name
+		 * its owner wrote ambiguous.
+		 */
+		if (ident_has_record(z, ident) != 0) {
+			(void) snprintf(id->zi_result, sizeof (id->zi_result),
+			    "%s", ident);
+			return (ident_result_ok(id));
+		}
+		if (zr_zfs_find_record(z, ident, NULL, &f, err,
+		    sizeof (err)) != 0) {
+			(void) fprintf(stderr, "zfs_rebase: %s\n", err);
+			return (-1);
+		}
+		if (f.zf_n > 1)
+			return (ident_many(ident, "open rebases", &f));
+		if (f.zf_n == 1) {
+			(void) snprintf(id->zi_result, sizeof (id->zi_result),
+			    "%s", f.zf_name[0]);
+			return (ident_result_ok(id));
 		}
 	}
-	rc = 0;
-out:
-	zr_parsed_fini(&p);
-	return (rc);
+	/*
+	 * 3. A snapshot of a dataset carrying the record, named for
+	 * the identifier: the dataset form's pre-apply snapshot. The
+	 * short spelling names the snapshot alone and any result can
+	 * be wearing it; the full one names the dataset too, and the
+	 * dataset is matched as in step 2, so "tank/main@pre" and
+	 * "main@pre" find the same snapshot.
+	 */
+	if (at != NULL && ident_has_record(z, ds) != 0 &&
+	    zr_zfs_exists(z, ident, err, sizeof (err)) > 0) {
+		(void) snprintf(id->zi_result, sizeof (id->zi_result), "%s",
+		    ds);
+		return (ident_result_ok(id));
+	}
+	/*
+	 * "ds@" names no snapshot at all, so there is no step to make
+	 * of it and the path steps are still to come.
+	 */
+	if (at == NULL || at[1] != '\0') {
+		if (zr_zfs_find_record(z, at != NULL ? ds : NULL, snap, &f,
+		    err, sizeof (err)) != 0) {
+			(void) fprintf(stderr, "zfs_rebase: %s\n", err);
+			return (-1);
+		}
+		if (f.zf_n > 1)
+			return (ident_many(ident, "pre-apply snapshots", &f));
+		if (f.zf_n == 1) {
+			dataset_of(f.zf_name[0], id->zi_result,
+			    sizeof (id->zi_result));
+			return (ident_result_ok(id));
+		}
+	}
+	/*
+	 * 4. A relative path to a manifest of the user's. A regular
+	 * file has to be standing there: anything else is not this
+	 * step, and the last step is still to come.
+	 */
+	if (stat(ident, &sb) == 0 && S_ISREG(sb.st_mode))
+		return (ident_path_step(ident, id));
+	/*
+	 * 5. A run directory of that name and nothing else: what a
+	 * crash before the record leaves, which --abort takes away
+	 * and no other verb has anything to do with. rundir_of is the
+	 * one thing that builds a path under WORKDIR, and it holds the
+	 * name against ZFS's own rule first (R19), so an identifier
+	 * that is no dataset name cannot name a directory here.
+	 */
+	if (rundir_of(dir, sizeof (dir), ident, NULL, 0) == 0 &&
+	    stat(dir, &sb) == 0 && S_ISDIR(sb.st_mode)) {
+		(void) snprintf(id->zi_result, sizeof (id->zi_result), "%s",
+		    ident);
+		id->zi_rundir = 1;
+		return (0);
+	}
+	/*
+	 * Nothing at all, and three ways of saying so. A word that is
+	 * no dataset name and no path is the first: it could not have
+	 * named a rebase, and the reason is ZFS's own, which is also
+	 * the reason no path was ever built from it (R19).
+	 */
+	if (valid == 0) {
+		(void) fprintf(stderr, "zfs_rebase: %s, and no manifest is at "
+		    "that path either: it names no rebase\n", nameerr);
+		return (-1);
+	}
+	/*
+	 * A dataset of that name that carries no record is the
+	 * second: it is either none of ours or a rebase that reached
+	 * done, which took its record off and left the manifest as
+	 * the only thing that still names it.
+	 */
+	if (zr_zfs_exists(z, ident, err, sizeof (err)) > 0) {
+		(void) fprintf(stderr, "zfs_rebase: %s is not a zfs_rebase "
+		    "result; nothing was touched. A rebase that reached done "
+		    "left no record: give the manifest its run wrote\n",
+		    ident);
+		return (-1);
+	}
+	/* And a name nothing at all answers to is the third. */
+	(void) fprintf(stderr, "zfs_rebase: no rebase answers to %s: no "
+	    "manifest is at that path, no result of an open rebase carries "
+	    "that name, and %s/%s is no run directory\n", ident, workdir(),
+	    ident);
+	return (-1);
 }
 
 /*
@@ -3315,25 +3537,48 @@ out:
  * decision every verb applies and the header is the rebase's
  * identity, so the two are read together and nothing here is read
  * twice.
+ *
+ * Once, and not twice: where the identifier was a path, the
+ * resolution has already parsed that very file to find this rebase,
+ * and that parse is adopted rather than made again (R12 of the code
+ * review). A record naming another file is read here, and the
+ * resolution's parse goes back first, because one verb holds one
+ * document.
+ *
+ * And this is the one place the two halves are held against each
+ * other, for every way a verb can have been given its rebase (R4):
+ * the dataset the header names has to be the dataset this record
+ * sits on. Without it a verb that found its rebase by name would
+ * take whatever file the record points at as the truth about it, and
+ * a file that had been replaced -- two runs given the same -o path
+ * -- would be applied to the wrong result.
  */
 static int
 read_manifest(struct resume *s)
 {
 	struct record *rb = &s->rb;
+	char hds[ZR_NAME_MAX], reason[512];
 	FILE *fp;
 	int rc;
 
-	fp = fopen(rb->manifest, "r");
-	if (fp == NULL) {
-		(void) snprintf(s->err, sizeof (s->err), "%s: %s",
-		    rb->manifest, strerror(errno));
-		return (-1);
+	if (s->parsed != 0 && strcmp(s->given, rb->manifest) != 0) {
+		zr_parsed_fini(&s->man);
+		memset(&s->man, 0, sizeof (s->man));
+		s->parsed = 0;
 	}
-	rc = zr_manifest_parse(fp, &s->man, s->err, sizeof (s->err));
-	s->parsed = 1;
-	(void) fclose(fp);
-	if (rc != 0)
-		return (-1);
+	if (s->parsed == 0) {
+		fp = fopen(rb->manifest, "r");
+		if (fp == NULL) {
+			(void) snprintf(s->err, sizeof (s->err), "%s: %s",
+			    rb->manifest, strerror(errno));
+			return (-1);
+		}
+		rc = zr_manifest_parse(fp, &s->man, s->err, sizeof (s->err));
+		s->parsed = 1;
+		(void) fclose(fp);
+		if (rc != 0)
+			return (-1);
+	}
 	hdr_str(rb->base, sizeof (rb->base), s->man.zp_base);
 	hdr_str(rb->from, sizeof (rb->from), s->man.zp_from);
 	hdr_str(rb->onto, sizeof (rb->onto), s->man.zp_onto);
@@ -3352,17 +3597,17 @@ read_manifest(struct resume *s)
 	 * that the verb has to take over and hand back.
 	 */
 	s->dataset = rb->form == ZR_HFORM_DATASET;
-	/*
-	 * A header names the result it was written for, and a verb
-	 * that found this manifest through that result's own property
-	 * must find its own name here: two documents that do not name
-	 * each other are not one rebase.
-	 */
-	if (s->man.zp_result == NULL ||
-	    strcmp(s->man.zp_result, ZR_NO_BASE) == 0) {
-		(void) snprintf(s->err, sizeof (s->err), "%s names no result "
-		    "and cannot be the manifest of %s", rb->manifest,
-		    s->result);
+	/* And the cross-check, by the header's own rule. */
+	if (zr_run_dataset(&s->man, hds, sizeof (hds), reason,
+	    sizeof (reason)) != 0) {
+		(void) snprintf(s->err, sizeof (s->err), "%s: %s",
+		    rb->manifest, reason);
+		return (-1);
+	}
+	if (strcmp(hds, s->result) != 0) {
+		(void) snprintf(s->err, sizeof (s->err), "%s is the manifest "
+		    "of %s and %s carries it as its own: they are two "
+		    "rebases", rb->manifest, hds, s->result);
 		return (-1);
 	}
 	return (0);
@@ -5111,8 +5356,11 @@ static int
 settled_open(struct resume *s, const struct zr_verb_opts *o)
 {
 	/*
-	 * --result reads a rebase off a record, and this dataset has
-	 * none. Only the manifest can name this one.
+	 * An identifier that found this rebase by name found it by
+	 * its record, and this dataset has none: only a manifest can
+	 * have named this one, and the resolution's own refusal says
+	 * so before ever reaching here. It is held all the same,
+	 * because a record can go between the two reads.
 	 */
 	if (s->given[0] == '\0') {
 		(void) fprintf(stderr, "zfs_rebase: %s: no rebase in flight; "
@@ -5141,11 +5389,28 @@ settled_open(struct resume *s, const struct zr_verb_opts *o)
 }
 
 /*
- * What every verb does first: it must be root, the command must name
- * a rebase, libzfs must open, the result must carry a record, the
- * manifest that record names must parse, every input its header
- * names must still be the snapshot it named, and what the command
- * said about the rebase beyond its name must agree with all of that.
+ * What every verb does first: it must be root and libzfs must open.
+ * Both come before the identifier is resolved, because two of its
+ * steps ask the pools what carries a record.
+ */
+static int
+resume_start(struct resume *s)
+{
+	if (geteuid() != 0) {
+		(void) fprintf(stderr, "zfs_rebase: must run as root\n");
+		return (EXIT_PRECOND);
+	}
+	if (zr_zfs_open(&s->zfs, s->err, sizeof (s->err)) != 0)
+		return (vfail(s, EXIT_PRECOND, "libzfs"));
+	return (EXIT_CLEAN);
+}
+
+/*
+ * And what every verb does with the result once it has been found:
+ * it must carry a record, the manifest that record names must parse
+ * and name it back, every input its header names must still be the
+ * snapshot it named, and what the command said about the rebase
+ * beyond its name must agree with all of that.
  *
  * The --verify verb is the one that also has a settled result to
  * answer for, and the record is what tells the two apart: settled_
@@ -5153,23 +5418,8 @@ settled_open(struct resume *s, const struct zr_verb_opts *o)
  * give up with.
  */
 static int
-resume_open(struct resume *s, const struct zr_verb_opts *o, int byguid)
+resume_found(struct resume *s, const struct zr_verb_opts *o, int byguid)
 {
-	if (geteuid() != 0) {
-		(void) fprintf(stderr, "zfs_rebase: must run as root\n");
-		return (EXIT_PRECOND);
-	}
-	/*
-	 * Which rebase this is, before any pool is opened: --result
-	 * names its dataset, and a manifest names it through the
-	 * header. What the command said about it beyond that is
-	 * checked against the record once the record is read.
-	 */
-	if (run_named(o, s->result, sizeof (s->result), s->given,
-	    sizeof (s->given)) != 0)
-		return (EXIT_PRECOND);
-	if (zr_zfs_open(&s->zfs, s->err, sizeof (s->err)) != 0)
-		return (vfail(s, EXIT_PRECOND, "libzfs"));
 	/*
 	 * In flight or settled, which only the report has to ask: a
 	 * rebase that reached done took its record off, and every
@@ -5231,6 +5481,69 @@ resume_open(struct resume *s, const struct zr_verb_opts *o, int byguid)
 		    "%s\n", s->result, s->rb.phase[0] != '\0' ? s->rb.phase :
 		    "no gate yet", s->rb.tag);
 	return (EXIT_CLEAN);
+}
+
+/*
+ * A verb, from the identifier it was given: root, libzfs, the five
+ * steps of the resolution (documents-design.md, section 11.4), and
+ * then the record. Returns EXIT_CLEAN, or the status to give up
+ * with, every refusal already printed.
+ */
+static int
+resume_open(struct resume *s, const struct zr_verb_opts *o, int byguid)
+{
+	struct zr_ident id;
+	int rc;
+
+	rc = resume_start(s);
+	if (rc != EXIT_CLEAN)
+		return (rc);
+	if (resolve_ident(s->zfs, o->ident, &id) != 0)
+		return (EXIT_PRECOND);
+	(void) snprintf(s->result, sizeof (s->result), "%s", id.zi_result);
+	(void) snprintf(s->given, sizeof (s->given), "%s", id.zi_path);
+	/*
+	 * The parse the resolution made of a manifest it was given,
+	 * taken over whole: read_manifest adopts it where the record
+	 * names that same file, and gives it back where it does not.
+	 */
+	s->man = id.zi_man;
+	s->parsed = id.zi_parsed;
+	memset(&id.zi_man, 0, sizeof (id.zi_man));
+	id.zi_parsed = 0;
+	/*
+	 * A run directory with no record on any dataset is a crash
+	 * leftover and not a rebase: there is nothing to continue, to
+	 * restart or to report on, and --abort is what clears it.
+	 */
+	if (id.zi_rundir != 0) {
+		(void) fprintf(stderr, "zfs_rebase: %s/%s is the directory of "
+		    "a run whose result carries no record; there is no rebase "
+		    "to move, and zfs_rebase --abort %s removes it\n",
+		    workdir(), s->result, o->ident);
+		return (EXIT_PRECOND);
+	}
+	return (resume_found(s, o, byguid));
+}
+
+/*
+ * And the same machinery over a result the caller already holds:
+ * the fresh run's own done gate, which has just written the record
+ * on that dataset and has nothing to resolve. It searches no pool
+ * and reads no identifier; everything after the record is the same
+ * path a verb takes, cross-check included.
+ */
+static int
+resume_open_result(struct resume *s, const struct zr_verb_opts *o,
+    const char *result, int byguid)
+{
+	int rc;
+
+	rc = resume_start(s);
+	if (rc != EXIT_CLEAN)
+		return (rc);
+	(void) snprintf(s->result, sizeof (s->result), "%s", result);
+	return (resume_found(s, o, byguid));
 }
 
 /*
@@ -5682,11 +5995,10 @@ final_verify(struct run *r, int *settled)
 	int rc;
 
 	memset(&o, 0, sizeof (o));
-	o.result = r->rds;
 	o.verbose = r->o.verbose;
 	memset(&s, 0, sizeof (s));
 	s.verbose = r->o.verbose;
-	rc = resume_open(&s, &o, 0);
+	rc = resume_open_result(&s, &o, r->rds, 0);
 	if (rc == EXIT_CLEAN) {
 		rc = resume_trees(&s) != 0 ?
 		    vfail(&s, EXIT_INTERNAL, "verify") : done_gate(&s);
@@ -5958,7 +6270,8 @@ abort_lost(struct zr_zfs *z, const char *result, const char *tag,
 	    "zfs destroy %s\n", result, result);
 	(void) fprintf(stderr, "zfs_rebase: if %s is a dataset of yours: zfs "
 	    "rollback %s@PRE and zfs destroy %s@PRE, where PRE is the "
-	    "pre-apply snapshot --result named\n", result, result, result);
+	    "pre-apply snapshot the run was started with\n", result, result,
+	    result);
 	return (0);
 }
 
@@ -6179,7 +6492,10 @@ abort_leftover(struct zr_zfs *z, const char *result, const char *dir,
  * A result with no record and a run directory of its own, and a
  * result that is not there at all with a run directory still
  * standing, both go to abort_leftover, which reads what the
- * directory holds and gives back what that names (R2 and R25).
+ * directory holds and gives back what that names (R2 and R25). The
+ * identifier's fifth step is that same directory, so a name that
+ * resolves to nothing else reaches it here rather than "no such
+ * run" (documents-design.md, section 11.4).
  *
  * It can be run again. A release of a tag that is not there, or of
  * a snapshot that is not there, is not a failure; a rollback to the
@@ -6196,10 +6512,11 @@ int
 zr_abort(const struct zr_verb_opts *o)
 {
 	char manifest[ZR_NAME_MAX], resolution[ZR_NAME_MAX];
-	char result[ZR_NAME_MAX], given[ZR_NAME_MAX];
+	char result[ZR_NAME_MAX], given[ZR_NAME_MAX], hds[ZR_NAME_MAX];
 	char dir[ZR_NAME_MAX], phase[64], tag[ZR_TAG_MAX], err[512];
 	const int verbose = o->verbose;
 	const char *snap;
+	struct zr_ident id;
 	struct zr_parsed p;
 	struct zr_zfs *z = NULL;
 	struct stat sb;
@@ -6210,32 +6527,38 @@ zr_abort(const struct zr_verb_opts *o)
 		(void) fprintf(stderr, "zfs_rebase: must run as root\n");
 		return (EXIT_PRECOND);
 	}
-	/*
-	 * Which rebase this is: --result names its dataset and a
-	 * manifest names it through the header, exactly as for the
-	 * verbs that go through resume_open. --abort keeps its own
-	 * path from here because it has to work where there is no
-	 * manifest left to read at all.
-	 */
-	if (run_named(o, result, sizeof (result), given,
-	    sizeof (given)) != 0)
-		return (EXIT_PRECOND);
-	/*
-	 * And the name held against ZFS's own rule before it builds a
-	 * path: --abort is the one verb that goes on where the dataset
-	 * does not exist, so an invalid name reads as "does not exist"
-	 * and would reach rmdir_run as a path (R19).
-	 */
-	if (rundir_of(dir, sizeof (dir), result, err, sizeof (err)) != 0) {
-		(void) fprintf(stderr, "zfs_rebase: %s\n", err);
-		return (EXIT_PRECOND);
-	}
 	memset(&p, 0, sizeof (p));
-	hasdir = stat(dir, &sb) == 0;
 	if (zr_zfs_open(&z, err, sizeof (err)) != 0) {
 		(void) fprintf(stderr, "zfs_rebase: libzfs: %s\n", err);
 		return (EXIT_PRECOND);
 	}
+	/*
+	 * Which rebase this is: the identifier, resolved as it is for
+	 * the verbs that go through resume_open (documents-design.md,
+	 * section 11.4). Its fifth step is the run directory with no
+	 * record on any dataset, which is this verb's alone: --abort
+	 * keeps its own path from here because it has to work where
+	 * there is no record and no manifest left to read at all.
+	 */
+	if (resolve_ident(z, o->ident, &id) != 0) {
+		rc = EXIT_PRECOND;
+		goto done;
+	}
+	(void) snprintf(result, sizeof (result), "%s", id.zi_result);
+	(void) snprintf(given, sizeof (given), "%s", id.zi_path);
+	/*
+	 * And the run directory, by the one rule that builds one: the
+	 * name held against ZFS's own before it is a path, and WORKDIR
+	 * resolved once (R19). --abort is the verb that goes on where
+	 * the dataset does not exist, so a name the resolution took
+	 * from a header must not reach rmdir_run unheld.
+	 */
+	if (rundir_of(dir, sizeof (dir), result, err, sizeof (err)) != 0) {
+		(void) fprintf(stderr, "zfs_rebase: %s\n", err);
+		rc = EXIT_PRECOND;
+		goto done;
+	}
+	hasdir = stat(dir, &sb) == 0;
 	hasds = zr_zfs_exists(z, result, err, sizeof (err));
 	if (hasds < 0) {
 		(void) fprintf(stderr, "zfs_rebase: %s: %s\n", result, err);
@@ -6322,8 +6645,17 @@ zr_abort(const struct zr_verb_opts *o)
 	 * gone or that will not parse leaves the tag and nothing else,
 	 * and abort_lost does what can be done with that.
 	 */
-	fp = fopen(manifest, "r");
-	if (fp == NULL) {
+	if (id.zi_parsed != 0 && strcmp(id.zi_path, manifest) == 0) {
+		/*
+		 * The resolution parsed this very file to find this
+		 * rebase; the parse moves here rather than being made
+		 * again (R12).
+		 */
+		p = id.zi_man;
+		memset(&id.zi_man, 0, sizeof (id.zi_man));
+		id.zi_parsed = 0;
+		parsed = 1;
+	} else if ((fp = fopen(manifest, "r")) == NULL) {
 		(void) fprintf(stderr, "zfs_rebase: %s: %s\n",
 		    manifest, strerror(errno));
 	} else {
@@ -6333,6 +6665,23 @@ zr_abort(const struct zr_verb_opts *o)
 		else
 			parsed = 1;
 		(void) fclose(fp);
+	}
+	/*
+	 * And the cross-check of the two halves, which read_manifest
+	 * makes for every other verb (R4): the file this record names
+	 * has to name this result back. A header that describes another
+	 * rebase would have this abort release that run's snapshots and
+	 * put back its properties, so it is refused; moving the file
+	 * aside leaves the tag, which is what abort_lost works from.
+	 */
+	if (parsed != 0 && (zr_run_dataset(&p, hds, sizeof (hds), err,
+	    sizeof (err)) != 0 || strcmp(hds, result) != 0)) {
+		(void) fprintf(stderr, "zfs_rebase: %s is the manifest of %s "
+		    "and %s carries it as its own: they are two rebases; move "
+		    "that file aside to abort %s with its tag alone\n",
+		    manifest, hds[0] != '\0' ? hds : err, result, result);
+		rc = EXIT_PRECOND;
+		goto done;
 	}
 	if (parsed == 0) {
 		/*
@@ -6527,6 +6876,7 @@ zr_abort(const struct zr_verb_opts *o)
 	}
 	rc = EXIT_CLEAN;
 done:
+	zr_ident_fini(&id);
 	zr_parsed_fini(&p);
 	zr_zfs_close(z);
 	return (rc);

@@ -84,7 +84,7 @@ EXPECT=tests/box/replay-expect.txt
 [ "$(uname)" = FreeBSD ] || { echo "FreeBSD only"; exit 2; }
 # The portable flavor answers every ZFS call with this line; the box
 # wants the freebsd flavor, and the Makefile keeps the two apart.
-if "$bin" --abort --result zr-flavor-probe/none 2>&1 |
+if "$bin" --abort zr-flavor-probe/none 2>&1 |
     grep -q 'not built with ZR_FREEBSD'; then
 	echo "$bin is the portable build: make clean && make freebsd"
 	exit 2
@@ -114,7 +114,7 @@ localprops() {
 teardown() {
 	# A failed step can leave the result clone, its persistent holds
 	# and its run directory; --abort is what gives back all three.
-	"$bin" --abort --result "$POOL/result" >/dev/null 2>&1
+	"$bin" --abort "$POOL/result" >/dev/null 2>&1
 	zpool destroy -f "$POOL" 2>/dev/null
 	[ -n "$MD" ] && mdconfig -d -u "$MD" 2>/dev/null
 	MD=
@@ -244,10 +244,10 @@ one() {
 	# directory is not: done took it, and this asserts so. A
 	# conflicted fixture is still open and --abort settles it.
 	if [ -n "$(localprops "$POOL/result")" ]; then
-		"$bin" --abort --result "$POOL/result" || fail "abort exited $?"
+		"$bin" --abort "$POOL/result" || fail "abort exited $?"
 		echo "ok   aborted, holds released"
 	else
-		"$bin" --abort --result "$POOL/result" > "$tmp/settled" 2>&1
+		"$bin" --abort "$POOL/result" > "$tmp/settled" 2>&1
 		st=$?
 		[ $st -eq 2 ] || \
 		    { cat "$tmp/settled"; fail "--abort on a settled result exited $st, want 2"; }

@@ -355,13 +355,19 @@ za_gate_flags(const struct zr_args *out, char *err, size_t errlen)
 
 /*
  * The verbs on a rebase that already exists. Each names the run it
- * acts on -- --result, the dataset carrying the record, or the
- * manifest of that run as the one operand, or both, which the driver
- * cross-checks -- and takes the two sides, the gate flags --continue
- * is allowed and -v, and nothing else, because there is nothing for
- * a flag of a fresh run to act on: a rebase is decided once, and an
- * open one is settled by --continue or --abort whatever flags are
- * given.
+ * acts on with IDENT, its one operand -- the result, its pre-apply
+ * snapshot, its manifest's path or its run directory, which the
+ * driver resolves and cross-checks -- and takes the two sides, the
+ * gate flags --continue is allowed and -v, and nothing else, because
+ * there is nothing for a flag of a fresh run to act on: a rebase is
+ * decided once, and an open one is settled by --continue or --abort
+ * whatever flags are given.
+ *
+ * --result is a start flag and no verb takes it (ruled 2026-09-08,
+ * documents-design.md section 11.4): it names what a run is to make,
+ * and a verb acts on one that exists. The refusal says so rather
+ * than reading it as the identifier, because a command written for
+ * the older spelling must not quietly do something else.
  *
  * --from and --onto are the exception among those. A verb reads the
  * two sides from the header and needs neither, but a person who
@@ -388,28 +394,24 @@ za_verb_flags(const struct zr_args *out, char *err, size_t errlen)
 		    "and so is %s; the final check is standard now and no "
 		    "flag asks for it", word));
 	/*
-	 * And beside the flags that start one. --from, --onto and
-	 * --result together are a start, whatever else is given, and
-	 * no verb starts anything: either side alone stands beside
-	 * --result, and both stand beside a manifest, since a verb
-	 * takes the sides and checks them against the header, but the
-	 * three together are another command (ruled 2026-09-06, kept
-	 * simple: the starting set is banned beside every verb). A dry
-	 * run is that command's other spelling.
+	 * And beside the flags that start one. A dry run is a start's
+	 * other spelling; --result is the flag that names what a
+	 * start makes. --from and --onto stand beside a verb, where
+	 * they name no rebase and are checked against the header.
 	 */
 	if (out->za_verb == ZR_VERB_REPORT && out->za_dryrun != 0)
 		return (za_no(err, errlen, "--dry-run decides a rebase and "
 		    "writes its manifest; --verify reports on one that "
 		    "exists, and the two are not one command"));
-	if (out->za_from != NULL && out->za_onto != NULL &&
-	    out->za_result != NULL)
-		return (za_no(err, errlen, "--from, --onto and --result "
-		    "together start a rebase, and %s is a verb: it takes "
-		    "--result or a manifest", word));
-	if (out->za_result == NULL && out->za_path == NULL)
-		return (za_no(err, errlen, "%s needs the run it acts on: "
-		    "--result, the dataset carrying the record, or the "
-		    "manifest of that run", word));
+	if (out->za_result != NULL)
+		return (za_no(err, errlen, "--result names the result of a "
+		    "run you are starting; a verb takes the rebase's name: "
+		    "%s IDENT, which is the result, its pre-apply snapshot, "
+		    "its manifest's path or its run directory", word));
+	if (out->za_ident == NULL)
+		return (za_no(err, errlen, "%s needs the rebase it acts on: "
+		    "IDENT, which is the result, its pre-apply snapshot, its "
+		    "manifest's path or its run directory", word));
 	/*
 	 * -o chooses where a manifest is written, and the start is
 	 * the only command that writes one: the record names the path
@@ -429,8 +431,8 @@ za_verb_flags(const struct zr_args *out, char *err, size_t errlen)
 		    "the start wrote; --quiet says nothing to it", word));
 	if (out->za_dryrun != 0 || out->za_unrelated != 0 ||
 	    out->za_base != NULL || out->za_mode != ZR_MODE_STRICT)
-		return (za_no(err, errlen, "%s takes --result and the flags "
-		    "of the gate; the rest belong to a fresh run", word));
+		return (za_no(err, errlen, "%s takes IDENT and the flags of "
+		    "the gate; the rest belong to a fresh run", word));
 	return (0);
 }
 
@@ -442,13 +444,15 @@ za_run_flags(const struct zr_args *out, char *err, size_t errlen)
 		return (za_no(err, errlen, "a rebase needs --from and --onto, "
 		    "the two sides"));
 	/*
-	 * A manifest names a rebase that exists, and this command
+	 * An identifier names a rebase that exists, and this command
 	 * makes one: what a start has to say about where its own
-	 * manifest goes it says with -o.
+	 * manifest goes it says with -o, and what it calls what it
+	 * makes it says with --result.
 	 */
-	if (out->za_path != NULL)
-		return (za_no(err, errlen, "\"%s\": a manifest names a rebase "
-		    "to a verb, and this command starts one", out->za_path));
+	if (out->za_ident != NULL)
+		return (za_no(err, errlen, "\"%s\": an identifier names a "
+		    "rebase to a verb, and this command starts one",
+		    out->za_ident));
 	/*
 	 * A base is given only where there is none to work out: with
 	 * a shared origin the branch point is what it is, and a
@@ -512,20 +516,20 @@ zr_args_parse(int argc, char **argv, struct zr_args *out, char *err,
 	for (i = 1; i < argc; i++) {
 		/*
 		 * The one operand of ordinary use, wherever it stands
-		 * among the flags: a manifest, which names the rebase
-		 * a verb acts on. A word beginning with a dash is a
-		 * flag or nothing, so a path that begins with one is
+		 * among the flags: IDENT, which names the rebase a
+		 * verb acts on. A word beginning with a dash is a flag
+		 * or nothing, so a path that begins with one is
 		 * spelled ./-name, as it is for every other tool.
 		 */
 		if (argv[i][0] != '-') {
 			if (argv[i][0] == '\0')
 				return (za_no(err, errlen, "an empty "
-				    "argument names no manifest"));
-			if (out->za_path != NULL)
-				return (za_no(err, errlen, "one manifest "
+				    "argument names no rebase"));
+			if (out->za_ident != NULL)
+				return (za_no(err, errlen, "one identifier "
 				    "names one rebase; \"%s\" is a second",
 				    argv[i]));
-			out->za_path = argv[i];
+			out->za_ident = argv[i];
 			continue;
 		}
 		if (za_one(argc, argv, &i, &opt, &val, err, errlen) != 0)

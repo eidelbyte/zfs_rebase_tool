@@ -118,6 +118,18 @@
 #    directory's mnt itself and takes the mount and the directory
 #    away again.
 #
+# 9 and 10. The identifier, in the clone form of a conflicted
+#    fixture, where a rebase is still open and a second result can be
+#    made. 10: a second dataset in the pool is given the record and a
+#    name whose last part is the result's, so the short name answers
+#    to two rebases -- the verb prints both and refuses, and the
+#    whole name still finds one, because it is asked of that dataset
+#    alone. 9: a second run is given the first one's -o path, so the
+#    first run's record now names a document describing another
+#    rebase; every verb holds the two halves against each other and
+#    refuses (R4). Then the second rebase goes by its own name and
+#    the first one's document is put back.
+#
 # Every case ends by taking the rebase away -- --abort where one is
 # still open, and by hand where it reached done, which leaves no
 # record for --abort to find -- and the pool is proved to be the
@@ -135,11 +147,13 @@
 # does exactly what it says.
 #
 # A clean fixture reaches done inside the run itself, and done takes
-# the record off, so from that moment there is no rebase on the
-# result for a verb named by --result to be asked about: the cases
-# assert what the tree holds instead, and that every motional verb
-# exits 2. The manifest is what names a settled rebase, and cases 5
-# to 8 ask by it.
+# the record off, so from that moment the result's name answers to no
+# step of the identifier's resolution: the cases assert what the tree
+# holds instead, and that every motional verb exits 2. The manifest
+# is what names a settled rebase, and cases 5 to 8 ask by it. Where a
+# rebase is open, this harness names it by the -o manifest's absolute
+# path, which is step 1, and by the result's whole dataset name,
+# which is step 2 asked of that dataset alone.
 #
 # Cases 1 to 7 give the dataset form from as a snapshot rather than
 # as a dataset, so that the from tree is still there after done; case
@@ -155,7 +169,7 @@ bin=./zfs_rebase
 [ "$(uname)" = FreeBSD ] || { echo "FreeBSD only"; exit 2; }
 # The portable flavor answers every ZFS call with this line; the box
 # wants the freebsd flavor, and the Makefile keeps the two apart.
-if "$bin" --abort --result zr-flavor-probe/none 2>&1 |
+if "$bin" --abort zr-flavor-probe/none 2>&1 |
     grep -q 'not built with ZR_FREEBSD'; then
 	echo "$bin is the portable build: make clean && make freebsd"
 	exit 2
@@ -178,8 +192,8 @@ cleanup() {
 		echo "KEEP=1: pool $POOL, $IMG and $tmp left in place"
 		return
 	fi
-	"$bin" --abort --result "$POOL/result" >/dev/null 2>&1
-	"$bin" --abort --result "$POOL/onto" >/dev/null 2>&1
+	"$bin" --abort "$POOL/result" >/dev/null 2>&1
+	"$bin" --abort "$POOL/onto" >/dev/null 2>&1
 	zpool destroy -f "$POOL" 2>/dev/null
 	[ -n "$MD" ] && mdconfig -d -u "$MD" 2>/dev/null
 	rm -f "$IMG"
@@ -412,16 +426,20 @@ at_end() {
 	sethere
 }
 
-# --verify on the result, where there is still a rebase to ask about.
-# Returns 0 with the report in $1 when there was, and 1 after
-# checking that a settled result has no record for --result to read
-# and says to give the manifest instead, which cases 5 to 8 do.
+# --verify on the result, named by the dataset that carries the
+# record, which is step 2 of the identifier. Returns 0 with the
+# report in $1 when there was a rebase to ask about, and 1 after
+# checking that a settled result answers to no step at all -- no
+# record under that name and no run directory left -- and that the
+# refusal says to give the manifest instead, which cases 5 to 8 do.
 verify_open() {			# OUT WANTEXIT
-	"$bin" --verify --result "$rds" > "$1" 2>&1
+	"$bin" --verify "$rds" > "$1" 2>&1
 	st=$?
 	if [ $clean -eq 1 ]; then
 		[ $st -eq 2 ] || \
 		    { cat "$1"; fail "--verify on a settled result exited $st, want 2"; }
+		grep -q 'not a zfs_rebase result' "$1" || \
+		    { cat "$1"; fail "--verify did not say there is no record"; }
 		grep -q 'give the manifest' "$1" || \
 		    { cat "$1"; fail "--verify did not ask for the manifest"; }
 		return 1
@@ -433,9 +451,13 @@ verify_open() {			# OUT WANTEXIT
 
 # The same for a --continue, which checks at the gate it arrives at
 # under no flag: on a settled result it is refused for want of a
-# record, and there is nothing left for it to do in any case.
+# record, and there is nothing left for it to do in any case. This
+# one names the rebase by the -o manifest's absolute path, which is
+# step 1 of the identifier: the header names the result and the
+# record names the file back, so the two halves cross-check every
+# time this harness runs (ZX223).
 continue_open() {		# OUT WANTEXIT
-	"$bin" --continue --result "$rds" > "$1" 2>&1
+	"$bin" --continue "$man" > "$1" 2>&1
 	st=$?
 	if [ $clean -eq 1 ]; then
 		[ $st -eq 2 ] || \
@@ -460,11 +482,15 @@ continue_open() {		# OUT WANTEXIT
 end_case() {
 	back=${1:-$POOL/onto@pre}
 	if [ -n "$(localprops "$rds")" ]; then
-		"$bin" --abort --result "$rds" > "$tmp/abort" 2>&1
+		# By the -o manifest's path, step 1: the file is the
+		# user's and --abort leaves it where it is.
+		"$bin" --abort "$man" > "$tmp/abort" 2>&1
 		st=$?
 		[ $st -eq 0 ] || { cat "$tmp/abort"; fail "--abort exited $st"; }
+		[ -f "$man" ] || \
+		    fail "--abort removed the -o manifest it was named by"
 	else
-		"$bin" --abort --result "$rds" > "$tmp/abort" 2>&1
+		"$bin" --abort "$rds" > "$tmp/abort" 2>&1
 		st=$?
 		[ $st -eq 2 ] || \
 		    { cat "$tmp/abort"; fail "--abort on a settled result exited $st, want 2"; }
@@ -649,7 +675,7 @@ case_drift() {
 		# applying1 mends it, so the verb still exits 3. What the
 		# edit to the conflicted name must not do is add to that:
 		# the same one drifted name, and the name list still empty.
-		"$bin" --verify --result "$rds" > "$tmp/verify3" 2>&1
+		"$bin" --verify "$rds" > "$tmp/verify3" 2>&1
 		st=$?
 		[ $st -eq 3 ] || \
 		    { cat "$tmp/verify3"; fail "--verify over a conflicted name exited $st, want 3 (the clean drift stands)"; }
@@ -657,7 +683,7 @@ case_drift() {
 		    { cat "$tmp/verify3"; fail "the edit to the conflicted name changed the drift report"; }
 		no_outside "$tmp/verify3" || \
 		    { cat "$tmp/verify3"; fail "a conflicted name reached the name list"; }
-		"$bin" --continue --result "$rds" > "$tmp/cont2" 2>&1
+		"$bin" --continue "$rds" > "$tmp/cont2" 2>&1
 		st=$?
 		[ $st -eq $wrun ] || \
 		    { cat "$tmp/cont2"; fail "--continue exited $st, want $wrun"; }
@@ -766,7 +792,7 @@ case_driftline() {
 	sed -e 's/ -$/ keep/' -e 's/^#unanswered .*$/#unanswered 0/' \
 	    "$res" > "$res.answered" || fail "cannot answer $res"
 	mv "$res.answered" "$res" || fail "cannot answer $res"
-	"$bin" --continue --result "$rds" > "$tmp/drift" 2>&1
+	"$bin" --continue "$rds" > "$tmp/drift" 2>&1
 	st=$?
 	[ $st -eq 0 ] || \
 	    { cat "$tmp/drift"; fail "--continue exited $st, want 0"; }
@@ -792,9 +818,9 @@ case_driftline() {
 	sethere
 	grep -q drift "$hmnt$kept" || fail "a verb wrote over the edit to $kept"
 
-	# The rebase is settled and carries no record, so --result has
+	# The rebase is settled and carries no record, so its name has
 	# nothing to read and says to give the manifest.
-	"$bin" --verify --result "$rds" > "$tmp/driftv" 2>&1
+	"$bin" --verify "$rds" > "$tmp/driftv" 2>&1
 	st=$?
 	[ $st -eq 2 ] || \
 	    { cat "$tmp/driftv"; fail "--verify on a settled result exited $st, want 2"; }
@@ -835,7 +861,7 @@ case_donedrift() {
 	sed -e 's/ -$/ keep/' -e 's/^#unanswered .*$/#unanswered 0/' \
 	    "$res" > "$res.answered" || fail "cannot answer $res"
 	mv "$res.answered" "$res" || fail "cannot answer $res"
-	ZFS_REBASE_PAUSE=applying2 "$bin" --continue -v --result "$rds" \
+	ZFS_REBASE_PAUSE=applying2 "$bin" --continue -v "$rds" \
 	    > "$tmp/late" 2>&1 &
 	pid=$!
 	wait_stop "$pid" || { cat "$tmp/late"; fail "never stopped at applying2"; }
@@ -1022,6 +1048,100 @@ case_madefrom() {
 	end_case
 }
 
+# --- 9 and 10. the identifier: two answers, and two documents ---
+#
+# Both halves of what naming a rebase can go wrong in, over one open
+# rebase of this pass's own.
+#
+# 10. Two rebases answering to one identifier. A second dataset in
+# this pool is given the record and a name whose last part is the
+# result's, so the short name answers to both: the verb prints them
+# and refuses, and never chooses. The whole name still finds one
+# rebase, because it is asked of that dataset alone.
+#
+# 9. Two runs given one -o path, which is R4 of the code review. The
+# second run's manifest lands on the first run's path, so the first
+# run's record now names a document that describes another rebase.
+# Every verb holds the two halves against each other and refuses:
+# without that check a --continue would apply the second rebase's
+# decision to the first one's result.
+case_ident() {
+	case_id="$fixture $form the identifier"
+	run_fg
+	st=$?
+	[ $st -eq $wrun ] || { cat "$log"; fail "the run exited $st, want $wrun"; }
+	at_end
+	tag0=$(recval zfs_rebase:tag "$rds")
+	[ -n "$tag0" ] || fail "the open rebase carries no tag"
+
+	# 10. a second dataset with the record and the same last name
+	zfs create "$POOL/twin" || fail "cannot make $POOL/twin"
+	zfs create "$POOL/twin/result" || fail "cannot make $POOL/twin/result"
+	zfs set "zfs_rebase:tag=$tag0" "$POOL/twin/result" || \
+	    fail "cannot give the twin a tag"
+	zfs set "zfs_rebase:manifest=$man" "$POOL/twin/result" || \
+	    fail "cannot give the twin a manifest"
+	"$bin" --verify result > "$tmp/two" 2>&1
+	st=$?
+	[ $st -eq 2 ] || \
+	    { cat "$tmp/two"; fail "two rebases under one name exited $st, want 2"; }
+	grep -q "$POOL/result\$" "$tmp/two" || \
+	    { cat "$tmp/two"; fail "the refusal did not print $POOL/result"; }
+	grep -q "$POOL/twin/result\$" "$tmp/two" || \
+	    { cat "$tmp/two"; fail "the refusal did not print $POOL/twin/result"; }
+	# and the whole name is one dataset's, asked of that dataset
+	"$bin" --verify "$rds" > "$tmp/one" 2>&1
+	st=$?
+	[ $st -eq 0 ] || \
+	    { cat "$tmp/one"; fail "--verify $rds exited $st, want 0"; }
+	zfs destroy -r "$POOL/twin" || fail "cannot destroy $POOL/twin"
+	rmdir "$MNT/twin" 2>/dev/null
+	echo "ok   $case_id: two answers to \"result\" refused with both"
+	echo "     printed, and $rds still names one rebase"
+
+	# 9. a second run over the same -o path
+	cp "$man" "$tmp/man1" || fail "cannot keep the first manifest"
+	"$bin" $flag -o "$man" --off-of "$POOL/from@work" \
+	    --onto "$POOL/onto@work" --result "$POOL/result2" \
+	    > "$tmp/run2" 2>&1
+	st=$?
+	[ $st -eq $wrun ] || \
+	    { cat "$tmp/run2"; fail "the second run exited $st, want $wrun"; }
+	[ "$(hdr result "$man")" = "$POOL/result2" ] || \
+	    fail "the second run did not write over $man"
+	for verb in --verify --continue --restart; do
+		"$bin" $verb "$rds" > "$tmp/swap" 2>&1
+		st=$?
+		[ $st -eq 2 ] || \
+		    { cat "$tmp/swap"; fail "$verb over a swapped manifest exited $st, want 2"; }
+		grep -q 'two rebases' "$tmp/swap" || \
+		    { cat "$tmp/swap"; fail "$verb did not say they are two rebases"; }
+	done
+	"$bin" --abort "$rds" > "$tmp/swapa" 2>&1
+	st=$?
+	[ $st -eq 2 ] || \
+	    { cat "$tmp/swapa"; fail "--abort over a swapped manifest exited $st, want 2"; }
+	grep -q 'two rebases' "$tmp/swapa" || \
+	    { cat "$tmp/swapa"; fail "--abort did not say they are two rebases"; }
+	[ "$(recval zfs_rebase:tag "$rds")" = "$tag0" ] || \
+	    fail "a refused verb changed the record"
+	[ "$(phasenow "$rds")" = conflicts ] || \
+	    fail "a refused verb moved the phase to $(phasenow "$rds")"
+	echo "ok   $case_id: a manifest the second run wrote is refused by"
+	echo "     every verb of the first, exit 2, the record unmoved"
+
+	# The second rebase goes by its own name, whose record and
+	# header do name each other, and the first one's document is
+	# put back for end_case to abort it by.
+	"$bin" --abort "$POOL/result2" > "$tmp/abort2" 2>&1
+	st=$?
+	[ $st -eq 0 ] || \
+	    { cat "$tmp/abort2"; fail "--abort of the second rebase exited $st"; }
+	cp "$tmp/man1" "$man" || fail "cannot put the first manifest back"
+	rm -f "$tmp/man1"
+	end_case
+}
+
 # ---------------------------------------------------------------
 # One fixture in one form: the cases above, each ending in --abort.
 # The last four of them belong to one kind of fixture or one form.
@@ -1060,6 +1180,11 @@ stray_pass() {
 	if [ $clean -eq 0 ]; then
 		case_driftline
 		case_donedrift
+		# The identifier's two refusals, which want a rebase
+		# that is still open and a second result to make one
+		# of: the clone form's, since the dataset form has one
+		# dataset to be rebased in.
+		[ "$form" = clone ] && case_ident
 	fi
 	# And the two settled checks, each of which wants a rebase
 	# that reached done in one invocation: the destroyed onto

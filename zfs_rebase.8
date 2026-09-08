@@ -8,7 +8,7 @@
 .\" BSD 3-Clause License, reproduced in the LICENSE file of this
 .\" distribution, are met.
 .\"
-.Dd September 6, 2026
+.Dd September 8, 2026
 .Dt ZFS_REBASE 8
 .Os
 .Sh NAME
@@ -40,19 +40,19 @@
 .Op Fl v | Fl -verbose
 .Op Fl f | Fl -from Ar snapshot
 .Op Fl t | Fl -onto Ar snapshot
-.Brq Fl r | Fl -result Ar dataset | Ar manifest
+.Ar ident
 .Nm
 .Fl R | Fl -restart
 .Op Fl v | Fl -verbose
-.Brq Fl r | Fl -result Ar dataset | Ar manifest
+.Ar ident
 .Nm
 .Fl a | Fl -abort
 .Op Fl v | Fl -verbose
-.Brq Fl r | Fl -result Ar dataset | Ar manifest
+.Ar ident
 .Nm
 .Fl V | Fl -verify
 .Op Fl v | Fl -verbose
-.Brq Fl r | Fl -result Ar dataset | Ar manifest
+.Ar ident
 .Nm
 .Fl -posix
 .Op Fl p
@@ -312,10 +312,12 @@ a dataset it is the name of the pre-apply snapshot taken of that dataset \(em
 the short name after the
 .Sy @ ,
 or a full name whose dataset part is onto.
-For every verb it is the dataset carrying the record, and a snapshot name
-is taken as its dataset, so both spellings find the same rebase;
-.Ar manifest ,
-the one operand, names that same rebase the other way about.
+It is a start's flag and nothing else: a verb names its rebase with
+.Ar ident ,
+the one operand, and
+.Fl -result
+beside one is a usage error that says so
+.Pq ruled 2026-09-08 .
 .It Fl u , Fl -allow-unrelated
 Rebase two sides that share no origin.
 The base is not derived; it is
@@ -336,12 +338,44 @@ a given base was there is gone
 .Pq ruled 2026-09-06 :
 it made every name of either side an add and every disagreement a
 conflict, which is a decision about two trees that were never compared.
-.It Ar manifest
+.It Ar ident
 The one operand, and the only argument of this tool that is not a flag:
-the path of a rebase's manifest, which names that rebase to a verb as
-.Fl -result
-does.
-The header names its run \(em
+the name of the rebase a verb acts on.
+It is resolved in five steps, the first that matches winning:
+.Bl -enum -compact
+.It
+an absolute path: the manifest at it.
+A path with no file at it is refused there and never looked for as a
+name.
+.It
+a dataset carrying the record whose name is
+.Ar ident
+or ends in
+.Sy /
+and it: the clone form's result, in full or by the last part of its
+name.
+.It
+a snapshot of a dataset carrying the record whose name after the
+.Sy @
+is
+.Ar ident ,
+or the whole snapshot spelled out: the dataset form's pre-apply
+snapshot.
+.It
+a relative path to a manifest.
+.It
+a run directory,
+.Pa /var/db/zfs_rebase/ Ns Ar ident ,
+which is what a crash before the record leaves and what
+.Fl -abort
+removes.
+.El
+.Pp
+Steps 2 and 3 search every imported pool.
+Two rebases that answer to one
+.Ar ident
+are refused with every match printed, and never chosen between.
+A path names its rebase through the header \(em
 .Cm #result
 in the clone form, and the dataset of
 .Cm #onto
@@ -349,15 +383,16 @@ in the dataset form, where
 .Cm #result
 is the pre-apply snapshot as
 .Fl -result
-spelled it \(em and the path is resolved with
+spelled it \(em and is resolved with
 .Xr realpath 3
 first, because that is what the record keeps.
-Given with
-.Fl -result ,
-the two must name each other: the record's
+Whatever step matched, the two halves are then held against each other:
+the record's
 .Sy zfs_rebase:manifest
-must be that file and the header must name that dataset, and a mismatch
-is refused with exit 2, saying both sides.
+must be the file and that file's header must name this result back, and
+a mismatch is refused with exit 2, saying both sides.
+The identifier is held against ZFS's own rule for a dataset name before
+it is ever made into a path.
 A start writes a manifest and reads none, so it takes no operand at all.
 .El
 .Pp
@@ -473,10 +508,9 @@ than it used to.
 .Fl -from
 and
 .Fl -onto
-go with it as they go with any verb, checked against the header; the two of
-them together with
+go with it as they go with any verb, checked against the header;
 .Fl -result
-are the shape of a start, and a verb starts nothing.
+names what a start makes, and a verb starts nothing.
 .It Fl q , Fl -quiet
 Silence the final check's report.
 It is a start option and is latched in
@@ -494,11 +528,9 @@ verb are printed as always.
 .El
 .Pp
 The verbs work on a rebase that already exists.
-Each names its run \(em
-.Fl -result ,
-or the
-.Ar manifest
-operand, or both \(em and takes
+Each names its run with
+.Ar ident ,
+its one operand, and takes
 .Fl v
 and the two sides;
 .Fl -continue
@@ -518,15 +550,11 @@ What they do is say which rebase the person thinks this is, and each is
 checked against the header by name and by guid \(em a name is what a
 snapshot is called and the guid is what it is \(em with both numbers
 printed on a mismatch, which is exit 2 with nothing touched.
-One side beside
-.Fl -result ,
-or both beside a manifest;
-.Fl -from ,
-.Fl -onto
-and
+One of them or both stand beside
+.Ar ident ;
 .Fl -result
-together are the shape of a start, and beside any verb they are refused,
-exit 2.
+is what a start calls the thing it makes, and beside any verb it is
+refused, exit 2, with a line saying what a verb takes instead.
 .Bl -tag -width indent
 .It Fl c , Fl -continue
 Take the rebase on from the gate its record names, through the gates that
@@ -621,6 +649,10 @@ shape
 .Fl -abort
 refuses, since a file that says a rebase was here and cannot be read is not
 a directory to remove quietly: it says so and exits 2.
+Step 5 of the identifier is how a name reaches that directory when no
+dataset carries a record under it; the other three verbs say there is no
+rebase to move and name
+.Fl -abort .
 The one thing it can still read is the
 .Sy mountpoint
 property, which the two forms never share: a path is a dataset of yours and
@@ -661,15 +693,15 @@ With
 .Fl v
 the whole list follows.
 .Pp
-On a settled result
-.Fl -result
-has no record to read a rebase off and says to give the manifest instead.
+A settled result carries no record, so its name answers to no step of the
+identifier: the tool says it is not a zfs_rebase result and asks for the
+manifest instead.
 The manifest is what names a settled rebase, and only a
 .Fl -manifest
 one can: the manifest a run writes for itself is unlinked at done with the
 run directory.
-Given it, the verb makes the final check over again, with no gate to make
-it at.
+Given its path, the verb makes the final check over again, with no gate to
+make it at.
 It wants both documents \(em the manifest and the resolution beside it \(em
 since the expected tree is onto's names with the manifest's actions and that
 resolution's choices applied, and a resolution that is not there or cannot
@@ -1171,12 +1203,27 @@ A run that was killed part way is a rebase, not a leftover.
 Look at the gate it left and take it on from there:
 .Bd -literal -offset indent
 zfs get -s local -H -o value zfs_rebase:phase tank/rebased
-zfs_rebase --continue --result tank/rebased
+zfs_rebase --continue tank/rebased
+.Ed
+.Pp
+The identifier is the rebase's name, so the last part of it does as
+well where nothing else answers to it, and so does the manifest's
+path:
+.Bd -literal -offset indent
+zfs_rebase --continue rebased
+zfs_rebase --verify /var/db/zfs_rebase/tank/rebased/manifest
+.Ed
+.Pp
+In the dataset form the rebase is named by the pre-apply snapshot the
+run was given:
+.Bd -literal -offset indent
+zfs_rebase --continue pre
+zfs_rebase --verify tank/main@pre
 .Ed
 .Pp
 Or take the whole thing away again:
 .Bd -literal -offset indent
-zfs_rebase --abort --result tank/rebased
+zfs_rebase --abort tank/rebased
 .Ed
 .Pp
 A rebase with no human in it: every conflict answered onto in advance, so

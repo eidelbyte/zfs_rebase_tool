@@ -33,6 +33,7 @@
 
 #include <stddef.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "zfsops.h"
 
@@ -41,7 +42,6 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <stdlib.h>
-#include <string.h>
 #include <unistd.h>
 
 #include <libnvpair.h>
@@ -805,6 +805,159 @@ zr_zfs_find_guid(struct zr_zfs *z, const char *pool, uint64_t guid, char *buf,
 	return (1);
 }
 
+/*
+ * One local user property off a handle the caller owns: 1 with the
+ * value in buf, 0 where this dataset does not carry it itself, -1
+ * where it is there and will not fit.
+ *
+ * Local, and nothing else. Each property's nvlist carries
+ * ZPROP_SOURCE beside ZPROP_VALUE, and the source of a local value
+ * is the dataset's own name; get_source (lib/libzfs/
+ * libzfs_dataset.c) and the user-property arm of get_callback
+ * (cmd/zfs/zfs_main.c) both read it that way. A user property
+ * inherits down the naming tree, so without this test a
+ * zfs_rebase:tag set on a pool would make every dataset under it
+ * look like a result, and a received value, whose source is the
+ * string "$recvd", is another machine's rebase and not ours.
+ *
+ * The list belongs to the handle, so the string is copied out before
+ * the handle closes. An iterated handle carries it as an opened one
+ * does: put_stats_zhdl fills zfs_user_props for both
+ * (lib/libzfs/libzfs_dataset.c).
+ */
+static int
+zz_user_local(zfs_handle_t *zhp, const char *prop, char *buf, size_t buflen)
+{
+	nvlist_t *props, *val;
+	const char *s, *src;
+
+	buf[0] = '\0';
+	props = zfs_get_user_props(zhp);
+	if (props == NULL || nvlist_lookup_nvlist(props, prop, &val) != 0 ||
+	    nvlist_lookup_string(val, ZPROP_VALUE, &s) != 0 ||
+	    nvlist_lookup_string(val, ZPROP_SOURCE, &src) != 0 ||
+	    strcmp(src, zfs_get_name(zhp)) != 0)
+		return (0);
+	if (strlen(s) >= buflen)
+		return (-1);
+	(void) snprintf(buf, buflen, "%s", s);
+	return (1);
+}
+
+/* Does this dataset carry the record: both properties, both local? */
+static int
+zz_has_record(zfs_handle_t *zhp)
+{
+	char buf[ZZ_NAME_MAX];
+
+	return (zz_user_local(zhp, ZR_PROP_TAG, buf, sizeof (buf)) > 0 &&
+	    zz_user_local(zhp, ZR_PROP_MANIFEST, buf, sizeof (buf)) > 0);
+}
+
+/* What the search of the pools is looking for, and what it found. */
+struct zz_find {
+	struct zr_zfs		*zf_z;
+	const char		*zf_name;	/* the dataset's, or NULL */
+	const char		*zf_snap;	/* one of its own, or NULL */
+	struct zr_zfs_found	*zf_out;
+};
+
+/*
+ * Does this dataset's name answer to the one asked for: it is that
+ * name, or it ends in it after a '/', which is the short spelling of
+ * a result. The comparison is exact either way -- a name is matched
+ * against a name, never parsed -- and "tank/a/result" answers to
+ * "result" and to "a/result" and not to "sult".
+ */
+static int
+zz_name_answers(const char *ds, const char *name)
+{
+	size_t dn = strlen(ds), n = strlen(name);
+
+	if (n == 0 || dn < n)
+		return (0);
+	if (dn == n)
+		return (strcmp(ds, name) == 0);
+	return (ds[dn - n - 1] == '/' && strcmp(ds + dn - n, name) == 0);
+}
+
+/* One match, kept where there is room for it and counted always. */
+static void
+zz_found_add(struct zr_zfs_found *f, const char *name)
+{
+	f->zf_n++;
+	if (f->zf_kept < ZR_FOUND_MAX && strlen(name) < ZR_FOUND_NAME) {
+		(void) snprintf(f->zf_name[f->zf_kept], ZR_FOUND_NAME, "%s",
+		    name);
+		f->zf_kept++;
+	}
+}
+
+/*
+ * One filesystem, and then the filesystems under it. A dataset that
+ * answers by name and carries the record is a match, or, where a
+ * snapshot was asked for, the snapshot of that name under it is:
+ * zfs_dataset_exists validates the name it is given and reports
+ * (lib/libzfs/libzfs_dataset.c), so a snapshot part that is no name
+ * at all is simply not there. Nothing stops the walk, because the
+ * point of it is to find every match and refuse where there are two.
+ */
+static int
+zz_find_fs(zfs_handle_t *zhp, void *arg)
+{
+	struct zz_find *f = arg;
+	const char *ds = zfs_get_name(zhp);
+	char full[ZZ_NAME_MAX];
+	int rc;
+
+	if ((f->zf_name == NULL || zz_name_answers(ds, f->zf_name)) &&
+	    zz_has_record(zhp)) {
+		if (f->zf_snap == NULL) {
+			zz_found_add(f->zf_out, ds);
+		} else if ((size_t)snprintf(full, sizeof (full), "%s@%s", ds,
+		    f->zf_snap) < sizeof (full) &&
+		    zfs_dataset_exists(f->zf_z->zz_hdl, full,
+		    ZFS_TYPE_SNAPSHOT)) {
+			zz_found_add(f->zf_out, full);
+		}
+	}
+	rc = zfs_iter_filesystems(zhp, zz_find_fs, arg);
+	zfs_close(zhp);
+	return (rc);
+}
+
+int
+zr_zfs_find_record(struct zr_zfs *z, const char *name, const char *snap,
+    struct zr_zfs_found *f, char *err, size_t errlen)
+{
+	struct zz_find s;
+	int rc;
+
+	if (err != NULL && errlen > 0)
+		err[0] = '\0';
+	if (z == NULL || f == NULL || (name == NULL && snap == NULL) ||
+	    (name != NULL && name[0] == '\0') ||
+	    (snap != NULL && snap[0] == '\0'))
+		return (zz_err(err, errlen, "search", EINVAL));
+	(void) memset(f, 0, sizeof (*f));
+	(void) memset(&s, 0, sizeof (s));
+	s.zf_z = z;
+	s.zf_name = name;
+	s.zf_snap = snap;
+	s.zf_out = f;
+	/*
+	 * zfs_iter_root (lib/libzfs/libzfs_config.c) hands the
+	 * callback the root dataset of every imported pool, each
+	 * handle the callback's to close, and gives back what the
+	 * callback gave it; the filesystem iterators report their own
+	 * failures as a negative number (lib/libzfs/libzfs_iter.c).
+	 */
+	rc = zfs_iter_root(z->zz_hdl, zz_find_fs, &s);
+	if (rc != 0)
+		return (zz_hdl_err(z, err, errlen, "search"));
+	return (0);
+}
+
 /* What the release walk gives back, and what it met on the way. */
 struct zz_reltag {
 	struct zr_zfs	*zt_z;
@@ -1206,8 +1359,6 @@ zr_zfs_get_user(struct zr_zfs *z, const char *dataset, const char *prop,
     char *buf, size_t buflen, char *err, size_t errlen)
 {
 	zfs_handle_t *zhp;
-	nvlist_t *props, *val;
-	const char *s, *src;
 	int rc;
 
 	if (err != NULL && errlen > 0)
@@ -1220,38 +1371,14 @@ zr_zfs_get_user(struct zr_zfs *z, const char *dataset, const char *prop,
 	if (zhp == NULL)
 		return (zz_hdl_err(z, err, errlen, dataset));
 	/*
-	 * The user properties come back as one nvlist per property,
-	 * the value under ZPROP_VALUE and the source under
-	 * ZPROP_SOURCE; get_callback in cmd/zfs/zfs_main.c reads them
-	 * the same way. The kernel always puts a source there
-	 * (dsl_prop_get_all_impl, module/zfs/dsl_prop.c), and it is
-	 * the name of the dataset the value was set on: this
-	 * dataset's own name for a local value, an ancestor's name
-	 * for an inherited one, and the string "$recvd"
-	 * (ZPROP_SOURCE_VAL_RECVD) for a received one. Only the first
-	 * is ours. A user property inherits down the naming tree, so
-	 * without this test a zfs_rebase:tag set on a pool would make
-	 * every dataset under it look like a result; a received value
-	 * is not ours either, since it names another machine's
-	 * snapshots and another machine's manifest path.
-	 *
-	 * The list belongs to the handle, so the string is copied out
-	 * before the handle closes.
+	 * The local value and nothing else, which is zz_user_local's
+	 * rule above and the same one the search of the pools reads a
+	 * record with: one reader for one question.
 	 */
-	props = zfs_get_user_props(zhp);
-	rc = 0;
-	if (props != NULL && nvlist_lookup_nvlist(props, prop, &val) == 0 &&
-	    nvlist_lookup_string(val, ZPROP_VALUE, &s) == 0 &&
-	    nvlist_lookup_string(val, ZPROP_SOURCE, &src) == 0 &&
-	    strcmp(src, dataset) == 0) {
-		if (strlen(s) >= buflen) {
-			zfs_close(zhp);
-			return (zz_err(err, errlen, prop, ENAMETOOLONG));
-		}
-		(void) snprintf(buf, buflen, "%s", s);
-		rc = 1;
-	}
+	rc = zz_user_local(zhp, prop, buf, buflen);
 	zfs_close(zhp);
+	if (rc < 0)
+		return (zz_err(err, errlen, prop, ENAMETOOLONG));
 	return (rc);
 }
 
@@ -1310,6 +1437,18 @@ zr_zfs_find_guid(struct zr_zfs *z, const char *pool, uint64_t guid, char *buf,
 	(void) guid;
 	if (buf != NULL && buflen > 0)
 		buf[0] = '\0';
+	return (zz_unbuilt(err, errlen));
+}
+
+int
+zr_zfs_find_record(struct zr_zfs *z, const char *name, const char *snap,
+    struct zr_zfs_found *f, char *err, size_t errlen)
+{
+	(void) z;
+	(void) name;
+	(void) snap;
+	if (f != NULL)
+		(void) memset(f, 0, sizeof (*f));
 	return (zz_unbuilt(err, errlen));
 }
 
