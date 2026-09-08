@@ -1040,6 +1040,28 @@ zr_zfs_exists(struct zr_zfs *z, const char *dataset, char *err, size_t errlen)
 }
 
 int
+zr_zfs_name_valid(const char *name, int snap, char *err, size_t errlen)
+{
+	if (err != NULL && errlen > 0)
+		err[0] = '\0';
+	if (name == NULL || name[0] == '\0')
+		return (zz_err(err, errlen, "name", EINVAL));
+	/*
+	 * zfs_name_valid (lib/libzfs/libzfs_dataset.c) takes no
+	 * handle: with a NULL one zfs_validate_name reports nothing
+	 * and only answers, which is all this wants. The type is
+	 * what says whether an @ is allowed in it.
+	 */
+	if (zfs_name_valid(name, snap != 0 ? ZFS_TYPE_SNAPSHOT :
+	    ZFS_TYPE_FILESYSTEM))
+		return (1);
+	if (err != NULL && errlen > 0)
+		(void) snprintf(err, errlen, "%s is no name for a %s", name,
+		    snap != 0 ? "snapshot" : "dataset");
+	return (0);
+}
+
+int
 zr_zfs_get(struct zr_zfs *z, const char *dataset, const char *prop, char *buf,
     size_t buflen, char *err, size_t errlen)
 {
@@ -1426,6 +1448,14 @@ zr_zfs_exists(struct zr_zfs *z, const char *dataset, char *err, size_t errlen)
 {
 	(void) z;
 	(void) dataset;
+	return (zz_unbuilt(err, errlen));
+}
+
+int
+zr_zfs_name_valid(const char *name, int snap, char *err, size_t errlen)
+{
+	(void) name;
+	(void) snap;
 	return (zz_unbuilt(err, errlen));
 }
 

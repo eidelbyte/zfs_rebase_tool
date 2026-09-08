@@ -868,6 +868,14 @@ again.
 | ZX210 | --abort on a run directory whose result carries no record and which holds no manifest -- the window before the birth manifest -- removes mnt and the directory, says what it found and exits 0 | planned: box, box/run-fixture.sh 5b, which makes that directory by hand: no kill can be timed inside a mkdir |
 | ZX211 | --abort on a run directory holding a birth manifest with no record on the result -- the window between the two writes -- destroys the from snapshot #made names, leaves the dataset form's #presnap and says so, unlinks both documents and removes the directory | planned: box, box/run-fixture.sh 5b, which builds the document from the header of a manifest the tool wrote; a kill in the live window is deferred, since no pause gate sits between the birth manifest and the record and adding one is a change to the gate vocabulary |
 | ZX212 | every document a run writes lands whole: the manifest at birth and at the decision, the skeleton, the drift lines and --restart's rewrite all go through the sibling and the rename, and no .tmp is left in the run directory or beside a -o file at any gate | planned: box, box/run-kills.sh and box/run-resolution.sh, whose gate assertions now hold over the directory's contents; the primitive itself is ZH43 to ZH45 on the Mac |
+| ZX213 | the done gate's order in the dataset form: the final check made and reported first, then the walks closed, the dataset unmounted from the private mount, readonly and canmount put back, the dataset mounted at its own mountpoint and asked whether it is there, and only after all of that the holds released, the record taken off, the tool's own from snapshot destroyed and the run directory removed | planned: box, box/run-kills.sh's settle case (c), which asserts the observable end of the order -- canmount and readonly as the fixture built them, the dataset at home, then no record, no hold and no directory -- and box/run-fixture.sh's dataset pass, which crosses it every trip |
+| ZX214 | done with the private mount busy: the unmount refuses, nothing after it happens -- the record and the three holds stay, the run directory stays, the result stays at the private mount -- the message names the mount path and the exit is 3; and a --continue once the mount is free settles it and reaches done | planned: box, box/run-kills.sh's settle case (a), which holds a shell's working directory inside <rundir>/mnt at the done gate, in both forms |
+| ZX215 | --abort with the private mount busy: the same stop in the same order -- the dataset rolled back and still at the private mount, or the clone still there, with the record, the holds and the directory kept -- exit non-zero, and a second --abort once the mount is free takes the rebase away | planned: box, box/run-kills.sh's settle case (b) |
+| ZX216 | --abort with the result dataset gone and a decision manifest in its run directory: the tag released on the three snapshots the header names, the #made snapshot destroyed, the two documents unlinked and the directory removed, exit 0 -- the state a --restart whose second clone failed leaves, and the one where the holds used to be stranded (R2) | planned: box, box/run-kills.sh's settle case (d), which destroys the clone by hand at the conflicts gate |
+| ZX217 | --abort on a run directory holding a manifest that will not parse: the file says a rebase was here and nothing can be read out of it, so nothing is released, nothing is removed, the parse's reason is printed and the exit is 2 | planned: box, box/run-kills.sh's settle case (e), which truncates the manifest before the abort. A directory holding no manifest at all is the other thing and stays ZX210: exit 0 and removed, since that is the window before the birth write and there is nothing in it to read |
+| ZX218 | --abort on the birth-manifest window in the dataset form destroys #presnap: a run directory with a birth manifest and no record can only be the window between the two writes, because a done takes its directory away, so the pre-apply snapshot there is the run's and not a user's before-image | deferred: by hand on the box, as ZX211 is -- run-fixture.sh 5b builds the leftover from a clone-form header, which has no #presnap, and building a dataset-form one wants a dataset-form run's manifest kept back the same way; the branch is one line beside the branch 5b crosses |
+| ZX219 | every name a verb is given is held against zfs_name_valid before it builds a path: --abort --result "../../../../tmp/x" is exit 2 naming the name, and the directory that spells reachable is still there | planned: box, box/run-kills.sh's settle case (f), which makes that directory as a decoy and gives --abort four names ZFS would not take; the check is rundir_of in src/run.c, through which every WORKDIR path is built, and the portable build cannot answer it at all (the stub says "not built with ZR_FREEBSD") |
+| ZX220 | WORKDIR is resolved with realpath once and the resolved prefix is what a recorded manifest path is compared against, so a symlink in /var/db would not make a run's own documents read as a -o pair | deferred: /var/db is a real directory on FreeBSD and making it a symlink is a box change no case can undo cleanly; the fix is workdir() in src/run.c and the every-trip proof is ZX173's no--o pass, whose documents are unlinked at done |
 
 ZX96 to ZX99 are no cells: the numbering skips to a round one so
 that the command line's own rows read as the block they are. ZX100
@@ -969,6 +977,21 @@ count held against tests/box/replay-expect.txt, and the manifest still
 equal to the fixture's expect block. ZX3 is what run-fixture.sh says
 beside it, which is only that a tree built from nothing prunes
 nothing.
+
+ZX213 to ZX220 are the settle's, and they are the shutdown order
+made observable. The order itself -- the walks, the result, the
+holds, the record, the snapshots, the directory -- cannot be watched
+from outside a running process, so what the rows assert is its two
+ends and its one refusal: that the dataset is at home with its
+properties before the record is gone (ZX213), and that a mount
+somebody is standing in stops everything after it and leaves a
+rebase the next verb can finish (ZX214, ZX215). ZX216 is R2, where
+the holds outlived the only thing that named them; ZX217 is the one
+shape --abort refuses. The last two are guards rather than
+behaviour: ZX219 is reachable on the box in one command, against a
+decoy directory the case makes for it, and ZX220 is not reachable at
+all without rebuilding /var/db, so it is carried by the code and by
+the no--o pass that would break the moment it were wrong.
 
 ZX205 to ZX212 are the birth manifest's: the header written before
 the record, the phase "decided" that says a decision is in place,

@@ -116,6 +116,14 @@
 #   snapshot the hold is the only thing in the way and the message
 #   must say busy.
 #
+# After the gates, for each form, come the settle cases: what the
+# order of the hand-back looks like from outside at the done gate and
+# after it, what a working directory left inside the private mount
+# does to done and to --abort, and what --abort makes of a run
+# directory whose result was destroyed under it. They are lettered
+# (a) to (f) below and in tests/MATRIX.md, ZX213 to ZX217 and
+# ZX219.
+#
 # The conflicted fixture reaches applying2 and done only through an
 # answered resolution. The tool writes the skeleton itself when it
 # writes the manifest, so the harness answers it: every "-" becomes
@@ -151,6 +159,7 @@ tmp=$(mktemp -d "${TMPDIR:-/tmp}/zr-kill.XXXXXX") || exit 2
 cleanup() {
 	prog_end
 	[ -n "$pid" ] && kill -KILL "$pid" 2>/dev/null
+	[ -n "${busy_pid:-}" ] && kill -KILL "$busy_pid" 2>/dev/null
 	if [ "${KEEP:-0}" = 1 ]; then
 		echo "KEEP=1: pool $POOL, $IMG and $tmp left in place"
 		return
@@ -842,6 +851,420 @@ kill_case() {
 }
 
 # ---------------------------------------------------------------
+# The settle cases: the order a rebase is given back in, and what a
+# mount somebody is standing in does to it. They are lettered (a) to
+# (f) here and in tests/MATRIX.md, ZX213 to ZX217 and ZX219.
+#
+# The order (documents-design.md, section 11.3) is: the final check,
+# the walks closed, the result put back into service, the holds
+# released, the record taken off, the tool's own snapshots destroyed,
+# the run directory removed. None of that can be watched from
+# outside a running process, so what these cases assert is its two
+# ends and its one refusal.
+#
+# The pause hook stops the tool at the done gate after the check has
+# been made and printed and before anything has been released, which
+# is exactly the moment the order turns on: what is asserted there is
+# that the record, the holds and the private mount are all still
+# where they were.
+#
+# The refusal is the ordinary one. An unmount fails with EBUSY when
+# anything holds the mount -- an open file, a working directory --
+# and at the conflicts gate a person is expected to be working
+# inside the private mount, so a shell left there is the common case
+# and not an exotic one. Nothing is ever forced, so the tool has to
+# stop; what it must not do is stop after it has taken the record
+# off, which would leave a dataset off its mountpoint that nothing
+# names (R3 of the code review).
+# ---------------------------------------------------------------
+
+# The names one form's rebase wears, as kill_case sets them for
+# itself. Kept apart from kill_case so that this section can be read
+# and moved on its own.
+names_for_form() {
+	if [ "$form" = clone ]; then
+		rds=$POOL/result
+	else
+		rds=$POOL/onto
+	fi
+	rundir=/var/db/zfs_rebase/$rds
+	man=$rundir/manifest
+	res=$rundir/resolution
+	log=$tmp/case.log
+}
+
+# A background shell whose working directory is inside the private
+# mount. It creates nothing there -- a file would be drift, and the
+# final check would say so -- and it says it has arrived by touching
+# a file outside the mount, so that the tool is never signalled
+# before the mount is really busy.
+busy_pid=
+hold_mount() {
+	rm -f "$tmp/busy.ready"
+	sh -c 'cd "$1" || exit 2; : > "$2"; exec sleep 300' sh "$1" \
+	    "$tmp/busy.ready" &
+	busy_pid=$!
+	i=0
+	while [ $i -lt 200 ]; do
+		[ -f "$tmp/busy.ready" ] && return 0
+		sleep 0.1
+		i=$((i + 1))
+	done
+	fail "the background shell never took a working directory in $1"
+}
+
+free_mount() {
+	if [ -n "$busy_pid" ]; then
+		kill -KILL "$busy_pid" 2>/dev/null
+		wait "$busy_pid" 2>/dev/null
+		busy_pid=
+	fi
+	rm -f "$tmp/busy.ready"
+	return 0
+}
+
+# A run taken to the pause at the done gate, by the two ways
+# kill_case takes one there: straight through for a clean fixture,
+# and through an answered resolution for a conflicted one. The tool
+# is stopped at the gate when this returns, with its report already
+# printed and nothing released.
+run_to_done() {
+	if [ $clean -eq 1 ]; then
+		if [ "$form" = clone ]; then
+			ZFS_REBASE_PAUSE=done "$bin" $flag -v \
+			    --off-of "$POOL/from@work" \
+			    --onto "$POOL/onto@work" \
+			    --result "$POOL/result" > "$log" 2>&1 &
+		else
+			ZFS_REBASE_PAUSE=done "$bin" $flag -v \
+			    --from "$POOL/from" --onto "$POOL/onto" \
+			    --result pre > "$log" 2>&1 &
+		fi
+		pid=$!
+	else
+		if [ "$form" = clone ]; then
+			"$bin" $flag --off-of "$POOL/from@work" \
+			    --onto "$POOL/onto@work" \
+			    --result "$POOL/result" > "$log" 2>&1
+		else
+			"$bin" $flag --from "$POOL/from" --onto "$POOL/onto" \
+			    --result pre > "$log" 2>&1
+		fi
+		st=$?
+		[ $st -eq 1 ] || \
+		    { cat "$log"; fail "the run before the resolution exited $st, want 1"; }
+		answer_resolution "$res"
+		ZFS_REBASE_PAUSE=done "$bin" --continue --result "$rds" \
+		    > "$log" 2>&1 &
+		pid=$!
+	fi
+	wait_stop "$pid" || { cat "$log"; fail "never stopped at the done gate"; }
+}
+
+# A rebase left standing at a gate, which is what --abort is for. A
+# conflicted fixture stops at its own conflicts gate; a clean one is
+# stopped inside applying1 with the pause hook and a SIGKILL, which
+# leaves the same thing: the record with a phase, the three holds,
+# both documents and the result at the private mount.
+leave_rebase_standing() {
+	if [ $clean -eq 0 ]; then
+		if [ "$form" = clone ]; then
+			"$bin" $flag --off-of "$POOL/from@work" \
+			    --onto "$POOL/onto@work" \
+			    --result "$POOL/result" > "$log" 2>&1
+		else
+			"$bin" $flag --from "$POOL/from" --onto "$POOL/onto" \
+			    --result pre > "$log" 2>&1
+		fi
+		st=$?
+		[ $st -eq 1 ] || \
+		    { cat "$log"; fail "the run for this case exited $st, want 1"; }
+		[ "$(phasenow "$rds")" = conflicts ] || \
+		    { cat "$log"; fail "that run did not stop at conflicts"; }
+	else
+		if [ "$form" = clone ]; then
+			ZFS_REBASE_PAUSE=applying1 "$bin" $flag \
+			    --off-of "$POOL/from@work" \
+			    --onto "$POOL/onto@work" \
+			    --result "$POOL/result" > "$log" 2>&1 &
+		else
+			ZFS_REBASE_PAUSE=applying1 "$bin" $flag \
+			    --from "$POOL/from" --onto "$POOL/onto" \
+			    --result pre > "$log" 2>&1 &
+		fi
+		pid=$!
+		wait_stop "$pid" || \
+		    { cat "$log"; fail "never stopped at applying1"; }
+		kill -KILL "$pid" || fail "cannot kill the stopped tool"
+		wait "$pid"
+		pid=
+		[ "$(phasenow "$rds")" = applying1 ] || \
+		    fail "the kill did not leave the rebase at applying1"
+	fi
+	[ "$(holdcount)" = 3 ] || \
+	    fail "$(holdcount) holds on the standing rebase, want 3"
+	[ -f "$man" ] || fail "the standing rebase has no manifest at $man"
+	where_is priv
+	return 0
+}
+
+# (a) done with the private mount busy. The unmount refuses, and
+# nothing the settle does after it happens: the record, the holds and
+# the run directory are where they were and the result is still at
+# the private mount. The exit is 3, which is what the drift verdict
+# is too, and the report tells them apart: drift says the rebase is
+# over, and this says it is not. Then the mount is freed and a plain
+# --continue settles it. ZX214.
+settle_busy_done() {
+	case_id="$fixture $form done with the private mount busy"
+	cases=$((cases + 1))
+	names_for_form
+	run_to_done
+	hold_mount "$rundir/mnt"
+	kill -CONT "$pid" || fail "cannot continue the stopped tool"
+	wait "$pid"
+	st=$?
+	pid=
+	[ $st -eq 3 ] || \
+	    { cat "$log"; fail "done with the mount busy exited $st, want 3"; }
+	grep -q "$rundir/mnt" "$log" || \
+	    { cat "$log"; fail "the message does not name the mount path"; }
+	grep -q -- '--continue or --abort' "$log" || \
+	    { cat "$log"; fail "the message does not say what finishes the settle"; }
+	[ -n "$(localprops "$rds")" ] || \
+	    { cat "$log"; fail "the settle took the record off although it could not give the result back"; }
+	[ "$(holdcount)" = 3 ] || \
+	    { cat "$log"; fail "$(holdcount) holds after the refused settle, want 3"; }
+	[ -d "$rundir" ] || \
+	    { cat "$log"; fail "the refused settle removed the run directory $rundir"; }
+	[ -f "$man" ] || \
+	    { cat "$log"; fail "the refused settle removed the manifest $man"; }
+	where_is priv
+	free_mount
+	"$bin" --continue --result "$rds" > "$tmp/cont" 2>&1
+	st=$?
+	[ $st -eq 0 ] || \
+	    { cat "$tmp/cont"; fail "the --continue after the refused settle exited $st, want 0"; }
+	[ -z "$(localprops "$rds")" ] || \
+	    { cat "$tmp/cont"; fail "that --continue reached done and left a record"; }
+	[ "$(holdcount)" = 0 ] || \
+	    { cat "$tmp/cont"; fail "that --continue reached done and left holds"; }
+	[ ! -e "$rundir" ] || \
+	    { cat "$tmp/cont"; fail "that --continue reached done and left $rundir"; }
+	if [ "$form" = dataset ]; then
+		where_is home
+	else
+		where_is void
+	fi
+	echo "ok   $case_id: exit 3 with the rebase kept whole, and the"
+	echo "     next --continue settled it"
+	reset_pool
+}
+
+# (b) --abort with the private mount busy, which stops in the same
+# place for the same reason: in the dataset form the rollback is
+# made and the hand-back refuses, and in the clone form the private
+# mount is undone before the destroy so that a busy mount refuses as
+# an unmount and not as a destroy. Either way the record and the
+# holds stay and a second --abort finishes it. ZX215.
+settle_busy_abort() {
+	case_id="$fixture $form --abort with the private mount busy"
+	cases=$((cases + 1))
+	names_for_form
+	leave_rebase_standing
+	hold_mount "$rundir/mnt"
+	"$bin" --abort --result "$rds" > "$tmp/abort" 2>&1
+	st=$?
+	[ $st -ne 0 ] || \
+	    { cat "$tmp/abort"; fail "--abort with the mount busy exited 0"; }
+	grep -q "$rundir/mnt" "$tmp/abort" || \
+	    { cat "$tmp/abort"; fail "--abort did not name the mount path"; }
+	[ "$(holdcount)" = 3 ] || \
+	    { cat "$tmp/abort"; fail "--abort released holds although it could not give the result back"; }
+	[ -n "$(localprops "$rds")" ] || \
+	    { cat "$tmp/abort"; fail "--abort took the record off although it could not give the result back"; }
+	[ -d "$rundir" ] || \
+	    { cat "$tmp/abort"; fail "--abort removed the run directory it could not empty"; }
+	where_is priv
+	free_mount
+	"$bin" --abort --result "$rds" > "$tmp/abort2" 2>&1
+	st=$?
+	[ $st -eq 0 ] || \
+	    { cat "$tmp/abort2"; fail "the second --abort exited $st, want 0"; }
+	[ "$(holdcount)" = 0 ] || \
+	    { cat "$tmp/abort2"; fail "the second --abort left $(holdcount) holds"; }
+	[ ! -e "$rundir" ] || \
+	    { cat "$tmp/abort2"; fail "the second --abort left $rundir"; }
+	if [ "$form" = dataset ]; then
+		hassnap "$POOL/onto@pre" && \
+		    { cat "$tmp/abort2"; fail "the second --abort left the pre-apply snapshot"; }
+		[ -z "$(localprops "$POOL/onto")" ] || \
+		    { cat "$tmp/abort2"; fail "the second --abort left a record on onto"; }
+		where_is home
+		[ "$(recval readonly "$POOL/onto")" = off ] || \
+		    { cat "$tmp/abort2"; fail "the second --abort left onto read-only"; }
+		[ "$(recval canmount "$POOL/onto")" = on ] || \
+		    { cat "$tmp/abort2"; fail "the second --abort left canmount at $(recval canmount "$POOL/onto")"; }
+	else
+		zfs list -H -o name "$POOL/result" >/dev/null 2>&1 && \
+		    { cat "$tmp/abort2"; fail "the second --abort left the clone"; }
+	fi
+	echo "ok   $case_id: refused with the rebase kept whole, and the"
+	echo "     second --abort took it away"
+	reset_pool
+}
+
+# (c) the done sequence, at the two points it can be seen from
+# outside: at the gate, where the check has been made and printed and
+# nothing has been released; and after it, where the result is in
+# service and the record, the holds and the directory are gone.
+# Between the two lies the order the settle keeps. ZX213.
+settle_done_order() {
+	case_id="$fixture $form the done sequence"
+	cases=$((cases + 1))
+	names_for_form
+	run_to_done
+	# At the gate: the check is made and reported before one thing
+	# is given back.
+	grep -q 'outside the manifest' "$log" || \
+	    { cat "$log"; fail "the final check was not made before the settle"; }
+	[ -n "$(localprops "$rds")" ] || \
+	    fail "the record was off before the settle"
+	[ "$(holdcount)" = 3 ] || \
+	    fail "$(holdcount) holds at the done gate, want 3"
+	[ -d "$rundir" ] || fail "no run directory at the done gate"
+	where_is priv
+	kill -CONT "$pid" || fail "cannot continue the stopped tool"
+	wait "$pid"
+	st=$?
+	pid=
+	[ $st -eq 0 ] || { cat "$log"; fail "done exited $st, want 0"; }
+	# And after it, in the order the settle made them true: the
+	# properties and the mount first, and the bookkeeping after.
+	if [ "$form" = dataset ]; then
+		[ "$(recval canmount "$POOL/onto")" = on ] || \
+		    { cat "$log"; fail "done left canmount at $(recval canmount "$POOL/onto")"; }
+		[ "$(recval readonly "$POOL/onto")" = off ] || \
+		    { cat "$log"; fail "done left onto read-only"; }
+		where_is home
+		hassnap "$POOL/onto@pre" || \
+		    { cat "$log"; fail "done destroyed the pre-apply snapshot, which is the user's"; }
+	else
+		where_is void
+	fi
+	[ -z "$(localprops "$rds")" ] || \
+	    { cat "$log"; fail "done left $(localprops "$rds")"; }
+	[ "$(holdcount)" = 0 ] || \
+	    { cat "$log"; fail "done left $(holdcount) holds"; }
+	[ ! -e "$rundir" ] || { cat "$log"; fail "done left $rundir"; }
+	echo "ok   $case_id: checked and reported at the gate with nothing"
+	echo "     released, then in service with the bookkeeping gone"
+	reset_pool
+}
+
+# (d) and (e): the result destroyed under a standing rebase, which
+# is what a --restart whose second clone failed leaves and what a
+# zfs destroy by hand leaves. The record went with it, so the tag it
+# named is only in the manifest the run directory still holds, and
+# before this that manifest was never opened and the holds were
+# stranded (R2). Clone form only: the dataset form's result is the
+# user's own dataset, and destroying it would take the fixture's onto
+# with it.
+#
+# (e) is the same state with the manifest made unreadable: nothing
+# can be released and nothing is removed, and the exit says so.
+# ZX216 and ZX217.
+settle_result_gone() {
+	case_id="$fixture $form the result destroyed under the rebase"
+	cases=$((cases + 1))
+	names_for_form
+	leave_rebase_standing
+	tag=$(recval zfs_rebase:tag "$rds")
+	cp "$man" "$tmp/gone-man" || fail "cannot keep a copy of $man"
+	zfs destroy -f "$rds" || fail "cannot destroy the clone by hand"
+	[ "$(holdcount)" = 3 ] || \
+	    fail "the destroy of the clone released the holds by itself"
+	# (e) first, over the same directory: a manifest that will not
+	# parse is the one thing this abort refuses.
+	printf 'this is not a manifest\n' > "$man" || fail "cannot spoil $man"
+	"$bin" --abort --result "$rds" > "$tmp/bad" 2>&1
+	st=$?
+	[ $st -eq 2 ] || \
+	    { cat "$tmp/bad"; fail "--abort on an unreadable manifest exited $st, want 2"; }
+	[ "$(holdcount)" = 3 ] || \
+	    { cat "$tmp/bad"; fail "--abort released holds off a manifest it could not read"; }
+	[ -d "$rundir" ] || \
+	    { cat "$tmp/bad"; fail "--abort removed a run directory it could not read"; }
+	[ -f "$man" ] || \
+	    { cat "$tmp/bad"; fail "--abort unlinked a manifest it could not read"; }
+	echo "ok   $case_id: an unreadable manifest is exit 2, nothing"
+	echo "     released and nothing removed"
+	cases=$((cases + 1))
+	# (d) with the header back: the tag it names is released on the
+	# three snapshots, the documents go and the directory goes.
+	cp "$tmp/gone-man" "$man" || fail "cannot put the manifest back"
+	"$bin" --abort --result "$rds" > "$tmp/gone" 2>&1
+	st=$?
+	[ $st -eq 0 ] || \
+	    { cat "$tmp/gone"; fail "--abort with the result gone exited $st, want 0"; }
+	[ "$(holdcount)" = 0 ] || \
+	    { cat "$tmp/gone"; fail "--abort left $(holdcount) holds the header named under $tag"; }
+	[ ! -e "$rundir" ] || \
+	    { cat "$tmp/gone"; fail "--abort left the run directory $rundir"; }
+	grep -q 'is not there' "$tmp/gone" || \
+	    { cat "$tmp/gone"; fail "--abort did not say what it found"; }
+	echo "ok   $case_id: the holds the header named are released and"
+	echo "     the directory is gone"
+	reset_pool
+}
+
+# (f) the name a verb is given, held against ZFS's own rule before it
+# builds a path. --abort is the one verb that goes on where the
+# dataset does not exist, so a name that is no dataset name used to
+# read as "no such run" only after it had been made into a path:
+# --result "../../../../tmp/x" reached rmdir_run, which contains by
+# a prefix compare and not by a parse, and took an empty /tmp/x/mnt
+# and /tmp/x with it. The decoy below is exactly that shape. ZX219.
+settle_bad_name() {
+	case_id="$fixture a name that is no dataset name"
+	cases=$((cases + 1))
+	rm -rf "$tmp/outside"
+	mkdir -p "$tmp/outside/mnt" || fail "cannot make the decoy directory"
+	# Enough .. to climb out of /var/db/zfs_rebase, so the first of
+	# these spells $tmp/outside as a path and nothing at all as a
+	# dataset name.
+	for bad in "../../../..$tmp/outside" "$POOL/../../etc" \
+	    "$POOL/result with a space"; do
+		"$bin" --abort --result "$bad" > "$tmp/badname" 2>&1
+		st=$?
+		[ $st -eq 2 ] || \
+		    { cat "$tmp/badname"; fail "--abort --result '$bad' exited $st, want 2"; }
+		grep -q 'no name for a dataset' "$tmp/badname" || \
+		    { cat "$tmp/badname"; fail "--abort --result '$bad' did not say the name is no dataset name"; }
+	done
+	[ -d "$tmp/outside/mnt" ] || \
+	    fail "--abort removed $tmp/outside/mnt, which is no run directory"
+	[ "$(holdcount)" = 0 ] || fail "a refused name changed the holds"
+	rm -rf "$tmp/outside"
+	echo "ok   $case_id: exit 2, and no path was built from it"
+}
+
+# Every case of these, for one form of one fixture. The two that do
+# not depend on the form run in the clone pass alone: (d) and (e)
+# destroy the result under the rebase, which in the dataset form
+# would be the fixture's own onto, and (f) opens no pool at all.
+settle_cases() {
+	settle_done_order
+	settle_busy_done
+	settle_busy_abort
+	if [ "$form" = clone ]; then
+		settle_result_gone
+		settle_bad_name
+	fi
+	return 0
+}
+
+# ---------------------------------------------------------------
 # One fixture, both forms, every gate, three signals.
 # ---------------------------------------------------------------
 one_fixture() {
@@ -878,6 +1301,7 @@ one_fixture() {
 				kill_case "$form" "$gate" "$sig"
 			done
 		done
+		settle_cases
 	done
 	drop_pool
 	echo "ok   $fixture: every gate killed and continued"

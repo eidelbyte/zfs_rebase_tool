@@ -318,6 +318,23 @@ int zr_zfs_exists(struct zr_zfs *z, const char *dataset, char *err,
     size_t errlen);
 
 /*
+ * Whether name is a name ZFS itself would take for a filesystem, or
+ * for a snapshot of one where snap is set: 1 yes, 0 no with err set,
+ * -1 where the answer cannot be had (the portable build). This is
+ * zfs_name_valid (lib/libzfs/libzfs_dataset.c), which needs no
+ * handle and opens nothing -- it is the character set, the length,
+ * the component rules and the one @ -- so it can be asked before a
+ * pool is opened and before the name is used for anything at all.
+ *
+ * The tool asks it of every name a verb was given before that name
+ * builds a path under WORKDIR: the run directory mirrors the dataset
+ * tree, so a name with a component of ".." in it would be a path out
+ * of the tree, and the containment of rmdir_run is a prefix test and
+ * not a parse (R19 of the code review).
+ */
+int zr_zfs_name_valid(const char *name, int snap, char *err, size_t errlen);
+
+/*
  * One property of dataset as the string zfs(8) would print. What is
  * really a string is what this is for -- origin and mountpoint, which
  * are names -- and beside them the two words the dataset form has to

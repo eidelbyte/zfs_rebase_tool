@@ -110,15 +110,37 @@ rebase, the conflicts gate included, and is handed home exactly
 twice: at done and at --abort (and by a run that gives up before it
 has written anything, which takes itself away as an --abort would).
 Off the private mount, `readonly` and
-`canmount` back to what the header says they were, and mounted where
+`canmount` back to what the header says they were, mounted where
 its `mountpoint` property says -- that property is never touched, so
-home is where it always was. A rebase waiting for its conflicts to be
+home is where it always was -- and then asked whether it is there. A
+rebase waiting for its conflicts to be
 answered is a half rebased tree, and a half rebased tree is not put
 back into service: holding a filesystem in that state where anyone
 can reach it is worse than holding it out of service while it is
 settled. A caught signal at a gate leaves it privately mounted, as a
 hard kill does, and the next --continue, --verify or --abort takes it
 from there.
+
+That hand-back is the first thing done and --abort do and not the
+last. The order both keep is the order a run took things in,
+reversed, with the bookkeeping last: the walks closed, the result
+put back into service, then the holds released, the record taken
+off, the snapshots the rebase owned destroyed and the run directory
+removed. So nothing is released until the tree is back where it
+belongs, and the record -- which is the only thing that names the
+manifest, and through it the tag, the pre-apply snapshot and the two
+property values -- is the last of it to go.
+
+An unmount refuses when anybody holds the mount: an open file, a
+working directory, a child mount. At the conflicts gate a person is
+expected to be working inside the private mount, so a shell left
+there is the ordinary case. When that happens nothing after the
+unmount is done: the record and the holds stay, the run directory
+stays, the mount path and the reason are printed, and the exit is 3.
+The next --continue or --abort finishes the settle once the mount is
+free. done never blocks on drift; this is the one thing it does
+block on, because giving the dataset back is the promise the dataset
+form makes.
 
 A dataset whose `canmount` is `off` has no home to be handed back to,
 and the dataset form refuses it at precondition with exit 2, before
@@ -272,9 +294,10 @@ not latched: it belongs to the invocation, so a --continue that
 should open the picker says -i each time, and a start given -i that
 reaches the gate in the same process is still interactive there.
 applying2 carries the choices out. done is no phase and is never
-written: when the result has verified and is read-only again, the
-holds are given back and then every zfs_rebase: property is taken
-off, in that order, since the tag is the only handle on those holds.
+written: when the result has verified and is read-only again, it is
+handed back -- home, or to the void -- and then the holds are given
+back and then every zfs_rebase: property is taken off, in that
+order, since the tag is the only handle on those holds.
 A result that carries any of them is therefore an open rebase, and
 one that carries none has no rebase to move, whatever its history:
 --continue, --restart and --abort all say so and touch nothing --
@@ -458,14 +481,35 @@ the final check over again, with no gate to make it at:
 
     zfs_rebase --abort (--result DATASET | MANIFEST)
 
-releases the holds, puts the result back -- destroying the clone, or
-rolling the dataset back to its pre-apply snapshot, destroying that
-snapshot, taking every zfs_rebase: property off it and mounting it
-where it belongs again -- destroys any snapshot the tool took for
-itself, unlinks the two documents the run wrote into its own
-directory, and removes that directory: as if the run never happened.
-A --manifest pair is the exception, and is left where you asked for
-it, here exactly as at done.
+puts the result back first -- destroying the clone, or rolling the
+dataset back to its pre-apply snapshot and mounting it where it
+belongs again with `readonly` and `canmount` as the header kept them
+-- and only then releases the holds, destroys the snapshots the
+rebase owned, takes every zfs_rebase: property off the result,
+unlinks the two documents the run wrote into its own directory and
+removes that directory: as if the run never happened. A --manifest
+pair is the exception, and is left where you asked for it, here
+exactly as at done.
+
+It stops where a step refuses and does nothing after it, so that
+what is left is a rebase a second --abort can find: a rollback that
+cannot be made -- the snapshot gone, or a newer one in the way -- and
+a private mount somebody is standing in both leave the record, the
+holds and the documents exactly as they were, with the reason
+printed and a non-zero exit.
+
+Given a result that is gone with its run directory still standing --
+a --restart whose second clone failed, or a `zfs destroy` by hand --
+--abort reads the manifest in that directory and gives back what its
+header names: the tag released on the three snapshots, the snapshot
+the tool took for itself destroyed, the documents unlinked and the
+directory removed. Before this the holds under that tag were
+unreachable, since the record that named it went with the dataset. A
+directory with no manifest in it is the window before the first
+write and is simply removed; one holding a manifest that will not
+parse is the one thing --abort refuses, since a file that says a
+rebase was here and cannot be read is not a directory to remove
+quietly: it says so and exits 2.
 
 Which of those it does is the manifest's to say, and the file is
 there at every gate, since the run writes its header before its

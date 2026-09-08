@@ -195,6 +195,36 @@ A rebase waiting for its conflicts to be answered is a half rebased tree,
 and a half rebased tree is not put back into service.
 A caught signal at a gate leaves it privately mounted, as a hard kill does,
 and the next verb takes it from there.
+.Pp
+That hand-back is the first thing done and
+.Fl -abort
+do and not the last.
+Both give a rebase back in the order a run took it in, reversed, with the
+bookkeeping last: the walks closed, the result put back into service and
+asked whether it is where its
+.Sy mountpoint
+property says, then the holds released, the record taken off, the snapshots
+the rebase owned destroyed and the run directory removed.
+Nothing is released until the tree is back where it belongs, and the record
+\(em the only thing that names the manifest, and through it the tag, the
+pre-apply snapshot and the two property values \(em is the last of it to go.
+.Pp
+An unmount refuses while anybody holds the mount: an open file, a working
+directory, a child mount.
+At the
+.Sy conflicts
+gate a person is expected to be working inside the private mount, so a
+shell left there is the ordinary case.
+Nothing after the unmount is then done: the record and the holds stay, the
+run directory stays, the mount path and the reason are printed, and the
+exit is 3.
+The next
+.Fl -continue
+or
+.Fl -abort
+finishes the settle once the mount is free.
+done never blocks on drift; this is the one thing it does block on, because
+giving the dataset back is the promise the dataset form makes.
 A dataset whose
 .Sy canmount
 is
@@ -528,18 +558,29 @@ skeleton.
 Nothing is decided again: the manifest is the decision.
 A resolution's edits are discarded by definition.
 .It Fl a , Fl -abort
-Release the holds, put the result back \(em the clone destroyed, or the
-dataset rolled back to its pre-apply snapshot, that snapshot destroyed,
-every one of its
+Put the result back first \(em the clone destroyed, or the dataset rolled
+back to its pre-apply snapshot and mounted where it belongs again with
+.Sy readonly
+and
+.Sy canmount
+as the header kept them \(em and only then release the holds, destroy the
+snapshots the rebase owned, take every one of the result's
 .Sy zfs_rebase
-properties taken off it and the dataset mounted where it belongs again \(em
-destroy any snapshot the tool took for itself, unlink the two documents
-the run wrote into its own directory, and remove that directory.
+properties off it, unlink the two documents the run wrote into its own
+directory, and remove that directory.
 As if the run never happened.
 A pair
 .Fl o
 named is the exception and stays where it was asked for, here exactly as
 at done: the tool removes no file outside the run directory.
+.Pp
+It stops where a step refuses and does nothing after it, so that what is
+left is a rebase a second
+.Fl -abort
+can find: a rollback that cannot be made \(em the snapshot gone, or a newer
+one in the way \(em and a private mount somebody is standing in both leave
+the record, the holds and the documents as they were, with the reason
+printed and a non-zero exit.
 Which of those it does is the manifest's to say, and that file is there at
 every gate, since the run writes its header before its record.
 Where it has been lost all the same, removed by a hand,
@@ -557,11 +598,25 @@ or
 back, for which it prints the two
 .Ic zfs set
 commands.
-A result with no record at all but a run directory of its own is the other
-half of this: that is what a crash before the record left, and
+A result with no record at all but a run directory of its own, and a result
+that is not there at all with its run directory still standing, are the
+other half of this.
 .Fl -abort
-says what it found there, destroys the from snapshot the header names if
-one was taken, and removes the directory.
+reads the manifest that directory holds and gives back what its header
+names: the tag released on the three snapshots, the from snapshot destroyed
+where one was taken, the documents unlinked and the directory removed.
+That is the way back from a
+.Fl -restart
+whose second clone failed, or a
+.Ic zfs destroy
+of the result by hand, where the record that named the tag went with the
+dataset and the holds under it could be reached by nothing else.
+A directory with no manifest in it is the window before the first write and
+is simply removed; one holding a manifest that will not parse is the one
+shape
+.Fl -abort
+refuses, since a file that says a rebase was here and cannot be read is not
+a directory to remove quietly: it says so and exits 2.
 The one thing it can still read is the
 .Sy mountpoint
 property, which the two forms never share: a path is a dataset of yours and
@@ -837,7 +892,8 @@ headless with the flag and without it.
 carries the choices out.
 .Sy done
 is no phase and is never written: once the result has verified and is
-read-only again the holds are given back and then every
+read-only again it is handed back \(em home, or to the void \(em and then
+the holds are given back and then every
 .Sy zfs_rebase
 property is taken off, in that order, since the tag is the only handle on
 those holds.
