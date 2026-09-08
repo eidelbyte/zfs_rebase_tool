@@ -485,6 +485,25 @@ za_run_flags(const struct zr_args *out, char *err, size_t errlen)
 	if (out->za_quiet != 0 && out->za_dryrun != 0)
 		return (za_no(err, errlen, "--dry-run makes no check to "
 		    "report; --quiet says nothing to it"));
+	/*
+	 * And the four gate flags, for the same reason (R22). A dry
+	 * run stops at the manifest: it writes no skeleton for
+	 * --take-onto or --take-from to answer and reaches no
+	 * conflicts gate for --interactive or --no-merge to hold, so
+	 * there is nothing for the flag to act on and no record to
+	 * latch it in. Refused rather than ignored, because a command
+	 * that says how to answer the conflicts and is not going to be
+	 * asked has been written under a wrong idea of what it does.
+	 */
+	if (out->za_dryrun != 0 && (out->za_takeonto != 0 ||
+	    out->za_takefrom != 0 || out->za_interactive != 0 ||
+	    out->za_nomerge != 0))
+		return (za_no(err, errlen, "--dry-run writes a manifest and "
+		    "stops; %s says nothing to it",
+		    out->za_takeonto != 0 ? "--take-onto" :
+		    out->za_takefrom != 0 ? "--take-from" :
+		    out->za_interactive != 0 ? "--interactive" :
+		    "--no-merge"));
 	return (0);
 }
 

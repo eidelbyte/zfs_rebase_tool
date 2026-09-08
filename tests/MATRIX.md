@@ -663,7 +663,10 @@ with what a settled check finds {the documents both there or one of
 them gone, the inputs all there or one gone or one worn by another
 snapshot, the result mounted at home, mounted where a hand put it or
 mounted nowhere, the tree clean or drifted}, which are ZX193 to
-ZX204; and, from ZX122 on, the
+ZX204; where an open rebase's result is mounted when a report
+arrives {at the private mount, nowhere} crossed with what the report
+leaves {the mount, the readonly flag, the run directory}, which are
+ZX237 to ZX240; and, from ZX122 on, the
 resolution as the driver carries it {the --take flag given or not,
 the gate flag given or not, the document complete or not, the choice
 answered by a flag or by hand, the verb that meets it}. Every row up
@@ -903,6 +906,11 @@ again.
 | ZX234 | the identifier and every dataset name a header hands back are held against zfs_name_valid before either becomes a path | covered: ident_result_ok in src/run.c, the one gate every step leaves through; box, the name steps of every harness |
 | ZX235 | the manifest an identifier named is parsed once: the resolution's parse is what the verb reads, and --abort's too | covered: src/run.c, read_manifest and zr_abort adopting it (R12); box, every verb given a path |
 | ZX236 | no message of the tool tells a person to write --result on a verb: every printed command names IDENT | covered: the grep over src, README.md and zfs_rebase.8 |
+| ZX237 | --verify on an open rebase reads the result where it is mounted and takes nothing over: in both forms and at every gate the mount is where the check found it, no zfs op moves it, and the phase, the holds and the two documents are untouched | planned: box, box/run-strays.sh's verify_open cases, which assert the mount before and after, and box/run-kills.sh, which verifies after every kill |
+| ZX238 | --verify never sets readonly, in either form: a clone a kill left writable inside a stage is still writable after the report, and one outside a stage is still read-only, since the report flips nothing either way | planned: box, box/run-strays.sh case 3, which reads readonly before the report and asserts it after, and its new unmounted case |
+| ZX239 | --verify on an open rebase whose result a hand unmounted -- the mounted-nowhere branch, which is also what a reboot leaves: the check mounts it at the run directory's mnt with the run's own zfs_mount_at, reads it there and unmounts it again, leaving it mounted nowhere and the run directory, its mnt and its documents exactly as they were | planned: box, box/run-strays.sh's unmounted case |
+| ZX240 | and the --continue after that report takes the result over as usual, mounting it privately again and reaching its gate: a report that mounted for itself leaves nothing for the next verb to work around | planned: box, box/run-strays.sh's unmounted case |
+| ZX241 | a dry run refuses -O, -F, -M and -i, both spellings: it writes a manifest and stops, so there is no skeleton for a --take flag to answer and no conflicts gate for --interactive or --no-merge to hold -- nothing for the flag to act on and no record to latch it in, which is the reasoning -q meets there (ZX138) | covered: check_args.c |
 
 ZX96 to ZX99 are no cells: the numbering skips to a round one so
 that the command line's own rows read as the block they are. ZX100
@@ -1059,6 +1067,21 @@ what it refuses is a run the apply could not finish; at
 securelevel 0 or less the apply clears them itself, which is ZA58
 to ZA61 and run-precond.sh 1d.
 
+ZX237 to ZX241 are review-verify-verb's: --verify reads in place
+(documents-design.md, section 11.6). Where the verb used to call
+take_over, which unmounts a result from wherever it is, mounts it at
+the private mount and sets readonly on in the clone form, it now
+reads the result where it is mounted and mounts it only where it is
+mounted nowhere -- the settled clone's branch, widened to serve an
+open rebase a reboot or a hand left unmounted, and giving back the
+mount without the run directory, which is the run's. So the sentence
+"writes nothing to the tree and moves nothing that is where it
+should be" is true of the verb again: the readonly flip after a kill
+inside a stage was the one real property write left, and it is gone.
+The four are box rows because a mount and a property on a real
+dataset are all they are about; ZX241 is the parse's and is
+check_args.c's, with ZX138.
+
 ## ZF -- the fixture format (check_fixture.c, run-fixtures.sh)
 
 Not an engine phase but the input every other family's end to end
@@ -1070,7 +1093,9 @@ expect}; what it acts on {file, dir, symlink, sock, a link line,
 the pool two names share}; builder {directories, pools, one
 directory edited into another}; the edit's decision {removed,
 created, relinked, rewritten, attrs, untouched}; rejection {every
-rule the format names}; platform {portable, box only}.
+rule the format names}; platform {portable, box only}; and what the
+runner holds a run against {the manifest's body from #mode on, the
+exit status}.
 
 Rows for the attributes were added with the attributes themselves
 (issue fixture-attrs). A row that only FreeBSD can reach names the
@@ -1143,6 +1168,7 @@ FreeBSD.
 | ZF60 | flags-conflict.zrt: hidden on from and nodump on onto -> changed-both (uchg is not a ZFS flag: EOPNOTSUPP) | planned (box: run-suite.sh) |
 | ZF61 | sock: the fifth type parses, builds with bind(2), walks back as a socket, and its absent mode= resolves to what bind leaves (0777 under the umask) | covered: run-fixtures.sh and check_roundtrip.c over sock-copy.zrt, which build the three trees and walk them; the apply of one is ZA7 |
 | ZF62 | flags-onto-rm.zrt: schg on an onto file an action removes -> the apply clears it and removes the file | planned (box: run-suite.sh; schg needs root, and comes off again only while securelevel is 0 or less) |
+| ZF63 | the runner asserts the exit status the expect block implies, and not the manifest alone: 0 where the block's #conflicts line is 0 and 1 where it is not, so a run that emits the right document with the wrong status fails the fixture (R22) | covered: run-fixtures.sh, over every fixture of the flat directory |
 
 ZF33 to ZF49 are --edit-fixture, added with the mode itself (issue
 fixture-edit) and all of them Mac cells: the mode is plain POSIX
@@ -1213,6 +1239,13 @@ over what the first left}.
 Rows ZY60 and up were plotted 2026-09-04, before their tests, for
 the one-verify issue: the second pass became a per-name list over
 the whole name table, and applying1 gained the repair over it.
+
+Rows ZY109 and ZY110 were plotted 2026-09-08, before their tests,
+for the review-verify-verb issue. One dimension comes with them: the
+pooling of a name an action made {an object of its own, one object
+with the name the action names as its source, one object with an
+untouched onto name}, crossed with the second pass's exemptions
+{the name acted on, the names of a marked result pool}.
 
 Rows ZY80 and up were plotted 2026-09-04, before their tests, for
 the verify-choices issue, which gave the classifier its third
@@ -1321,6 +1354,8 @@ snapshot, a clone and a kill need the box.
 | ZY106 | a conflict line the manifest marks that a hand edit removed is put back at the conflicts gate with the take mode's answer -- onto, from, or "-" in standard mode -- and the header counts move with it | planned: box, run-resolution.sh case 10, under each take mode |
 | ZY107 | a conflict line for a name the manifest never marked is carried out like a drift line with that choice, and the classification holds it against the side it names | covered: check_apply.c and check_verify.c; box: run-resolution.sh case 10 |
 | ZY108 | a directory line the chosen side lacks that a keep line under it holds open reads pending or drifted after the choices: choices_hold passes it, the done gate counts it, the exit is 3 and done is reached all the same | covered: check_verify.c; box: run-resolution.sh case 9 |
+| ZY109 | a cp whose target the result holds as the very object it holds at the cp's source name: the copy was never made, so the classification goes on to ask onto and answers drifted, where the same tree with the link cut is done; a cp of a from name to that same path has no second name and is asked nothing, which is ZY9 and ZY11 standing | covered: check_verify.c |
+| ZY110 | the result pool is marked for a write and for no other action: an untouched onto name a hand linked to a cp or a dup target is not exempted from the second pass, so the tear is an entry of the name list where before both halves went unseen | covered: check_verify.c |
 
 ZY40 to ZY45 are the post-done verify's: a tree that is not there
 any more is walked as the empty tree and named in the missing mask,
@@ -1340,6 +1375,21 @@ ZY60 to ZY69 are the one verify of the plan's 2026-09-04 revision:
 one algorithm at every gate, a per-name list beside the per-action
 outcomes, and a fix only at applying1, where the result is the
 run's own and anything off the expected tree is a stray.
+
+ZY109 and ZY110 are review-verify-verb's, and they are R21: one
+edit made through two blind spots at once. zv_marks marked the
+result pool of every action's name and zv_untouched skipped every
+other name in a marked pool, which is right for a write -- the
+object is onto's own and every name onto gave it sees the new bytes
+through it, and zv_kept_pool polices the shape of that sharing --
+and wrong for everything else, since a cp, a dup and an ln make an
+object of their own at the name. And cp, alone of the two makes,
+was never asked whether it had severed. So a cp target somebody
+hard-linked onto an untouched onto name read done, and the untouched
+name left the second pass: the mark is now a write's alone and cp is
+asked the question dup is, with the one guard dup never needs -- a
+source name that is the target name has no second name to be one
+object with, which is what a cp of a from file to its own path is.
 
 ZY104 to ZY108 are review-resolution's: the resolution as the
 authority (documents-design.md, section 11.5). The verdict has four

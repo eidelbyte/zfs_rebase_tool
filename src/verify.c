@@ -271,16 +271,27 @@ zv_ln(struct zv_ctx *c, const struct zr_action *a, zr_pool_t po, zr_pool_t pr,
 
 /*
  * cp and dup: a new object at the name, out of the from tree for a
- * cp and out of the onto tree itself for a dup. dup severs, so an
- * object equal to the anchor's because it is still the anchor's own
- * file has not been made yet: that is the pending state, and the
- * result walk is where it shows.
+ * cp and out of the onto tree itself for a dup. Both sever, and both
+ * are asked the same question about it (R21). The apply makes a file
+ * of its own at the name and copies into it, so an object equal to
+ * the source's only because the result holds it at the source's own
+ * name -- a name other than this one -- has not been made here at
+ * all. For a dup that is the pending state, since the source is a
+ * name of the very onto pool being broken up and the result still
+ * has the target in it. For a cp the source is from's and the result
+ * holds that name only as onto left it, so what the two share is a
+ * link somebody made by hand and the classification goes on to ask
+ * what onto had here, which answers drifted.
+ *
+ * Where the source is this name itself -- a cp of a from file to the
+ * path it has there, which is most of them -- there are not two
+ * names to be one object, and nothing is asked.
  */
 static int
 zv_make(struct zv_ctx *c, const struct zr_action *a, zr_pool_t po,
     zr_pool_t pr, enum zr_outcome *out)
 {
-	zr_name_t an;
+	zr_name_t an, nm;
 	zr_pool_t ps, pa;
 	int src, eq;
 
@@ -299,7 +310,8 @@ zv_make(struct zv_ctx *c, const struct zr_action *a, zr_pool_t po,
 	eq = zv_same(c, src, ps, ZV_RESULT, pr);
 	if (eq < 0)
 		return (-1);
-	if (eq != 0 && a->za_kind == ZR_ACT_DUP) {
+	nm = zv_name(c, a->za_path, a->za_pathlen);
+	if (eq != 0 && an != nm) {
 		pa = zv_pool(c, ZV_RESULT, an);
 		if (pa != ZR_POOL_NONE && pa == pr)
 			eq = 0;
@@ -385,11 +397,20 @@ zv_write(struct zv_ctx *c, const struct zr_action *a, zr_pool_t po,
 }
 
 /*
- * Every name of the manifest, and every pool of the result one of
- * them reaches, marked before anything is classified. The pool mark
- * is what keeps the name list honest: the second name of a written
- * file did change, and the action on the first name is why, so it is
- * not a stray edit and nobody is told about it twice.
+ * Every name of the manifest, and the result pool of every write,
+ * marked before anything is classified. The pool mark is what keeps
+ * the name list honest: the second name of a written file did
+ * change, and the action on the first name is why, so it is not a
+ * stray edit and nobody is told about it twice.
+ *
+ * A write alone (R21). Its pool is legitimately shared -- the object
+ * is onto's own and every name onto gave it sees the new bytes
+ * through it -- and zv_kept_pool polices the shape of that sharing
+ * separately. Every other action makes an object of its own at the
+ * name, or takes one away, so a result pool it reaches that holds
+ * some other name is a pool somebody tore or joined by hand, and
+ * exempting that name from the second pass would be to hide the
+ * other half of the edit.
  */
 static void
 zv_marks(struct zv_ctx *c)
@@ -412,6 +433,8 @@ zv_marks(struct zv_ctx *c)
 			c->zc_mark[nm] |= ZV_RMDIR;
 		if (a->za_kind != ZR_ACT_RM && a->za_kind != ZR_ACT_CONFLICT)
 			c->zc_mark[nm] |= ZV_REMADE;
+		if (a->za_kind != ZR_ACT_WRITE)
+			continue;
 		pr = zv_pool(c, ZV_RESULT, nm);
 		if (pr != ZR_POOL_NONE && pr < c->zc_npools)
 			c->zc_pmark[pr] = 1;
@@ -442,8 +465,8 @@ zv_marks(struct zv_ctx *c)
  * some action names has its own outcome; a name a conflict covers is
  * nobody's to judge; a name a resolution line covers is spoken for by
  * that choice, which is the same exemption for the same reason; and a
- * name that shares a result pool with a name an action made is that
- * action's doing.
+ * name that shares a result pool with a name the manifest writes is
+ * that write's doing, since a write keeps the object it was given.
  */
 static int
 zv_untouched(const struct zv_ctx *c, zr_name_t nm)

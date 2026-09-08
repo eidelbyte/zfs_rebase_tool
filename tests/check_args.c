@@ -8,6 +8,7 @@
  *
  * Matrix cells (tests/MATRIX.md, family ZX): ZX100 to ZX121,
  * ZX137 to ZX139 for --quiet and for the --overwrite that is gone,
+ * ZX241 for the four gate flags a dry run refuses beside it,
  * ZX188 and ZX189 for --verify as a verb and only a verb,
  * ZX180 to ZX187 for IDENT as the one operand, -o at the start
  * alone, --allow-unrelated needing --base, and the two sides on a
@@ -724,6 +725,44 @@ test_quiet_and_overwrite(void)
 }
 
 /*
+ * ZX241: a dry run refuses the four gate flags for the reason it
+ * refuses --quiet. It writes a manifest and stops: no skeleton is
+ * written for --take-onto or --take-from to answer, no conflicts
+ * gate is reached for --interactive or --no-merge to hold, and
+ * there is no record to latch any of them in. On a fresh run each
+ * is the flag it is, which is what says the refusal is the dry
+ * run's and not the flag's.
+ */
+static void
+test_dryrun_gate_flags(void)
+{
+	char *gate[] = { w_takeonto, w_takefrom, w_interactive, w_nomerge };
+	char *sgate[] = { s_takeonto, s_takefrom, s_interactive, s_nomerge };
+	char *dry[] = { w_prog, w_dryrun, w_from, v_from, w_onto, v_onto,
+	    NULL };
+	char *run[] = { w_prog, w_from, v_from, w_onto, v_onto, w_result,
+	    v_result, NULL };
+	struct zr_args a;
+	size_t i;
+
+	for (i = 0; i < NELEM(gate); i++) {
+		dry[6] = gate[i];
+		parse_bad(dry, (int)NELEM(dry));
+		dry[6] = sgate[i];
+		parse_bad(dry, (int)NELEM(dry));
+		run[7] = gate[i];
+		a = parse_ok(run, (int)NELEM(run));
+		CHECK(a.za_verb == ZR_VERB_RUN && a.za_dryrun == 0);
+		run[7] = sgate[i];
+		a = parse_ok(run, (int)NELEM(run));
+		CHECK(a.za_verb == ZR_VERB_RUN && a.za_dryrun == 0);
+	}
+	/* and a dry run with none of them is the start it is */
+	a = parse_ok(dry, (int)NELEM(dry) - 1);
+	CHECK(a.za_verb == ZR_VERB_RUN && a.za_dryrun == 1);
+}
+
+/*
  * ZX180, ZX181, ZX221, ZX222: a verb names its rebase with IDENT,
  * its one operand, and with nothing else. The operand stands
  * wherever it is written among the flags, since the tool has no
@@ -1170,6 +1209,7 @@ main(void)
 	test_verb_flags();
 	test_run_flags();
 	test_quiet_and_overwrite();
+	test_dryrun_gate_flags();
 	test_ident_operand();
 	test_manifest_flag_on_verbs();
 	test_operand_on_a_start();

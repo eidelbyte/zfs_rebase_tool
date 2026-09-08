@@ -67,7 +67,7 @@ manifest and reads none, so it takes no IDENT.
 | `--continue` | `-c` | take the rebase on from the gate its record names |
 | `--restart` | `-R` | the result back as onto was, the manifest applied again from the first gate, the resolution back to its skeleton |
 | `--abort` | `-a` | holds released, tool-made snapshots destroyed, the clone destroyed or the dataset rolled back, the run directory and the documents in it removed (a `-o` pair stays) |
-| `--dry-run` | `-n` | decide and write the manifest, then tear down: nothing held, nothing created, --result ignored |
+| `--dry-run` | `-n` | decide and write the manifest, then tear down: nothing held, nothing created, --result ignored. It reaches no gate, so -q, -O, -F, -M and -i are all usage errors beside it: there is nothing for any of them to act on and no record to latch one in |
 | `--allow-unrelated` | `-u` | no derivation of the base, and no pruning; it needs --base |
 | `--base` | `-b` | with --allow-unrelated only, and it needs one: the base, no newer than either side |
 
@@ -338,6 +338,10 @@ changes and none can skip:
 | end of applying2, before done is written | reported, exit 3, and done written all the same; what was found is written into the resolution with the choice `-`, which is the record of it; --quiet prints nothing and the exit status stands |
 | a settled result, --verify with its manifest's path | reported, exit 3; the same check with no gate, against the header's identity, and nothing written |
 
+Wherever it is made, a --verify writes nothing to the tree and moves
+nothing that is where it should be: it reads the result where it is
+mounted and mounts it only where it is mounted nowhere.
+
 The resolution is the authority from the conflicts gate on. Every
 line is carried out by its path and its choice, whoever wrote it: a
 line the tool wrote, a line the person changed and a line the person
@@ -467,7 +471,9 @@ started with is not an edit.
     zfs_rebase --verify IDENT
 
 reports and writes nothing at all, so a deliberate edit to a rebased
-file is shown and never overwritten. It is a verb and only a verb:
+file is shown and never overwritten: it writes nothing to the tree
+and moves nothing that is where it should be. It is a verb and only a
+verb:
 beside a start, beside --dry-run and beside --continue, --restart or
 --abort it is a usage error, because the checks are standard and
 there is nothing left for the word to ask for. It exits 0 when
@@ -480,7 +486,13 @@ is looked for by name and then by guid across the pool, which is
 what survives a rename or a promote, each one it finds is held for
 the length of the report and not a moment longer, and what it cannot
 find it names -- with every action that would have had to be read
-against that tree reported unchecked rather than guessed at.
+against that tree reported unchecked rather than guessed at. It
+reads the result where it is mounted, which for an open rebase is the
+run's private mount; where the result is mounted nowhere, which is
+what a reboot or a hand leaves, it mounts it at the run directory's
+`mnt` for the length of the read and unmounts it again, leaving the
+run directory to the run. It never sets `readonly`, in either form:
+the flag the stages flip is not a report's to touch.
 
 A result whose rebase reached done carries no record, so its name
 answers to no step of the resolution: the tool says it is not a

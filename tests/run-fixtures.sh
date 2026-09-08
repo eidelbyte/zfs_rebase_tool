@@ -8,6 +8,13 @@
 # and onto, which is what tools/regen-expect.sh wrote into the block.
 # A fixture whose name ends in -permissive.zrt runs with -p.
 #
+# Two things are held against the expect block, not one (ZF63): the
+# manifest's body and the exit status the block implies. A --posix
+# run exits 1 where the decision has a conflict and 0 where it has
+# none (main.c), and the block's own "#conflicts" line says which,
+# so a run that emits exactly the right document with the wrong
+# status fails the fixture rather than passing it.
+#
 # A fixture with a "platform" line is that platform's alone, and
 # tests/fixtures/freebsd/ is where those live -- out of the flat
 # directory, which every host builds whole. One is skipped here
@@ -59,15 +66,29 @@ for f in tests/fixtures/*.zrt tests/fixtures/freebsd/*.zrt; do
 	case "$name" in *-permissive) flag="-p" ;; esac
 	(cd "$d" && "$root/$bin" --posix $flag -o got base from onto)
 	st=$?
+	conf=$(sed -n 's/^#conflicts  *\([0-9][0-9]*\).*/\1/p' "$d/expect")
+	if [ -z "$conf" ]; then
+		echo "FAIL $f (the expect block has no #conflicts line)"
+		rc=1
+		continue
+	fi
+	if [ "$conf" = 0 ]; then
+		want=0
+	else
+		want=1
+	fi
 	sed -n '/^#mode/,$p' "$d/expect" > "$d/expect.body"
 	sed -n '/^#mode/,$p' "$d/got" > "$d/got.body"
-	if cmp -s "$d/expect.body" "$d/got.body"; then
-		echo "ok   $f (exit $st)"
-		n=$((n + 1))
-	else
+	if ! cmp -s "$d/expect.body" "$d/got.body"; then
 		echo "FAIL $f (exit $st)"
 		diff "$d/expect.body" "$d/got.body" | head -20
 		rc=1
+	elif [ "$st" -ne "$want" ]; then
+		echo "FAIL $f (exit $st, want $want)"
+		rc=1
+	else
+		echo "ok   $f (exit $st)"
+		n=$((n + 1))
 	fi
 done
 # A fixture may have set an immutable or append-only flag, and rm(1)

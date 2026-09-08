@@ -108,7 +108,11 @@
 #   it: an action is pending until the stage that makes it has run,
 #   so a rebase stopped before or inside applying1 exits 3 with
 #   pending actions and one past it exits 0, and neither moves the
-#   gate, the holds or the tree.
+#   gate, the holds or the tree. Nor the mount and nor readonly: the
+#   report reads the result where the kill left it, which is what a
+#   verb that writes nothing has to do (documents-design.md, section
+#   11.6), and a kill inside a stage is where the difference shows,
+#   since the stage left readonly off.
 #
 #   At the held gate, while the tool is stopped, zfs destroy of each
 #   held snapshot must fail and leave the snapshot standing: that is
@@ -218,6 +222,9 @@ holdcount() {
 }
 holdtags() { zfs holds -H "$1" | cut -f2; }
 mounted_at() { mount | grep -q " on $1 "; }
+# Where a dataset is mounted just now, or nothing where it is
+# mounted nowhere: "DATASET on PATH (zfs, ...)" is the mount(8) line.
+mountpt() { mount | awk -v d="$1" '$1 == d { print $3 }'; }
 # A clone whose rebase reached done is unmounted with its mountpoint
 # property still none -- the void the tool hands it to -- so reading
 # its tree means placing it first, which is exactly what the tool's
@@ -786,6 +793,18 @@ kill_case() {
 	if [ "$gate" = action:2 ] && [ "$sig" != KILL ] && [ "$nact" -eq 2 ]; then
 		wrep=0
 	fi
+	#
+	# A kill inside a stage leaves the result where the stage had
+	# it -- at the private mount, and in the clone form with
+	# readonly off, which is what the stage flipped it to. The
+	# report reads it there and leaves both alone: it reads in
+	# place and sets readonly on nothing (ZX237, ZX238;
+	# documents-design.md, section 11.6), where it used to take
+	# the result over as a --continue does and flip readonly back
+	# on, which was a property write by a verb that writes
+	# nothing.
+	vro=$(recval readonly "$rds")
+	vat=$(mountpt "$rds")
 	"$bin" --verify "$ident" > "$tmp/verify" 2>&1
 	st=$?
 	[ $st -eq $wrep ] || \
@@ -796,6 +815,12 @@ kill_case() {
 	    fail "--verify moved the phase"
 	[ "$(holdcount)" = "$whold_now" ] || \
 	    fail "--verify changed the holds"
+	vat2=$(mountpt "$rds")
+	[ "$vat2" = "$vat" ] || \
+	    fail "--verify moved $rds from ${vat:-nowhere} to ${vat2:-nowhere}"
+	vro2=$(recval readonly "$rds")
+	[ "$vro2" = "$vro" ] || \
+	    fail "--verify left readonly $vro2, want $vro"
 
 	# Where the --continue lands: at done when there is nothing to
 	# answer or the answers are in, and back at conflicts while the

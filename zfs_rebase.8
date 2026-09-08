@@ -520,6 +520,16 @@ for the whole run, so that whichever invocation reaches
 finds it there; on any other verb, and on
 .Fl -dry-run ,
 it is a usage error.
+A dry run refuses
+.Fl -take-onto ,
+.Fl -take-from ,
+.Fl -interactive
+and
+.Fl -no-merge
+for the same reason: it writes a manifest and stops, so no skeleton is
+written for a take flag to answer and no conflicts gate is reached for the
+other two to hold \(em nothing for the flag to act on and no record to latch
+it in.
 It silences that one report and nothing else: the check is still made, its
 verdict still stands in the exit status, and the report of the conflicts
 gate and of the
@@ -663,7 +673,8 @@ place.
 It prints the command for each form and leaves the choice to you.
 .It Fl V , Fl -verify
 Report and write nothing at all, so that a deliberate
-edit to a rebased file is shown and never overwritten.
+edit to a rebased file is shown and never overwritten: it writes
+nothing to the tree and moves nothing that is where it should be.
 It reports on a rebase that is open and on one that is over; which of the
 two this is, the record says, and a result whose rebase reached done carries
 none.
@@ -692,6 +703,21 @@ with).
 With
 .Fl v
 the whole list follows.
+.Pp
+The result is read where it is mounted, which for a rebase in flight is the
+run's private mount, where the rule keeps it.
+Where it is mounted nowhere \(em what a reboot leaves, and what a hand that
+unmounted it leaves \(em the check mounts it at the run directory's
+.Pa mnt
+with
+.Fn zfs_mount_at
+for the length of the read and unmounts it again, leaving the run directory
+to the run: the next verb takes the rebase from there.
+It sets
+.Sy readonly
+on nothing in either form, so a result a kill left writable inside a stage
+is still writable after the report and one outside a stage is still
+read-only.
 .Pp
 A settled result carries no record, so its name answers to no step of the
 identifier: the tool says it is not a zfs_rebase result and asks for the
@@ -1051,7 +1077,8 @@ can try again.
 The
 .Fl -verify
 verb is the same check asked for on its own, at whatever gate the rebase is
-waiting and after it is over: it reports and writes nothing at all.
+waiting and after it is over: it reports and writes nothing at all, and
+moves nothing that is where it should be.
 .Pp
 From the
 .Sy conflicts

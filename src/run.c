@@ -3034,16 +3034,16 @@ struct resume {
 	int			privmnt;	/* it is at workmnt just now */
 	int			settled;	/* it reached the done gate */
 	int			post;		/* --verify of a settled one */
-	int			postmnt;	/* and this check mounted it */
+	int			mademnt;	/* and this check mounted it */
 	struct record		rb;
 	char			rundir[ZR_NAME_MAX];
 	/*
-	 * Where the result's tree is to be read. For a rebase in
-	 * flight that is <rundir>/mnt, the private mount the run made
-	 * and every verb takes over; for a settled result it is
-	 * wherever the result is mounted, which is that same path
-	 * only where this check had to mount it there itself
-	 * (documents-design.md, section 7).
+	 * Where the result's tree is to be read. For a verb that moves
+	 * a rebase that is <rundir>/mnt, the private mount the run
+	 * made and every such verb takes over; for a report it is
+	 * wherever the result is mounted, which is that same path only
+	 * where the rebase is open, or where the check had to mount it
+	 * there itself (documents-design.md, sections 7 and 11.6).
 	 */
 	char			workmnt[ZR_NAME_MAX];
 	char			respath[ZR_NAME_MAX];	/* the resolution */
@@ -4139,7 +4139,10 @@ rescan_result(struct resume *s)
  * run took it over and in both forms alike: at the run's own place,
  * where no writer but this verb can reach it, and read-only in the
  * clone form so that nothing can be in it while a stage or a walk
- * reads it. Three states are possible and all three are ordinary:
+ * reads it. Only a verb that moves a rebase comes here; a report
+ * takes nothing over and reads where the result stands
+ * (report_mount). Three states are possible and all three are
+ * ordinary:
  *
  *	at the private mount already, which is what a kill and what
  *	the gate between two verbs leave, and there is nothing to do;
@@ -5547,21 +5550,31 @@ resume_open_result(struct resume *s, const struct zr_verb_opts *o,
 }
 
 /*
- * Where a settled result is read, which is the one thing the check
- * of a rebase that is over does differently from the check of one in
- * flight: it takes nothing over. A settled dataset is at home and is
- * read there, and so is a clone somebody has placed; a settled clone
- * is unmounted with no mountpoint of its own (documents-design.md,
- * section 5), and for that one alone the check mounts it at the run
- * directory's mnt with the same call the run uses, reads it there
- * and takes the mount and the directory away again (resume_close).
+ * Where a report reads the result, which is the one thing --verify
+ * does differently from every other verb: it takes nothing over. It
+ * reads the result where it is mounted -- an open rebase's at the
+ * private mount, which is where the rule puts it; a settled dataset
+ * at home; a settled clone where a hand has placed it -- and mounts
+ * it only where it is mounted nowhere, at the run directory's mnt
+ * with the same call the run uses, reading it there and taking that
+ * mount away again (resume_close). A settled clone is unmounted with
+ * no mountpoint of its own (documents-design.md, section 5) and a
+ * reboot leaves an open rebase's result the same way, so the one
+ * branch serves both.
  *
- * No property of the result is touched either way. A settled clone
- * has readonly on, so the private mount is read-only, which is all a
- * check ever wanted of it.
+ * No property of the result is touched either way: a report never
+ * sets readonly and moves nothing that is where it should be
+ * (documents-design.md, section 11.6). A clone outside a stage has
+ * readonly on, so the mount it is read at is read-only, which is all
+ * a check ever wanted of it.
+ *
+ * The run directory is the settled check's alone to make and to take
+ * away. An open rebase's is the run's, holding its documents and the
+ * mount point every verb after this one uses, so a report that had
+ * to mount leaves the directory exactly as it found it.
  */
 static int
-settled_mount(struct resume *s)
+report_mount(struct resume *s)
 {
 	char at[ZR_NAME_MAX];
 	int rc;
@@ -5581,10 +5594,11 @@ settled_mount(struct resume *s)
 		return (-1);
 	if (zr_zfs_mount_at(s->zfs, s->result, s->workmnt, s->err,
 	    sizeof (s->err)) != 0) {
-		(void) rmdir_run(s->result);
+		if (s->post)
+			(void) rmdir_run(s->result);
 		return (-1);
 	}
-	s->postmnt = 1;
+	s->mademnt = 1;
 	if (s->verbose)
 		(void) fprintf(stderr, "zfs_rebase: %s is mounted nowhere; "
 		    "this check mounts it at %s and takes that away again\n",
@@ -5596,7 +5610,7 @@ settled_mount(struct resume *s)
 static int
 resume_trees(struct resume *s)
 {
-	if (s->post ? settled_mount(s) != 0 : take_over(s) != 0)
+	if (s->report ? report_mount(s) != 0 : take_over(s) != 0)
 		return (-1);
 	s->names = zr_names_create();
 	if (s->names == NULL) {
@@ -5643,27 +5657,31 @@ resume_close(struct resume *s)
 		zr_parsed_fini(&s->man);
 	zr_resolution_fini(&s->res);
 	/*
-	 * And the mount a settled check made for itself, undone
-	 * whatever the check found: a result that was mounted nowhere
-	 * when the verb began is mounted nowhere when it ends, and
-	 * the directory the mount needed goes with it, so a rebase
-	 * that is over leaves nothing under WORKDIR either way
-	 * (documents-design.md, section 7). Nothing here can change
-	 * what the check returned; every failure is reported and none
-	 * is passed up.
+	 * And the mount a check made for itself, undone whatever the
+	 * check found: a result that was mounted nowhere when the verb
+	 * began is mounted nowhere when it ends (documents-design.md,
+	 * sections 7 and 11.6). For a settled result the directory the
+	 * mount needed goes with it, so a rebase that is over leaves
+	 * nothing under WORKDIR either way; an open rebase's run
+	 * directory is the run's and stays, since the next verb takes
+	 * the rebase from there. Nothing here can change what the
+	 * check returned; every failure is reported and none is passed
+	 * up.
 	 */
-	if (s->postmnt) {
-		s->postmnt = 0;
+	if (s->mademnt) {
+		s->mademnt = 0;
 		if (zr_zfs_unmount(s->zfs, s->result, e, sizeof (e)) != 0)
 			(void) fprintf(stderr, "zfs_rebase: unmount %s: %s\n",
 			    s->result, e);
-		rc = rmdir_run(s->result);
-		if (rc != 0)
-			(void) fprintf(stderr, "zfs_rebase: %s: %s\n",
-			    s->rundir, strerror(rc));
-		else if (s->verbose)
-			(void) fprintf(stderr, "zfs_rebase: removed %s\n",
-			    s->rundir);
+		if (s->post) {
+			rc = rmdir_run(s->result);
+			if (rc != 0)
+				(void) fprintf(stderr, "zfs_rebase: %s: %s\n",
+				    s->rundir, strerror(rc));
+			else if (s->verbose)
+				(void) fprintf(stderr,
+				    "zfs_rebase: removed %s\n", s->rundir);
+		}
 	}
 	if (s->zfs != NULL)
 		zr_zfs_close(s->zfs);

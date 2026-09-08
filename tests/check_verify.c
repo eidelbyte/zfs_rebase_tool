@@ -41,7 +41,8 @@
  * The family is ZY of tests/MATRIX.md, and ZC25 of the oracle's is
  * here too, since the pair entry point this classifier asks
  * everything through is new with it. Covered: ZY1 through ZY36, ZY40
- * through ZY45, ZY60 through ZY69 and ZY80 through ZY93. ZY37, ZY38,
+ * through ZY45, ZY60 through ZY69, ZY80 through ZY93, and ZY109 and
+ * ZY110. ZY37, ZY38,
  * ZY39 and ZY94 are the box's -- a real ACL and both extended
  * attribute namespaces in a comparison, a kill at a gate, the dataset
  * form, and a drift line written into a real resolution.
@@ -636,6 +637,76 @@ check_cp_over(void)
 	vshape_one(&v, "    n cp /n\n", "/n", ZR_OC_PENDING);
 	mkfile(v.vs_res, "/n", "from bytes\n", 0644);
 	vshape_one(&v, "    n cp /n\n", "/n", ZR_OC_DONE);
+	vshape_fini(&v);
+}
+
+/*
+ * ZY109: a cp severs too. The target is the copy's own object, so a
+ * target the result holds as the very object it holds at the cp's
+ * source name was never copied at all -- somebody linked the two --
+ * and the classification goes on to ask what onto had here, which is
+ * nothing: drifted. Cut the link and the same bytes at the same name
+ * are done.
+ */
+static void
+check_cp_severed(void)
+{
+	struct vshape v;
+
+	vshape_init(&v);
+	mkfile(v.vs_from, "/s", "shared bytes\n", 0644);
+	mkfile(v.vs_onto, "/s", "shared bytes\n", 0644);
+	mkfile(v.vs_res, "/s", "shared bytes\n", 0644);
+	mklink(v.vs_res, "/n", "/s");
+	vshape_one(&v, "    n cp /s\n", "/n", ZR_OC_DRIFTED);
+	rmname(v.vs_res, "/n");
+	mkfile(v.vs_res, "/n", "shared bytes\n", 0644);
+	vshape_one(&v, "    n cp /s\n", "/n", ZR_OC_DONE);
+	vshape_fini(&v);
+}
+
+/*
+ * ZY110: the result pool is marked for a write and for no other
+ * action. An untouched onto name a hand has relinked onto a cp's
+ * target holds the copy's bytes and not onto's, and it is an entry
+ * of the name list: with the pool of every action marked it was
+ * exempt, and both halves of the edit went unseen. A write's pool is
+ * the object onto gave it, so it stays marked and its other names
+ * stay out of the list, which is ZY25 standing.
+ */
+static void
+check_marks_write_only(void)
+{
+	struct zr_verify_report rep;
+	struct zr_parsed p;
+	struct vshape v;
+
+	vshape_init(&v);
+	mkfile(v.vs_from, "/n", "new\n", 0644);
+	mkfile(v.vs_onto, "/k", "keep\n", 0644);
+	mkfile(v.vs_res, "/k", "keep\n", 0644);
+	mkfile(v.vs_res, "/n", "new\n", 0644);
+	/* the cp is done, and nothing is outside the manifest yet */
+	vshape_one(&v, "    n cp /n\n", "/n", ZR_OC_DONE);
+	rmname(v.vs_res, "/k");
+	mklink(v.vs_res, "/k", "/n");
+	vshape_run(&v, "    n cp /n\n", 1, 0, "", &p, &rep);
+	CHECK(rep.zv_outcome[idx_of(&p, "/n")] == ZR_OC_DONE);
+	CHECK(rep.zv_ndiffs == 1);
+	CHECK(rep.zv_dcount[ZR_DF_CHANGED] == 1);
+	CHECK(rep.zv_dfirst[ZR_DF_CHANGED] ==
+	    zr_names_lookup(v.vs_ns, "/k", 2));
+	zr_verify_report_fini(&rep);
+	zr_parsed_fini(&p);
+	vshape_fini(&v);
+
+	vshape_init(&v);
+	mkfile(v.vs_from, "/w", "new\n", 0644);
+	mkfile(v.vs_onto, "/w", "old\n", 0644);
+	mkfile(v.vs_onto, "/k", "keep\n", 0644);
+	mkfile(v.vs_res, "/w", "new\n", 0644);
+	mklink(v.vs_res, "/k", "/w");
+	vshape_one(&v, "    w write /w\n", "/w", ZR_OC_DONE);
 	vshape_fini(&v);
 }
 
@@ -2566,6 +2637,8 @@ main(void)
 	check_ln_states();
 	check_cp_new();
 	check_cp_over();
+	check_cp_severed();
+	check_marks_write_only();
 	check_dup_states();
 	check_write_states();
 	check_write_pool();

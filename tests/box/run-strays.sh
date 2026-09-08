@@ -76,6 +76,16 @@
 #    the resolution's now. Conflicted fixtures only: a clean rebase
 #    never stops at that gate.
 #
+# 5b. The result unmounted by hand at the conflicts gate, which is
+#    what a reboot leaves. --verify finds it mounted nowhere, mounts
+#    it at the run directory's mnt for the read, reads it there and
+#    leaves it mounted nowhere again, with the run directory, its
+#    mount point and its two documents untouched and readonly as it
+#    found it: the report reads in place and takes nothing over
+#    (documents-design.md, section 11.6). The --continue after it
+#    takes the result over as usual and goes on to done. Conflicted
+#    fixtures only, for the gate it wants.
+#
 # 6. A stray between the last two gates, which the final check
 #    reports and done does not block on. The conflicts are answered,
 #    a --continue is stopped at the applying2 gate -- past the
@@ -229,6 +239,9 @@ holdcount() {
 	printf '%s' "$n"
 }
 mounted_at() { mount | grep -q " on $1 "; }
+# Where a dataset is mounted just now, or nothing where it is
+# mounted nowhere: "DATASET on PATH (zfs, ...)" is the mount(8) line.
+mountpt() { mount | awk -v d="$1" '$1 == d { print $3 }'; }
 # Every kind of the name list at zero in one report: gone, extra,
 # changed and unpooled, each on its own line with its count.
 no_outside() {
@@ -433,8 +446,22 @@ at_end() {
 # record under that name and no run directory left -- and that the
 # refusal says to give the manifest instead, which cases 5 to 8 do.
 verify_open() {			# OUT WANTEXIT
+	vro=$(recval readonly "$rds")
+	vat=$(mountpt "$rds")
 	"$bin" --verify "$rds" > "$1" 2>&1
 	st=$?
+	# The report reads the result where it stands: it moves nothing
+	# that is where it should be and sets readonly on nothing, in
+	# either form and at either end of the branch (ZX237, ZX238;
+	# documents-design.md, section 11.6). The verb used to take the
+	# result over as a --continue does, which after a kill inside a
+	# stage was a real property write.
+	vat2=$(mountpt "$rds")
+	[ "$vat2" = "$vat" ] || \
+	    fail "--verify moved $rds from ${vat:-nowhere} to ${vat2:-nowhere}"
+	vro2=$(recval readonly "$rds")
+	[ "$vro2" = "$vro" ] || \
+	    fail "--verify left readonly $vro2, want $vro"
 	if [ $clean -eq 1 ]; then
 		[ $st -eq 2 ] || \
 		    { cat "$1"; fail "--verify on a settled result exited $st, want 2"; }
@@ -844,6 +871,74 @@ case_driftline() {
 	end_case
 }
 
+# --- 5b. the result unmounted by hand at the conflicts gate: the
+#         report mounts it privately for the read and leaves it
+#         mounted nowhere again ---
+case_unmounted() {
+	case_id="$fixture $form the result unmounted at the gate"
+	run_fg
+	st=$?
+	[ $st -eq $wrun ] || { cat "$log"; fail "the run exited $st, want $wrun"; }
+	[ "$(phasenow "$rds")" = conflicts ] || \
+	    fail "the run is at $(phasenow "$rds"), want conflicts"
+	sethere
+	ro0=$(recval readonly "$rds")
+	holds0=$(holdcount)
+	# What a reboot leaves, made by hand: the result off the
+	# private mount, with the run directory, its mount point and
+	# its two documents all still there. Nothing of this harness
+	# is standing in the mount, so the unmount goes through.
+	zfs unmount "$rds" || fail "cannot unmount $rds by hand"
+	[ -z "$(mountpt "$rds")" ] || \
+	    fail "$rds is still mounted at $(mountpt "$rds")"
+	[ -d "$wmnt" ] || fail "the unmount took $wmnt away"
+
+	# The mounted-nowhere branch (ZX239): the check mounts the
+	# result at the run directory's mnt with the run's own
+	# zfs_mount_at, reads it there, and takes that mount away
+	# again. The directory is the run's and stays, since the next
+	# verb takes the rebase from there.
+	"$bin" -v --verify "$rds" > "$tmp/unmv" 2>&1
+	st=$?
+	[ $st -eq 0 ] || \
+	    { cat "$tmp/unmv"; fail "--verify of the unmounted result exited $st, want 0"; }
+	grep -q 'drifted 0' "$tmp/unmv" || \
+	    { cat "$tmp/unmv"; fail "--verify found drift after the unmount"; }
+	no_outside "$tmp/unmv" || \
+	    { cat "$tmp/unmv"; fail "--verify found names outside the manifest"; }
+	grep -q "is mounted nowhere" "$tmp/unmv" || \
+	    { cat "$tmp/unmv"; fail "--verify did not say it mounted the result itself"; }
+	[ -z "$(mountpt "$rds")" ] || \
+	    fail "--verify left $rds mounted at $(mountpt "$rds")"
+	[ "$(recval readonly "$rds")" = "$ro0" ] || \
+	    fail "--verify left readonly $(recval readonly "$rds"), want $ro0"
+	[ -d "$wmnt" ] || fail "--verify took $wmnt away"
+	[ -d "$rundir" ] || fail "--verify took the run directory $rundir away"
+	[ -f "$man" ] || fail "--verify took the manifest away"
+	[ -f "$res" ] || fail "--verify took the resolution away"
+	[ "$(phasenow "$rds")" = conflicts ] || \
+	    fail "--verify moved the phase to $(phasenow "$rds")"
+	[ "$(holdcount)" = "$holds0" ] || \
+	    fail "--verify left $(holdcount) holds, want $holds0"
+
+	# And the verb after it takes the result over as it always did
+	# (ZX240): the conflicts answered, --continue mounts it
+	# privately again and goes on to done.
+	sed -e 's/ -$/ keep/' -e 's/^#unanswered .*$/#unanswered 0/' \
+	    "$res" > "$res.answered" || fail "cannot answer $res"
+	mv "$res.answered" "$res" || fail "cannot answer $res"
+	"$bin" --continue "$rds" > "$tmp/unmc" 2>&1
+	st=$?
+	[ $st -eq 0 ] || \
+	    { cat "$tmp/unmc"; fail "--continue after the report exited $st, want 0"; }
+	[ -z "$(localprops "$rds")" ] || \
+	    fail "the rebase did not reach done: $(localprops "$rds")"
+	sethere
+	echo "ok   $case_id: mounted privately for the read, mounted nowhere"
+	echo "     after it, and the --continue took it over as usual"
+	end_case
+}
+
 # --- 6. a stray between the last two gates: reported at done,
 #        which is reached all the same ---
 case_donedrift() {
@@ -1144,7 +1239,7 @@ case_ident() {
 
 # ---------------------------------------------------------------
 # One fixture in one form: the cases above, each ending in --abort.
-# The last four of them belong to one kind of fixture or one form.
+# The last five of them belong to one kind of fixture or one form.
 # ---------------------------------------------------------------
 stray_pass() {
 	form=$1
@@ -1175,10 +1270,12 @@ stray_pass() {
 	case_drift
 	case_live
 	# The conflicts gate is the only place a drift line is written,
-	# and a clean rebase never stops there; the applying2 gate case
-	# 6 stops at is the conflicted fixtures' too.
+	# and a clean rebase never stops there; the gate case 5b stands
+	# at and the applying2 gate case 6 stops at are the conflicted
+	# fixtures' too.
 	if [ $clean -eq 0 ]; then
 		case_driftline
+		case_unmounted
 		case_donedrift
 		# The identifier's two refusals, which want a rebase
 		# that is still open and a second result to make one
