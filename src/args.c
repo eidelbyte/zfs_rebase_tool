@@ -71,7 +71,7 @@ static const struct zr_opt zr_opts[] = {
 	{ "no-merge",		'M', 0, ZO_NOMERGE },
 	{ "continue",		'c', 0, ZO_CONTINUE },
 	{ "restart",		'R', 0, ZO_RESTART },
-	{ "abort",		'a', 0, ZO_ABORT },
+	{ "abort",		'A', 0, ZO_ABORT },
 	{ "dry-run",		'n', 0, ZO_DRYRUN },
 	{ "allow-unrelated",	'u', 0, ZO_UNRELATED },
 	{ "base",		'b', 1, ZO_BASE }

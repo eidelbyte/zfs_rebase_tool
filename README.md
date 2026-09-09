@@ -70,7 +70,7 @@ it; a start writes a manifest and reads none, so it takes no IDENT.
 | `--no-merge` | `-M` | stop at the conflicts gate however the resolution reads; an error once the gate is passed |
 | `--continue` | `-c` | take the rebase on from the gate its record names |
 | `--restart` | `-R` | the result back as onto was, the manifest applied again from the first gate, the resolution back to its skeleton |
-| `--abort` | `-a` | holds released, tool-made snapshots destroyed, the clone destroyed or the dataset rolled back, the run directory and the documents in it removed (a `-o` pair stays) |
+| `--abort` | `-A` | holds released, tool-made snapshots destroyed, the clone destroyed or the dataset rolled back, the run directory and the documents in it removed (a `-o` pair stays) |
 | `--dry-run` | `-n` | decide and write the manifest, then tear down: nothing held, nothing created, --result ignored. It reaches no gate, so -q, -O, -F, -M and -i are all usage errors beside it: there is nothing for any of them to act on and no record to latch one in |
 | `--allow-unrelated` | `-u` | no derivation of the base, and no pruning; it needs --base |
 | `--base` | `-b` | with --allow-unrelated only, and it needs one: the base, no newer than either side |

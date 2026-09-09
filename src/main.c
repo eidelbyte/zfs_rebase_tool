@@ -88,7 +88,7 @@ static const char usage[] =
 	"                          resolution is answered; an error past it\n"
 	"  -c, --continue          take the rebase on from the gate it left\n"
 	"  -R, --restart           the result back as onto was, applied again\n"
-	"  -a, --abort             the rebase undone, as if it never happened\n"
+	"  -A, --abort             the rebase undone, as if it never happened\n"
 	"  -n, --dry-run           the manifest only, to stdout without -o;\n"
 	"                          --result is ignored\n"
 	"  -u, --allow-unrelated   no derivation of the base, and no pruning;\n"
