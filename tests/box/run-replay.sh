@@ -17,13 +17,13 @@
 # the pruning, and "zfs_rebase: N pools unchanged" is the only thing
 # that reports it.
 #
-# run-fixture.sh builds each side by clearing a clone and untarring the
-# fixture's tree into it, so every object is newly made and N is zero:
-# the rule is exercised there in its negative direction only, and a
-# pruning that never fired would look exactly the same. Here each side
-# is a clone of base edited in place by --edit-fixture, which touches
-# only what the two trees disagree about, so real objects come through
-# with real object numbers and real unmoved ctimes. N is then the count
+# run-fixture.sh builds its sides the same way now (it cleared a clone
+# and untarred the fixture's tree into it until 2026-09-08), but it
+# never asserts N: a pruning that never fired would look exactly the
+# same there. Here each side is a clone of base edited in place by
+# --edit-fixture, which touches only what the two trees disagree
+# about, so real objects come through with real object numbers and
+# real unmoved ctimes, and N is asserted. N is then the count
 # the fixture predicts, computed from the fixture alone by
 # tools/replay-expect.py and committed in tests/box/replay-expect.txt:
 # for each side, the pools that keep base's object with base's names

@@ -207,11 +207,13 @@
 #      $POOL/onto@pre, which must be the same rebase of the same
 #      snapshot;
 #
-# The from and onto datasets are made by clearing a clone of base and
-# extracting the fixture's tree with tar, so every object is new and
-# none of them prunes; the unchanged-pool pruning is exercised only
-# in its negative direction here. A replay that edits in place is
-# the next harness.
+# base is built in its dataset by --build-fixture and the from and
+# onto datasets are clones of base@base edited in place by
+# --edit-fixture, the way run-replay.sh does it (since 2026-09-08:
+# tar carries no socket and rm clears no schg), so objects neither
+# side touched keep base's object number and ctime. What this
+# harness does not assert is the count the pruning reports; that is
+# run-replay.sh's.
 set -u
 fixture=${1:?usage: run-fixture.sh FIXTURE.zrt}
 cd "$(dirname "$0")/../.." || exit 2

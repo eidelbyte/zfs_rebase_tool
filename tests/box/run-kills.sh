@@ -304,9 +304,12 @@ wait_stop() {
 	return 1
 }
 
-# The pool, as run-fixture.sh builds it: base with the fixture's base
-# tree, from and onto cleared clones of it with the fixture's own
-# trees, and a snapshot of each side.
+# The pool: base with the fixture's base tree, from and onto cleared
+# clones of it with the fixture's own trees copied in with tar, and a
+# snapshot of each side. run-fixture.sh builds its trees in place
+# with the fixture builder since 2026-09-08; this harness runs
+# fixtures with neither a socket nor a flag, which is where tar is
+# still sound, and keeps the copy.
 make_pool() {
 	truncate -s 512m "$IMG" || exit 2
 	MD=$(mdconfig -a -t vnode -f "$IMG") || exit 2

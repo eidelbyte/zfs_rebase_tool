@@ -2206,10 +2206,13 @@ read_trees(struct run *r)
 	/*
 	 * The unchanged set, off the three walks and nothing else: a
 	 * pool of either side that base holds under the same object
-	 * number, generation, ctime, link count, type and names is
-	 * what base holds, and is never read (yellow.c). Only a
-	 * derived base licenses that, so --allow-unrelated leaves
-	 * r->prune clear and every pool is compared.
+	 * number, generation, ctime, link count, type and names, with
+	 * the same extended attributes and ACLs, is what base holds,
+	 * and is never read (yellow.c; the ctime is trusted for the
+	 * bytes, and yellow.h says why the attributes are compared
+	 * besides). Only a derived base licenses that, so
+	 * --allow-unrelated leaves r->prune clear and every pool is
+	 * compared.
 	 */
 	marked = 0;
 	if (r->prune) {
