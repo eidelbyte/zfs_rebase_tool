@@ -1,12 +1,16 @@
 /*
  * apply: write the actions of a parsed manifest into the onto tree.
  * The root is opened once and every operation is relative to that
- * descriptor with the link never followed, so no path built here can
- * leave the tree. The exceptions are the calls that have no
- * descriptor-relative form at all: the extended attributes, the ACL
- * and the file flags, and the bind(2) that makes a socket, each of
- * which is handed the root's own path with the action's path
- * appended. Actions run in manifest order; only the removal of a
+ * descriptor with the link never followed. The exceptions are the
+ * four calls that have no descriptor-relative form at all: the
+ * extended attributes, the ACL and the file flags, and the bind(2)
+ * that makes a socket, each of which is handed the root's own path
+ * with the action's path appended. So containment is not a resolved
+ * descriptor per component: what keeps every write inside the tree
+ * is the 0700 chain down to the run directory and the mount policy
+ * that puts the result at its mnt, where root alone can reach it
+ * (R17 of the code review, filed in sprints/future-features.md).
+ * Actions run in manifest order; only the removal of a
  * directory waits, until the last action under it has run. Bytes
  * and attributes come from the walked from tree. Extended
  * attributes, the ACL and the file flags are the only writes POSIX

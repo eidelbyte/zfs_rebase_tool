@@ -99,6 +99,40 @@ is given, and so is a pair whose derived base turns out to be one of the
 arguments: one side already contains the other, and what is wanted there is
 not a rebase.
 .Pp
+The three walks also give the unchanged set, which is the prune.
+A pool of either side is declared to hold what
+.Ar base
+holds \(em and its bytes are then never read \(em when the object number,
+the type, the link count, the number of names, the generation number and
+the change time to the nanosecond all agree with base's, every one of its
+names is in that same base pool, and the extended attributes and both ACLs
+compare equal.
+What the object number, the generation and the change time are trusted for
+is the object's bytes and the attributes its znode keeps \(em the mode, the
+owner, the group, the file flags, the size \(em since ZFS moves a
+.Sy ctime
+for a write and for every one of those, and an object number is only ever
+reused by an object of a later generation.
+The extended attributes are compared rather than trusted because one
+storage escapes the
+.Sy ctime :
+an attribute written into an object's hidden directory
+.Pq Sy xattr Ns = Ns Sy dir , and the fallback an SA write takes when it fails
+never touches the object's own znode, so a
+.Ar from
+side whose only change was such an attribute would otherwise be dropped in
+silence.
+The two ACLs are compared beside them because it costs nothing.
+Every field is in memory from the walks, so the prune reads nothing from
+disk and asks ZFS nothing; the OpenZFS source line for each of those facts
+is listed above
+.Fn zr_oracle_prune
+in
+.Pa src/yellow.h .
+.Fl -allow-unrelated
+turns the prune off, because an object number in one lineage means nothing
+in another.
+.Pp
 The decision is made over names, over hardlink pools \(em a pool being one
 file and every name it has \(em and over content.
 A name only one side touched takes that side's version; a pool edited
@@ -133,6 +167,11 @@ on is the decision: the mode and the counts of actions and conflicts.
 The version is 5, and no other is read.
 Names are escaped as a backslash and three octal digits wherever they are
 not plain printable ASCII.
+Every name in the manifest, in the resolution and in the shared name table
+is the tree's own \(em relative to the root of the tree, written with a
+leading slash, and never a path on the running system.
+Where the result happens to be mounted is the run's business and no
+document's: no mount prefix reaches the engine or either document.
 The format is a document of its own,
 .Pa v4-manifest.md
 in the project's notes, and it is the contract between this tool and
@@ -248,6 +287,39 @@ next
 or
 .Fl -abort
 mounts it privately again from there.
+.Pp
+Special files are carried like everything else.
+A fifo or a device node is made with
+.Fn mkfifoat
+or
+.Fn mknodat ,
+and a unix-domain socket the one way one can be made, with
+.Fn bind
+at its path; the mode, the owner, the times and the rest are written
+afterwards as for any other object, and a path too long for a socket
+address is refused in words rather than truncated.
+An object already standing where an action must act, and carrying an
+immutable, append-only or no-unlink flag of either the system or the user
+family, has those flags taken off before it is removed, rewritten or given
+new attributes, and what the decision asks for goes back on last: ZFS
+refuses the unlink, the write and the attribute change alike on such an
+object, so an apply that did not clear them would stop part way through the
+tree.
+Above securelevel 0 the system three cannot be cleared at all, so a run
+whose
+.Ar onto
+side carries
+.Sy schg ,
+.Sy sappnd
+or
+.Sy sunlnk
+at a name the decision would remove, rewrite or re-pool is refused at
+precondition with exit 2, naming the first such name, before anything is
+touched.
+The user three
+.Pq Sy uchg , Sy uappnd , Sy uunlnk
+are not in that guard: they come off for the owner at any securelevel, and
+ZFS refuses to set them at all.
 .Pp
 A side given as a dataset rather than a snapshot is snapshotted by the tool
 under a generated name, recorded as tool-made, and destroyed when the
@@ -391,8 +463,12 @@ the record's
 .Sy zfs_rebase:manifest
 must be the file and that file's header must name this result back, and
 a mismatch is refused with exit 2, saying both sides.
-The identifier is held against ZFS's own rule for a dataset name before
-it is ever made into a path.
+The identifier is held against ZFS's own naming rule before it is ever
+made into a path, and as what it is spelled as: a word with an
+.Sy @
+in it is held against the snapshot rule, so that a well-formed snapshot
+name that names no rebase is refused as that rather than as no name at
+all.
 A start writes a manifest and reads none, so it takes no operand at all.
 .El
 .Pp
@@ -642,23 +718,37 @@ back, for which it prints the two
 commands.
 A result with no record at all but a run directory of its own, and a result
 that is not there at all with its run directory still standing, are the
-other half of this.
-.Fl -abort
-reads the manifest that directory holds and gives back what its header
-names: the tag released on the three snapshots, the from snapshot destroyed
-where one was taken, the documents unlinked and the directory removed.
-That is the way back from a
+other half of this, and what the directory holds says which of three cases
+it is.
+A directory with no manifest in it is the window before the first write: it
+is removed, and saying so is all there is to say.
+A birth manifest \(em a header with
+.Sy #actions 0
+and
+.Sy #conflicts 0
+\(em is the window between that write and the record: nothing was held and
+nothing was written to the result, so what goes with the directory is the
+snapshot the tool took of
+.Ar from
+and, because this window proves the run never reached a record, the dataset
+form's pre-apply snapshot as well.
+A decision manifest is a rebase whose result was destroyed under it \(em a
 .Fl -restart
 whose second clone failed, or a
 .Ic zfs destroy
-of the result by hand, where the record that named the tag went with the
-dataset and the holds under it could be reached by nothing else.
-A directory with no manifest in it is the window before the first write and
-is simply removed; one holding a manifest that will not parse is the one
-shape
+of the result by hand \(em where the record that named the tag went with
+the dataset and the holds under it could be reached by nothing else: the
+tag is released on the three snapshots the header names, the tool's own
+snapshot is destroyed, the documents are unlinked and the directory is
+removed.
+The pre-apply snapshot is named and left in that last case, since a rebase
+that lost its result and a done whose unlink failed have the same shape and
+one of them means to keep it.
+A manifest that will not parse is the one shape
 .Fl -abort
 refuses, since a file that says a rebase was here and cannot be read is not
-a directory to remove quietly: it says so and exits 2.
+a directory to remove quietly: it releases nothing, removes nothing, says
+so and exits 2.
 Step 5 of the identifier is how a name reaches that directory when no
 dataset carries a record under it; the other three verbs say there is no
 rebase to move and name
@@ -835,6 +925,15 @@ Every document is written to a sibling
 in the destination's own directory and renamed over the destination, which
 cannot cross a filesystem and so cannot be anywhere else; a reader finds
 the document whole or as it was and never half of either.
+A write that fails takes its own
+.Pa .tmp
+away, and a write that succeeds leaves nothing behind.
+A
+.Pa .tmp
+beside a
+.Fl o
+file is what a crash in the middle of one write leaves; it is the user's,
+like the file it sits beside, and the tool never removes it.
 .Pp
 .Fl -restart
 reads the header's
@@ -901,9 +1000,9 @@ goes down immediately before the result stops being read-only, and the
 clean actions of the manifest are applied under it whether the decision had
 conflicts or not.
 .Sy conflicts
-is written after that apply verified itself -- every action done or blocked
-and every name outside the manifest as onto had it, the stage putting back
-what was not -- and is the hand-off.
+is written after that apply verified itself \(em every action done or
+blocked and every name outside the manifest as onto had it, the stage
+putting back what was not \(em and is the hand-off.
 The run wrote the resolution beside the manifest when it wrote the manifest:
 one line per conflicted name, in the manifest's own tree grammar, each
 carrying the conflict's group number and a choice of
@@ -1037,10 +1136,11 @@ to have the name put back as onto had it, or change to
 to have the manifest's own action made again.
 From this gate on the tree is being edited by hand and nothing can tell that
 work from a stray, so nothing here touches it.
-.It end of applying2
-reported, and the exit status is 3;
+.It the done gate
+reported, and the exit status is 3; the gate is passed all the same.
 .Sy done
-is written all the same.
+is no phase and is never written: what says a rebase reached it is
+that the result carries no record.
 What was found is written into the resolution with the choice
 .Sy \- ,
 which is the record of it: a choice that was not carried out set back to
@@ -1087,9 +1187,19 @@ Every line is carried out by its path and its choice, whoever wrote it: a
 line the tool wrote, a line the person changed and a line the person added
 alike, and a conflict line added by hand for a name the manifest never
 marked has its group number ignored, since it belongs to no group.
+.Sy applying2
+leaves every
+.Sy keep
+line exactly as it is and carries out every
+.Sy onto
+and every
+.Sy from
+one, and it touches a name the document speaks for by no other means: a
+conflict mark in the manifest is a line the apply skips.
 What a hand edit cannot do is take a conflict away: a conflict line the
-manifest marks that the document no longer has is put back at the next gate
-with the take mode's answer \(em
+manifest marks that the document no longer has is put back \(em at the
+.Sy conflicts
+gate with the take mode's answer,
 .Sy onto
 under
 .Fl -take-onto ,
@@ -1098,9 +1208,14 @@ under
 .Fl -take-from ,
 and
 .Sy \-
-where the run was given neither.
+where the run was given neither; and at the done gate with
+.Sy \- ,
+since by then the document is a record and not a question.
 Two lines for one name are refused when the file is read: they are two
 instructions for one object.
+The verdict of every check then reads two documents and nothing else: an
+action of the manifest not done, or a line of the resolution not done, is
+drift.
 .Sh FILES
 Each run keeps its own directory, 0700 throughout, named for the dataset
 carrying the record with its slashes kept as directories.

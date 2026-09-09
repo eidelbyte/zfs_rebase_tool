@@ -45,8 +45,12 @@ five steps, the first that matches winning:
 
 Steps 2 and 3 search every imported pool. Two rebases that answer to
 one IDENT are refused with both printed and never chosen between.
---result is a start's flag and no verb takes it; a start writes a
-manifest and reads none, so it takes no IDENT.
+Whatever step matched, the identifier is held against ZFS's own naming
+rule before it is ever made into a path, and as what it is spelled as:
+a word with an `@` in it is held against the snapshot rule, so a
+well-formed snapshot name that names no rebase is refused as that and
+not as no name at all. --result is a start's flag and no verb takes
+it; a start writes a manifest and reads none, so it takes no IDENT.
 
 ## Options
 
@@ -230,14 +234,64 @@ compared; that is gone, ruled 2026-09-06.)
 It is not a zfs(8) verb. It destroys no snapshot of yours and takes
 one only where you gave it a dataset instead. It reads the three
 through their .zfs/snapshot directories, takes the unchanged set off
-those walks -- an object whose number, generation number and change
-time all stood still since base is the object base holds, and is
-never read -- decides by a small rule over names, hardlink pools and
-content,
-writes a manifest of actions and conflicts, and applies the actions
-to the result clone, which it creates read-only and puts back that
-way. All ZFS operations go through libzfs_core and libzfs; nothing is
-exec'd.
+those walks, decides by a small rule over names, hardlink pools and
+content, writes a manifest of actions and conflicts, and applies the
+actions to the result, which it puts back read-only. All ZFS
+operations go through libzfs_core and libzfs; nothing is exec'd.
+
+The unchanged set is the prune. A pool of either side is declared to
+hold what base holds -- and is then never read -- when the object
+number, the type, the link count, the number of names, the
+generation number and the change time to the nanosecond all agree
+with base's, every one of its names is in that same base pool, and
+the extended attributes and both ACLs compare equal.
+
+What the object number, the generation and the change time are
+trusted for is the bytes of the object and the attributes its znode
+keeps -- the mode, the owner, the group, the flags, the size: ZFS
+moves a ctime for a write and for every one of those, and an object
+number is only ever reused by an object of a later generation. The
+extended attributes are compared rather than trusted because one
+storage escapes the ctime: an attribute written into an object's
+hidden directory (xattr=dir, and the fallback an SA write takes
+whenever it fails) never touches the object's own znode, so a from
+side whose only change was such an attribute would otherwise be
+dropped in silence. The two ACLs are compared beside them because it
+costs nothing and it keeps the answer from ever being looser than a
+read's. Every field is already in memory from the walks, so the
+prune reads nothing from disk and asks ZFS nothing. The OpenZFS
+source line for each of those facts is listed above zr_oracle_prune
+in src/yellow.h, and that list is meant to be checked against rather
+than rediscovered. --allow-unrelated turns the prune off, because an
+object number in one lineage means nothing in another.
+
+The names in the manifest, in the resolution and in the name table
+are the tree's own: tree-relative, written with a leading slash, and
+never a path on the running system. Where the result is mounted is
+the run's business and no document's, and no mount prefix ever
+reaches the engine or either document.
+
+Special files are carried like everything else. A fifo or a device
+node is made with mkfifoat(2) or mknodat(2), and a unix-domain
+socket the one way one can be made, with bind(2) at its path; the
+mode, the owner, the times and the rest go on afterwards as for any
+other object, and a path too long for a socket address is refused in
+words rather than truncated.
+
+An object already standing where an action must act, and carrying an
+immutable, append-only or no-unlink flag of either the system or the
+user family, has those flags taken off before it is removed,
+rewritten or given new attributes, and what the decision asks for
+goes back on last. ZFS refuses the unlink, the write and the
+attribute change alike on such an object, so an apply that did not
+clear them would stop part way through the tree. Above securelevel 0
+the system three cannot be cleared at all, so a run whose onto side
+carries schg, sappnd or sunlnk at a name the decision would remove,
+rewrite or re-pool is refused at precondition with exit 2, naming
+the first such name, before anything at all is touched. The user
+three (uchg, uappnd, uunlnk) are not in that guard: they come off
+for the owner at any securelevel, and ZFS refuses to set them at
+all.
 
 A rebase outlives the process that started it. While it is open the
 result carries a record of four user properties -- set by the create
@@ -265,10 +319,14 @@ over it later; so the order a run acquires things in is the pre-apply
 snapshot (dataset form), the run directory, that header, the record,
 the holds, the snapshot it takes of from, the take, and then the
 walks, the decision and the skeleton. Every document is written to a
-sibling `<file>.tmp` in its own directory and renamed over its
-destination, so a reader finds the document whole or as it was and
-never half of either; a `.tmp` left beside a `-o` file by a crash is
-the only thing that survives one.
+sibling `<file>.tmp` in the destination's own directory -- the
+destination's, because rename(2) cannot cross a filesystem and a
+`-o` file on another dataset is the ordinary case -- and renamed
+over the destination, so a reader finds the document whole or as it
+was and never half of either. A write that fails takes its own
+`.tmp` away, and on success nothing is left behind; a `.tmp` beside
+a `-o` file is what a crash in the middle of one write leaves, and
+it is yours to remove.
 
 There is one persistent hold per input snapshot under that tag, so that
 none of the three can be destroyed while the rebase is open: zfs
@@ -335,24 +393,32 @@ changes and none can skip:
 |------|---------------------------|
 | end of applying1 | fixed, by the stage's own self-check: up to the conflicts gate the result is the run's own, so a name that is not what the expected tree says is a stray, and no line is written |
 | entering conflicts, and every --continue that arrives at that gate | written into the resolution as lines with the choice keep, printed, and never fixed: from this gate on the tree is being edited by hand, and nothing can tell that work from a stray |
-| end of applying2, before done is written | reported, exit 3, and done written all the same; what was found is written into the resolution with the choice `-`, which is the record of it; --quiet prints nothing and the exit status stands |
+| the done gate, after applying2 and before anything is given back | reported, exit 3, and the gate passed all the same -- done is no phase and is never written; what was found is written into the resolution with the choice `-`, which is the record of it, and a conflict line the manifest marks that the document lost is put back with `-` beside them; --quiet prints nothing and the exit status stands |
 | a settled result, --verify with its manifest's path | reported, exit 3; the same check with no gate, against the header's identity, and nothing written |
 
 Wherever it is made, a --verify writes nothing to the tree and moves
 nothing that is where it should be: it reads the result where it is
-mounted and mounts it only where it is mounted nowhere.
+mounted, mounts it only where it is mounted nowhere, and sets
+readonly on nothing in either form.
 
 The resolution is the authority from the conflicts gate on. Every
 line is carried out by its path and its choice, whoever wrote it: a
 line the tool wrote, a line the person changed and a line the person
 added alike, and a conflict line added by hand for a name the
 manifest never marked has its group number ignored, since it belongs
-to no group. What a hand edit cannot do is take a conflict away: a
-conflict line the manifest marks that the document no longer has is
-put back at the next gate, with the take mode's answer -- `onto`
-under `--take-onto`, `from` under `--take-from`, `-` where the run
-was given neither. Two lines for one name are refused when the file
-is read, since they are two instructions for one object.
+to no group. applying2 leaves every `keep` line exactly as it is and
+carries out every `onto` and every `from` one, and it touches a name
+the document speaks for by no other means: a conflict mark in the
+manifest is a line the apply skips. What a hand edit cannot do is
+take a conflict away: a conflict line the manifest marks that the
+document no longer has is put back, at the conflicts gate with the
+take mode's answer -- `onto` under `--take-onto`, `from` under
+`--take-from`, `-` where the run was given neither -- and at the
+done gate with `-`, since by then it is a record and not a question.
+Two lines for one name are refused when the file is read, since they
+are two instructions for one object. The verdict of every check then
+reads two documents and nothing else: an action of the manifest not
+done, or a line of the resolution not done, is drift.
 
 done never blocks on drift. What the last check finds is said and
 carried out in the exit status, and the gate is passed regardless:
@@ -544,18 +610,29 @@ a private mount somebody is standing in both leave the record, the
 holds and the documents exactly as they were, with the reason
 printed and a non-zero exit.
 
-Given a result that is gone with its run directory still standing --
-a --restart whose second clone failed, or a `zfs destroy` by hand --
---abort reads the manifest in that directory and gives back what its
-header names: the tag released on the three snapshots, the snapshot
-the tool took for itself destroyed, the documents unlinked and the
-directory removed. Before this the holds under that tag were
-unreachable, since the record that named it went with the dataset. A
-directory with no manifest in it is the window before the first
-write and is simply removed; one holding a manifest that will not
+A run directory whose result carries no record, or whose result is
+not there at all, is the other half of --abort, and what the
+directory holds says which of three cases it is. A directory with no
+manifest in it is the window before the first write: it is removed,
+and saying so is all there is to say. A birth manifest -- a header
+with `#actions 0` and `#conflicts 0` -- is the window between that
+write and the record: nothing was held and nothing was written to
+the result, so what goes with the directory is the snapshot the tool
+took of from and, because this window proves the run never reached a
+record, the dataset form's pre-apply snapshot too. A decision
+manifest is a rebase whose result was destroyed under it -- a
+--restart whose second clone failed, or a `zfs destroy` by hand --
+and its holds are the thing that must not be left behind: the tag is
+released on the three snapshots the header names, the tool's own
+snapshot destroyed, the documents unlinked and the directory
+removed. Before this the holds under that tag were unreachable,
+since the record that named the tag went with the dataset. The
+pre-apply snapshot is named and left in that last case: a rebase
+that lost its result and a done whose unlink failed have the same
+shape, and one of them means to keep it. A manifest that will not
 parse is the one thing --abort refuses, since a file that says a
 rebase was here and cannot be read is not a directory to remove
-quietly: it says so and exits 2.
+quietly: it says so, releases nothing, removes nothing and exits 2.
 
 Which of those it does is the manifest's to say, and the file is
 there at every gate, since the run writes its header before its
@@ -575,13 +652,10 @@ it, `none` is a clone of the tool's and is left unmounted for you to
 destroy or to place. It prints the command for each form and leaves the
 choice to you.
 
---abort has one case of its own among the verbs: where the result
-carries no record and a run directory of that name is still standing,
-that directory is what a crash before the record left, and step 5 of
-the resolution is how IDENT reaches it. --abort reads the header in
-it if there is one, destroys the snapshot the run took for itself,
-unlinks the documents and removes the directory; the other three
-verbs say there is no rebase to move and name --abort.
+That leftover is --abort's alone among the verbs, and step 5 of
+IDENT's resolution is how a name reaches it: a run directory of that
+name with no record on any dataset. The other three verbs say there
+is no rebase to move and name --abort.
 
 A dataset that carries any zfs_rebase: property of its own is an open
 rebase and is not rebased over: the tool says so and exits 2, and

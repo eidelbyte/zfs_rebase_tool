@@ -85,8 +85,15 @@ struct zr_apply_stats {
  * attributes for every cp and write. Actions run in manifest order,
  * except that the removal of a directory waits for its scope to
  * close. Every operation is relative to one descriptor on onto_root
- * and never follows a symbolic link, so nothing outside that tree is
- * read or written. Conflict marks do nothing.
+ * and never follows a symbolic link, except the four calls that have
+ * no descriptor-relative form at all -- the extended attributes, the
+ * ACL, the file flags and the bind(2) that makes a socket, each
+ * handed the root's own path with the action's path appended. What
+ * keeps those inside the tree is not a resolved descriptor per
+ * component but the 0700 chain down to the run directory and the
+ * mount policy that puts the result at its mnt, root's alone (R17 of
+ * the code review, filed in sprints/future-features.md). Conflict
+ * marks do nothing.
  *
  * skip, when it is not NULL, is a report of zr_verify over this same
  * manifest: the actions it marks done or blocked are left alone and
