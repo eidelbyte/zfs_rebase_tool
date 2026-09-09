@@ -490,11 +490,32 @@ Where a side was given as a dataset the tool still snapshots it, because
 there has to be something to read, and destroys that snapshot again before
 it exits.
 .It Fl p , Fl -permissive-merge
-Permissive-merge mode.
-Sharing that strict mode raises as an
+Permissive-merge mode, which decides what a hard link made on one side
+means when the other side had its own opinion about the same file.
+Strict, the default, treats the link as a claim to be held against the
+other side and raises a conflict; permissive treats a link as a link and
+follows it.
+Two shapes differ between the modes.
+Where one side linked a name into one pool and the other side linked the
+same name into another, following both links joins the two pools into one,
+which neither side asked for: strict raises an
 .Sy unexpressed-sharing
-conflict is resolved instead.
-Strict is the default, and the mode is recorded.
+conflict, permissive joins them.
+Where one side made a name a link of another file and the other side
+edited that file, strict raises a
+.Sy disagree
+conflict, since the linked name defends the content it had in base;
+permissive reads the link as "this name is that file from now on" and the
+name adopts whatever the file ends up as.
+An adoption that meets an edit of the adopted name, two sides adopting one
+name into files whose bytes differ, and a cycle of adoptions are conflicts
+in both modes.
+Use strict when a link on the from side may be accidental or every link
+that crosses an edit should be looked at, and permissive when the from
+side's links are deliberate deduplication or aliasing that should stick.
+The mode is written into the manifest's header as
+.Cm #mode
+and every verb of the rebase runs under it.
 .It Fl v , Fl -verbose
 Report counts and the steps taken on standard error.
 .It Fl o , Fl -manifest Ar file
