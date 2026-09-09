@@ -1266,9 +1266,14 @@ settle_bad_name() {
 	mkdir -p "$tmp/outside/mnt" || fail "cannot make the decoy directory"
 	# Enough .. to climb out of /var/db/zfs_rebase, so the first of
 	# these spells $tmp/outside as a path and nothing at all as a
-	# dataset name.
+	# dataset name. The third carries a character ZFS's rule leaves
+	# out: a space is NOT one of them -- valid_char in
+	# module/zcommon/zfs_namecheck.c allows letters, digits, "-",
+	# "_", ".", ":" and " ", so "result with a space" is a name a
+	# dataset could have and the box said so on 2026-09-08 -- while
+	# "?" is.
 	for bad in "../../../..$tmp/outside" "$POOL/../../etc" \
-	    "$POOL/result with a space"; do
+	    "$POOL/result?no"; do
 		"$bin" --abort "$bad" > "$tmp/badname" 2>&1
 		st=$?
 		[ $st -eq 2 ] || \
