@@ -355,7 +355,7 @@ holdcount() {
 # the fixture's own base and from, and the clone at its mountpoint.
 # Stage 1 is idempotent, so this must have nothing left to do.
 again() {
-	"$bin" --posix $flag -o "$1" "$tmp/base" "$tmp/from" "$cmnt"
+	"$bin" --posix $flag -o "$1" "$MNT/base" "$tmp/from" "$cmnt"
 	hst=$?
 	[ $hst -eq 0 ] || [ $hst -eq 1 ] || fail "the --posix re-run exited $hst"
 }
@@ -368,8 +368,6 @@ idempotent() {
 }
 
 say "fixture $fixture"
-"$bin" --build-fixture "$fixture" "$tmp" || fail "build-fixture"
-[ -f "$tmp/expect" ] || fail "no expect block"
 flag=""
 case "$fixture" in *-permissive.zrt) flag="-p" ;; esac
 
@@ -379,14 +377,29 @@ MD=$(mdconfig -a -t vnode -f "$IMG") || exit 2
 mkdir -p "$MNT"
 zpool create -m "$MNT" -O casesensitivity=sensitive -O normalization=none \
     "$POOL" "/dev/$MD" || exit 2
-zfs create "$POOL/base" || exit 2
-(cd "$tmp/base" && tar -cf - .) | (cd "$MNT/base" && tar -xpf -) || fail "populate base"
+# The trees are made in the datasets by the tool's own builder, the
+# way run-replay.sh does it, and not copied in: tar cannot carry a
+# socket (sock-copy.zrt), and rm cannot clear a tree that holds an
+# schg object (flags-onto-rm.zrt), both of which the box found on
+# 2026-09-08. --build-fixture makes DIR/base, DIR/from, DIR/onto and
+# DIR/expect, so the base dataset is mounted at $tmp/base for the
+# length of the build and every object of base is created inside
+# it; from and onto are clones of base@base edited in place by
+# --edit-fixture, which takes a flag off before it touches an
+# object. The plain $tmp/from stays for the --posix re-runs below,
+# and base is read from its dataset there.
+zfs create -o mountpoint="$tmp/base" "$POOL/base" || exit 2
+"$bin" --build-fixture "$fixture" "$tmp" || fail "build-fixture"
+[ -f "$tmp/expect" ] || fail "no expect block"
 zfs snapshot "$POOL/base@base" || exit 2
+zfs set mountpoint="$MNT/base" "$POOL/base" || exit 2
+# past the tick the base objects were made in, so an edited object's
+# ctime is later than base's on any filesystem
+sleep 1
 for side in from onto; do
 	zfs clone "$POOL/base@base" "$POOL/$side" || exit 2
-	# clear, then extract the fixture's tree for this side
-	(cd "$MNT/$side" && find . -mindepth 1 -maxdepth 1 -exec rm -rf {} +) || fail "clear $side"
-	(cd "$tmp/$side" && tar -cf - .) | (cd "$MNT/$side" && tar -xpf -) || fail "populate $side"
+	"$bin" --edit-fixture "$fixture" "$side" "$MNT/$side" \
+	    > "$tmp/edit-$side" || fail "edit-fixture $side"
 done
 zfs snapshot "$POOL/from@work" "$POOL/onto@work" || exit 2
 
@@ -1410,7 +1423,7 @@ dfail() { fail "the dataset form (--result $dspec): $*"; }
 # declare exactly what the expect block declares, which it can only
 # do if onto is back to the tree the fixture built.
 onto_is_the_fixture() {
-	"$bin" --posix $flag -o "$1" "$tmp/base" "$tmp/from" "$MNT/onto"
+	"$bin" --posix $flag -o "$1" "$MNT/base" "$tmp/from" "$MNT/onto"
 	st=$?
 	[ $st -eq 0 ] || [ $st -eq 1 ] || dfail "the --posix re-run exited $st"
 	sed -n '/^#mode/,$p' "$1" > "$1.body"
