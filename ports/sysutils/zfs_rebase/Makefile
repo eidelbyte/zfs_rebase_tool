@@ -46,8 +46,9 @@ IGNORE=	needs the FreeBSD source tree in ${SRC_BASE}: install src.txz there, or 
 
 # The upstream install target honors DESTDIR and PREFIX and puts the
 # binary in sbin and the page in share/man/man8, which is where this
-# tree keeps them; pkg-plist names the page uncompressed, the way the
-# tree has listed man pages since it stopped compressing them.
+# tree keeps them. The framework compresses the page at stage, so
+# pkg-plist names it with its .gz (check-plist on the box,
+# 2026-09-08: "Orphaned: share/man/man8/zfs_rebase.8.gz").
 do-install:
 	@cd ${WRKSRC} && ${MAKE_CMD} ${MAKE_ARGS} install \
 		DESTDIR=${STAGEDIR} PREFIX=${PREFIX}
