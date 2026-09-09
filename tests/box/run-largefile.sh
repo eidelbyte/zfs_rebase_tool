@@ -18,8 +18,8 @@
 # built from COMMIT, which has no SEEK_DATA path at all. The sysctl
 # is put back to what it was. Then ZW35: a dry run under truss, with
 # the counts of the attribute calls that should be per walk
-# (lpathconf) and per file (the descriptor variants) rather than per
-# file for both. KEEP=1 leaves the pool; the scratch directory with
+# (lpathconf) and per file (the descriptor variants, which truss
+# shows under their syscall names) rather than per file for both. KEEP=1 leaves the pool; the scratch directory with
 # the logs is kept either way. --dense-mb defaults to 1024 and
 # --sparse-gb to 4; the image is IMGSIZE (default 12g).
 set -u
@@ -174,8 +174,10 @@ truss -f -o "$tmp/truss.out" "$bin" -n --from "$POOL/from@work" \
     --onto "$POOL/onto@work" > "$tmp/truss-run.log" 2>&1 || \
     { tail -5 "$tmp/truss-run.log"; fail "the dry run under truss"; }
 {
-	for call in lpathconf extattr_list_fd extattr_get_fd acl_get_fd_np \
-	    extattr_list_link extattr_get_link acl_get_link_np openat fstatat; do
+	# truss shows syscalls: acl_get_fd_np and acl_get_link_np are
+	# libc's names for __acl_get_fd and __acl_get_link.
+	for call in lpathconf extattr_list_fd extattr_get_fd __acl_get_fd \
+	    extattr_list_link extattr_get_link __acl_get_link openat fstatat; do
 		printf '%-18s %6s\n' "$call" "$(grep -c "^[0-9]*: $call(\|[ :]$call(" "$tmp/truss.out")"
 	done
 } | tee "$tmp/truss-counts.txt"
