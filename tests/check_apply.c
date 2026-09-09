@@ -789,7 +789,7 @@ check_repair_sock(void)
 	CHECK(zr_walk(sh.sh_onto, sh.sh_ns, &wo, err, sizeof (err)) == 0);
 	CHECK(zr_walk(sh.sh_from, sh.sh_ns, &wf, err, sizeof (err)) == 0);
 	err[0] = '\0';
-	if (zr_apply_check(&p, res, sh.sh_ns, &wo, &wf, 0, 1, &st, err,
+	if (zr_apply_check(&p, res, sh.sh_ns, &wo, &wf, 0, 1, &st, NULL, err,
 	    sizeof (err)) != 0)
 		printf("  check: %s\n", err);
 	CHECK(err[0] == '\0');
@@ -798,6 +798,72 @@ check_repair_sock(void)
 	CHECK(lstat(full, &s) == 0);
 	CHECK(S_ISSOCK(s.st_mode));
 	CHECK((s.st_mode & 07777) == 0600);
+	zr_walk_fini(&wf);
+	zr_walk_fini(&wo);
+	zr_parsed_fini(&p);
+	rmtree(res);
+	shape_fini(&sh);
+}
+
+/*
+ * ZY109: the walk the check ends with, handed back. The caller says
+ * where it is to be left, and what comes back is a walk of the
+ * result -- the same pools a walk made here finds -- and an oracle
+ * over onto, from and it, ready to be asked. The walk the repair
+ * threw away is not the one handed over: the check walks again after
+ * it writes, so what the caller gets holds the socket the repair put
+ * back.
+ */
+static void
+check_kept_walk(void)
+{
+	struct zr_apply_kept kept;
+	struct zr_apply_stats st;
+	struct zr_walk wo, wf, mine, fresh;
+	struct zr_parsed p;
+	struct shape sh;
+	char res[PATHMAX], err[512];
+	zr_name_t nm;
+	zr_pool_t pk, pm;
+
+	shape_init(&sh);
+	mkfile(sh.sh_onto, "/A", "kept", 0644);
+	mksock(sh.sh_onto, "/sk", 0600);
+	join(res, sizeof (res), sh.sh_root, "/res");
+	CHECK(mkdir(res, 0755) == 0);
+	mkfile(res, "/A", "kept", 0644);
+	parse_body(&p, "", 0);
+	err[0] = '\0';
+	CHECK(zr_walk(sh.sh_onto, sh.sh_ns, &wo, err, sizeof (err)) == 0);
+	CHECK(zr_walk(sh.sh_from, sh.sh_ns, &wf, err, sizeof (err)) == 0);
+	memset(&kept, 0, sizeof (kept));
+	kept.zk_walk = &mine;
+	err[0] = '\0';
+	if (zr_apply_check(&p, res, sh.sh_ns, &wo, &wf, 0, 1, &st, &kept,
+	    err, sizeof (err)) != 0)
+		printf("  check: %s\n", err);
+	CHECK(err[0] == '\0');
+	CHECK(st.zs_restored == 1);
+	CHECK(kept.zk_live == 1);
+	CHECK(kept.zk_oracle != NULL);
+	CHECK(mine.zw_rootfd >= 0);
+	/* the socket the repair put back is in the walk handed over */
+	nm = zr_names_lookup(sh.sh_ns, "/sk", 3);
+	CHECK(nm != ZR_NAME_NONE);
+	pk = zr_tree_pool(&mine.zw_tree, nm);
+	CHECK(pk != ZR_POOL_NONE);
+	CHECK(mine.zw_tree.zt_pools[pk].zp_type == ZR_T_SOCK);
+	/* and it is the tree a walk made here finds, pool for pool */
+	err[0] = '\0';
+	CHECK(zr_walk(res, sh.sh_ns, &fresh, err, sizeof (err)) == 0);
+	pm = zr_tree_pool(&fresh.zw_tree, nm);
+	CHECK(pm != ZR_POOL_NONE);
+	CHECK(fresh.zw_tree.zt_npools == mine.zw_tree.zt_npools);
+	CHECK(fresh.zw_tree.zt_pools[pm].zp_type ==
+	    mine.zw_tree.zt_pools[pk].zp_type);
+	zr_walk_fini(&fresh);
+	zr_oracle_fini(kept.zk_oracle);
+	zr_walk_fini(&mine);
 	zr_walk_fini(&wf);
 	zr_walk_fini(&wo);
 	zr_parsed_fini(&p);
@@ -1441,7 +1507,7 @@ pick_apply(struct pick *p, struct doc *d, struct zr_apply_stats *st, char *err,
 	CHECK(zr_walk(p->pk_onto, p->pk_ns, &wo, werr, sizeof (werr)) == 0);
 	CHECK(zr_walk(p->pk_from, p->pk_ns, &wf, werr, sizeof (werr)) == 0);
 	rc = zr_apply_choices(&d->dc_r, &d->dc_m, p->pk_res, p->pk_ns, &wo,
-	    &wf, st, err, errlen);
+	    &wf, NULL, st, err, errlen);
 	zr_walk_fini(&wf);
 	zr_walk_fini(&wo);
 	return (rc);
@@ -2529,6 +2595,7 @@ main(void)
 	check_cp_fifo();
 	check_cp_sock();
 	check_repair_sock();
+	check_kept_walk();
 	check_ln_replace();
 	check_write_links();
 	check_rm_deep();

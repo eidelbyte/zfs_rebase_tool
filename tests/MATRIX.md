@@ -167,6 +167,8 @@ order {readdir's, sorted}; faults.
 | ZW31 | za_gen is st_gen, and 0 where the platform has none | covered: check_walk.c |
 | ZW32 | za_ctime is st_ctim, seconds and nanoseconds | covered: check_walk.c |
 | ZW33 | the archive bit ZFS keeps for itself (UF_ARCHIVE, set on every new object and every write) is masked out of za_flags: on ZFS the walk's word lacks the bit st_flags shows, ZW20's lstat compare with the mask | planned: box (check_walk on a ZFS TMPDIR); the Mac has no such bit |
+| ZW34 | the FreeBSD walk reads the extended attributes and the ACL of a file or a directory through a descriptor opened from the directory it was found in, and reads a symlink, a device, a fifo and a socket by path as before; the same attributes and the same ACLs come back either way | planned: box, the freebsd/ fixtures through run-suite.sh (sysxattr*.zrt for both namespaces, acl-*.zrt for both ACL kinds, mixed-attrs.zrt for the types with no descriptor); nothing on the Mac, whose section is unchanged |
+| ZW35 | the ACL flavor is asked once, of the root, and not of every entry: a tree on ZFS reads NFSv4 for every file and a tree on UFS POSIX.1e, and a walk of n files makes one lpathconf rather than 2n | planned: box, by truss or ktrace over a walk of a fixture tree (R15 of the code review); the answer itself is ZW18's and ZC9's |
 
 ZW31 and ZW32 are the two fields the pruning of ZC26 below reads,
 and the walk pays nothing for them: it lstat'd every object
@@ -260,6 +262,8 @@ where ZFS moves no ctime}.
 | ZC41 | a pruned pair differs only in an extended attribute | covered: check_yellow.c |
 | ZC42 | a pruned pair differs only in an ACL, and only in a default ACL | covered: check_yellow.c |
 | ZC43 | a from side on xattr=dir whose only change is an attribute | planned: box, box/run-fixture.sh case 5b |
+| ZC44 | two files with the same hole map: equal, and the hole is not read | covered: check_yellow.c |
+| ZC45 | a hole against written zeros at chunk scale, and a difference on the far side of a shared hole: both read and both judged | covered: check_yellow.c |
 
 ZC20 and ZC26 to ZC37 are the unchanged set, which sprint 5 took
 off zfs diff and put on the walk (sprints/sprint-5/string-audit.md
@@ -289,6 +293,22 @@ The oracle asks zr_acl_equal for za_acl and za_dacl, so ZC9 is that
 function on two pools of a live filesystem: the comparison itself is
 ZW30's, and what attr-cells adds is a non-trivial NFSv4 ACL that the
 walk really read and apply really wrote back.
+
+ZC44 and ZC45 are R27's: the byte comparison asks both files where
+their next data is and skips a stretch that is a hole in both,
+since the sizes are equal already and a hole reads as zeros. The
+two must agree about where the hole ends -- a hole in one and
+written zeros in the other are the same bytes under a different map
+-- and a file smaller than one chunk is read straight through, so
+every other row of this family reads exactly what it read before.
+Where the platform has no SEEK_DATA, or the filesystem declines to
+answer (ZFS does for a file whose dnode is dirty, unless
+zfs_dmu_offset_next_sync is on, in which case it waits for a txg:
+module/zfs/dmu.c, dmu_offset_next), the pair is read. ZC44's byte
+count is asserted only where the filesystem under TMPDIR really
+kept the hole, and loosely: what it proves is that the megabytes of
+the hole were not read, not where one filesystem or another puts
+the edges.
 
 ZC41 to ZC43 are the other half of the rule, added with the review's
 R1 (sprints/sprint-5/code-review-2026-09-07.md): the pruning
@@ -1356,6 +1376,9 @@ snapshot, a clone and a kill need the box.
 | ZY108 | a directory line the chosen side lacks that a keep line under it holds open reads pending or drifted after the choices: choices_hold passes it, the done gate counts it, the exit is 3 and done is reached all the same | covered: check_verify.c; box: run-resolution.sh case 9 |
 | ZY109 | a cp whose target the result holds as the very object it holds at the cp's source name: the copy was never made, so the classification goes on to ask onto and answers drifted, where the same tree with the link cut is done; a cp of a from name to that same path has no second name and is asked nothing, which is ZY9 and ZY11 standing | covered: check_verify.c |
 | ZY110 | the result pool is marked for a write and for no other action: an untouched onto name a hand linked to a cp or a dup target is not exempted from the second pass, so the tear is an entry of the name list where before both halves went unseen | covered: check_verify.c |
+| ZY111 | the walk a stage's self-check ends with is the walk the stage goes on with: zr_apply_check hands it and the oracle over it back and rescan_result adopts them, and the classification after the stage is the one it was before | covered: check_apply.c and check_verify.c, which pass NULL and so still walk twice, and the whole fixture suite through run-fixtures.sh; box: run-fixture.sh steps 2 and 5 and run-kills.sh, where the stage really runs |
+| ZY112 | applying2's idempotence check over one walk: the first pass is made over the walk the verb already held, the tree is walked once between the passes, and the second pass -- which must change nothing -- leaves that walk true for the done gate | planned: box, box/run-resolution.sh cases 1, 4, 6 and 9; a second pass that did change something is the internal failure the case's message names |
+| ZY113 | the fresh run's done gate is handed the run's own three trees and its libzfs handle, and makes the same check the same function makes for a --continue: from and onto are held snapshots, the result is read-only and unwritten since the self-check walked it, and where any of that has moved -- a snapshot renamed, a tree missing, the result mounted elsewhere -- the gate reads everything for itself | planned: box, box/run-fixture.sh step 5 under -v ("the final check reads the three trees this run walked"), and box/run-kills.sh, whose --continue reaches the same gate with no lending at all |
 
 ZY40 to ZY45 are the post-done verify's: a tree that is not there
 any more is walked as the empty tree and named in the missing mask,
@@ -1390,6 +1413,17 @@ name left the second pass: the mark is now a write's alone and cp is
 asked the question dup is, with the one guard dup never needs -- a
 source name that is the target name has no second name to be one
 object with, which is what a cp of a from file to its own path is.
+
+ZY111 to ZY113 are review-cost's, and all three are one rule: a walk
+of a tree nothing has written to since is an input a later phase may
+be handed, never an answer it may skip asking. What is passed is
+the walk; the oracle goes with it only inside one stage, where the
+review's R13 asks for it by name, and never across the gate to the
+done check, which builds its own so that it compares what it is
+given rather than inheriting a memo of comparisons somebody else
+made. A clean clone-form run made seven full tree walks and now
+makes four; a --continue through applying2 made six and now makes
+four.
 
 ZY104 to ZY108 are review-resolution's: the resolution as the
 authority (documents-design.md, section 11.5). The verdict has four

@@ -160,13 +160,21 @@ int zr_apply_with(const struct zr_parsed *m, const char *onto_root,
  * removal already made. A second call over the same document
  * therefore changes nothing, which is how the stage checks itself.
  *
+ * pre is the result as it stands before this call, which is what
+ * that oracle is asked about; NULL says to walk it here, which is
+ * what this did throughout before. A caller that already holds a
+ * walk of the tree nothing has written to since hands it in rather
+ * than paying for the same walk twice (R13 of the code review); it
+ * must be a walk over names, since the oracle wants one name table.
+ *
  * Returns 0 with the choice fields of *st filled and zs_line naming
  * the first line that was changed, or -1 with a message in err when
  * errlen is not 0.
  */
 int zr_apply_choices(const struct zr_resolution *res, const struct zr_parsed *m,
     const char *root, struct zr_names *names, struct zr_walk *onto,
-    struct zr_walk *from, struct zr_apply_stats *st, char *err, size_t errlen);
+    struct zr_walk *from, struct zr_walk *pre, struct zr_apply_stats *st,
+    char *err, size_t errlen);
 
 /*
  * The other half of an apply: the names no action spoke for, put
@@ -194,6 +202,28 @@ int zr_apply_repair(const struct zr_verify_report *rep, const char *onto_root,
     struct zr_apply_stats *st, char *err, size_t errlen);
 
 /*
+ * Where the caller takes over the last look the check had at the
+ * result: the walk it made and the oracle over it, which the check
+ * would otherwise finalise on its way out. The caller sets zk_walk
+ * to the storage the walk is to be left in -- the oracle keeps a
+ * pointer to it, so it must be storage that outlives the oracle --
+ * and the check fills that in, sets zk_oracle over onto, from and it
+ * in that order, and sets zk_live. Nothing between the check's last
+ * walk and the caller's next question writes into the result, so the
+ * walk the check made is the walk the caller would have made
+ * (R13 of the code review).
+ *
+ * zk_live stays clear where there is nothing to take over: the check
+ * failed, or it was given no zk_walk. Then the caller walks for
+ * itself, exactly as it did before there was a hand-over.
+ */
+struct zr_apply_kept {
+	struct zr_walk		*zk_walk;	/* the caller's storage */
+	struct zr_oracle	*zk_oracle;
+	int			zk_live;	/* both are the caller's now */
+};
+
+/*
  * The self-check of an applying stage, made on the document it has
  * just applied: the tree at onto_root walked beside onto and from,
  * m classified against the three, and -- with fix, which is the
@@ -208,12 +238,15 @@ int zr_apply_repair(const struct zr_verify_report *rep, const char *onto_root,
  * through it. Without fix the names are not looked at: from the
  * conflicts gate on they are the person's work.
  *
+ * kept may be NULL, and then the walk and the oracle go with the
+ * call; where it is not, see zr_apply_kept above.
+ *
  * Returns 0 with the repair's counts in *st, or -1 with a message in
  * err when errlen is not 0.
  */
 int zr_apply_check(const struct zr_parsed *m, const char *onto_root,
     struct zr_names *names, struct zr_walk *onto, struct zr_walk *from,
-    unsigned missing, int fix, struct zr_apply_stats *st, char *err,
-    size_t errlen);
+    unsigned missing, int fix, struct zr_apply_stats *st,
+    struct zr_apply_kept *kept, char *err, size_t errlen);
 
 #endif	/* ZR_APPLY_H */

@@ -488,12 +488,26 @@ zr_tree_add(struct zr_tree *tr, zr_name_t nm, uint64_t ino, zr_type_t type,
 			return (ZR_POOL_NONE);
 		if (type == ZR_T_DIR)
 			return (ZR_POOL_NONE);
-		names = realloc(pool->zp_names,
-		    (size_t)(pool->zp_nnames + 1) * sizeof (zr_name_t));
-		if (names == NULL)
-			return (ZR_POOL_NONE);
-		names[pool->zp_nnames] = nm;
-		pool->zp_names = names;
+		/*
+		 * The array holds the next power of two of its names,
+		 * so it is grown when the count is one -- every count
+		 * that is a power of two is the full array -- and the
+		 * k names of one pool cost log k copies rather than
+		 * the k an array grown by one slot at a time cost
+		 * (R14 of the code review). Nothing outside this file
+		 * reads a capacity: what a pool has is zp_nnames, and
+		 * the slack beyond it is never looked at.
+		 */
+		if ((pool->zp_nnames & (pool->zp_nnames - 1)) == 0) {
+			if (pool->zp_nnames > (uint32_t)-1 / 2)
+				return (ZR_POOL_NONE);
+			names = realloc(pool->zp_names,
+			    (size_t)pool->zp_nnames * 2 * sizeof (zr_name_t));
+			if (names == NULL)
+				return (ZR_POOL_NONE);
+			pool->zp_names = names;
+		}
+		pool->zp_names[pool->zp_nnames] = nm;
 		pool->zp_nnames++;
 		tr->zt_by_name[nm] = idx;
 		return (idx);

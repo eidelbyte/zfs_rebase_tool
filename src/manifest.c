@@ -2846,15 +2846,29 @@ zw_under(const struct zw_ent *d, const struct zw_ent *e)
 	return (zp_under(d->ze_path, d->ze_len, e->ze_path, e->ze_len));
 }
 
-/* Bytes as the format escapes them, one byte's escaping at a time. */
+/*
+ * Bytes as the format escapes them, through a scratch buffer the way
+ * the emitter's zm_vis does it: the encoding of one byte never
+ * depends on its neighbours, so a run of them encodes exactly as the
+ * bytes did one at a time, and the writers pay one fputs per chunk
+ * rather than one per byte (R20 of the code review). The buffer
+ * holds the worst case, four bytes out for one in, and the encoding
+ * is printable ASCII with no NUL in it, which is what lets fputs
+ * carry it.
+ */
+#define	ZW_VIS_CHUNK	128
+
 static void
 zw_vis(FILE *out, const unsigned char *p, size_t len)
 {
-	char buf[8];
-	size_t i;
+	char buf[ZW_VIS_CHUNK * 4 + 1];
+	size_t i, n;
 
-	for (i = 0; i < len; i++) {
-		(void) zr_vis_encode(p + i, 1, buf, sizeof (buf));
+	for (i = 0; i < len; i += n) {
+		n = len - i;
+		if (n > ZW_VIS_CHUNK)
+			n = ZW_VIS_CHUNK;
+		(void) zr_vis_encode(p + i, n, buf, sizeof (buf));
 		(void) fputs(buf, out);
 	}
 }

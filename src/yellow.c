@@ -18,6 +18,23 @@
  */
 
 #define	_XOPEN_SOURCE	700
+/*
+ * SEEK_DATA is nobody's standard: FreeBSD keeps it behind
+ * __BSD_VISIBLE, which _XOPEN_SOURCE alone switches off, macOS
+ * behind _DARWIN_C_SOURCE and Linux behind _GNU_SOURCE. Each is
+ * asked for by name, and where the platform still has neither
+ * SEEK_DATA nor SEEK_HOLE the hole skipping compiles out and every
+ * byte is read, which is what this file did before.
+ */
+#ifdef __FreeBSD__
+#define	__BSD_VISIBLE	1
+#endif
+#ifdef __APPLE__
+#define	_DARWIN_C_SOURCE
+#endif
+#ifdef __linux__
+#define	_GNU_SOURCE
+#endif
 
 #include <errno.h>
 #include <fcntl.h>
@@ -25,6 +42,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+
+#if defined(SEEK_DATA) && defined(SEEK_HOLE)
+#define	ZO_HAVE_HOLES	1
+#endif
 
 #include "name.h"
 #include "walk.h"
@@ -274,11 +295,60 @@ zo_read_chunk(int fd, unsigned char *buf, size_t *np)
 	return (0);
 }
 
+#ifdef ZO_HAVE_HOLES
+
+/*
+ * A hole the two files share, from off. Both are the same length --
+ * the caller compared the sizes before it came here -- so a stretch
+ * that is a hole in both reads as zeros in both and neither has to
+ * be read at all (R27 of the code review). The two must agree about
+ * where the hole ends: a hole in one and written zeros in the other
+ * are the same bytes but not the same map, and that pair is read.
+ *
+ * *nextp comes back as the offset to go on from, with both
+ * descriptors there; *donep says both files are one hole from off to
+ * the end, which is the whole of what is left and needs no read.
+ * Returns -1 where the question could not be asked -- a filesystem
+ * with no SEEK_DATA, or ZFS declining to answer for a file whose
+ * dnode is dirty -- and then the caller puts the descriptors back
+ * where they were and reads the rest.
+ */
+static int
+zo_hole_skip(int fda, int fdb, off_t off, off_t *nextp, int *donep)
+{
+	off_t da, db;
+
+	*nextp = off;
+	*donep = 0;
+	da = lseek(fda, off, SEEK_DATA);
+	if (da < 0 && errno != ENXIO)
+		return (-1);
+	db = lseek(fdb, off, SEEK_DATA);
+	if (db < 0 && errno != ENXIO)
+		return (-1);
+	if (da < 0 && db < 0) {
+		*donep = 1;
+		return (0);
+	}
+	if (da != db) {
+		if (lseek(fda, off, SEEK_SET) < 0 ||
+		    lseek(fdb, off, SEEK_SET) < 0)
+			return (-1);
+		return (0);
+	}
+	*nextp = da;
+	return (0);
+}
+
+#endif	/* ZO_HAVE_HOLES */
+
 /*
  * The bytes of two regular files, a chunk from each side at a time,
  * abandoned at the first pair that differs. Every byte read is
- * counted, whether it was told anything or not. Returns 1 equal, 0
- * different, -1 with err set.
+ * counted, whether it was told anything or not. A file smaller than
+ * one chunk is read straight through: there is nothing in it a
+ * skipped hole would save, and asking costs two system calls a file.
+ * Returns 1 equal, 0 different, -1 with err set.
  */
 static int
 zo_bytes_equal(struct zr_oracle *o, int ta, zr_pool_t pa, int tb,
@@ -287,6 +357,10 @@ zo_bytes_equal(struct zr_oracle *o, int ta, zr_pool_t pa, int tb,
 	zr_name_t na, nb;
 	size_t gota, gotb;
 	int fda, fdb, rc;
+#ifdef ZO_HAVE_HOLES
+	off_t off = 0;
+	int skip;
+#endif
 
 	na = o->zo_w[ta]->zw_tree.zt_pools[pa].zp_names[0];
 	nb = o->zo_w[tb]->zw_tree.zt_pools[pb].zp_names[0];
@@ -307,7 +381,31 @@ zo_bytes_equal(struct zr_oracle *o, int ta, zr_pool_t pa, int tb,
 		return (-1);
 	}
 	rc = 1;
+#ifdef ZO_HAVE_HOLES
+	skip = o->zo_w[ta]->zw_attrs[pa].za_size >= ZO_CHUNK;
+#endif
 	for (;;) {
+#ifdef ZO_HAVE_HOLES
+		off_t next;
+		int done;
+
+		if (skip != 0) {
+			if (zo_hole_skip(fda, fdb, off, &next, &done) != 0) {
+				skip = 0;
+				if (lseek(fda, off, SEEK_SET) < 0 ||
+				    lseek(fdb, off, SEEK_SET) < 0) {
+					zo_fail(o, ta, na, "seek", err,
+					    errlen);
+					rc = -1;
+					break;
+				}
+			} else if (done != 0) {
+				break;
+			} else {
+				off = next;
+			}
+		}
+#endif
 		if (zo_read_chunk(fda, o->zo_buf[0], &gota) != 0) {
 			zo_fail(o, ta, na, "read", err, errlen);
 			rc = -1;
@@ -330,6 +428,9 @@ zo_bytes_equal(struct zr_oracle *o, int ta, zr_pool_t pa, int tb,
 			rc = 0;
 			break;
 		}
+#ifdef ZO_HAVE_HOLES
+		off += (off_t)gota;
+#endif
 	}
 	(void) close(fda);
 	(void) close(fdb);

@@ -45,6 +45,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -936,6 +937,14 @@ za_copy_rw(struct za_ctx *c, const struct zr_action *a, int in, int out,
  * itself -- on ZFS that is a block clone rather than a read and a
  * write. A kernel that declines for this pair of files says so with
  * one of a handful of errnos, and then the loop above does it.
+ *
+ * The whole of what is left is asked for at once. The call is free
+ * to do less and says how much it did, which this loop goes on from,
+ * so the only thing a small length bought was more calls: sixty-four
+ * kilobytes at a time made a ten gigabyte file a hundred and sixty
+ * thousand system calls where one would do (R20 of the code review).
+ * SSIZE_MAX is what "as much as you can" is spelled as, since the
+ * return is a signed count of the bytes moved.
  */
 static int
 za_copy(struct za_ctx *c, const struct zr_action *a, int in, int out,
@@ -945,7 +954,7 @@ za_copy(struct za_ctx *c, const struct zr_action *a, int in, int out,
 	ssize_t n;
 
 	for (;;) {
-		n = copy_file_range(in, NULL, out, NULL, (size_t)ZA_BUFSZ, 0);
+		n = copy_file_range(in, NULL, out, NULL, (size_t)SSIZE_MAX, 0);
 		if (n == 0)
 			return (0);
 		if (n > 0) {
@@ -2157,13 +2166,13 @@ za_verdict(char *err, size_t errlen, const struct zr_parsed *m,
 int
 zr_apply_check(const struct zr_parsed *m, const char *onto_root,
     struct zr_names *names, struct zr_walk *onto, struct zr_walk *from,
-    unsigned missing, int fix, struct zr_apply_stats *st, char *err,
-    size_t errlen)
+    unsigned missing, int fix, struct zr_apply_stats *st,
+    struct zr_apply_kept *kept, char *err, size_t errlen)
 {
 	struct zr_apply_stats spare;
 	struct zr_verify_report rep;
 	struct zr_oracle *o = NULL;
-	struct zr_walk wr;
+	struct zr_walk sparew, *wr;
 	int pass, walked = 0, rc = -1;
 
 	if (st == NULL)
@@ -2172,6 +2181,10 @@ zr_apply_check(const struct zr_parsed *m, const char *onto_root,
 	memset(&rep, 0, sizeof (struct zr_verify_report));
 	if (err != NULL && errlen > 0)
 		err[0] = '\0';
+	if (kept != NULL) {
+		kept->zk_oracle = NULL;
+		kept->zk_live = 0;
+	}
 	if (m == NULL || onto_root == NULL || names == NULL || onto == NULL ||
 	    from == NULL) {
 		if (err != NULL && errlen > 0)
@@ -2179,21 +2192,27 @@ zr_apply_check(const struct zr_parsed *m, const char *onto_root,
 		return (-1);
 	}
 	/*
+	 * The walk goes into the caller's storage where the caller
+	 * asked for it, because the oracle over it keeps a pointer to
+	 * it and that pointer has to outlive this call.
+	 */
+	wr = kept != NULL && kept->zk_walk != NULL ? kept->zk_walk : &sparew;
+	/*
 	 * Twice at most: once as the apply left the tree, and once
 	 * more after a repair, which is the only thing between the
 	 * two that writes.
 	 */
 	for (pass = 0; pass < 2; pass++) {
-		if (zr_walk(onto_root, names, &wr, err, errlen) != 0)
+		if (zr_walk(onto_root, names, wr, err, errlen) != 0)
 			goto out;
 		walked = 1;
-		if (zr_oracle_init(&o, onto, from, &wr) != 0) {
+		if (zr_oracle_init(&o, onto, from, wr) != 0) {
 			if (err != NULL && errlen > 0)
 				(void) snprintf(err, errlen, "the check: out "
 				    "of memory");
 			goto out;
 		}
-		if (zr_verify(m, o, onto, from, &wr, missing, &rep, err,
+		if (zr_verify(m, o, onto, from, wr, missing, &rep, err,
 		    errlen) != 0)
 			goto out;
 		if (pass != 0 || fix == 0 || rep.zv_ndiffs == 0)
@@ -2204,7 +2223,7 @@ zr_apply_check(const struct zr_parsed *m, const char *onto_root,
 		zr_verify_report_fini(&rep);
 		zr_oracle_fini(o);
 		o = NULL;
-		zr_walk_fini(&wr);
+		zr_walk_fini(wr);
 		walked = 0;
 	}
 	if (rep.zv_count[ZR_OC_PENDING] != 0 ||
@@ -2214,12 +2233,23 @@ zr_apply_check(const struct zr_parsed *m, const char *onto_root,
 		goto out;
 	}
 	rc = 0;
+	/*
+	 * The check passed, so the walk it is holding is the result
+	 * as the caller is about to ask about it. Handed over rather
+	 * than made again.
+	 */
+	if (kept != NULL && kept->zk_walk != NULL) {
+		kept->zk_oracle = o;
+		kept->zk_live = 1;
+		o = NULL;
+		walked = 0;
+	}
 out:
 	zr_verify_report_fini(&rep);
 	if (o != NULL)
 		zr_oracle_fini(o);
 	if (walked != 0)
-		zr_walk_fini(&wr);
+		zr_walk_fini(wr);
 	return (rc);
 }
 
@@ -2416,7 +2446,8 @@ za_picks(const struct zr_resolution *res, const struct zr_parsed *m,
 int
 zr_apply_choices(const struct zr_resolution *res, const struct zr_parsed *m,
     const char *root, struct zr_names *names, struct zr_walk *onto,
-    struct zr_walk *from, struct zr_apply_stats *st, char *err, size_t errlen)
+    struct zr_walk *from, struct zr_walk *pre, struct zr_apply_stats *st,
+    char *err, size_t errlen)
 {
 	static const unsigned char self[] = "(the choices)";
 	struct zr_apply_stats spare;
@@ -2426,7 +2457,7 @@ zr_apply_choices(const struct zr_resolution *res, const struct zr_parsed *m,
 	const struct zr_rline *l, *al;
 	struct zr_action a;
 	struct za_ctx c;
-	struct zr_walk wr;
+	struct zr_walk wr, *rw;
 	uint64_t was;
 	uint32_t i;
 	unsigned int acted = 0;		/* the harness's gate counts these */
@@ -2471,13 +2502,19 @@ zr_apply_choices(const struct zr_resolution *res, const struct zr_parsed *m,
 	}
 	/*
 	 * The result as it stands before any of this is done, which is
-	 * what the oracle is asked about. A walk that failed is still a
-	 * walk to finalise, which is why the flag is set first.
+	 * what the oracle is asked about: the caller's walk of it
+	 * where there is one, and otherwise one made here. A walk that
+	 * failed is still a walk to finalise, which is why the flag is
+	 * set first.
 	 */
-	walked = 1;
-	if (zr_walk(root, names, &wr, err, errlen) != 0)
-		goto out;
-	if (zr_oracle_init(&o, onto, from, &wr) != 0) {
+	rw = pre;
+	if (rw == NULL) {
+		walked = 1;
+		if (zr_walk(root, names, &wr, err, errlen) != 0)
+			goto out;
+		rw = &wr;
+	}
+	if (zr_oracle_init(&o, onto, from, rw) != 0) {
 		(void) za_failpx(&c, self, "the two sides and the result do "
 		    "not make an oracle");
 		goto out;
@@ -2540,7 +2577,7 @@ zr_apply_choices(const struct zr_resolution *res, const struct zr_parsed *m,
 				goto out;
 			continue;
 		}
-		eq = za_choice_done(&c, o, &wr, picks[i].zk_tree,
+		eq = za_choice_done(&c, o, rw, picks[i].zk_tree,
 		    picks[i].zk_pool, l->zl_path, l->zl_pathlen);
 		if (eq < 0)
 			goto out;

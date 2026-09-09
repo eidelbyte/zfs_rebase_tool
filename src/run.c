@@ -329,7 +329,14 @@ struct run {
 	 * "-" that says it had none.
 	 */
 	uint64_t		baseguid, fromguid, ontoguid;
-	int			dirmade, cloned, walked;
+	int			dirmade, cloned;
+	/*
+	 * Which of the run's walks are live, one bit each. The
+	 * result's is the one the applying1 self-check made and left
+	 * behind it, which the done gate reads rather than walking
+	 * the tree a second time (R13 of the code review).
+	 */
+	int			walked;
 	int			born;		/* the birth manifest is */
 	/*
 	 * Whether the unchanged set may be read off the walks. It may
@@ -349,11 +356,17 @@ struct run {
 	int			nheld;		/* holds taken, base first */
 	uint32_t		unanswered;	/* lines of the skeleton */
 	struct zr_names		*names;
-	struct zr_walk		wb, wf, wo;
+	struct zr_walk		wb, wf, wo, wr;
 	struct zr_oracle	*oracle;
 	struct zr_decision	d;
 	char			err[512];
 };
+
+/* The bits of run.walked, one per tree the run has read. */
+#define	ZR_W_BASE	0x1
+#define	ZR_W_FROM	0x2
+#define	ZR_W_ONTO	0x4
+#define	ZR_W_RESULT	0x8
 
 /* Which form is this? The dataset form is the one that is unusual. */
 static int
@@ -2170,19 +2183,19 @@ read_trees(struct run *r)
 	snapdir(path, sizeof (path), r->basemnt, r->base);
 	if (zr_walk(path, r->names, &r->wb, r->err, sizeof (r->err)) != 0)
 		return (-1);
-	r->walked = 1;
+	r->walked |= ZR_W_BASE;
 	if (stopped(r) != 0)
 		return (-1);
 	snapdir(path, sizeof (path), r->frommnt, r->fromsnap);
 	if (zr_walk(path, r->names, &r->wf, r->err, sizeof (r->err)) != 0)
 		return (-1);
-	r->walked = 2;
+	r->walked |= ZR_W_FROM;
 	if (stopped(r) != 0)
 		return (-1);
 	snapdir(path, sizeof (path), r->ontomnt, r->ontosnap);
 	if (zr_walk(path, r->names, &r->wo, r->err, sizeof (r->err)) != 0)
 		return (-1);
-	r->walked = 3;
+	r->walked |= ZR_W_ONTO;
 	if (stopped(r) != 0)
 		return (-1);
 
@@ -2357,8 +2370,27 @@ apply_manifest(struct run *r)
 	 * the putting back writes.
 	 */
 	if (rc == 0) {
+		struct zr_apply_kept kept;
+
+		/*
+		 * The walk of the result the check ends with is the
+		 * result as the done gate is about to ask about it --
+		 * read-only from here and written by nothing in
+		 * between -- so it is kept for the gate rather than
+		 * thrown away and made again (R13 of the code review).
+		 * The oracle over it is not: the gate is the check a
+		 * --continue makes, and what it is handed are the
+		 * three trees and not a memo of comparisons somebody
+		 * else has already made.
+		 */
+		memset(&kept, 0, sizeof (kept));
+		kept.zk_walk = &r->wr;
 		rc = zr_apply_check(&parsed, r->workmnt, r->names, &r->wo,
-		    &r->wf, 0, 1, &rst, r->err, sizeof (r->err));
+		    &r->wf, 0, 1, &rst, &kept, r->err, sizeof (r->err));
+		if (kept.zk_live != 0) {
+			zr_oracle_fini(kept.zk_oracle);
+			r->walked |= ZR_W_RESULT;
+		}
 		if (rc == 0 && r->o.verbose)
 			(void) fprintf(stderr, "zfs_rebase: put back %llu "
 			    "restored, %llu removed, %llu relinked\n",
@@ -2390,16 +2422,39 @@ release_trees(struct run *r)
 		zr_oracle_fini(r->oracle);
 		r->oracle = NULL;
 	}
-	if (r->walked >= 3)
+	if ((r->walked & ZR_W_RESULT) != 0)
+		zr_walk_fini(&r->wr);
+	if ((r->walked & ZR_W_ONTO) != 0)
 		zr_walk_fini(&r->wo);
-	if (r->walked >= 2)
+	if ((r->walked & ZR_W_FROM) != 0)
 		zr_walk_fini(&r->wf);
-	if (r->walked >= 1)
+	if ((r->walked & ZR_W_BASE) != 0)
 		zr_walk_fini(&r->wb);
 	r->walked = 0;
 	if (r->names != NULL) {
 		zr_names_destroy(r->names);
 		r->names = NULL;
+	}
+}
+
+/*
+ * The base and the decision's oracle alone, let go of as soon as the
+ * manifest is written: nothing after that reads either, and the two
+ * sides and the result stay for the done gate, which is handed them
+ * rather than walking the same three trees again (R13 of the code
+ * review). A run that stops before the gate lets them go in
+ * release_trees like everything else.
+ */
+static void
+release_base(struct run *r)
+{
+	if (r->oracle != NULL) {
+		zr_oracle_fini(r->oracle);
+		r->oracle = NULL;
+	}
+	if ((r->walked & ZR_W_BASE) != 0) {
+		zr_walk_fini(&r->wb);
+		r->walked &= ~ZR_W_BASE;
 	}
 }
 
@@ -2411,11 +2466,13 @@ teardown(struct run *r, int keep)
 	zr_decision_fini(&r->d);
 	if (r->oracle != NULL)
 		zr_oracle_fini(r->oracle);
-	if (r->walked >= 3)
+	if ((r->walked & ZR_W_RESULT) != 0)
+		zr_walk_fini(&r->wr);
+	if ((r->walked & ZR_W_ONTO) != 0)
 		zr_walk_fini(&r->wo);
-	if (r->walked >= 2)
+	if ((r->walked & ZR_W_FROM) != 0)
 		zr_walk_fini(&r->wf);
-	if (r->walked >= 1)
+	if ((r->walked & ZR_W_BASE) != 0)
 		zr_walk_fini(&r->wb);
 	if (r->names != NULL)
 		zr_names_destroy(r->names);
@@ -2829,7 +2886,14 @@ zr_run(const struct zr_run_opts *o)
 		goto done;
 	}
 	keep = 1;
-	release_trees(&r);
+	/*
+	 * The base and the decision's oracle go here, as they always
+	 * did; the two sides, the result the self-check walked and
+	 * the name table stay, because the done gate below is handed
+	 * them (R13 of the code review). A run that stops before that
+	 * gate lets them go with the rest.
+	 */
+	release_base(&r);
 	/*
 	 * A signal that came in while the apply or the self-check ran
 	 * leaves the gate it came in under, and writes no new one.
@@ -2841,6 +2905,12 @@ zr_run(const struct zr_run_opts *o)
 		goto done;
 	}
 	if (r.d.zd_nconflicts != 0) {
+		/*
+		 * Nothing of this run reads the trees again: what
+		 * comes next is either the wait at the conflicts gate
+		 * or a --continue, which opens the rebase for itself.
+		 */
+		release_trees(&r);
 		/*
 		 * The hand-off. The clean part of the rebase is in the
 		 * result and the conflicts are the manifest's; the
@@ -2905,6 +2975,7 @@ zr_run(const struct zr_run_opts *o)
 	 * flag that would skip it (documents-design.md, section 7).
 	 */
 	rc = final_verify(&r, &settled);
+	release_trees(&r);
 	if (!settled) {
 		/*
 		 * The gate was not passed: the check could not be
@@ -3026,6 +3097,7 @@ struct record {
 /* One verb in flight. */
 struct resume {
 	struct zr_zfs		*zfs;
+	int			zfslent;	/* the caller's, not to close */
 	char			result[ZR_NAME_MAX];
 	int			nomerge;	/* --no-merge on the command */
 	int			report;		/* the verb is --verify */
@@ -4115,9 +4187,9 @@ build_oracle(struct resume *s)
 	return (0);
 }
 
-/* The result as it stands now, walked again beside the two sides. */
-static int
-rescan_result(struct resume *s)
+/* The walk of the result and the oracle over it, let go of. */
+static void
+drop_result(struct resume *s)
 {
 	if (s->oracle != NULL) {
 		zr_oracle_fini(s->oracle);
@@ -4127,11 +4199,33 @@ rescan_result(struct resume *s)
 		zr_walk_fini(&s->w[ZS_RESULT]);
 		s->walked &= ~(1 << ZS_RESULT);
 	}
+}
+
+/* The result as it stands now, walked again beside the two sides. */
+static int
+rescan_result(struct resume *s)
+{
+	drop_result(s);
 	if (zr_walk(s->workmnt, s->names, &s->w[ZS_RESULT], s->err,
 	    sizeof (s->err)) != 0)
 		return (-1);
 	s->walked |= 1 << ZS_RESULT;
 	return (build_oracle(s));
+}
+
+/*
+ * The same trees, taken from a self-check that has just walked them
+ * rather than walked again. What zr_apply_check leaves behind it is
+ * the result as it stood when the check passed, and nothing writes
+ * between there and here, so this is the walk rescan_result would
+ * have made and the oracle build_oracle would have built over it
+ * (R13 of the code review).
+ */
+static void
+adopt_result(struct resume *s, const struct zr_apply_kept *kept)
+{
+	s->walked |= 1 << ZS_RESULT;
+	s->oracle = kept->zk_oracle;
 }
 
 /*
@@ -4460,6 +4554,7 @@ stage_apply(struct resume *s, const struct zr_parsed *m, const char *phase)
 {
 	struct zr_verify_report rep;
 	struct zr_apply_stats st, rst;
+	struct zr_apply_kept kept;
 	int fix, rc = -1;
 
 	fix = phase != NULL && strcmp(phase, ZR_PHASE_APPLYING1) == 0;
@@ -4490,8 +4585,17 @@ stage_apply(struct resume *s, const struct zr_parsed *m, const char *phase)
 		    (unsigned long long)st.zs_skipped,
 		    (unsigned long long)st.zs_bytes);
 	zr_verify_report_fini(&rep);
+	/*
+	 * The check walks the result itself, and the walk it ends
+	 * with is the one this verb goes on with, so the storage it
+	 * is to land in is handed over before the call and the walk
+	 * that was there is let go of first.
+	 */
+	drop_result(s);
+	memset(&kept, 0, sizeof (kept));
+	kept.zk_walk = &s->w[ZS_RESULT];
 	if (zr_apply_check(m, s->workmnt, s->names, &s->w[ZS_ONTO],
-	    &s->w[ZS_FROM], s->miss, fix, &rst, s->err,
+	    &s->w[ZS_FROM], s->miss, fix, &rst, &kept, s->err,
 	    sizeof (s->err)) != 0)
 		goto out;
 	if (fix != 0 && s->verbose)
@@ -4505,7 +4609,9 @@ stage_apply(struct resume *s, const struct zr_parsed *m, const char *phase)
 	 * behind it: the stage after this one classifies against the
 	 * result as it stands now.
 	 */
-	if (rescan_result(s) != 0)
+	if (kept.zk_live != 0)
+		adopt_result(s, &kept);
+	else if (rescan_result(s) != 0)
 		goto out;
 	rc = 0;
 out:
@@ -4564,6 +4670,82 @@ covered(const struct zr_resolution *r, const char *path, size_t len)
 }
 
 /*
+ * The same question with the answer in hand: one bit per name id for
+ * the names the resolution already has a line on. Both writers below
+ * ask it once per conflict mark and once per entry of the name list,
+ * and the scan above made each of them cost the whole document
+ * (R20 of the code review). A line a writer adds sets its bit too,
+ * since the scan would have found it from then on.
+ *
+ * A path no tree ever interned has no id and so no bit; the only
+ * question that can be about such a path is one that has no id
+ * either, and that one still goes to the scan. Out of memory is no
+ * failure here: the bitmap is left unbuilt and every question goes
+ * to the scan, which is what the code did before.
+ */
+struct rcover {
+	unsigned char	*rv_bits;
+	uint32_t	rv_n;		/* names the bitmap covers */
+};
+
+static void
+rcover_set(struct rcover *rv, const struct zr_names *ns, const char *path,
+    size_t len)
+{
+	zr_name_t nm;
+
+	if (rv->rv_bits == NULL)
+		return;
+	nm = zr_names_lookup(ns, path, len);
+	if (nm != ZR_NAME_NONE && nm < rv->rv_n)
+		rv->rv_bits[nm >> 3] |= (unsigned char)(1u << (nm & 7));
+}
+
+static void
+rcover_init(struct rcover *rv, const struct resume *s)
+{
+	uint32_t i;
+
+	rv->rv_bits = NULL;
+	rv->rv_n = s->names != NULL ? zr_names_count(s->names) : 0;
+	if (rv->rv_n == 0)
+		return;
+	rv->rv_bits = calloc(((size_t)rv->rv_n + 7) / 8, 1);
+	if (rv->rv_bits == NULL) {
+		rv->rv_n = 0;
+		return;
+	}
+	for (i = 0; i < s->res.zs_nlines; i++) {
+		rcover_set(rv, s->names,
+		    (const char *)s->res.zs_lines[i].zl_path,
+		    s->res.zs_lines[i].zl_pathlen);
+	}
+}
+
+static void
+rcover_fini(struct rcover *rv)
+{
+	free(rv->rv_bits);
+	rv->rv_bits = NULL;
+	rv->rv_n = 0;
+}
+
+static int
+rcover_has(const struct rcover *rv, const struct resume *s, const char *path,
+    size_t len)
+{
+	zr_name_t nm;
+
+	if (rv->rv_bits != NULL) {
+		nm = zr_names_lookup(s->names, path, len);
+		if (nm != ZR_NAME_NONE && nm < rv->rv_n)
+			return ((rv->rv_bits[nm >> 3] &
+			    (1u << (nm & 7))) != 0);
+	}
+	return (covered(&s->res, path, len));
+}
+
+/*
  * Is this name a directory? The result is asked first and onto after
  * it, since a name the result no longer holds is exactly what a gone
  * entry is. It decides one thing: the trailing slash of the line the
@@ -4618,14 +4800,16 @@ static int
 add_drift(struct resume *s, const struct zr_verify_report *rep)
 {
 	const struct zr_action *a;
+	struct rcover rv;
 	const char *nm;
 	size_t len;
 	uint32_t i, n = 0, back = 0;
 
+	rcover_init(&rv, s);
 	for (i = 0; i < s->man.zp_nactions; i++) {
 		a = &s->man.zp_actions[i];
 		if (a->za_kind != ZR_ACT_CONFLICT ||
-		    covered(&s->res, (const char *)a->za_path,
+		    rcover_has(&rv, s, (const char *)a->za_path,
 		    a->za_pathlen) != 0)
 			continue;
 		if (zr_resolution_add_conflict(&s->res, a->za_path,
@@ -4634,14 +4818,18 @@ add_drift(struct resume *s, const struct zr_verify_report *rep)
 			(void) snprintf(s->err, sizeof (s->err), "%s: cannot "
 			    "put back the conflict line %s", s->respath,
 			    (const char *)a->za_path);
+			rcover_fini(&rv);
 			return (-1);
 		}
+		rcover_set(&rv, s->names, (const char *)a->za_path,
+		    a->za_pathlen);
 		back++;
 	}
 	for (i = 0; i < rep->zv_ndiffs; i++) {
 		len = 0;
 		nm = zr_names_str(s->names, rep->zv_diffs[i].zn_name, &len);
-		if (nm == NULL || len == 0 || covered(&s->res, nm, len) != 0)
+		if (nm == NULL || len == 0 ||
+		    rcover_has(&rv, s, nm, len) != 0)
 			continue;
 		if (zr_resolution_add_drift(&s->res,
 		    (const unsigned char *)nm, len,
@@ -4649,10 +4837,13 @@ add_drift(struct resume *s, const struct zr_verify_report *rep)
 		    ZR_CH_KEEP) != 0) {
 			(void) snprintf(s->err, sizeof (s->err), "%s: cannot "
 			    "take the drift line %s", s->respath, nm);
+			rcover_fini(&rv);
 			return (-1);
 		}
+		rcover_set(&rv, s->names, nm, len);
 		n++;
 	}
+	rcover_fini(&rv);
 	if (n == 0 && back == 0)
 		return (0);
 	if (zr_doc_write(s->respath, emit_resolution, &s->res, s->err,
@@ -4691,6 +4882,7 @@ static int
 done_lines(struct resume *s, const struct zr_verify_report *rep, uint32_t *np)
 {
 	const struct zr_action *a;
+	struct rcover rv;
 	const char *nm;
 	size_t len;
 	uint32_t i, n = 0;
@@ -4707,10 +4899,12 @@ done_lines(struct resume *s, const struct zr_verify_report *rep, uint32_t *np)
 		s->res.zs_lines[i].zl_choice = ZR_CH_NONE;
 		n++;
 	}
+	rcover_init(&rv, s);
 	for (i = 0; i < rep->zv_ndiffs; i++) {
 		len = 0;
 		nm = zr_names_str(s->names, rep->zv_diffs[i].zn_name, &len);
-		if (nm == NULL || len == 0 || covered(&s->res, nm, len) != 0)
+		if (nm == NULL || len == 0 ||
+		    rcover_has(&rv, s, nm, len) != 0)
 			continue;
 		if (zr_resolution_add_drift(&s->res,
 		    (const unsigned char *)nm, len,
@@ -4718,14 +4912,16 @@ done_lines(struct resume *s, const struct zr_verify_report *rep, uint32_t *np)
 		    ZR_CH_NONE) != 0) {
 			(void) snprintf(s->err, sizeof (s->err), "%s: cannot "
 			    "take the drift line %s", s->respath, nm);
+			rcover_fini(&rv);
 			return (-1);
 		}
+		rcover_set(&rv, s->names, nm, len);
 		n++;
 	}
 	for (i = 0; i < s->man.zp_nactions; i++) {
 		a = &s->man.zp_actions[i];
 		if (a->za_kind != ZR_ACT_CONFLICT ||
-		    covered(&s->res, (const char *)a->za_path,
+		    rcover_has(&rv, s, (const char *)a->za_path,
 		    a->za_pathlen) != 0)
 			continue;
 		if (zr_resolution_add_conflict(&s->res, a->za_path,
@@ -4734,10 +4930,14 @@ done_lines(struct resume *s, const struct zr_verify_report *rep, uint32_t *np)
 			(void) snprintf(s->err, sizeof (s->err), "%s: cannot "
 			    "put back the conflict line %s", s->respath,
 			    (const char *)a->za_path);
+			rcover_fini(&rv);
 			return (-1);
 		}
+		rcover_set(&rv, s->names, (const char *)a->za_path,
+		    a->za_pathlen);
 		n++;
 	}
+	rcover_fini(&rv);
 	if (n == 0)
 		return (0);
 	if (zr_doc_write(s->respath, emit_resolution, &s->res, s->err,
@@ -5010,10 +5210,19 @@ static int
 apply_choices(struct resume *s, const struct zr_resolution *res)
 {
 	struct zr_apply_stats st, again;
+	struct zr_walk *pre;
 	const char *first;
 
+	/*
+	 * The result as this verb last read it, which is the tree the
+	 * first pass is made over: nothing has written to it since --
+	 * the conflicts gate writes the resolution and never the tree
+	 * -- so the walk in hand is the walk this call would have
+	 * made for itself (R13 of the code review).
+	 */
+	pre = (s->walked & (1 << ZS_RESULT)) != 0 ? &s->w[ZS_RESULT] : NULL;
 	if (zr_apply_choices(res, &s->man, s->workmnt, s->names,
-	    &s->w[ZS_ONTO], &s->w[ZS_FROM], &st, s->err,
+	    &s->w[ZS_ONTO], &s->w[ZS_FROM], pre, &st, s->err,
 	    sizeof (s->err)) != 0)
 		return (-1);
 	if (s->verbose)
@@ -5028,8 +5237,19 @@ apply_choices(struct resume *s, const struct zr_resolution *res)
 		    st.zs_latedirs == 1 ? "y" : "ies",
 		    (unsigned long long)st.zs_skipped,
 		    (unsigned long long)st.zs_bytes);
+	/*
+	 * The tree as the first pass left it, walked once. It is what
+	 * the second pass is made over, and, because that pass must
+	 * change nothing, it is also the tree the check after this
+	 * one asks about: the walk is made here, between the two
+	 * passes, and stands for both. Where the second pass does
+	 * change something the run stops below, and what the walk
+	 * says about the tree stops mattering.
+	 */
+	if (rescan_result(s) != 0)
+		return (-1);
 	if (zr_apply_choices(res, &s->man, s->workmnt, s->names,
-	    &s->w[ZS_ONTO], &s->w[ZS_FROM], &again, s->err,
+	    &s->w[ZS_ONTO], &s->w[ZS_FROM], &s->w[ZS_RESULT], &again, s->err,
 	    sizeof (s->err)) != 0)
 		return (-1);
 	if (again.zs_made == 0 && again.zs_dropped == 0 &&
@@ -5165,14 +5385,15 @@ stage2(struct resume *s)
 	if (ro_off(s) != 0)
 		goto out;
 	zr_pause(ZR_PHASE_APPLYING2);
-	if (apply_choices(s, &s->res) != 0)
-		goto out;
 	/*
 	 * And the trees this verb goes on with, which the choices have
-	 * just changed: the done gate classifies against the result as
-	 * it stands now.
+	 * just changed: apply_choices walks the result between its two
+	 * passes and the second pass leaves that walk true, so the
+	 * done gate classifies against the result as it stands now.
 	 */
-	if (rescan_result(s) != 0 || choices_hold(s) != 0)
+	if (apply_choices(s, &s->res) != 0)
+		goto out;
+	if (choices_hold(s) != 0)
 		goto out;
 	rc = 0;
 out:
@@ -5395,6 +5616,13 @@ settled_open(struct resume *s, const struct zr_verb_opts *o)
  * What every verb does first: it must be root and libzfs must open.
  * Both come before the identifier is resolved, because two of its
  * steps ask the pools what carries a record.
+ *
+ * A handle already in s is one the caller lent -- the fresh run's
+ * own, at its done gate -- and is opened by nobody here and closed
+ * by nobody here (R13 of the code review). The two handles could
+ * never disagree about anything: the tool leaves libzfs's mount
+ * table cache off, so every lookup re-reads the system table. One
+ * handle is simply one fewer.
  */
 static int
 resume_start(struct resume *s)
@@ -5403,6 +5631,8 @@ resume_start(struct resume *s)
 		(void) fprintf(stderr, "zfs_rebase: must run as root\n");
 		return (EXIT_PRECOND);
 	}
+	if (s->zfs != NULL)
+		return (EXIT_CLEAN);
 	if (zr_zfs_open(&s->zfs, s->err, sizeof (s->err)) != 0)
 		return (vfail(s, EXIT_PRECOND, "libzfs"));
 	return (EXIT_CLEAN);
@@ -5683,7 +5913,7 @@ resume_close(struct resume *s)
 				    "zfs_rebase: removed %s\n", s->rundir);
 		}
 	}
-	if (s->zfs != NULL)
+	if (s->zfs != NULL && s->zfslent == 0)
 		zr_zfs_close(s->zfs);
 }
 
@@ -5991,6 +6221,78 @@ done:
 }
 
 /*
+ * May the gate be handed the run's own three trees instead of
+ * reading them again? Only where they are the same three trees, read
+ * the same way, and where taking the result over will move no mount:
+ * the walks hold descriptors inside that mount, and a take that
+ * unmounted it would leave them pointing at a filesystem nobody is
+ * standing in any more.
+ *
+ * from and onto are snapshots held under the run's tag and cannot
+ * have changed; the result is read-only and unwritten since the
+ * self-check walked it. Anything else -- a snapshot the record now
+ * names differently, a tree the verb could not find, a result
+ * somebody moved -- and the gate walks for itself, which is what it
+ * always did (R13 of the code review).
+ */
+static int
+lend_ok(struct resume *s, const struct run *r)
+{
+	char at[ZR_NAME_MAX];
+	int rc;
+
+	if ((r->walked & (ZR_W_FROM | ZR_W_ONTO | ZR_W_RESULT)) !=
+	    (ZR_W_FROM | ZR_W_ONTO | ZR_W_RESULT) || r->names == NULL)
+		return (0);
+	if (s->report != 0 || s->post != 0 || s->miss != 0 ||
+	    s->gone[ZI_FROM] != 0 || s->gone[ZI_ONTO] != 0)
+		return (0);
+	if (s->dataset != in_dataset_form(r))
+		return (0);
+	if (strcmp(s->found[ZI_FROM], r->fromsnap) != 0 ||
+	    strcmp(s->found[ZI_ONTO], r->ontosnap) != 0)
+		return (0);
+	if (strcmp(s->workmnt, r->workmnt) != 0)
+		return (0);
+	rc = zr_zfs_mounted_at(s->zfs, s->result, at, sizeof (at), s->err,
+	    sizeof (s->err));
+	return (rc > 0 && strcmp(at, s->workmnt) == 0);
+}
+
+/*
+ * resume_trees' sibling, for the one caller that has the trees
+ * already: the result taken over exactly as there, and then the
+ * run's three walks and its name table moved into this verb, which
+ * owns them from here -- close_trees closes them before the settle
+ * unmounts anything, as it does with walks of its own. The oracle is
+ * built here rather than taken, so that the gate compares what it is
+ * given and inherits no memo of comparisons somebody else made.
+ */
+static int
+lend_trees(struct resume *s, struct run *r)
+{
+	/*
+	 * take_over and not report_mount: lend_ok has refused every
+	 * verb but the fresh run's own gate, which is no report and
+	 * has the result at the private mount already, so this take
+	 * moves no mount and the walks below stay good.
+	 */
+	if (take_over(s) != 0)
+		return (-1);
+	s->w[ZS_ONTO] = r->wo;
+	s->w[ZS_FROM] = r->wf;
+	s->w[ZS_RESULT] = r->wr;
+	s->walked = (1 << ZS_ONTO) | (1 << ZS_FROM) | (1 << ZS_RESULT);
+	s->names = r->names;
+	r->walked &= ~(ZR_W_FROM | ZR_W_ONTO | ZR_W_RESULT);
+	r->names = NULL;
+	if (s->verbose)
+		(void) fprintf(stderr, "zfs_rebase: the final check reads the "
+		    "three trees this run walked\n");
+	return (build_oracle(s));
+}
+
+/*
  * The fresh run's done gate, made by the verbs' own machinery over
  * the record the run has just written: the result walked again
  * beside from and onto, every action classified, and the release and
@@ -5999,6 +6301,11 @@ done:
  * killed before it and continued later makes exactly this check and
  * no other one, and the record is what both of them read --
  * zfs_rebase:quiet included, which the start latched there.
+ *
+ * What the run lends it are inputs and not answers: the same libzfs
+ * handle, the same three trees, and then the same function over
+ * them. Where anything about the rebase has moved, lend_ok says so
+ * and the gate reads everything for itself.
  *
  * *settled says whether the gate was passed, which the caller cannot
  * read off the status: 3 is the check that found drift, and done is
@@ -6016,10 +6323,24 @@ final_verify(struct run *r, int *settled)
 	o.verbose = r->o.verbose;
 	memset(&s, 0, sizeof (s));
 	s.verbose = r->o.verbose;
+	s.zfs = r->zfs;
+	s.zfslent = 1;
 	rc = resume_open_result(&s, &o, r->rds, 0);
 	if (rc == EXIT_CLEAN) {
-		rc = resume_trees(&s) != 0 ?
-		    vfail(&s, EXIT_INTERNAL, "verify") : done_gate(&s);
+		if (lend_ok(&s, r) != 0) {
+			rc = lend_trees(&s, r) != 0 ?
+			    vfail(&s, EXIT_INTERNAL, "verify") : done_gate(&s);
+		} else {
+			/*
+			 * The gate reads the trees itself, so this
+			 * run lets go of its own first: they are held
+			 * open inside the mount the take may have to
+			 * move.
+			 */
+			release_trees(r);
+			rc = resume_trees(&s) != 0 ?
+			    vfail(&s, EXIT_INTERNAL, "verify") : done_gate(&s);
+		}
 	}
 	*settled = s.settled;
 	resume_close(&s);

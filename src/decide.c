@@ -37,36 +37,49 @@ uf_union(zr_name_t *parent, zr_name_t a, zr_name_t b)
 /* A small open-addressing set of uint64 keys, for base-pool pairs. */
 struct u64set {
 	uint64_t	*keys;
-	uint32_t	cap;
-	uint32_t	n;
+	size_t		cap;
+	size_t		n;
 };
 
 #define	U64_EMPTY	((uint64_t)-1)
 
+/*
+ * The capacity is twice the hint, rounded up to a power of two, and
+ * every step of that is taken in size_t: "hint * 2" in a 32-bit
+ * integer wrapped to a small number for a hint above 2^31, and the
+ * set that came back had sixteen slots and a probe loop that would
+ * never find an empty one (R14 of the code review). A capacity whose
+ * byte size would overflow is refused instead, which the callers
+ * report as being out of memory.
+ */
 static int
-u64set_init(struct u64set *s, uint32_t hint)
+u64set_init(struct u64set *s, size_t hint)
 {
-	uint32_t i;
+	size_t cap = 16, want, i;
 
-	s->cap = 16;
-	while (s->cap < hint * 2)
-		s->cap *= 2;
+	want = hint > ((size_t)-1) / 2 ? (size_t)-1 : hint * 2;
+	while (cap < want) {
+		if (cap > ((size_t)-1) / (2 * sizeof (uint64_t)))
+			return (-1);
+		cap *= 2;
+	}
+	s->cap = cap;
 	s->n = 0;
-	s->keys = malloc((size_t)s->cap * sizeof (uint64_t));
+	s->keys = malloc(cap * sizeof (uint64_t));
 	if (s->keys == NULL)
 		return (-1);
-	for (i = 0; i < s->cap; i++)
+	for (i = 0; i < cap; i++)
 		s->keys[i] = U64_EMPTY;
 	return (0);
 }
 
-static uint32_t
+static size_t
 u64_hash(uint64_t k)
 {
 	k ^= k >> 33;
 	k *= 0xff51afd7ed558ccdULL;
 	k ^= k >> 33;
-	return ((uint32_t)k);
+	return ((size_t)(uint32_t)k);
 }
 
 static int u64set_add(struct u64set *s, uint64_t k);
@@ -75,7 +88,7 @@ static int
 u64set_grow(struct u64set *s)
 {
 	struct u64set old = *s;
-	uint32_t i;
+	size_t i;
 
 	if (u64set_init(s, old.cap) != 0) {
 		*s = old;
@@ -91,7 +104,7 @@ u64set_grow(struct u64set *s)
 static int
 u64set_add(struct u64set *s, uint64_t k)
 {
-	uint32_t i;
+	size_t i;
 
 	if (s->n * 2 >= s->cap && u64set_grow(s) != 0)
 		return (-1);
@@ -109,7 +122,7 @@ u64set_add(struct u64set *s, uint64_t k)
 static int
 u64set_has(const struct u64set *s, uint64_t k)
 {
-	uint32_t i = u64_hash(k) & (s->cap - 1);
+	size_t i = u64_hash(k) & (s->cap - 1);
 
 	while (s->keys[i] != U64_EMPTY) {
 		if (s->keys[i] == k)
@@ -272,6 +285,8 @@ pass_lumps(struct ctx *c)
 		for (qi = 0; qi < t->zt_npools; qi++) {
 			const struct zr_pool *q = &t->zt_pools[qi];
 			zr_pool_t origin = ZR_POOL_NONE;
+			zr_name_t first = ZR_NAME_NONE;
+			uint32_t firsti = 0;
 			int norigin = 0, hasnew = 0;
 			uint32_t i;
 
@@ -281,6 +296,19 @@ pass_lumps(struct ctx *c)
 
 				if (!settled(c, n))
 					continue;
+				/*
+				 * The first settled name of the pool,
+				 * taken here rather than looked for
+				 * again under every later name: it is
+				 * the same answer every time, and the
+				 * scan for it made the pass quadratic
+				 * in the names of one pool (R14 of the
+				 * code review).
+				 */
+				if (first == ZR_NAME_NONE) {
+					first = n;
+					firsti = i;
+				}
 				if (!inbase(c, n)) {
 					hasnew = 1;
 					continue;
@@ -295,20 +323,12 @@ pass_lumps(struct ctx *c)
 			}
 			if (norigin < 2 && !hasnew)
 				continue;
-			for (i = 1; i < q->zp_nnames; i++) {
+			if (first == ZR_NAME_NONE)
+				continue;
+			for (i = firsti + 1; i < q->zp_nnames; i++) {
 				zr_name_t n = q->zp_names[i];
-				zr_name_t first = ZR_NAME_NONE;
-				uint32_t j;
 
-				if (!settled(c, n))
-					continue;
-				for (j = 0; j < i; j++) {
-					if (settled(c, q->zp_names[j])) {
-						first = q->zp_names[j];
-						break;
-					}
-				}
-				if (first != ZR_NAME_NONE)
+				if (settled(c, n))
 					uf_union(c->parent, first, n);
 			}
 		}
@@ -443,42 +463,129 @@ pass_groups(struct ctx *c)
  * pass may skip: every partner of a shares a's result class, hence
  * its group, so a second partner would flag what a already did.
  */
+/*
+ * One settled name of a base pool, on one side's face: its result
+ * class, its pool on that side, and where it stands among the pool's
+ * settled names. The entries are sorted by class so that the names
+ * of one class stand together, and the position keeps the pool's own
+ * order inside a class, which is the order the flags must come in.
+ */
+struct heal_ent {
+	uint32_t	hz_klass;
+	uint32_t	hz_pos;
+	zr_pool_t	hz_q;
+	zr_name_t	hz_n;
+};
+
+static int
+heal_cmp(const void *a, const void *b)
+{
+	const struct heal_ent *x = a, *y = b;
+
+	if (x->hz_klass != y->hz_klass)
+		return (x->hz_klass < y->hz_klass ? -1 : 1);
+	return (x->hz_pos < y->hz_pos ? -1 : (x->hz_pos > y->hz_pos));
+}
+
+/*
+ * One base pool on one side's face. The pass wants, for every
+ * settled name a of the pool, the first later settled name b of the
+ * same result class whose pool on this side is a different one; that
+ * is what a healed split is, and (a, b) is what the group records as
+ * why. Comparing every pair said it in k squared comparisons for a
+ * pool of k names, run whether or not anything split (R14 of the
+ * code review).
+ *
+ * Sorting the settled names by class puts the candidates for one
+ * name next to each other, and inside a class one backward sweep
+ * answers all of them: the first later name with a different pool is
+ * the next name when that one differs, and otherwise it is the
+ * answer that name already has, since the two share a pool. The
+ * flags then go out in the pool's own order, so a group that two
+ * splits reach records the same why it recorded before.
+ *
+ * ents and part are the caller's scratch, one slot per name of the
+ * widest base pool. Returns nothing: every failure is a memory one
+ * and is the caller's.
+ */
 static void
+heal_side(struct ctx *c, const struct zr_pool *p, int side,
+    struct heal_ent *ents, zr_name_t *part)
+{
+	uint32_t cnt = 0, i, run;
+
+	for (i = 0; i < p->zp_nnames; i++) {
+		zr_name_t n = p->zp_names[i];
+
+		if (!settled(c, n))
+			continue;
+		ents[cnt].hz_klass = c->klass[n];
+		ents[cnt].hz_pos = cnt;
+		ents[cnt].hz_q = zr_tree_pool(c->t[side], n);
+		ents[cnt].hz_n = n;
+		cnt++;
+	}
+	if (cnt < 2)
+		return;
+	qsort(ents, cnt, sizeof (*ents), heal_cmp);
+	for (i = 0; i < cnt; i = run) {
+		uint32_t last;
+
+		for (run = i + 1; run < cnt &&
+		    ents[run].hz_klass == ents[i].hz_klass; run++)
+			continue;
+		last = run - 1;
+		part[ents[last].hz_pos] = ZR_NAME_NONE;
+		while (last > i) {
+			last--;
+			part[ents[last].hz_pos] =
+			    ents[last + 1].hz_q != ents[last].hz_q ?
+			    ents[last + 1].hz_n : part[ents[last + 1].hz_pos];
+		}
+	}
+	cnt = 0;
+	for (i = 0; i < p->zp_nnames; i++) {
+		zr_name_t n = p->zp_names[i];
+
+		if (!settled(c, n))
+			continue;
+		if (part[cnt] != ZR_NAME_NONE)
+			flag(c, n, ZR_CF_HEALED_SPLIT, n, part[cnt]);
+		cnt++;
+	}
+}
+
+static int
 pass_healed(struct ctx *c)
 {
 	const struct zr_tree *base = c->t[T_BASE];
+	struct heal_ent *ents;
+	zr_name_t *part;
+	uint32_t wide = 0;
 	zr_pool_t pi;
 	int side;
 
+	for (pi = 0; pi < base->zt_npools; pi++)
+		if (base->zt_pools[pi].zp_nnames > wide)
+			wide = base->zt_pools[pi].zp_nnames;
+	if (wide < 2)
+		return (0);
+	ents = malloc((size_t)wide * sizeof (*ents));
+	part = malloc((size_t)wide * sizeof (*part));
+	if (ents == NULL || part == NULL) {
+		free(ents);
+		free(part);
+		return (-1);
+	}
 	for (pi = 0; pi < base->zt_npools; pi++) {
 		const struct zr_pool *p = &base->zt_pools[pi];
 
-		for (side = T_FROM; side <= T_ONTO; side++) {
-			uint32_t i, j;
-
-			for (i = 0; i < p->zp_nnames; i++) {
-				zr_name_t a = p->zp_names[i];
-				zr_pool_t qa;
-
-				if (!settled(c, a))
-					continue;
-				qa = zr_tree_pool(c->t[side], a);
-				for (j = i + 1; j < p->zp_nnames; j++) {
-					zr_name_t b = p->zp_names[j];
-
-					if (!settled(c, b))
-						continue;
-					if (zr_tree_pool(c->t[side], b) == qa)
-						continue;
-					if (c->klass[a] == c->klass[b]) {
-						flag(c, a, ZR_CF_HEALED_SPLIT,
-						    a, b);
-						break;
-					}
-				}
-			}
-		}
+		for (side = T_FROM; side <= T_ONTO; side++)
+			heal_side(c, p, side, ents, part);
 	}
+	free(ents);
+	free(part);
+	return (0);
 }
 
 /*
@@ -619,10 +726,10 @@ static int
 pass_unexpressed(struct ctx *c)
 {
 	struct u64set covered;
-	uint32_t *scratch, *off;
+	uint32_t *scratch, *off, *seen;
 	zr_pool_t *bp;
 	zr_name_t *memb;
-	uint32_t maxn = 0, i, k, total;
+	uint32_t maxn = 0, i, k, total, nbase, stamp = 0;
 	int side, rc = 0;
 	zr_name_t n;
 
@@ -654,8 +761,9 @@ pass_unexpressed(struct ctx *c)
 	 */
 	if (maxn < c->nnames)
 		maxn = c->nnames;
+	nbase = c->t[T_BASE]->zt_npools;
 	scratch = malloc((((size_t)maxn + c->nnames + 1) * 2 +
-	    ((size_t)c->nclass + 1) + c->nnames) * sizeof (*scratch));
+	    ((size_t)c->nclass + 1) + c->nnames + nbase) * sizeof (*scratch));
 	if (scratch == NULL) {
 		u64set_fini(&covered);
 		return (-1);
@@ -663,6 +771,19 @@ pass_unexpressed(struct ctx *c)
 	bp = scratch;
 	off = scratch + ((size_t)maxn + c->nnames + 1) * 2;
 	memb = off + (size_t)c->nclass + 1;
+	seen = memb + c->nnames;
+	for (i = 0; i < nbase; i++)
+		seen[i] = 0;
+	/*
+	 * The base pools one side pool holds survivors of, each taken
+	 * once: the marker says which are in hand already, where a
+	 * scan of what was collected so far said it in a pass over
+	 * the names for every name. A pool of k hard links out of one
+	 * base pool then costs k and not k squared, and the pairs
+	 * that go into the set are the distinct ones alone -- which
+	 * is what they always were, since the set held one entry per
+	 * distinct pair (R14 of the code review).
+	 */
 	for (side = T_FROM; side <= T_ONTO; side++) {
 		const struct zr_tree *t = c->t[side];
 		zr_pool_t qi;
@@ -671,12 +792,18 @@ pass_unexpressed(struct ctx *c)
 			const struct zr_pool *q = &t->zt_pools[qi];
 			uint32_t cnt = 0, a, b;
 
+			stamp++;
 			for (i = 0; i < q->zp_nnames; i++) {
 				zr_name_t m = q->zp_names[i];
+				zr_pool_t pb;
 
-				if (settled(c, m) && inbase(c, m))
-					bp[cnt++] =
-					    zr_tree_pool(c->t[T_BASE], m);
+				if (!settled(c, m) || !inbase(c, m))
+					continue;
+				pb = zr_tree_pool(c->t[T_BASE], m);
+				if (pb >= nbase || seen[pb] == stamp)
+					continue;
+				seen[pb] = stamp;
+				bp[cnt++] = pb;
 			}
 			for (a = 0; a < cnt; a++) {
 				for (b = a + 1; b < cnt; b++) {
@@ -721,13 +848,15 @@ pass_unexpressed(struct ctx *c)
 		uint32_t cnt = 0, a, b, e;
 		zr_name_t first = ZR_NAME_NONE;
 
+		stamp++;
 		for (e = off[k]; e < off[k + 1]; e++) {
+			zr_pool_t pb;
+
 			n = memb[e];
-			bp[cnt] = zr_tree_pool(c->t[T_BASE], n);
-			for (a = 0; a < cnt; a++)
-				if (bp[a] == bp[cnt])
-					break;
-			if (a == cnt) {
+			pb = zr_tree_pool(c->t[T_BASE], n);
+			if (pb < nbase && seen[pb] != stamp) {
+				seen[pb] = stamp;
+				bp[cnt] = pb;
 				bp[cnt + c->nnames] = n;
 				cnt++;
 			}
@@ -1248,7 +1377,8 @@ zr_decide(const struct zr_tree *base, const struct zr_tree *from,
 	if (pass_labels(&c) != 0 || pass_classes(&c) != 0 ||
 	    pass_groups(&c) != 0)
 		goto done;
-	pass_healed(&c);
+	if (pass_healed(&c) != 0)
+		goto done;
 	pass_orphaned(&c);
 	if (pass_contested(&c) != 0 || pass_unexpressed(&c) != 0)
 		goto done;

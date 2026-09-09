@@ -20,6 +20,9 @@
 #ifdef __APPLE__
 #define	_DARWIN_C_SOURCE
 #endif
+#ifdef __linux__
+#define	_GNU_SOURCE
+#endif
 
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -69,6 +72,7 @@ tmp_template(char *buf, size_t len, const char *leaf)
 #define	CHUNK		((size_t)128 * 1024)	/* the oracle's buffer */
 #define	NOFLIP		((size_t)-1)
 #define	HOLE		4096			/* the sparse file's size */
+#define	BIGHOLE		(4 * MEG)		/* one the oracle may skip */
 #define	MTIME		1000000000		/* an mtime long past */
 
 /*
@@ -240,6 +244,53 @@ zerof(int dfd, const char *name, size_t len)
 	CHECK(len <= sizeof (z));
 	memset(z, 0, len);
 	wr(dfd, name, z, len, 0644);
+}
+
+/*
+ * ZC44 and ZC45: a file of one chunk of data, a hole, and one chunk
+ * of data, the last of them filled with tail. The offsets are whole
+ * chunks so that a filesystem which rounds a hole to its block size
+ * still has the same map for two files built the same way.
+ */
+static void
+sparsef(int dfd, const char *name, off_t hole, unsigned char tail)
+{
+	unsigned char *buf;
+	int fd;
+
+	buf = malloc(CHUNK);
+	CHECK(buf != NULL);
+	fd = openat(dfd, name, O_WRONLY | O_CREAT | O_EXCL, 0644);
+	CHECK(fd >= 0);
+	memset(buf, 'A', CHUNK);
+	CHECK(write(fd, buf, CHUNK) == (ssize_t)CHUNK);
+	CHECK(lseek(fd, hole, SEEK_CUR) >= 0);
+	memset(buf, tail, CHUNK);
+	CHECK(write(fd, buf, CHUNK) == (ssize_t)CHUNK);
+	CHECK(fchmod(fd, 0644) == 0);
+	CHECK(close(fd) == 0);
+	free(buf);
+}
+
+/* Does this filesystem keep the hole it was told to keep? */
+static int
+kept_hole(int dfd, const char *name)
+{
+#if defined(SEEK_HOLE)
+	off_t at;
+	int fd, got;
+
+	fd = openat(dfd, name, O_RDONLY);
+	CHECK(fd >= 0);
+	at = lseek(fd, 0, SEEK_HOLE);
+	got = at >= 0 && at < (off_t)(2 * CHUNK + BIGHOLE);
+	CHECK(close(fd) == 0);
+	return (got);
+#else
+	(void) dfd;
+	(void) name;
+	return (0);
+#endif
 }
 
 /*
@@ -659,6 +710,51 @@ check_trans(void)
 
 	/* seven bytes from each side of each of the two pairs */
 	CHECK(zr_oracle_bytes_read(t.t_o) == 4 * 7);
+	check_dense(&t);
+	trees_close(&t);
+}
+
+/*
+ * ZC44 and ZC45. Two files with the same hole map are equal without
+ * the hole being read at all, and a difference on the far side of
+ * one is still found; a hole against written zeros, which is the
+ * same bytes under a different map, is read and is equal (R27 of
+ * the code review). The byte count is asserted only where the
+ * filesystem under TMPDIR really kept the holes, and loosely: what
+ * it has to prove is that the four megabytes of each hole were not
+ * read, not where one filesystem or another puts the edges.
+ */
+static void
+check_sparse(void)
+{
+	char tmpl[256];
+	char err[256];
+	struct trees t;
+	int holes;
+
+	tmp_template(tmpl, sizeof (tmpl), "zryellows.XXXXXX");
+	trees_open(&t, tmpl);
+	sparsef(t.t_fd[0], "same", BIGHOLE, 'B');
+	sparsef(t.t_fd[1], "same", BIGHOLE, 'B');
+	sparsef(t.t_fd[0], "tail", BIGHOLE, 'C');
+	sparsef(t.t_fd[1], "tail", BIGHOLE, 'D');
+	holes = kept_hole(t.t_fd[0], "same");
+	trees_walk(&t);
+	CHECK(zr_oracle_assign(t.t_o, err, sizeof (err)) == 0);
+	CHECK(hand(&t, 0, "/same") == hand(&t, 1, "/same"));	/* ZC44 */
+	CHECK(hand(&t, 0, "/tail") != hand(&t, 1, "/tail"));
+	if (holes)
+		CHECK(zr_oracle_bytes_read(t.t_o) < 2 * (uint64_t)BIGHOLE);
+	check_dense(&t);
+	trees_close(&t);
+
+	tmp_template(tmpl, sizeof (tmpl), "zryellowh.XXXXXX");
+	trees_open(&t, tmpl);
+	holef(t.t_fd[0], "big", (off_t)(2 * CHUNK + BIGHOLE));
+	sparsef(t.t_fd[1], "big", BIGHOLE, 'B');
+	trees_walk(&t);
+	CHECK(zr_oracle_assign(t.t_o, err, sizeof (err)) == 0);
+	CHECK(hand(&t, 0, "/big") != hand(&t, 1, "/big"));	/* ZC45 */
 	check_dense(&t);
 	trees_close(&t);
 }
@@ -1270,6 +1366,7 @@ main(void)
 	check_big(MEG, MEG - 1, 0, 2 * (uint64_t)MEG);	/* ZC16 */
 	check_big(MEG, 0, 0, 2 * (uint64_t)CHUNK);
 	check_trans();
+	check_sparse();
 	check_readerr();
 	check_prune_all();
 	check_prune_changed();

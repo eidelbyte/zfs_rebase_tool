@@ -1358,7 +1358,7 @@ scene_check(struct scene *s, const char *work, int fix,
 
 	err[0] = '\0';
 	if (zr_apply_check(&s->sc_p, work, s->sc_ns, &s->sc_wo, &s->sc_wf, 0,
-	    fix, st, err, sizeof (err)) != 0)
+	    fix, st, NULL, err, sizeof (err)) != 0)
 		printf("  check: %s\n", err);
 	CHECK(err[0] == '\0');
 }
@@ -1618,8 +1618,8 @@ check_repair(void)
 	CHECK(zr_walk(v.vs_onto, v.vs_ns, &wo, err, sizeof (err)) == 0);
 	CHECK(zr_walk(v.vs_from, v.vs_ns, &wf, err, sizeof (err)) == 0);
 	err[0] = '\0';
-	if (zr_apply_check(&p, v.vs_res, v.vs_ns, &wo, &wf, 0, 1, &st, err,
-	    sizeof (err)) != 0)
+	if (zr_apply_check(&p, v.vs_res, v.vs_ns, &wo, &wf, 0, 1, &st, NULL,
+	    err, sizeof (err)) != 0)
 		printf("  check: %s\n", err);
 	CHECK(err[0] == '\0');
 	CHECK(st.zs_restored == 3);
@@ -1671,8 +1671,8 @@ check_repair_pool(void)
 	CHECK(zr_walk(v.vs_onto, v.vs_ns, &wo, err, sizeof (err)) == 0);
 	CHECK(zr_walk(v.vs_from, v.vs_ns, &wf, err, sizeof (err)) == 0);
 	err[0] = '\0';
-	if (zr_apply_check(&p, v.vs_res, v.vs_ns, &wo, &wf, 0, 1, &st, err,
-	    sizeof (err)) != 0)
+	if (zr_apply_check(&p, v.vs_res, v.vs_ns, &wo, &wf, 0, 1, &st, NULL,
+	    err, sizeof (err)) != 0)
 		printf("  check: %s\n", err);
 	CHECK(err[0] == '\0');
 	CHECK(st.zs_restored == 1);
@@ -1708,14 +1708,14 @@ check_check_nofix(void)
 	CHECK(zr_walk(v.vs_onto, v.vs_ns, &wo, err, sizeof (err)) == 0);
 	CHECK(zr_walk(v.vs_from, v.vs_ns, &wf, err, sizeof (err)) == 0);
 	err[0] = '\0';
-	CHECK(zr_apply_check(&p, v.vs_res, v.vs_ns, &wo, &wf, 0, 0, &st, err,
-	    sizeof (err)) == 0);
+	CHECK(zr_apply_check(&p, v.vs_res, v.vs_ns, &wo, &wf, 0, 0, &st, NULL,
+	    err, sizeof (err)) == 0);
 	CHECK(st.zs_restored == 0 && st.zs_removed == 0);
 	CHECK(absent(v.vs_res, "/gone"));
 	/* and with the fix it is applying1 again, and it mends them */
 	err[0] = '\0';
-	CHECK(zr_apply_check(&p, v.vs_res, v.vs_ns, &wo, &wf, 0, 1, &st, err,
-	    sizeof (err)) == 0);
+	CHECK(zr_apply_check(&p, v.vs_res, v.vs_ns, &wo, &wf, 0, 1, &st, NULL,
+	    err, sizeof (err)) == 0);
 	CHECK(st.zs_restored == 2);
 	CHECK(!absent(v.vs_res, "/gone"));
 	same_dirs(&v, v.vs_onto, v.vs_res);

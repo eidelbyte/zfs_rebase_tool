@@ -46,6 +46,7 @@
 #define	ZV_RMDIR	0x4	/* and that line removes a directory */
 #define	ZV_CHOSEN	0x8	/* a resolution line names it */
 #define	ZV_REMADE	0x10	/* a later line makes an object at it */
+#define	ZV_HASCONF	0x20	/* a conflict mark lies somewhere under it */
 
 /* How many entries the name list starts at and grows by. */
 #define	ZV_DIFF_MIN	16
@@ -167,6 +168,50 @@ zr_verify_blocked(const struct zr_parsed *m, const unsigned char *dir,
 }
 
 /*
+ * The same question, asked once for the whole check rather than once
+ * per still-present directory removal: every ancestor path of every
+ * conflict mark carries ZV_HASCONF, so a removal reads its own bit
+ * (R20 of the code review). The ancestors are taken off the mark's
+ * own path and not off the interned parent chain, which is what
+ * makes this the same rule zr_verify_blocked applies: a directory
+ * blocks when the mark's path starts with it and the next byte is a
+ * slash, and the root, whose path is one byte, matches nothing by
+ * that rule. A mark whose ancestor no tree ever interned has no bit
+ * to set and none to answer with; zv_blocked below asks the scan
+ * about a name with no id.
+ */
+static void
+zv_conf_marks(struct zv_ctx *c)
+{
+	const struct zr_action *a;
+	zr_name_t up;
+	uint32_t i;
+	size_t k;
+
+	for (i = 0; i < c->zc_m->zp_nactions; i++) {
+		a = &c->zc_m->zp_actions[i];
+		if (a->za_kind != ZR_ACT_CONFLICT)
+			continue;
+		for (k = 1; k < a->za_pathlen; k++) {
+			if (a->za_path[k] != '/')
+				continue;
+			up = zv_name(c, a->za_path, k);
+			if (up != ZR_NAME_NONE && up < c->zc_nnames)
+				c->zc_mark[up] |= ZV_HASCONF;
+		}
+	}
+}
+
+/* Does a conflict mark lie under this directory? */
+static int
+zv_blocked(const struct zv_ctx *c, zr_name_t nm, const struct zr_action *a)
+{
+	if (nm == ZR_NAME_NONE || nm >= c->zc_nnames)
+		return (zr_verify_blocked(c->zc_m, a->za_path, a->za_pathlen));
+	return ((c->zc_mark[nm] & ZV_HASCONF) != 0);
+}
+
+/*
  * Is this name inside a directory the manifest marked one of these
  * ways? ZV_CONFLICT says a conflict covers everything under it, so
  * that nothing there is classified at all; ZV_RMDIR says the
@@ -204,8 +249,8 @@ zv_rm(struct zv_ctx *c, const struct zr_action *a, zr_pool_t po, zr_pool_t pr,
 		*out = ZR_OC_DONE;
 		return (0);
 	}
-	if (a->za_isdir != 0 &&
-	    zr_verify_blocked(c->zc_m, a->za_path, a->za_pathlen) != 0) {
+	nm = zv_name(c, a->za_path, a->za_pathlen);
+	if (a->za_isdir != 0 && zv_blocked(c, nm, a) != 0) {
 		*out = ZR_OC_BLOCKED;
 		return (0);
 	}
@@ -227,7 +272,6 @@ zv_rm(struct zv_ctx *c, const struct zr_action *a, zr_pool_t po, zr_pool_t pr,
 	 * product and that line's to judge; the removal has done its
 	 * part. With no later line, whatever sits here is a stray.
 	 */
-	nm = zv_name(c, a->za_path, a->za_pathlen);
 	if (nm != ZR_NAME_NONE && nm < c->zc_nnames &&
 	    (c->zc_mark[nm] & ZV_REMADE) != 0)
 		*out = ZR_OC_DONE;
@@ -833,6 +877,7 @@ zr_verify_with(const struct zr_parsed *m, const struct zr_resolution *res,
 		}
 	}
 	zv_marks(&c);
+	zv_conf_marks(&c);
 	for (i = 0; i < m->zp_nactions; i++) {
 		a = &m->zp_actions[i];
 		if (a->za_kind == ZR_ACT_CONFLICT) {

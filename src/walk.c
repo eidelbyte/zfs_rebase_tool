@@ -79,8 +79,33 @@
  * an ACL is libc's acl_t and they are a field-by-field comparison
  * and acl_free, everywhere else it is text and they are strcmp and
  * free. Why is at zw_acl below.
+ *
+ * What zw_capture calls is one function over the two, zw_attrs(),
+ * which is given the directory descriptor the entry was found
+ * through and its leaf in it, and the name id for the platforms
+ * whose calls take a path. FreeBSD opens the leaf from that
+ * descriptor once and asks both questions of the descriptor; the
+ * others share the one wrapper below the section, which builds the
+ * path and calls the two above unchanged.
  * ---------------------------------------------------------------
  */
+
+/*
+ * The tree's ACL flavor. NFSv4 or POSIX.1e is a property of the
+ * mount and has the same answer for every file under it, so it is
+ * asked once, of the root, and kept in the walk (R15 of the code
+ * review). Only the FreeBSD section has anything to ask.
+ */
+#define	ZW_ACL_UNASKED	0
+#define	ZW_ACL_NONE	1
+#define	ZW_ACL_NFS4	2
+#define	ZW_ACL_POSIX	3
+
+#if defined(__FreeBSD__)
+struct zw_ctx;
+static const char *zw_full(struct zw_ctx *c, zr_name_t nm);
+static int zw_flavor(struct zw_ctx *c);
+#endif
 
 #if defined(__FreeBSD__) || defined(__APPLE__)
 #define	ZW_HAVE_ST_FLAGS	1	/* struct stat carries st_flags */
@@ -188,8 +213,15 @@ zw_xattr_sort(struct zr_attr *at)
 /* "system." plus an attribute name of at most 255 bytes, plus a NUL */
 #define	ZW_FBSD_NAME	264
 
+/*
+ * One attribute's value. fd is the entry opened from its own
+ * directory, where one could be opened, and then the kernel resolves
+ * nothing; full is the whole path and is used only for the types no
+ * descriptor can be had for -- a symbolic link, a device, a fifo, a
+ * socket -- where the _link calls take the path as they always did.
+ */
 static int
-zw_xattr_value(const char *full, int ns, const char *name,
+zw_xattr_value(int fd, const char *full, int ns, const char *name,
     unsigned char **valp, size_t *lenp)
 {
 	unsigned char *buf;
@@ -197,13 +229,15 @@ zw_xattr_value(const char *full, int ns, const char *name,
 	int i;
 
 	for (i = 0; i < ZW_XATTR_TRIES; i++) {
-		want = extattr_get_link(full, ns, name, NULL, 0);
+		want = fd >= 0 ? extattr_get_fd(fd, ns, name, NULL, 0) :
+		    extattr_get_link(full, ns, name, NULL, 0);
 		if (want < 0)
 			return (-1);
 		buf = malloc((size_t)want + 1);
 		if (buf == NULL)
 			return (-1);
-		n = extattr_get_link(full, ns, name, buf, (size_t)want);
+		n = fd >= 0 ? extattr_get_fd(fd, ns, name, buf, (size_t)want) :
+		    extattr_get_link(full, ns, name, buf, (size_t)want);
 		if (n >= 0) {
 			*valp = buf;
 			*lenp = (size_t)n;
@@ -218,17 +252,18 @@ zw_xattr_value(const char *full, int ns, const char *name,
 }
 
 /*
- * One namespace of one entry, never following the link.
- * extattr_list_link returns the names as a run of (one length byte,
- * that many bytes) pairs, none of them terminated -- not the
- * NUL-separated list the other two platforms return. Each name is
- * stored under its namespace prefix so that the two namespaces
- * cannot collide in za_xattrs. A namespace this process may not read
- * -- the system one, for anybody but root -- is no attributes, not a
- * failed walk, which is what zw_absent above decides.
+ * One namespace of one entry, never following the link. The list
+ * comes back as a run of (one length byte, that many bytes) pairs,
+ * none of them terminated -- not the NUL-separated list the other
+ * two platforms return. Each name is stored under its namespace
+ * prefix so that the two namespaces cannot collide in za_xattrs. A
+ * namespace this process may not read -- the system one, for anybody
+ * but root -- is no attributes, not a failed walk, which is what
+ * zw_absent above decides.
  */
 static int
-zw_xattr_ns(const char *full, int ns, const char *prefix, struct zr_attr *at)
+zw_xattr_ns(int fd, const char *full, int ns, const char *prefix,
+    struct zr_attr *at)
 {
 	char qname[ZW_FBSD_NAME];
 	unsigned char *val;
@@ -237,13 +272,15 @@ zw_xattr_ns(const char *full, int ns, const char *prefix, struct zr_attr *at)
 	size_t i, plen, len, vlen;
 	int rc;
 
-	want = extattr_list_link(full, ns, NULL, 0);
+	want = fd >= 0 ? extattr_list_fd(fd, ns, NULL, 0) :
+	    extattr_list_link(full, ns, NULL, 0);
 	if (want < 0)
 		return (zw_absent(errno) ? 0 : -1);
 	list = malloc((size_t)want + 1);
 	if (list == NULL)
 		return (-1);
-	n = extattr_list_link(full, ns, list, (size_t)want);
+	n = fd >= 0 ? extattr_list_fd(fd, ns, list, (size_t)want) :
+	    extattr_list_link(full, ns, list, (size_t)want);
 	if (n < 0) {
 		free(list);
 		return (zw_absent(errno) ? 0 : -1);
@@ -261,7 +298,8 @@ zw_xattr_ns(const char *full, int ns, const char *prefix, struct zr_attr *at)
 		}
 		memcpy(qname + plen, list + i, len);
 		qname[plen + len] = '\0';
-		if (zw_xattr_value(full, ns, qname + plen, &val, &vlen) != 0) {
+		if (zw_xattr_value(fd, full, ns, qname + plen, &val,
+		    &vlen) != 0) {
 			if (zw_absent(errno))
 				continue;
 			rc = -1;
@@ -277,37 +315,31 @@ zw_xattr_ns(const char *full, int ns, const char *prefix, struct zr_attr *at)
 }
 
 static int
-zw_xattrs(int dfd, const char *leaf, const char *full,
-    const struct stat *st, struct zr_attr *at)
+zw_xattrs(int fd, const char *full, struct zr_attr *at)
 {
-	(void) dfd;
-	(void) leaf;
-	(void) st;
-	if (zw_xattr_ns(full, EXTATTR_NAMESPACE_USER, "user.", at) != 0)
+	if (zw_xattr_ns(fd, full, EXTATTR_NAMESPACE_USER, "user.", at) != 0)
 		return (-1);
-	if (zw_xattr_ns(full, EXTATTR_NAMESPACE_SYSTEM, "system.", at) != 0)
+	if (zw_xattr_ns(fd, full, EXTATTR_NAMESPACE_SYSTEM, "system.",
+	    at) != 0)
 		return (-1);
 	zw_xattr_sort(at);
 	return (0);
 }
 
 /*
- * Which flavor of ACL this path carries: ZFS has NFSv4 ACLs, UFS has
- * POSIX.1e, and a filesystem with neither answers no to both.
- * lpathconf asks of the link itself.
+ * Which flavor of ACL this tree carries: ZFS has NFSv4 ACLs, UFS has
+ * POSIX.1e, and a filesystem with neither answers no to both. It is
+ * the mount's answer, so it is asked of the root and of nothing
+ * else; zw_flavor below keeps it.
  */
 static int
-zw_acl_flavor(const char *full, acl_type_t *typep)
+zw_root_flavor(const char *root)
 {
-	if (lpathconf(full, _PC_ACL_NFS4) > 0) {
-		*typep = ACL_TYPE_NFS4;
-		return (1);
-	}
-	if (lpathconf(full, _PC_ACL_EXTENDED) > 0) {
-		*typep = ACL_TYPE_ACCESS;
-		return (1);
-	}
-	return (0);
+	if (lpathconf(root, _PC_ACL_NFS4) > 0)
+		return (ZW_ACL_NFS4);
+	if (lpathconf(root, _PC_ACL_EXTENDED) > 0)
+		return (ZW_ACL_POSIX);
+	return (ZW_ACL_NONE);
 }
 
 /*
@@ -328,14 +360,14 @@ zw_acl_flavor(const char *full, acl_type_t *typep)
  * ordinary file would otherwise carry one.
  */
 static int
-zw_acl_get(const char *full, acl_type_t type, int skiptrivial,
+zw_acl_get(int fd, const char *full, acl_type_t type, int skiptrivial,
     zr_acl_t *outp)
 {
 	acl_t a;
 	int trivial;
 
 	*outp = NULL;
-	a = acl_get_link_np(full, type);
+	a = fd >= 0 ? acl_get_fd_np(fd, type) : acl_get_link_np(full, type);
 	if (a == NULL) {
 		if (zw_absent(errno) || errno == EINVAL)
 			return (0);
@@ -359,21 +391,74 @@ zw_acl_get(const char *full, acl_type_t type, int skiptrivial,
  * entries.
  */
 static int
-zw_acl(const char *full, const struct stat *st, struct zr_attr *at)
+zw_acl(int fd, const char *full, int flavor, const struct stat *st,
+    struct zr_attr *at)
 {
-	acl_type_t type;
-
 	at->za_acl = NULL;
 	at->za_dacl = NULL;
-	if (zw_acl_flavor(full, &type) == 0)
+	if (flavor == ZW_ACL_NFS4)
+		return (zw_acl_get(fd, full, ACL_TYPE_NFS4, 1, &at->za_acl));
+	if (flavor != ZW_ACL_POSIX)
 		return (0);
-	if (type == ACL_TYPE_NFS4)
-		return (zw_acl_get(full, ACL_TYPE_NFS4, 1, &at->za_acl));
-	if (zw_acl_get(full, ACL_TYPE_ACCESS, 0, &at->za_acl) != 0)
+	if (zw_acl_get(fd, full, ACL_TYPE_ACCESS, 0, &at->za_acl) != 0)
 		return (-1);
 	if (!S_ISDIR(st->st_mode))
 		return (0);
-	return (zw_acl_get(full, ACL_TYPE_DEFAULT, 0, &at->za_dacl));
+	return (zw_acl_get(fd, full, ACL_TYPE_DEFAULT, 0, &at->za_dacl));
+}
+
+/*
+ * The entry itself, opened from the descriptor of the directory it
+ * was found in, so that the kernel resolves one component and not a
+ * path of the tree's whole depth. A regular file and a directory can
+ * be opened for reading and nothing else can: a symbolic link cannot
+ * be opened without following it, and opening a device or a fifo
+ * would block or disturb it (apply.c says the same of its own
+ * reads). An open that fails for any other reason is no failure
+ * either -- what comes back is -1 and the caller asks by path, as
+ * this file did throughout before (R15 of the code review).
+ */
+static int
+zw_leaf_fd(int dfd, const char *leaf, const struct stat *st)
+{
+	if (S_ISREG(st->st_mode))
+		return (openat(dfd, leaf, O_RDONLY | O_NOFOLLOW | O_CLOEXEC));
+	if (S_ISDIR(st->st_mode))
+		return (openat(dfd, leaf, O_RDONLY | O_DIRECTORY |
+		    O_NOFOLLOW | O_CLOEXEC));
+	return (-1);
+}
+
+/*
+ * The extended attributes and the ACL of one entry, both asked of
+ * one descriptor where there can be one. The full path is built only
+ * for the entries there cannot be, which is what keeps zw_full out
+ * of the common case.
+ */
+static int
+zw_attrs(struct zw_ctx *c, zr_name_t nm, int dfd, const char *leaf,
+    const struct stat *st, struct zr_attr *at)
+{
+	const char *full = NULL;
+	int fd, rc, e;
+
+	fd = zw_leaf_fd(dfd, leaf, st);
+	if (fd < 0) {
+		full = zw_full(c, nm);
+		if (full == NULL) {
+			errno = ENOMEM;
+			return (-1);
+		}
+	}
+	rc = zw_xattrs(fd, full, at);
+	if (rc == 0)
+		rc = zw_acl(fd, full, zw_flavor(c), st, at);
+	if (fd >= 0) {
+		e = errno;
+		(void) close(fd);
+		errno = e;
+	}
+	return (rc);
 }
 
 /*
@@ -812,6 +897,7 @@ struct zw_ctx {
 	size_t		zc_rootlen;
 	char		*zc_full;
 	size_t		zc_fullcap;
+	int		zc_flavor;	/* ZW_ACL_, asked once of the root */
 	char		*zc_err;
 	size_t		zc_errlen;
 };
@@ -886,6 +972,48 @@ zw_full(struct zw_ctx *c, zr_name_t nm)
 	c->zc_full[c->zc_rootlen + len] = '\0';
 	return (c->zc_full);
 }
+
+#if defined(__FreeBSD__)
+
+/*
+ * The tree's ACL flavor, asked of the root the first time an entry
+ * wants it and kept for the rest of the walk: it is the mount's
+ * answer, and it used to be asked twice of every file (R15 of the
+ * code review). The root's own path is what zw_root_copy kept, and
+ * the empty string it leaves for the filesystem root is that root.
+ */
+static int
+zw_flavor(struct zw_ctx *c)
+{
+	if (c->zc_flavor == ZW_ACL_UNASKED)
+		c->zc_flavor = zw_root_flavor(c->zc_rootlen != 0 ?
+		    c->zc_root : "/");
+	return (c->zc_flavor);
+}
+
+#else
+
+/*
+ * The platforms whose calls take a path: the path is built and the
+ * two above are asked in turn, which is what zw_capture did itself
+ * before the FreeBSD section grew a descriptor form.
+ */
+static int
+zw_attrs(struct zw_ctx *c, zr_name_t nm, int dfd, const char *leaf,
+    const struct stat *st, struct zr_attr *at)
+{
+	const char *full = zw_full(c, nm);
+
+	if (full == NULL) {
+		errno = ENOMEM;
+		return (-1);
+	}
+	if (zw_xattrs(dfd, leaf, full, st, at) != 0)
+		return (-1);
+	return (zw_acl(full, st, at));
+}
+
+#endif	/* __FreeBSD__ */
 
 /* The same, but with something printable when memory ran out. */
 static const char *
@@ -1227,7 +1355,6 @@ zw_capture(struct zw_ctx *c, zr_pool_t pool, zr_name_t nm,
 {
 	struct zr_walk *w;
 	struct zr_attr *at, *tab;
-	const char *full;
 	uint32_t i;
 
 	w = c->zc_w;
@@ -1261,14 +1388,7 @@ zw_capture(struct zw_ctx *c, zr_pool_t pool, zr_name_t nm,
 	if (S_ISLNK(st->st_mode) &&
 	    zw_readlink(dfd, leaf, st, &at->za_target) != 0)
 		return (-1);
-	full = zw_full(c, nm);
-	if (full == NULL) {
-		errno = ENOMEM;
-		return (-1);
-	}
-	if (zw_xattrs(dfd, leaf, full, st, at) != 0)
-		return (-1);
-	return (zw_acl(full, st, at));
+	return (zw_attrs(c, nm, dfd, leaf, st, at));
 }
 
 /*
