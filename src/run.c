@@ -3476,8 +3476,15 @@ resolve_ident(struct zr_zfs *z, const char *ident, struct zr_ident *id)
 	 */
 	if (ident[0] == '/')
 		return (ident_path_step(ident, id));
-	valid = zr_zfs_name_valid(ident, 0, nameerr, sizeof (nameerr)) == 1;
+	/*
+	 * Held against ZFS's own rule as what it is spelled as: a name
+	 * with an '@' in it is a snapshot's and is valid or not by the
+	 * snapshot rule, so that "tank/x@nosuch", which names no
+	 * rebase, is refused as that and not as no name at all.
+	 */
 	at = strchr(ident, '@');
+	valid = zr_zfs_name_valid(ident, at != NULL, nameerr,
+	    sizeof (nameerr)) == 1;
 	if (at != NULL) {
 		dataset_of(ident, ds, sizeof (ds));
 		snap = at + 1;
