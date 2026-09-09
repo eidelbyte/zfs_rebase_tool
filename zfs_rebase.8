@@ -293,11 +293,22 @@ A fifo or a device node is made with
 .Fn mkfifoat
 or
 .Fn mknodat ,
-and a unix-domain socket the one way one can be made, with
+and a unix-domain socket the one way one can be made, by binding one;
+the mode, the owner, the times and the rest are written
+afterwards as for any other object, and an address too long for a socket
+is refused in words rather than truncated.
+On
+.Fx
+the bind is
+.Fn bindat ,
+which takes the parent's descriptor, so only the leaf name is measured
+and the depth of the run directory is out of it.
+Elsewhere it is
 .Fn bind
-at its path; the mode, the owner, the times and the rest are written
-afterwards as for any other object, and a path too long for a socket
-address is refused in words rather than truncated.
+at the root's path with the action's appended, both lengths are in the
+measurement, and the refusal says which of the two is at fault: the path
+in the tree, which no root would make room for, or the root this result
+happens to be written at.
 An object already standing where an action must act, and carrying an
 immutable, append-only or no-unlink flag of either the system or the user
 family, has those flags taken off before it is removed, rewritten or given
@@ -305,17 +316,25 @@ new attributes, and what the decision asks for goes back on last: ZFS
 refuses the unlink, the write and the attribute change alike on such an
 object, so an apply that did not clear them would stop part way through the
 tree.
-Above securelevel 0 the system three cannot be cleared at all, so a run
-whose
-.Ar onto
-side carries
+Above securelevel 0 the system three cannot be cleared at all, so two
+kinds of object are refused at precondition with exit 2, naming the first
+such name and the side it is on, before anything is touched.
+One of
+.Ar onto Ns 's
+carrying
 .Sy schg ,
 .Sy sappnd
 or
 .Sy sunlnk
-at a name the decision would remove, rewrite or re-pool is refused at
-precondition with exit 2, naming the first such name, before anything is
-touched.
+at a name the decision would remove, rewrite or re-pool, which the apply
+would have to unlock and could not.
+And one of
+.Ar from Ns 's
+carrying one of them that the decision would write into the result, which
+the apply would lock by writing the flag on, and which a
+.Fl -continue
+redoing the action, or the applying1 self-check putting it back, would
+then be unable to touch.
 The user three
 .Pq Sy uchg , Sy uappnd , Sy uunlnk
 are not in that guard: they come off for the owner at any securelevel, and

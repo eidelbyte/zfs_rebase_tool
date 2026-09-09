@@ -2238,23 +2238,146 @@ read_trees(struct run *r)
 }
 
 /*
- * The apply takes an object's immutable, append-only and no-unlink
- * flags off before it removes, rewrites or changes it, and puts back
- * what the decision asks for afterwards (src/apply.c, za_unlock_st).
- * Above securelevel 0 that is not possible for the system three:
- * zfs_freebsd_setattr calls securelevel_gt(cred, 0) before it will
- * change the flags of an object that carries schg, sappnd or sunlnk,
- * and returns EPERM. So an object of onto's -- the side the result
- * is written over -- that carries one of them and that the decision
- * would remove, rewrite or re-pool is refused here, before anything
- * is touched, naming the first such name; a run that went ahead
- * would stop part way through the apply with a half-written tree.
- *
- * Only the system flags enter this. The user three (uchg, uappnd,
- * uunlnk) come off at any securelevel for the owner, and this tool
- * runs as root; ZFS refuses to set them at all (EOPNOTSUPP), so on
- * the target they can only arrive on a tree from another
- * filesystem. Only FreeBSD has any of it.
+ * The three flags the guard is about, in the word the walk keeps.
+ * Only a BSD spells them; where the platform has none the mask is
+ * empty and the question below answers no for every object, which
+ * is the right answer there.
+ */
+#if defined(SF_IMMUTABLE) && defined(SF_APPEND) && defined(SF_NOUNLINK)
+#define	ZR_SYSFLAGS	((uint32_t)(SF_IMMUTABLE | SF_APPEND | SF_NOUNLINK))
+#else
+#define	ZR_SYSFLAGS	((uint32_t)0)
+#endif
+
+/* Does this side's pool carry one of the three? */
+static int
+sysflagged(const struct zr_walk *w, zr_pool_t i)
+{
+	return (i < w->zw_nattrs &&
+	    (w->zw_attrs[i].za_flags & ZR_SYSFLAGS) != 0);
+}
+
+/* The result pool one name comes to, or none. */
+static zr_pool_t
+result_of(const struct zr_decision *d, zr_name_t n)
+{
+	if (n >= d->zd_nnames)
+		return (ZR_POOL_NONE);
+	return (d->zd_result_of[n]);
+}
+
+/*
+ * Would the decision remove, rewrite or re-pool this object of
+ * onto's? Any of the three has the apply take the flags off it
+ * first, which above securelevel 0 it cannot do.
+ */
+static int
+onto_changed(const struct zr_decision *d, const struct zr_pool *q)
+{
+	uint32_t j;
+
+	for (j = 0; j < q->zp_nnames; j++) {
+		zr_pool_t k = result_of(d, q->zp_names[j]);
+
+		if (k == ZR_POOL_NONE)
+			return (1);		/* removed */
+		if (d->zd_pools[k].zr_content != q->zp_content ||
+		    d->zd_pools[k].zr_nnames != q->zp_nnames)
+			return (1);		/* rewritten or re-pooled */
+	}
+	return (0);
+}
+
+/*
+ * Would the decision write this object of from's into the result?
+ * The result takes from's object at one of its names, and onto does
+ * not already hold that same object there -- so a cp, a write or an
+ * attribute change carries it over, and za_attrs stamps the flag on
+ * at the end of it. Where onto holds it already, pool for pool and
+ * content for content, the manifest has nothing to say about the
+ * name and nothing is written.
+ */
+static int
+from_written(const struct zr_decision *d, const struct zr_tree *ot,
+    const struct zr_pool *q)
+{
+	uint32_t j;
+
+	for (j = 0; j < q->zp_nnames; j++) {
+		zr_name_t n = q->zp_names[j];
+		zr_pool_t k = result_of(d, n);
+		zr_pool_t op;
+
+		if (k == ZR_POOL_NONE ||
+		    d->zd_pools[k].zr_content != q->zp_content)
+			continue;	/* not from's object at this name */
+		op = zr_tree_pool(ot, n);
+		if (op != ZR_POOL_NONE &&
+		    ot->zt_pools[op].zp_content == q->zp_content &&
+		    ot->zt_pools[op].zp_nnames == d->zd_pools[k].zr_nnames)
+			continue;	/* onto has it: nothing is written */
+		return (1);
+	}
+	return (0);
+}
+
+/* One line naming the object and the side it is on; see run.h. */
+static void
+flags_say(char *err, size_t errlen, const struct zr_names *names,
+    zr_name_t n, int level, const char *side, const char *what)
+{
+	const char *p;
+	size_t l;
+
+	if (err == NULL || errlen == 0)
+		return;
+	p = zr_names_str(names, n, &l);
+	(void) snprintf(err, errlen, "securelevel %d: %s carries schg, "
+	    "sappnd or sunlnk on %s's side and would %s", level,
+	    p == NULL ? "(a name the table does not hold)" : p, side, what);
+}
+
+int
+zr_flags_refused(const struct zr_decision *d, const struct zr_walk *onto,
+    const struct zr_walk *from, const struct zr_names *names, int level,
+    char *err, size_t errlen)
+{
+	const struct zr_tree *t;
+	uint32_t i;
+
+	if (err != NULL && errlen > 0)
+		err[0] = '\0';
+	if (level <= 0 || ZR_SYSFLAGS == 0 || d == NULL || onto == NULL ||
+	    from == NULL || names == NULL)
+		return (0);
+	t = &onto->zw_tree;
+	for (i = 0; i < t->zt_npools; i++) {
+		if (sysflagged(onto, i) == 0 ||
+		    onto_changed(d, &t->zt_pools[i]) == 0)
+			continue;
+		flags_say(err, errlen, names, t->zt_pools[i].zp_names[0],
+		    level, "onto", "change");
+		return (1);
+	}
+	t = &from->zw_tree;
+	for (i = 0; i < t->zt_npools; i++) {
+		if (sysflagged(from, i) == 0 ||
+		    from_written(d, &onto->zw_tree, &t->zt_pools[i]) == 0)
+			continue;
+		flags_say(err, errlen, names, t->zt_pools[i].zp_names[0],
+		    level, "from", "be written into the result");
+		return (1);
+	}
+	return (0);
+}
+
+/*
+ * The guard itself: what securelevel this box is at, and then the
+ * question above. The sysctl is the only part of it FreeBSD alone
+ * can answer, which is why it is the only part behind the #if; a
+ * box that cannot be booted above securelevel 0 without a reboot
+ * can still be asked what the rule says (tests/MATRIX.md, ZX23 and
+ * ZX242).
  */
 static int
 securelevel_guard(struct run *r)
@@ -2262,40 +2385,12 @@ securelevel_guard(struct run *r)
 #if defined(__FreeBSD__)
 	int level = 0;
 	size_t len = sizeof (level);
-	const struct zr_tree *ot = &r->wo.zw_tree;
-	uint32_t i, j;
 
-	if (sysctlbyname("kern.securelevel", &level, &len, NULL, 0) != 0 ||
-	    level <= 0)
+	if (sysctlbyname("kern.securelevel", &level, &len, NULL, 0) != 0)
 		return (0);
-	for (i = 0; i < ot->zt_npools; i++) {
-		const struct zr_pool *q = &ot->zt_pools[i];
-		const struct zr_attr *a = &r->wo.zw_attrs[i];
-		int touched = 0;
-
-		if ((a->za_flags & (SF_IMMUTABLE | SF_APPEND |
-		    SF_NOUNLINK)) == 0)
-			continue;
-		for (j = 0; j < q->zp_nnames && !touched; j++) {
-			zr_name_t n = q->zp_names[j];
-			zr_pool_t k = r->d.zd_result_of[n];
-
-			if (k == ZR_POOL_NONE)
-				touched = 1;	/* removed */
-			else if (r->d.zd_pools[k].zr_content != q->zp_content ||
-			    r->d.zd_pools[k].zr_nnames != q->zp_nnames)
-				touched = 1;	/* rewritten or re-pooled */
-		}
-		if (touched) {
-			size_t l;
-
-			(void) snprintf(r->err, sizeof (r->err),
-			    "securelevel %d: %s carries schg, sappnd or "
-			    "sunlnk and would change", level,
-			    zr_names_str(r->names, q->zp_names[0], &l));
-			return (-1);
-		}
-	}
+	if (zr_flags_refused(&r->d, &r->wo, &r->wf, r->names, level, r->err,
+	    sizeof (r->err)) != 0)
+		return (-1);
 #else
 	(void) r;
 #endif

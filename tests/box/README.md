@@ -562,8 +562,18 @@ Section 2 is the securelevel refusal itself, and this script raises
 nothing and restores nothing: it prints the procedure and leaves it
 to a human. Above securelevel 0 the system flags cannot be cleared
 at all, so src/run.c's securelevel_guard refuses before anything is
-written, naming the first onto-side object that carries schg, sappnd
-or sunlnk and would change. It cannot be checked in a reusable box
+written, naming the first object that carries schg, sappnd or
+sunlnk and the side it is on. Both sides are read: onto's, where
+the apply would have to take the flag off and could not, and
+from's, where the apply would write the flag on and lock the object
+against whatever has to touch it next -- a --continue redoing the
+action, or the applying1 self-check putting it back. The rule
+itself, given a level, is check_run.c's on any machine (ZX242);
+what this section is about is the sysctl and the real run.
+Two trees are wanted for it, then, not one: an schg file on onto
+that the manifest removes, and an schg file on from that the
+manifest copies in, each of which must be refused on its own.
+It cannot be checked in a reusable box
 session: securelevel can be raised at any time and only a reboot
 lowers it, and an schg file made under it cannot be removed again
 either. The printed procedure is a throwaway VM or a jail with its
@@ -922,7 +932,13 @@ clean.
   procedure and runs nothing, because securelevel can be raised and
   only a reboot lowers it. It wants a throwaway VM or a jail, which
   sprints/future-features.md carries as a bhyve guest for the
-  harness.
+  harness. Both halves of it are owed now, onto's and from's.
+- ZA70, the socket made with bindat(2): the FreeBSD branch of
+  za_mksock has never been run. make check-freebsd reaches the
+  refusal and the leaf that fits (check_apply.c, check_sock_long),
+  and a fixture carrying a socket run from a real run directory --
+  /var/db/zfs_rebase/<pool>/<dataset>/mnt, which is what used to be
+  in the measurement -- is the rest of it.
 - the scale-timing numbers of sprints/sprint-5/scale-timing.md,
   which run-scale.sh takes but which no trip has run.
 - the SEEK_DATA timing over large freshly written files, which

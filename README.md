@@ -273,10 +273,16 @@ reaches the engine or either document.
 
 Special files are carried like everything else. A fifo or a device
 node is made with mkfifoat(2) or mknodat(2), and a unix-domain
-socket the one way one can be made, with bind(2) at its path; the
-mode, the owner, the times and the rest go on afterwards as for any
-other object, and a path too long for a socket address is refused in
-words rather than truncated.
+socket the one way one can be made, by binding one; the mode, the
+owner, the times and the rest go on afterwards as for any other
+object, and an address too long for a socket is refused in words
+rather than truncated. On FreeBSD the bind is bindat(2), which takes
+the parent's descriptor, so only the leaf name is measured and the
+depth of the run directory is out of it. Elsewhere it is bind(2) at
+the root's path with the action's appended, both lengths are in the
+measurement, and the refusal says which of the two is at fault: the
+path in the tree, which no root would make room for, or the root
+this result happens to be written at.
 
 An object already standing where an action must act, and carrying an
 immutable, append-only or no-unlink flag of either the system or the
@@ -285,13 +291,18 @@ rewritten or given new attributes, and what the decision asks for
 goes back on last. ZFS refuses the unlink, the write and the
 attribute change alike on such an object, so an apply that did not
 clear them would stop part way through the tree. Above securelevel 0
-the system three cannot be cleared at all, so a run whose onto side
-carries schg, sappnd or sunlnk at a name the decision would remove,
-rewrite or re-pool is refused at precondition with exit 2, naming
-the first such name, before anything at all is touched. The user
-three (uchg, uappnd, uunlnk) are not in that guard: they come off
-for the owner at any securelevel, and ZFS refuses to set them at
-all.
+the system three cannot be cleared at all, so two kinds of object
+are refused at precondition with exit 2, naming the first such name
+and the side it is on, before anything at all is touched: one of
+onto's carrying schg, sappnd or sunlnk at a name the decision would
+remove, rewrite or re-pool, which the apply would have to unlock and
+could not; and one of from's carrying one of them that the decision
+would write into the result, which the apply would lock by writing
+the flag on and which a --continue redoing the action, or the
+applying1 self-check putting it back, would then be unable to touch.
+The user three (uchg, uappnd, uunlnk) are not in that guard: they
+come off for the owner at any securelevel, and ZFS refuses to set
+them at all.
 
 A rebase outlives the process that started it. While it is open the
 result carries a record of four user properties -- set by the create

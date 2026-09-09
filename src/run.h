@@ -7,6 +7,7 @@
 
 #include "decide.h"
 #include "manifest.h"
+#include "walk.h"
 
 #define	ZR_NAME_MAX	1024	/* dataset names and mountpoints */
 
@@ -76,6 +77,48 @@ struct zr_run_opts {
 };
 
 int zr_run(const struct zr_run_opts *);
+
+/*
+ * Would a system file flag stop the apply at this securelevel?
+ *
+ * The apply takes an object's immutable, append-only and no-unlink
+ * flags off before it removes, rewrites or changes it, and puts back
+ * what the decision asks for afterwards (src/apply.c, za_unlock_st).
+ * Above securelevel 0 that is not possible for the system three:
+ * zfs_freebsd_setattr calls securelevel_gt(cred, 0) before it will
+ * change the flags of an object carrying schg, sappnd or sunlnk, and
+ * returns EPERM. Setting one is allowed at every level; only taking
+ * it off is not. So two kinds of object are refused, before anything
+ * is touched:
+ *
+ *	onto's, the side the result is written over: one carrying a
+ *	system flag at a name the decision would remove, rewrite or
+ *	re-pool has to be unlocked first, and cannot be;
+ *
+ *	from's, the side the result is written out of: one carrying a
+ *	system flag that the decision puts into the result has that
+ *	flag written by za_attrs, and is locked from that moment. A
+ *	--continue that has to redo the action, or the applying1
+ *	self-check's put-back, then meets the same EPERM the onto half
+ *	exists to prevent, with the tree part written.
+ *
+ * Only the system flags enter this. The user three (uchg, uappnd,
+ * uunlnk) come off for the owner at any securelevel, and this tool
+ * runs as root; ZFS refuses to set them at all (EOPNOTSUPP), so on
+ * the target they can only arrive on a tree from another
+ * filesystem. Only a BSD has any of it.
+ *
+ * level is the securelevel to answer for, which is why this is a
+ * function and not the sysctl read itself: the caller reads
+ * kern.securelevel and this decides. Returns 1 with one line in err
+ * naming the first such path and the side it is on, or 0 when there
+ * is nothing to refuse -- which is every level of 0 or less, where
+ * the apply clears the flags itself, and every platform that has no
+ * system flags to carry.
+ */
+int zr_flags_refused(const struct zr_decision *d, const struct zr_walk *onto,
+    const struct zr_walk *from, const struct zr_names *names, int level,
+    char *err, size_t errlen);
 
 /*
  * What a verb was given (documents-design.md, section 11.4). One

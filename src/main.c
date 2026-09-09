@@ -246,9 +246,17 @@ build_fixture(const char *path, const char *dir)
 			zr_fixture_free(fx);
 			return (EXIT_PRECOND);
 		}
-		if (zr_fixture_build(fx, (enum zr_fixture_tree)i, buf) != 0) {
+		/*
+		 * The form that says why: a fixture of another platform
+		 * is refused with the line and the platform it names,
+		 * and every other failure with the path and the errno.
+		 * The bare builder would print ENOTSUP's own words,
+		 * "Operation not supported", which say neither.
+		 */
+		if (zr_fixture_build_err(fx, (enum zr_fixture_tree)i, buf,
+		    err, sizeof (err)) != 0) {
 			(void) fprintf(stderr, "zfs_rebase: build %s: %s\n",
-			    buf, strerror(errno));
+			    buf, err);
 			zr_fixture_free(fx);
 			return (EXIT_PRECOND);
 		}

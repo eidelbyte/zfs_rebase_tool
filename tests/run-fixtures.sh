@@ -15,6 +15,12 @@
 # so a run that emits exactly the right document with the wrong
 # status fails the fixture rather than passing it.
 #
+# One more thing the driver is held to here, and not the engine
+# (ZF64): --build-fixture over a fixture of another platform prints
+# the builder's own worded reason, naming the line and the platform,
+# rather than the bare errno of ENOTSUP. That case only exists off
+# the platform the fixture names, so on FreeBSD it is a skip.
+#
 # A fixture with a "platform" line is that platform's alone, and
 # tests/fixtures/freebsd/ is where those live -- out of the flat
 # directory, which every host builds whole. One is skipped here
@@ -91,6 +97,33 @@ for f in tests/fixtures/*.zrt tests/fixtures/freebsd/*.zrt; do
 		n=$((n + 1))
 	fi
 done
+# ZF64: the off-platform refusal, in the builder's words.
+p=tests/fixtures/freebsd/acl-nfsv4.zrt
+if [ ! -f "$p" ]; then
+	echo "FAIL $p is not there (ZF64)"; rc=1
+elif [ "$host" = freebsd ]; then
+	echo "skip ZF64 (it wants a host no fixture's platform line names)"
+else
+	d="$tmp/off-platform"
+	mkdir -p "$d/base" || rc=1
+	msg=$("$bin" --build-fixture "$p" "$d" 2>&1)
+	st=$?
+	case "$msg" in
+	*"platform freebsd"*"builds on no other platform"*)
+		if [ "$st" -eq 2 ]; then
+			echo "ok   $p (off-platform refusal)"
+		else
+			echo "FAIL $p (off-platform refusal, exit $st, want 2)"
+			rc=1
+		fi
+		;;
+	*)
+		echo "FAIL $p (off-platform refusal said: $msg)"
+		rc=1
+		;;
+	esac
+fi
+
 # A fixture may have set an immutable or append-only flag, and rm(1)
 # cannot remove what those hold down. The names are the same on
 # FreeBSD and on macOS.

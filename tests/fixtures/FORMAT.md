@@ -46,9 +46,11 @@ it, because nothing else can build them: acl=, since a text ACL is
 FreeBSD's own, and an extended attribute of the system namespace,
 which the Mac has no namespaces for. A fixture without the line
 builds anywhere, and a fixture off its platform is refused where it
-would be built: --edit-fixture says so in words, and --build-fixture
-prints the errno of the refusal, "Operation not supported", since it
-calls the form of the builder that takes no message.
+would be built. Both modes say so in the builder's own words, which
+name the line and the platform it demands:
+
+    zfs_rebase: build DIR/base: line 1: this fixture says
+    "platform freebsd", and builds on no other platform
 
 Such a fixture lives in tests/fixtures/freebsd/ rather than in the
 flat directory, which every host builds whole; tests/run-fixtures.sh

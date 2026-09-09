@@ -600,6 +600,14 @@ line the chosen side lacks {empty in the result, held open by a
 keep line under it}; the line the manifest never marked; the pass
 {first, second}.
 
+And three the reading of 2026-09-08 added: the umask the apply
+inherits {0, 077}, since every object it makes is created under it
+and given its mode afterwards; the socket address {the tree path
+alone too long, the root and the tree path together too long, the
+descriptor form FreeBSD's bindat(2) takes}; and the removal that
+removed nothing {the name gone before the stat, gone between the
+stat and the unlink}.
+
 | cell | scenario | disposition |
 |------|----------|-------------|
 | ZA1 | cp of a regular file: bytes and type | covered: check_apply.c |
@@ -659,6 +667,11 @@ keep line under it}; the line the manifest never marked; the pass
 | ZA64 | a directory line whose chosen side has no such directory while a line under it says keep: the pre-scan marks it blocked and the drop loop skips it, counted as left alone, so the apply asks nothing of the disk while it acts and the run does not die on the ENOTEMPTY | covered: check_apply.c; box: run-resolution.sh case 9 |
 | ZA65 | applying2 leaves every keep line exactly as it is and carries out every onto and from line, in one document | covered: check_apply.c |
 | ZA66 | a conflict line for a name the manifest never marked is the person's instruction and is carried out like a drift line with that choice: its group number is not read, so it pools with nobody | covered: check_apply.c; box: run-resolution.sh case 10 |
+| ZA67 | a drop line for a name the result no longer holds: the removal removed nothing, so it is counted as left alone and not as dropped | covered: check_apply.c |
+| ZA68 | the apply's own umask: every object it creates is created with the mode the manifest asked for and not that mode under the umask the caller happened to leave behind | covered: check_apply.c, which runs one apply under umask 077 and reads the modes back, and reads the umask again afterwards |
+| ZA69 | a socket the address cannot hold: the refusal says which of the two lengths is at fault, the path in the tree or the root the result is written at | covered: check_apply.c, over the path form, which is every platform but FreeBSD |
+| ZA70 | the same socket on FreeBSD, where bindat(2) takes the parent descriptor and only the leaf goes into sun_path, so the depth of the run directory is out of the measurement and a socket that fits in the source dataset fits in the result | planned: box, box/run-fixture.sh over tests/fixtures/sock-copy.zrt, whose run directory is /var/db/zfs_rebase/<pool>/<dataset>/mnt |
+| ZA71 | one group whose names are many: every line after the first is pooled onto the first, whatever the order the pre-scan reads them in | covered: check_apply.c, six names of one pool in one group |
 
 ## ZX -- the ZFS layer (zfs ops, driver, guards)
 
@@ -931,6 +944,7 @@ again.
 | ZX239 | --verify on an open rebase whose result a hand unmounted -- the mounted-nowhere branch, which is also what a reboot leaves: the check mounts it at the run directory's mnt with the run's own zfs_mount_at, reads it there and unmounts it again, leaving it mounted nowhere and the run directory, its mnt and its documents exactly as they were | planned: box, box/run-strays.sh's unmounted case |
 | ZX240 | and the --continue after that report takes the result over as usual, mounting it privately again and reaching its gate: a report that mounted for itself leaves nothing for the next verb to work around | planned: box, box/run-strays.sh's unmounted case |
 | ZX241 | a dry run refuses -O, -F, -M and -i, both spellings: it writes a manifest and stops, so there is no skeleton for a --take flag to answer and no conflicts gate for --interactive or --no-merge to hold -- nothing for the flag to act on and no record to latch it in, which is the reasoning -q meets there (ZX138) | covered: check_args.c |
+| ZX242 | the flag guard reads from's side as well: an object of from's carrying schg, sappnd or sunlnk that the decision would write into the result is refused above securelevel 0 too, since za_attrs would stamp the flag on and a --continue or the self-check's put-back would then meet EPERM with the tree part written | covered: check_run.c, which asks the question with the level as an argument over a synthetic decision and two synthetic walks; the sysctl that reads the real level is the box's, ZX23 |
 
 ZX96 to ZX99 are no cells: the numbering skips to a round one so
 that the command line's own rows read as the block they are. ZX100
@@ -1081,11 +1095,16 @@ Note on ZX23: securelevel cannot be raised without a reboot of the
 box, so the refusal path stays deferred. Unblocking work is a
 box-probe run started at securelevel 1, which is also the only way
 to prove the schg/sappnd/sunlnk name listing. The guard reads the
-three system flags off onto's side against the decision (the user
-flags are always clearable by root, so they never enter it), and
-what it refuses is a run the apply could not finish; at
-securelevel 0 or less the apply clears them itself, which is ZA58
-to ZA61 and run-precond.sh 1d.
+three system flags off both sides against the decision (the user
+flags are always clearable by root, so they never enter it) --
+onto's, where the flag stops the apply from clearing it, and
+from's, where the flag is written by the apply and stops whatever
+has to touch that object next -- and what it refuses is a run the
+apply could not finish; at securelevel 0 or less the apply clears
+them itself, which is ZA58 to ZA61 and run-precond.sh 1d. The
+question the guard asks is ZX242 and is check_run.c's, since it
+takes the level as an argument; only the sysctl that answers "what
+level is this" is the box's.
 
 ZX237 to ZX241 are review-verify-verb's: --verify reads in place
 (documents-design.md, section 11.6). Where the verb used to call
@@ -1189,6 +1208,7 @@ FreeBSD.
 | ZF61 | sock: the fifth type parses, builds with bind(2), walks back as a socket, and its absent mode= resolves to what bind leaves (0777 under the umask) | covered: run-fixtures.sh and check_roundtrip.c over sock-copy.zrt, which build the three trees and walk them; the apply of one is ZA7 |
 | ZF62 | flags-onto-rm.zrt: schg on an onto file an action removes -> the apply clears it and removes the file | planned (box: run-suite.sh; schg needs root, and comes off again only while securelevel is 0 or less) |
 | ZF63 | the runner asserts the exit status the expect block implies, and not the manifest alone: 0 where the block's #conflicts line is 0 and 1 where it is not, so a run that emits the right document with the wrong status fails the fixture (R22) | covered: run-fixtures.sh, over every fixture of the flat directory |
+| ZF64 | --build-fixture over a fixture of another platform prints the builder's own reason, naming the platform line, and not the bare errno of it | covered: run-fixtures.sh, which runs the driver over tests/fixtures/freebsd/ off the platform those name |
 
 ZF33 to ZF49 are --edit-fixture, added with the mode itself (issue
 fixture-edit) and all of them Mac cells: the mode is plain POSIX

@@ -2,14 +2,17 @@
  * apply: write the actions of a parsed manifest into the onto tree.
  * The root is opened once and every operation is relative to that
  * descriptor with the link never followed. The exceptions are the
- * four calls that have no descriptor-relative form at all: the
- * extended attributes, the ACL and the file flags, and the bind(2)
- * that makes a socket, each of which is handed the root's own path
- * with the action's path appended. So containment is not a resolved
- * descriptor per component: what keeps every write inside the tree
- * is the 0700 chain down to the run directory and the mount policy
- * that puts the result at its mnt, where root alone can reach it
- * (R17 of the code review, filed in sprints/future-features.md).
+ * calls that have no descriptor-relative form: the extended
+ * attributes, the ACL and the file flags everywhere, and off
+ * FreeBSD the bind(2) that makes a socket, each of which is handed
+ * the root's own path with the action's path appended. So
+ * containment is not a resolved descriptor per component: what
+ * keeps every write inside the tree is the 0700 chain down to the
+ * run directory and the mount policy that puts the result at its
+ * mnt, where root alone can reach it (R17 of the code review, filed
+ * in sprints/future-features.md). FreeBSD's bindat(2) takes the
+ * parent descriptor, so on the target the socket is one step of
+ * that direction already.
  * Actions run in manifest order; only the removal of a
  * directory waits, until the last action under it has run. Bytes
  * and attributes come from the walked from tree. Extended
@@ -617,6 +620,8 @@ struct za_ctx {
 	uint32_t		zc_npend;
 	uint32_t		zc_pendcap;
 	unsigned char		*zc_buf;
+	mode_t			zc_umask;	/* the caller's, held aside */
+	int			zc_umasked;	/* and whether it was taken */
 };
 
 /* One from object: where its bytes are and what it looks like. */
@@ -1185,18 +1190,90 @@ za_pour(struct za_ctx *c, const struct zr_action *a,
  * but this tool copies system trees, where a socket at a well known
  * path is a name something else is waiting to connect to.
  *
- * This is the one call outside the platform section that takes a
- * path rather than the root descriptor and a name: there is no
- * bindat(2) everywhere (FreeBSD has one, macOS and Linux do not),
- * and sockaddr_un has nowhere to put a descriptor. So the path is
- * built from the root the way the attribute writes build theirs, and
- * it rests on the same guarantee they do -- the 0700 chain to the
- * run directory and the mount policy, not a resolved descriptor per
- * component (R17 of the code review, filed in
- * sprints/future-features.md). sun_path is about a hundred bytes, so
- * a path too long for it is refused in its own words rather than
- * silently truncated into a name nothing expects.
+ * sockaddr_un has nowhere to put a descriptor, so the address is a
+ * path however it is bound, and sun_path is about a hundred bytes
+ * (104 on FreeBSD and on macOS): an address that does not fit is
+ * refused in words rather than silently truncated into a name
+ * nothing expects. What differs is what has to fit.
+ *
+ * FreeBSD has bindat(2), which resolves the address relative to a
+ * directory descriptor. There the parent is opened relative to the
+ * root the way the rest of this file reaches an object, and only the
+ * leaf goes into sun_path: the depth of the run directory is out of
+ * the measurement altogether, so a socket that fits in the source
+ * dataset fits in the result wherever the result is mounted, and
+ * this one call has the descriptor-relative property R17 asks for
+ * of the other four (sprints/future-features.md).
+ *
+ * macOS and Linux have no bindat, so there the path is built from
+ * the root the way the attribute writes build theirs, and it rests
+ * on the same guarantee they do -- the 0700 chain to the run
+ * directory and the mount policy, not a resolved descriptor per
+ * component. Both lengths are then in the measurement, and the
+ * refusal says which of the two is the one that does not fit: the
+ * path the tree itself spells, which no root would make room for,
+ * or the root this result happens to be written at.
  */
+#if defined(__FreeBSD__)
+static int
+za_mksock(struct za_ctx *c, const struct zr_action *a)
+{
+	struct sockaddr_un sun;
+	const unsigned char *p = a->za_path;
+	size_t k, len = a->za_pathlen;
+	char *dir;
+	int dfd, fd, rc, saved;
+
+	/* p[k - 1] is the '/' before the leaf; za_path_ok says there is one */
+	for (k = len; k > 0 && p[k - 1] != '/'; k--)
+		;
+	if (k == 0 || len - k >= sizeof (sun.sun_path))
+		return (za_failx(c, a, "the name is too long for a socket "
+		    "address"));
+	dfd = c->zc_rootfd;
+	if (k > 1) {
+		dir = malloc(k - 1);
+		if (dir == NULL) {
+			errno = ENOMEM;
+			return (za_fail(c, a, "memory"));
+		}
+		memcpy(dir, p + 1, k - 2);
+		dir[k - 2] = '\0';
+		dfd = openat(c->zc_rootfd, dir, O_RDONLY | O_DIRECTORY |
+		    O_NOFOLLOW | O_CLOEXEC);
+		saved = errno;
+		free(dir);
+		if (dfd < 0) {
+			errno = saved;
+			return (za_fail(c, a, "open of the directory the "
+			    "socket goes in"));
+		}
+	}
+	memset(&sun, 0, sizeof (sun));
+	sun.sun_family = AF_UNIX;
+	memcpy(sun.sun_path, p + k, len - k);
+	fd = socket(AF_UNIX, SOCK_STREAM, 0);
+	if (fd < 0) {
+		saved = errno;
+		if (dfd != c->zc_rootfd)
+			(void) close(dfd);
+		errno = saved;
+		return (za_fail(c, a, "socket"));
+	}
+	rc = bindat(dfd, fd, (const struct sockaddr *)&sun,
+	    (socklen_t)sizeof (sun));
+	saved = errno;
+	if (dfd != c->zc_rootfd)
+		(void) close(dfd);
+	if (close(fd) != 0 && rc == 0)
+		return (za_fail(c, a, "close"));
+	if (rc != 0) {
+		errno = saved;
+		return (za_fail(c, a, "bind"));
+	}
+	return (0);
+}
+#else
 static int
 za_mksock(struct za_ctx *c, const struct zr_action *a)
 {
@@ -1211,8 +1288,13 @@ za_mksock(struct za_ctx *c, const struct zr_action *a)
 		return (za_fail(c, a, "memory"));
 	}
 	len = strlen(full);
-	if (len >= sizeof (sun.sun_path))
-		return (za_failx(c, a, "the path is too long for a socket"));
+	if (len >= sizeof (sun.sun_path)) {
+		if (a->za_pathlen >= sizeof (sun.sun_path))
+			return (za_failx(c, a, "the path in the tree is too "
+			    "long for a socket address"));
+		return (za_failx(c, a, "the root this result is written at "
+		    "makes the path too long for a socket address"));
+	}
 	memset(&sun, 0, sizeof (sun));
 	sun.sun_family = AF_UNIX;
 	memcpy(sun.sun_path, full, len);
@@ -1229,6 +1311,7 @@ za_mksock(struct za_ctx *c, const struct zr_action *a)
 	}
 	return (0);
 }
+#endif
 
 /*
  * cp: a new object with the type, bytes and attributes of from's.
@@ -1622,9 +1705,42 @@ za_do_rm(struct za_ctx *c, const struct zr_action *a)
 	return (0);
 }
 
+/*
+ * The apply's own umask, taken at the moment it opens the root and
+ * given back in za_ctx_fini. Every object it makes -- mkdirat, the
+ * O_CREAT openat, mkfifoat, mknodat and the bind(2) that makes a
+ * socket -- is created with the from object's own mode, and a umask
+ * of the caller's can only take bits out of that. The mode arrives
+ * in full a moment later, in za_attrs, so the tree the apply leaves
+ * is right either way; what an inherited umask leaves is a window
+ * between the create and the chmod in which the object stands with
+ * fewer bits than the decision asked for, and, on a platform that
+ * declines a symbolic link's own mode, a link that keeps the
+ * narrowed one for good. The real mode closes that window behind
+ * the 0700 chain to the private mount; a --posix run over a tree of
+ * the user's does not, so the apply does not leave it open.
+ *
+ * One process runs one rebase, so the process umask is the apply's
+ * to take. It is taken where the root is opened, which is the last
+ * step before the first create in each of the three entry points,
+ * and given back in za_ctx_fini, which is the one exit every path
+ * past that point goes through: so it is held exactly as long as
+ * this apply can write, and no failure path leaks it.
+ */
+static void
+za_umask_take(struct za_ctx *c)
+{
+	if (c->zc_umasked == 0) {
+		c->zc_umask = umask(0);
+		c->zc_umasked = 1;
+	}
+}
+
 static void
 za_ctx_fini(struct za_ctx *c)
 {
+	if (c->zc_umasked != 0)
+		(void) umask(c->zc_umask);
 	if (c->zc_rootfd >= 0)
 		(void) close(c->zc_rootfd);
 	free(c->zc_root);
@@ -1710,6 +1826,7 @@ zr_apply_with(const struct zr_parsed *m, const char *onto_root,
 		(void) za_failp(&c, (const unsigned char *)onto_root, "open");
 		goto out;
 	}
+	za_umask_take(&c);
 	for (i = 0; i < m->zp_nactions; i++) {
 		/*
 		 * Between two actions is the one place the apply can
@@ -1923,8 +2040,17 @@ za_rm_one(struct za_ctx *c, const struct zr_action *a)
 	isdir = S_ISDIR(st.st_mode);
 	if (za_unlock_st(c, a->za_path, a->za_pathlen, &st) != 0)
 		return (-1);
-	if (unlinkat(c->zc_rootfd, rel, isdir ? AT_REMOVEDIR : 0) != 0 &&
-	    errno != ENOENT) {
+	if (unlinkat(c->zc_rootfd, rel, isdir ? AT_REMOVEDIR : 0) != 0) {
+		/*
+		 * A name that went between the stat above and this call
+		 * is the state the action asks for, so the action is
+		 * done; but nothing here removed it, and the count is of
+		 * removals this apply made. The same is true of the name
+		 * that was already gone at the stat, which returned
+		 * above without counting either.
+		 */
+		if (errno == ENOENT)
+			return (0);
 		/*
 		 * A directory that still holds something stays, counted
 		 * as left alone: a name inside it is being kept, which
@@ -2050,6 +2176,7 @@ zr_apply_repair(const struct zr_verify_report *rep, const char *onto_root,
 		(void) za_failp(&c, (const unsigned char *)onto_root, "open");
 		goto out;
 	}
+	za_umask_take(&c);
 	/*
 	 * First what nothing expected, children before parents, so
 	 * that a directory somebody left behind is empty by the time
@@ -2384,21 +2511,66 @@ za_late_rmdirs(struct za_ctx *c, const struct zr_parsed *m)
 }
 
 /*
+ * What makes two lines pool together: the same group of the
+ * manifest, the same choice, and the same pool of that side. Sorting
+ * the lines that can pool by this key, and by the line number under
+ * it, puts each class together with its own first line at the head
+ * of it -- and that first line is the anchor, which is what the
+ * search this replaced found by reading back over every earlier
+ * line. The line number is in the key so that the order does not
+ * depend on qsort's own, which is not stable.
+ */
+struct za_key {
+	uint32_t	zy_group;
+	uint32_t	zy_choice;
+	uint32_t	zy_pool;
+	uint32_t	zy_line;
+};
+
+static int
+za_bykey(const void *va, const void *vb)
+{
+	const struct za_key *a = va;
+	const struct za_key *b = vb;
+
+	if (a->zy_group != b->zy_group)
+		return (a->zy_group < b->zy_group ? -1 : 1);
+	if (a->zy_choice != b->zy_choice)
+		return (a->zy_choice < b->zy_choice ? -1 : 1);
+	if (a->zy_pool != b->zy_pool)
+		return (a->zy_pool < b->zy_pool ? -1 : 1);
+	if (a->zy_line != b->zy_line)
+		return (a->zy_line < b->zy_line ? -1 : 1);
+	return (0);
+}
+
+/*
  * Every line's pick, and the pooling that ties some of them
  * together. The whole document is read here, before a byte of the
  * tree is touched, so that the apply asks nothing of the disk while
  * it acts: a directory line whose chosen side has no such directory
  * while a line under it says keep is marked blocked and is left
  * alone, because the removal cannot be made and will not be tried.
+ *
+ * Returns 0, or -1 with errno set when there is no memory for the
+ * key table. Nothing of the tree has been touched when it fails.
  */
-static void
+static int
 za_picks(const struct zr_resolution *res, const struct zr_parsed *m,
     struct za_pick *picks, struct zr_walk *onto, struct zr_walk *from)
 {
-	const struct zr_rline *l, *al;
+	const struct zr_rline *l;
+	struct za_key *keys;
 	struct za_pick *p;
-	uint32_t i, j;
+	uint32_t first = ZA_NO_ANCHOR;
+	uint32_t i, nk = 0;
 
+	keys = malloc((size_t)(res->zs_nlines == 0 ? 1 : res->zs_nlines) *
+	    sizeof (struct za_key));
+	if (keys == NULL) {
+		errno = ENOMEM;
+		return (-1);
+	}
 	for (i = 0; i < res->zs_nlines; i++) {
 		l = &res->zs_lines[i];
 		p = &picks[i];
@@ -2426,25 +2598,30 @@ za_picks(const struct zr_resolution *res, const struct zr_parsed *m,
 		 * conflict line for a name the manifest never marked,
 		 * which is the person's own instruction and whose group
 		 * number is not read (documents-design.md, section 11.5).
+		 * The mark is read once per line here and not once per
+		 * pair, which is what the key table below is for.
 		 */
 		if (l->zl_kind != ZR_RL_CONFLICT ||
 		    zr_verify_marked(m, l->zl_path, l->zl_pathlen) == 0)
 			continue;
-		for (j = 0; j < i; j++) {
-			al = &res->zs_lines[j];
-			if (al->zl_kind != ZR_RL_CONFLICT ||
-			    al->zl_group != l->zl_group ||
-			    al->zl_choice != l->zl_choice ||
-			    picks[j].zk_drop != 0 ||
-			    picks[j].zk_pool != p->zk_pool ||
-			    zr_verify_marked(m, al->zl_path,
-			    al->zl_pathlen) == 0)
-				continue;
-			p->zk_anchor = picks[j].zk_anchor == ZA_NO_ANCHOR ?
-			    j : picks[j].zk_anchor;
-			break;
-		}
+		keys[nk].zy_group = l->zl_group;
+		keys[nk].zy_choice = (uint32_t)l->zl_choice;
+		keys[nk].zy_pool = p->zk_pool;
+		keys[nk].zy_line = i;
+		nk++;
 	}
+	if (nk > 1)
+		qsort(keys, (size_t)nk, sizeof (struct za_key), za_bykey);
+	for (i = 0; i < nk; i++) {
+		if (i == 0 || keys[i].zy_group != keys[i - 1].zy_group ||
+		    keys[i].zy_choice != keys[i - 1].zy_choice ||
+		    keys[i].zy_pool != keys[i - 1].zy_pool)
+			first = keys[i].zy_line;
+		else
+			picks[keys[i].zy_line].zk_anchor = first;
+	}
+	free(keys);
+	return (0);
 }
 
 int
@@ -2531,7 +2708,10 @@ zr_apply_choices(const struct zr_resolution *res, const struct zr_parsed *m,
 			(void) za_failp(&c, self, "memory");
 			goto out;
 		}
-		za_picks(res, m, picks, onto, from);
+		if (za_picks(res, m, picks, onto, from) != 0) {
+			(void) za_failp(&c, self, "memory");
+			goto out;
+		}
 	}
 	if (za_root_copy(&c, root) != 0) {
 		errno = ENOMEM;
@@ -2550,6 +2730,7 @@ zr_apply_choices(const struct zr_resolution *res, const struct zr_parsed *m,
 		(void) za_failp(&c, (const unsigned char *)root, "open");
 		goto out;
 	}
+	za_umask_take(&c);
 	/*
 	 * First what the choices make, in document order, which is the
 	 * walk's, so that a directory is there before the names under

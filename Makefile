@@ -38,7 +38,8 @@ LIB_OBJS = build/vis.o build/name.o build/decide.o build/fixture.o \
 	build/apply.o build/zfsops.o build/run.o build/args.o
 CORE_OBJS = build/main.o $(LIB_OBJS)
 TESTS = check_vis check_name check_fixture check_manifest check_walk \
-	check_yellow check_roundtrip check_apply check_verify check_args
+	check_yellow check_roundtrip check_apply check_verify check_args \
+	check_run
 
 all: build zfs_rebase
 

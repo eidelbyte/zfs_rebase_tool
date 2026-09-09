@@ -29,7 +29,9 @@
  * The family is ZA of tests/MATRIX.md. Covered here: ZA1, ZA2, ZA3,
  * ZA6, ZA7, ZA8, ZA9, ZA10, ZA11, ZA12, ZA13, ZA14, ZA15, ZA16,
  * ZA17, ZA19, ZA20, ZA22, ZA24, ZA25, ZA26, ZA27, ZA28, ZA30, ZA40
- * to ZA55, and ZA58 to ZA61 and ZA63. ZA4 and ZA5 need mknod, which
+ * to ZA55, ZA58 to ZA61, ZA63, and ZA67 to ZA69 and ZA71 -- and
+ * ZA70 as well where this file is compiled on FreeBSD, which is
+ * make check-freebsd. ZA4 and ZA5 need mknod, which
  * needs root; ZA18 cannot see the chown at all, since an apply run
  * by the tree's own owner skips it; ZA21 wants an immutable file and
  * ZA23 a forced re-stat mismatch, both of which need root; ZA29 and
@@ -597,6 +599,62 @@ checktimes(const struct stat *s)
 }
 
 /*
+ * ZA68: the apply's own umask. Under a umask of 077 the mkdirat and
+ * the O_CREAT openat would land on 0700 and 0600, and the mode the
+ * manifest asked for would arrive a moment later in za_attrs; the
+ * apply takes umask 0 for the length of its writes so that no
+ * object of its making ever stands with a mode nobody asked for.
+ * What is read back here is the modes, and then the umask itself,
+ * which must be the caller's again.
+ */
+static void
+check_umask(void)
+{
+	struct zr_apply_stats st;
+	char full[PATHMAX];
+	struct shape sh;
+	struct stat s;
+	mode_t was;
+
+	was = umask(077);
+	shape_init(&sh);
+	mkdirp(sh.sh_from, "/d", 0755);
+	mkfile(sh.sh_from, "/d/f", "under a umask\n", 0644);
+	shape_ok(&sh,
+	    "    d/ cp /d\n"
+	    "        f cp /d/f\n"
+	    "    ..\n", 2, &st);
+	CHECK(st.zs_cp == 2);
+	lstat_at(sh.sh_onto, "/d", &s);
+	CHECK((s.st_mode & 07777) == 0755);
+	lstat_at(sh.sh_onto, "/d/f", &s);
+	CHECK((s.st_mode & 07777) == 0644);
+	/* and the apply gave the caller's umask back */
+	CHECK(umask(was) == 077);
+	shape_fini(&sh);
+
+	/*
+	 * The window itself, which is otherwise between two system
+	 * calls: the from tree is walked, the source is taken away
+	 * behind the walk, and the cp then fails after the openat
+	 * that made the file and before the attributes are written.
+	 * What it leaves must already carry the mode the manifest
+	 * asked for and not that mode under the caller's umask.
+	 */
+	(void) umask(077);
+	shape_init(&sh);
+	mkfile(sh.sh_from, "/g", "gone in a moment\n", 0666);
+	shape_walk(&sh);
+	join(full, sizeof (full), sh.sh_from, "/g");
+	CHECK(unlink(full) == 0);
+	shape_refused(&sh, "    g cp /g\n", 1, "open of the from file");
+	lstat_at(sh.sh_onto, "/g", &s);
+	CHECK((s.st_mode & 07777) == 0666);
+	CHECK(umask(was) == 077);
+	shape_fini(&sh);
+}
+
+/*
  * ZA1, ZA19, ZA28: a file copied whole -- its bytes, its mode, its
  * one extended attribute, and the times, which are written after the
  * attribute and so are the ones that survive.
@@ -757,6 +815,63 @@ check_cp_sock(void)
 	CHECK(po != ZR_POOL_NONE);
 	CHECK(w.zw_tree.zt_pools[po].zp_type == ZR_T_SOCK);
 	zr_walk_fini(&w);
+	shape_fini(&sh);
+}
+
+/*
+ * ZA69, ZA70: a socket whose address will not fit. from holds one
+ * at a short name and the manifest puts it at a long one, so what
+ * is measured is the result's side of it and nothing else.
+ *
+ * Off FreeBSD the address is the root's path with the action's
+ * appended, and both lengths are in the measurement: a name of 110
+ * bytes is one no root could make room for, and a name of 100 is
+ * one that would fit on its own and does not under this root. The
+ * two refusals say which is which, since only one of them is the
+ * fixture's fault.
+ *
+ * On FreeBSD bindat(2) takes the parent descriptor, so only the leaf
+ * is measured: the name of 100 bytes is made, however deep the root
+ * is, and only the one longer than sun_path itself is refused. That
+ * half runs under make check-freebsd; the depth of a real run
+ * directory is box/run-fixture.sh's.
+ */
+static void
+check_sock_long(void)
+{
+	char body[PATHMAX];
+	struct shape sh;
+	int n;
+
+	shape_init(&sh);
+	mksock(sh.sh_from, "/k", 0660);
+	n = snprintf(body, sizeof (body), "    %0*d cp /k\n", 110, 0);
+	CHECK(n > 0 && (size_t)n < sizeof (body));
+#if defined(__FreeBSD__)
+	shape_refused(&sh, body, 1, "the name is too long");
+	n = snprintf(body, sizeof (body), "    %0*d cp /k\n", 100, 0);
+	CHECK(n > 0 && (size_t)n < sizeof (body));
+	{
+		struct zr_apply_stats st;
+		struct stat s;
+		char rel[PATHMAX];
+
+		shape_ok(&sh, body, 1, &st);
+		CHECK(st.zs_cp == 1);
+		n = snprintf(rel, sizeof (rel), "/%0*d", 100, 0);
+		CHECK(n > 0 && (size_t)n < sizeof (rel));
+		lstat_at(sh.sh_onto, rel, &s);
+		CHECK(S_ISSOCK(s.st_mode));
+	}
+#else
+	shape_refused(&sh, body, 1, "the path in the tree is too long");
+	n = snprintf(body, sizeof (body), "    %0*d cp /k\n", 100, 0);
+	CHECK(n > 0 && (size_t)n < sizeof (body));
+	/* 1 + 100 is inside sun_path; the root is what takes it past */
+	CHECK(strlen(sh.sh_onto) + 101 >= sizeof (((struct sockaddr_un *)0)->
+	    sun_path));
+	shape_refused(&sh, body, 1, "the root this result is written at");
+#endif
 	shape_fini(&sh);
 }
 
@@ -1806,6 +1921,104 @@ check_choice_gone(void)
 }
 
 /*
+ * ZA67: a drop line for a name the result no longer holds -- the
+ * first pass of a --continue over a document the first run had
+ * already carried out. The removal removes nothing, so it counts as
+ * left alone and not as dropped, and no line of the document is
+ * marked changed.
+ */
+static void
+check_choice_gone_already(void)
+{
+	struct zr_apply_stats st;
+	struct pick p;
+	struct doc d;
+	static const char body[] =
+	    "    x conflict 1\n";
+	static const char records[] =
+	    "\n"
+	    "conflict 1 orphaned-add\n"
+	    "  why  /x was added on one side only\n"
+	    "  base ()\n"
+	    "  from ({/x}y)\n"
+	    "  onto ()\n";
+
+	pick_init(&p);
+	mkfile(p.pk_from, "/x", "from only\n", 0644);
+	/* the result has not got it either: it went in an earlier pass */
+	doc_build(&d, body, 0, 1, records);
+	doc_choose(&d, "/x", ZR_CH_ONTO);
+	pick_ok(&p, &d, &st);
+	CHECK(st.zs_dropped == 0);
+	CHECK(st.zs_skipped == 1);
+	CHECK(st.zs_line == ZR_LINE_NONE);
+	CHECK(absent(p.pk_res, "/x"));
+	pick_stable(&p, &d);
+	doc_fini(&d);
+	pick_fini(&p);
+}
+
+/*
+ * ZA71: one group whose names are many. from holds six names of one
+ * file; every line after the first is pooled onto the first, so one
+ * object is made and five links are put on it, whatever order the
+ * pre-scan reads the lines in.
+ */
+static void
+check_choice_wide_group(void)
+{
+	struct zr_apply_stats st;
+	struct pick p;
+	struct doc d;
+	struct stat s1;
+	int i;
+	char rel[16];
+	static const char body[] =
+	    "    w1 conflict 1\n"
+	    "    w2 conflict 1\n"
+	    "    w3 conflict 1\n"
+	    "    w4 conflict 1\n"
+	    "    w5 conflict 1\n"
+	    "    w6 conflict 1\n";
+	static const char records[] =
+	    "\n"
+	    "conflict 1 disagree\n"
+	    "  why  the six names of /w1 are one file on one side only\n"
+	    "  base ()\n"
+	    "  from ({/w1 /w2 /w3 /w4 /w5 /w6}y)\n"
+	    "  onto ({/w1}z {/w2}w {/w3}v {/w4}u {/w5}t {/w6}s)\n";
+
+	pick_init(&p);
+	mkfile(p.pk_from, "/w1", "one file, six names\n", 0644);
+	mkfile(p.pk_onto, "/w1", "onto w1\n", 0644);
+	mkfile(p.pk_res, "/w1", "onto w1\n", 0644);
+	for (i = 2; i <= 6; i++) {
+		(void) snprintf(rel, sizeof (rel), "/w%d", i);
+		mklink(p.pk_from, "/w1", rel);
+		mkfile(p.pk_onto, rel, "onto apart\n", 0644);
+		mkfile(p.pk_res, rel, "onto apart\n", 0644);
+	}
+	doc_build(&d, body, 0, 1, records);
+	for (i = 1; i <= 6; i++) {
+		(void) snprintf(rel, sizeof (rel), "/w%d", i);
+		doc_choose(&d, rel, ZR_CH_FROM);
+	}
+	pick_ok(&p, &d, &st);
+	CHECK(st.zs_made == 1);
+	CHECK(st.zs_linked == 5);
+	lstat_at(p.pk_res, "/w1", &s1);
+	CHECK(s1.st_nlink == 6);
+	for (i = 2; i <= 6; i++) {
+		(void) snprintf(rel, sizeof (rel), "/w%d", i);
+		CHECK(one_object(p.pk_res, "/w1", rel));
+		has_bytes(p.pk_res, rel, "one file, six names\n");
+	}
+	pick_stable(&p, &d);
+	doc_fini(&d);
+	pick_fini(&p);
+}
+
+/*
  * ZA45, ZA46: one group, one side, and the pooling that side has.
  * The two names from holds as one file end as one object here, the
  * first of them copied and the second linked onto it; the two names
@@ -2594,7 +2807,9 @@ main(void)
 	check_cp_dir();
 	check_cp_fifo();
 	check_cp_sock();
+	check_sock_long();
 	check_repair_sock();
+	check_umask();
 	check_kept_walk();
 	check_ln_replace();
 	check_write_links();
@@ -2618,7 +2833,9 @@ main(void)
 	check_choice_onto();
 	check_choice_from();
 	check_choice_gone();
+	check_choice_gone_already();
 	check_choice_pool();
+	check_choice_wide_group();
 	check_choice_mixed();
 	check_choice_dir();
 	check_choice_drift();
