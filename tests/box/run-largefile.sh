@@ -74,6 +74,18 @@ cleanup() {
 	echo "logs and results: $tmp"
 }
 trap cleanup EXIT
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
+# A pool of this name left by a run that was interrupted before its
+# cleanup ran is ours, and goes first, with the md its image is on.
+leftover() {
+	zpool destroy -f "$POOL" 2>/dev/null
+	for u in $(mdconfig -lv 2>/dev/null | \
+	    awk -v img="$IMG" '$NF == img { sub(/^md/, "", $1); print $1 }'); do
+		mdconfig -d -u "$u" 2>/dev/null
+	done
+	rm -f "$IMG"
+}
 say() { printf '\n== %s\n' "$*"; }
 fail() { echo "FAIL: $*"; exit 1; }
 timed() {	# LOG CMD...
@@ -100,6 +112,7 @@ fi
 echo "current: $(git rev-parse --short HEAD)"
 
 say "the pool, and base made in its dataset"
+leftover
 truncate -s "$IMGSIZE" "$IMG" || exit 2
 MD=$(mdconfig -a -t vnode -f "$IMG") || exit 2
 mkdir -p "$MNT"
