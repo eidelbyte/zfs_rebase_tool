@@ -93,15 +93,19 @@ LIBDIFF_BZERO_CFLAGS = -Dexplicit_bzero=bzero
 LIBDIFF_OBJS = build/diff_main.o build/diff_myers.o build/diff_patience.o \
 	build/diff_atomize_text.o $(LIBDIFF_COMPAT_OBJS)
 
+# The built-in picker, an internal plugin of its own (plan section
+# 3.1). It goes into LIB_OBJS, so the tool and the tests reach it the
+# way they reach every other object.
+PICKER_OBJS = build/picker.o build/model.o
 # Library objects are everything but main.o; tests link against them.
 LIB_OBJS = build/vis.o build/name.o build/decide.o build/fixture.o \
 	build/manifest.o build/walk.o build/yellow.o build/verify.o \
 	build/apply.o build/zfsops.o build/run.o build/args.o build/launch.o \
-	build/picker.o $(LIBDIFF_OBJS)
+	$(PICKER_OBJS) $(LIBDIFF_OBJS)
 CORE_OBJS = build/main.o $(LIB_OBJS)
 TESTS = check_vis check_name check_fixture check_manifest check_walk \
 	check_yellow check_roundtrip check_apply check_verify check_args \
-	check_run
+	check_run check_picker
 
 all: build zfs_rebase
 
@@ -180,6 +184,9 @@ build/recallocarray.o: $(LIBDIFF)/compat/recallocarray.c \
 	$(LIBDIFF)/compat/include/stdlib.h
 	$(CC) $(LIBDIFF_CFLAGS) $(LIBDIFF_BZERO_CFLAGS) -c -o $@ \
 	    $(LIBDIFF)/compat/recallocarray.c
+build/model.o: src/plugins/picker/model.c src/plugins/picker/picker.h \
+	src/manifest.h src/vis.h
+	$(CC) $(CFLAGS) -c -o $@ src/plugins/picker/model.c
 
 build/vis.o: src/vis.c src/vis.h
 	$(CC) $(CFLAGS) -c -o $@ src/vis.c

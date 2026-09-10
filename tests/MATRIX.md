@@ -1629,66 +1629,66 @@ session on the box goes into the worklog.
 
 | cell | scenario | disposition |
 |------|----------|-------------|
-| ZP1 | one row per resolution line, in the file's order, and nothing else is a row | planned: check_picker.c |
-| ZP2 | a conflict line at each of the four choices opens at that choice | planned: check_picker.c |
-| ZP3 | a drift line: no group, the GRP column says drift, the choice as the gate wrote it | planned: check_picker.c |
-| ZP4 | a hand-added conflict line, whose group no record of the manifest answers to: a row like any other | planned: check_picker.c |
-| ZP5 | a conflict line whose group the manifest has: the why line, the class and the three trees under the list | planned: check_picker.c |
-| ZP6 | a drift line and a hand-added line have no detail to show, and the picker says so rather than leaving the last row's detail up | planned: check_picker.c |
-| ZP7 | two names of one group: both rows carry the number, and the detail says how many names the group holds | planned: check_picker.c |
-| ZP8 | the object's kind per row off the three trees: text, binary, directory, link, socket, fifo | planned: check_picker.c |
-| ZP9 | the text rule: a NUL within the first 8000 bytes is binary, a NUL after them is not | planned: check_picker.c |
-| ZP10 | any one of the three binary makes the row binary, and no merge view exists for it | planned: check_picker.c |
-| ZP11 | the three disagree on the kind (a file on from, a directory on onto): the row says so and Enter opens nothing | planned: check_picker.c |
-| ZP12 | a side absent (add/add, delete/edit, deleted on both): the kind comes from the sides that hold the name | planned: check_picker.c |
-| ZP13 | BASE given as "" (a run with no base): the detail says there is none and every merge is the two-way compare | planned: check_picker.c |
-| ZP14 | a side path given as "": the kind is read from the trees there are, and Enter says why not | planned: check_picker.c |
-| ZP15 | a hand-added line for a name none of the three trees holds: the row draws with no kind and opens nothing | planned: check_picker.c |
-| ZP16 | a document complete at open by --take-onto: every conflict row at onto, and the picker opens all the same (ruling 2) | planned: check_picker.c |
-| ZP17 | the same by --take-from, and the same for a document a hand answered before -i was given | planned: check_picker.c |
-| ZP18 | an empty resolution: no rows, the counts 0, and w writes it and exits 0 | planned: check_picker.c |
-| ZP19 | a resolution of drift lines only: rows, no groups, nothing unanswered | planned: check_picker.c |
-| ZP20 | a conflict line the manifest marks that the document lacks: no row for it and nothing added, since the re-add is the gate's (documents-design.md 11.5) | planned: check_picker.c |
-| ZP21 | two lines for one name: the parse refuses, its reason is printed, exit 2, and nothing is drawn | planned: check_picker.c |
-| ZP22 | a name that is ".", ".." or holds a "/": the same refusal | planned: check_picker.c |
-| ZP23 | a header naming another rebase: refused before anything is drawn, exit 2 | planned: check_picker.c |
-| ZP24 | a snapshot name whose guid differs from the manifest's: refused with both numbers, exit 2 | planned: check_picker.c |
-| ZP25 | a header count that does not match the lines: the parse's refusal, exit 2 | planned: check_picker.c |
-| ZP26 | the manifest missing beside the resolution, or unreadable: exit 2 naming the path, before the terminal is touched | planned: check_picker.c |
-| ZP27 | a directory line's trailing slash: a row of kind D whose isdir survives to the write | planned: check_picker.c |
-| ZP28 | a name whose bytes want the escaping (a space, a newline, a high byte): the row shows the decoded bytes and the write puts the escaping back | planned: check_picker.c |
-| ZP29 | up on the first row and down on the last stay where they are: no wrap | planned: check_picker.c |
-| ZP30 | up and down over a document of one row, and over none | planned: check_picker.c |
-| ZP31 | f, o and k on a conflict line set from, onto and keep | planned: check_picker.c |
-| ZP32 | f, o and k on a drift line: the same three, a drift line being answered like any other | planned: check_picker.c |
-| ZP33 | f, o and k on a hand-added conflict line: the same three (v4-manifest.md 8: carried out like a drift line with that choice) | planned: check_picker.c |
-| ZP34 | "-" on a conflict line clears it back to unanswered | planned: check_picker.c |
-| ZP35 | "-" on a drift line: refused, with a line saying only a conflict line starts unanswered | planned: check_picker.c |
-| ZP36 | "-" on a hand-added conflict line clears it, and it counts unanswered | planned: check_picker.c |
-| ZP37 | g moves to the next row of the same group and wraps within the group | planned: check_picker.c |
-| ZP38 | g on a drift line or a hand-added line: nothing moves, and it says the line has no group | planned: check_picker.c |
-| ZP39 | g on a group of one name: the cursor stays put | planned: check_picker.c |
-| ZP40 | Enter on a text row opens screen 2; before picker-merge it says so and opens nothing | planned: check_picker.c |
-| ZP41 | Enter on a binary, a directory, a link, a socket or a fifo: nothing opens and the line says why not | planned: check_picker.c |
-| ZP42 | Enter on a delete/edit row: nothing opens, it being a choice and not a merge | planned: check_picker.c |
-| ZP43 | the counts in the header after each change: conflicts, groups, unanswered, drift | planned: check_picker.c |
-| ZP44 | s writes the document and stays on the list, with the rows as they were | planned: check_picker.c |
-| ZP45 | s then q: exit 1, with the file holding what s wrote | planned: check_picker.c |
-| ZP46 | q with nothing saved: exit 2, and the file untouched byte for byte | planned: check_picker.c |
-| ZP47 | w with nothing unanswered: written, exit 0 | planned: check_picker.c |
-| ZP48 | w with something unanswered: refused, the count and the first unanswered name said, nothing written, the picker still up | planned: check_picker.c |
-| ZP49 | w again after the last unanswered name is answered: written, exit 0 | planned: check_picker.c |
-| ZP50 | a key the picker does not know: ignored, and nothing changes | planned: check_picker.c |
-| ZP51 | every key on an empty document: only w and q do anything | planned: check_picker.c |
-| ZP52 | the write goes through zr_doc_write: a .tmp sibling and a rename, so a reader finds one whole document or the other and never half | planned: check_picker.c |
-| ZP53 | the document written after a key sequence differs from the one opened at exactly the lines those keys touched, and nowhere else | planned: check_picker.c |
-| ZP54 | #names and #unanswered in the written header are the library writer's own count of the lines, never a number the picker carried | planned: check_picker.c |
-| ZP55 | the order out is the order in, for a sequence that answers the rows back to front | planned: check_picker.c |
-| ZP56 | every line it opened with is in the file it writes: never one fewer, whatever was pressed (v4-manifest.md 8: a hand cannot take a conflict away) | planned: check_picker.c |
-| ZP57 | byte equality: what the picker writes for a set of choices is what zr_resolution_write writes for the same lines | planned: check_picker.c |
-| ZP58 | an unchanged document written by w is byte-identical to the one opened | planned: check_picker.c |
-| ZP59 | a write that fails (a read-only directory, ENOSPC on the .tmp): the message after endwin, the destination as it was, no .tmp left, a non-zero exit | planned: check_picker.c |
-| ZP60 | s twice and then w: one document with the last choices, and no line doubled | planned: check_picker.c |
+| ZP1 | one row per resolution line, in the file's order, and nothing else is a row | covered: check_picker.c |
+| ZP2 | a conflict line at each of the four choices opens at that choice | covered: check_picker.c |
+| ZP3 | a drift line: no group, the GRP column says drift, the choice as the gate wrote it | covered: check_picker.c |
+| ZP4 | a hand-added conflict line, whose group no record of the manifest answers to: a row like any other | covered: check_picker.c |
+| ZP5 | a conflict line whose group the manifest has: the why line, the class and the three trees under the list | covered: check_picker.c |
+| ZP6 | a drift line and a hand-added line have no detail to show, and the picker says so rather than leaving the last row's detail up | covered for the row's half (a drift line and a hand-added line carry no record): check_picker.c; the detail pane not standing stale is picker-list's |
+| ZP7 | two names of one group: both rows carry the number, and the detail says how many names the group holds | covered: check_picker.c |
+| ZP8 | the object's kind per row off the three trees: text, binary, directory, link, socket, fifo | covered: check_picker.c |
+| ZP9 | the text rule: a NUL within the first 8000 bytes is binary, a NUL after them is not | covered: check_picker.c |
+| ZP10 | any one of the three binary makes the row binary, and no merge view exists for it | covered: check_picker.c |
+| ZP11 | the three disagree on the kind (a file on from, a directory on onto): the row says so and Enter opens nothing | covered: check_picker.c |
+| ZP12 | a side absent (add/add, delete/edit, deleted on both): the kind comes from the sides that hold the name | covered: check_picker.c |
+| ZP13 | BASE given as "" (a run with no base): the detail says there is none and every merge is the two-way compare | covered for the model's half (base "" is absent on every row, and no merge view opens): check_picker.c; the two-way compare at picker-merge |
+| ZP14 | a side path given as "": the kind is read from the trees there are, and Enter says why not | covered: check_picker.c |
+| ZP15 | a hand-added line for a name none of the three trees holds: the row draws with no kind and opens nothing | covered: check_picker.c |
+| ZP16 | a document complete at open by --take-onto: every conflict row at onto, and the picker opens all the same (ruling 2) | covered: check_picker.c |
+| ZP17 | the same by --take-from, and the same for a document a hand answered before -i was given | covered: check_picker.c |
+| ZP18 | an empty resolution: no rows, the counts 0, and w writes it and exits 0 | covered: check_picker.c |
+| ZP19 | a resolution of drift lines only: rows, no groups, nothing unanswered | covered: check_picker.c |
+| ZP20 | a conflict line the manifest marks that the document lacks: no row for it and nothing added, since the re-add is the gate's (documents-design.md 11.5) | covered: check_picker.c |
+| ZP21 | two lines for one name: the parse refuses, its reason is printed, exit 2, and nothing is drawn | covered: check_picker.c |
+| ZP22 | a name that is ".", ".." or holds a "/": the same refusal | covered: check_picker.c |
+| ZP23 | a header naming another rebase: refused before anything is drawn, exit 2 | covered: check_picker.c |
+| ZP24 | a snapshot name whose guid differs from the manifest's: refused with both numbers, exit 2 | covered: check_picker.c |
+| ZP25 | a header count that does not match the lines: the parse's refusal, exit 2 | covered: check_picker.c |
+| ZP26 | the manifest missing beside the resolution, or unreadable: exit 2 naming the path, before the terminal is touched | covered: check_picker.c |
+| ZP27 | a directory line's trailing slash: a row of kind D whose isdir survives to the write | covered: check_picker.c |
+| ZP28 | a name whose bytes want the escaping (a space, a newline, a high byte): the row shows the decoded bytes and the write puts the escaping back | covered: check_picker.c |
+| ZP29 | up on the first row and down on the last stay where they are: no wrap | covered: check_picker.c |
+| ZP30 | up and down over a document of one row, and over none | covered: check_picker.c |
+| ZP31 | f, o and k on a conflict line set from, onto and keep | covered: check_picker.c |
+| ZP32 | f, o and k on a drift line: the same three, a drift line being answered like any other | covered: check_picker.c |
+| ZP33 | f, o and k on a hand-added conflict line: the same three (v4-manifest.md 8: carried out like a drift line with that choice) | covered: check_picker.c |
+| ZP34 | "-" on a conflict line clears it back to unanswered | covered: check_picker.c |
+| ZP35 | "-" on a drift line: refused, with a line saying only a conflict line starts unanswered | covered: check_picker.c |
+| ZP36 | "-" on a hand-added conflict line clears it, and it counts unanswered | covered: check_picker.c |
+| ZP37 | g moves to the next row of the same group and wraps within the group | covered: check_picker.c |
+| ZP38 | g on a drift line or a hand-added line: nothing moves, and it says the line has no group | covered: check_picker.c |
+| ZP39 | g on a group of one name: the cursor stays put | covered: check_picker.c |
+| ZP40 | Enter on a text row opens screen 2; before picker-merge it says so and opens nothing | covered for the model's answer (a text conflict line returns ZR_PK_OPEN): check_picker.c; what opens, and the line before picker-merge, at picker-list |
+| ZP41 | Enter on a binary, a directory, a link, a socket or a fifo: nothing opens and the line says why not | covered: check_picker.c |
+| ZP42 | Enter on a delete/edit row: nothing opens, it being a choice and not a merge | covered: check_picker.c |
+| ZP43 | the counts in the header after each change: conflicts, groups, unanswered, drift | covered: check_picker.c |
+| ZP44 | s writes the document and stays on the list, with the rows as they were | covered: check_picker.c |
+| ZP45 | s then q: exit 1, with the file holding what s wrote | covered: check_picker.c |
+| ZP46 | q with nothing saved: exit 2, and the file untouched byte for byte | covered: check_picker.c |
+| ZP47 | w with nothing unanswered: written, exit 0 | covered: check_picker.c |
+| ZP48 | w with something unanswered: refused, the count and the first unanswered name said, nothing written, the picker still up | covered: check_picker.c |
+| ZP49 | w again after the last unanswered name is answered: written, exit 0 | covered: check_picker.c |
+| ZP50 | a key the picker does not know: ignored, and nothing changes | covered: check_picker.c |
+| ZP51 | every key on an empty document: only w and q do anything | covered: check_picker.c |
+| ZP52 | the write goes through zr_doc_write: a .tmp sibling and a rename, so a reader finds one whole document or the other and never half | covered: check_picker.c |
+| ZP53 | the document written after a key sequence differs from the one opened at exactly the lines those keys touched, and nowhere else | covered: check_picker.c |
+| ZP54 | #names and #unanswered in the written header are the library writer's own count of the lines, never a number the picker carried | covered: check_picker.c |
+| ZP55 | the order out is the order in, for a sequence that answers the rows back to front | covered: check_picker.c |
+| ZP56 | every line it opened with is in the file it writes: never one fewer, whatever was pressed (v4-manifest.md 8: a hand cannot take a conflict away) | covered: check_picker.c |
+| ZP57 | byte equality: what the picker writes for a set of choices is what zr_resolution_write writes for the same lines | covered: check_picker.c |
+| ZP58 | an unchanged document written by w is byte-identical to the one opened | covered: check_picker.c |
+| ZP59 | a write that fails (a read-only directory, ENOSPC on the .tmp): the message after endwin, the destination as it was, no .tmp left, a non-zero exit | covered: check_picker.c |
+| ZP60 | s twice and then w: one document with the last choices, and no line doubled | covered: check_picker.c |
 | ZP61 | a crash between the rename and the exit: the written document stands, no .tmp beside it, and the next --continue reads it | planned: box, by hand, in the worklog of picker-list |
 | ZP62 | the termios saved before initscr are back on the normal return (w, exit 0) | planned: check_picker.c on a pty from posix_openpt(3), the standalone binary as the child, at picker-list |
 | ZP63 | back on the error return: a document the parse refuses, exit 2 | planned: check_picker.c on a pty, at picker-list |
@@ -1697,7 +1697,7 @@ session on the box goes into the worklog.
 | ZP66 | the same for SIGTERM and for SIGHUP | planned: check_picker.c on a pty, at picker-list |
 | ZP67 | the same for SIGSEGV and SIGBUS, whose default disposition still takes what it takes | planned: check_picker.c on a pty, at picker-list |
 | ZP68 | nothing of ours reaches stdout or stderr while curses is up: a pty recording every byte sees no message until after endwin | planned: check_picker.c on a pty, at picker-list |
-| ZP69 | the queued messages are printed after endwin, in the order they were queued | planned: check_picker.c |
+| ZP69 | the queued messages are printed after endwin, in the order they were queued | covered for the queue's half (the order, and the oldest dropped): check_picker.c; printed after endwin at picker-list |
 | ZP70 | no terminal at all: refused with a line and exit 2, before initscr is called | planned: check_picker.c |
 | ZP71 | TERM unset: refused, exit 2, nothing drawn | planned: check_picker.c on a pty, at picker-list |
 | ZP72 | TERM a name terminfo does not know: the same | planned: check_picker.c on a pty, at picker-list |
@@ -1739,8 +1739,8 @@ session on the box goes into the worklog.
 | ZP108 | partition: the chunks' base ranges cover base once, in order, with no gap and no overlap | planned: check_picker.c over tests/battery/ |
 | ZP109 | the counterexamples of Khanna, Kunal and Pierce come out as the battery states, and a disagreement of tools/merge-oracle.sh with diff3 -m or git merge-file is recorded rather than accepted in silence | planned: check_picker.c over tests/battery/, with tools/merge-oracle.sh as the outside oracle |
 | ZP110 | the standalone binary takes RESOLUTION BASE FROM ONTO RESULT, the same five, and exits 0, 1 and 2 as the entry does | planned: check_picker.c on a pty, at picker-list |
-| ZP111 | too few or too many arguments: usage on stderr and exit 2, before the terminal is touched | planned: check_picker.c |
-| ZP112 | "" for a tree with no path is not a path of "" and is never opened | planned: check_picker.c |
+| ZP111 | too few or too many arguments: usage on stderr and exit 2, before the terminal is touched | covered for zr_pk_open's half (an argv that is not the five words is refused before anything is read): check_picker.c; the usage line and the exit at picker-list |
+| ZP112 | "" for a tree with no path is not a path of "" and is never opened | covered: check_picker.c |
 | ZP113 | the standalone binary run with no tool around it, on a --posix fixture's resolution and manifest: the same screens and the same statuses | planned: box, by hand, in the worklog of picker-list |
 | ZP114 | the tool's child and the standalone binary are the same objects: one key sequence through both gives one file | planned: check_picker.c |
 
