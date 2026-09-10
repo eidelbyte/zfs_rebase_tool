@@ -143,11 +143,15 @@
 #define	PK_TERMLEN	128
 
 /*
- * The colors of the mockup, as the eight a terminal has. A style is
- * one of these crossed with whether the row is the selected one: the
- * cursor's row is a dark blue band, so every color has a second pair
- * with the blue background, and a terminal with no colors gets
- * A_REVERSE for the band and A_BOLD for what would have been colored.
+ * The colors of the mockup, as the eight a terminal has. The cursor's
+ * row is a band of the terminal's own colors swapped -- the key
+ * bar's look -- and gives up the per-column colors for its one row.
+ * The first cut gave it a blue background under each color, and on
+ * the author's scheme that blue was a light teal that lost the text
+ * (the box, 2026-09-10: "let's use grey"). Reverse video is the one
+ * band every scheme can read, since it is made of the two colors the
+ * scheme already puts against each other. A terminal with no colors
+ * gets the same band and A_BOLD for what would have been colored.
  */
 #define	PK_CO_PLAIN	0
 #define	PK_CO_FROM	1	/* magenta, the mockup's from */
@@ -313,11 +317,11 @@ pk_saysmall(char *err, size_t errlen, int rows, int cols)
  * ---------------------------------------------------------------
  */
 
-/* Which pair a color is, unselected and on the cursor's band. */
+/* Which pair a color is. */
 static short
-pk_pair(int co, int sel)
+pk_pair(int co)
 {
-	return ((short)(1 + co + (sel != 0 ? PK_CO_N : 0)));
+	return ((short)(1 + co));
 }
 
 static void
@@ -343,25 +347,31 @@ pk_colors(void)
 		f = fg[co];
 		if (f < 0 && bg != -1)
 			f = COLOR_WHITE;
-		(void) init_pair(pk_pair(co, 0), f, bg);
-		(void) init_pair(pk_pair(co, 1), f < 0 ? COLOR_WHITE : f,
-		    COLOR_BLUE);
+		(void) init_pair(pk_pair(co), f, bg);
 	}
 	pk_color = 1;
 }
 
-/* One style: the color, or bold and reverse where there is none. */
+/*
+ * One style: the color, or bold where there is none; and on the
+ * cursor's band the terminal's own two colors swapped, whatever the
+ * column's color would have been.
+ */
 static chtype
 pk_style(int co, int sel)
 {
 	chtype at = A_NORMAL;
 
+	if (sel != 0) {
+		at = A_REVERSE;
+		if (pk_color != 0)
+			at |= (chtype)COLOR_PAIR(pk_pair(PK_CO_PLAIN));
+		return (at);
+	}
 	if (co == PK_CO_DIM)
 		at |= A_DIM;
 	if (pk_color != 0)
-		return (at | (chtype)COLOR_PAIR(pk_pair(co, sel)));
-	if (sel != 0)
-		at |= A_REVERSE;
+		return (at | (chtype)COLOR_PAIR(pk_pair(co)));
 	if (co != PK_CO_PLAIN && co != PK_CO_DIM)
 		at |= A_BOLD;
 	return (at);
@@ -946,7 +956,8 @@ pk_draw(const struct zr_picker *pk, const struct pk_geom *g, uint32_t top,
  *
  * The keys are the model's: 1 and 2 answer the hunk under the cursor,
  * b puts its base range in the result pane's place, n and p move
- * between the conflicting hunks, c folds the stable stretches away, w
+ * between the conflicting hunks, c folds every stretch that needs no
+ * choice away, w
  * writes and Esc goes back. Nothing here changes a chunk or a choice
  * itself, and nothing here writes a file.
  */
@@ -1156,11 +1167,28 @@ pk_side_fill(const struct zr_pk_merge *mg, const struct pk_view *v,
 		uint32_t no = c->onto_hi - c->onto_lo;
 		uint32_t tall;
 
-		if (mg->pm_only != 0 && c->kind == ZR_M3_STABLE) {
+		if (mg->pm_only != 0 && c->kind != ZR_M3_CONFLICT) {
+			/*
+			 * Conflicts only means conflicts only (the author,
+			 * on the box, 2026-09-10): every chunk that needs
+			 * no choice -- stable, one side's own, both the
+			 * same -- folds, and a run of them is one row.
+			 */
+			uint32_t first = i, sf = 0, so = 0;
+
+			while (i < m->nchunks &&
+			    m->chunks[i].kind != ZR_M3_CONFLICT) {
+				const struct zr_m3_chunk *k = &m->chunks[i];
+
+				sf += k->from_hi - k->from_lo;
+				so += k->onto_hi - k->onto_lo;
+				i++;
+			}
+			i--;
 			if (out != NULL) {
-				out[n].s_chunk = i;
-				pk_cell_fold(&out[n].s_from, nf);
-				pk_cell_fold(&out[n].s_onto, no);
+				out[n].s_chunk = first;
+				pk_cell_fold(&out[n].s_from, sf);
+				pk_cell_fold(&out[n].s_onto, so);
 			}
 			n++;
 			continue;
@@ -1189,11 +1217,20 @@ pk_res_fill(const struct zr_pk_merge *mg, struct pk_rrow *out)
 	for (i = 0; i < m->nchunks; i++) {
 		const struct zr_m3_chunk *c = &m->chunks[i];
 
-		if (mg->pm_only != 0 && c->kind == ZR_M3_STABLE) {
-			(void) zr_m3_answer(m, i, &lo, &hi);
+		if (mg->pm_only != 0 && c->kind != ZR_M3_CONFLICT) {
+			/* the same run as the side panes', by its answers */
+			uint32_t first = i, sum = 0;
+
+			while (i < m->nchunks &&
+			    m->chunks[i].kind != ZR_M3_CONFLICT) {
+				(void) zr_m3_answer(m, i, &lo, &hi);
+				sum += hi - lo;
+				i++;
+			}
+			i--;
 			if (out != NULL) {
-				out[n].r_chunk = i;
-				pk_cell_fold(&out[n].r_cell, hi - lo);
+				out[n].r_chunk = first;
+				pk_cell_fold(&out[n].r_cell, sum);
 			}
 			n++;
 			continue;
@@ -1445,7 +1482,7 @@ pk_draw_cell(const struct zr_m3 *m, int y, int x, int w,
 	pk_put(y, x, c->c_co, sel, gut);
 	if (c->c_kind == PK_MR_FOLD) {
 		(void) snprintf(text, sizeof (text),
-		    "... %lu line%s both sides agree on ...",
+		    "... %lu line%s with no conflict ...",
 		    (unsigned long)c->c_line, c->c_line == 1 ? "" : "s");
 		pk_putm(y, x + PK_M_HEAD, w - PK_M_HEAD, PK_CO_DIM, sel, text);
 		return;
@@ -1977,6 +2014,15 @@ zr_pk_screen(struct zr_picker *pk, char *err, size_t errlen)
 	rc = pk_loop(pk);
 	pk_restore();
 	(void) delscreen(sp);
+	/*
+	 * A terminal with no alternate screen -- FreeBSD's termcap
+	 * chain for xterm has none -- keeps the picker's last screen
+	 * in the scrollback, and endwin leaves the cursor on its last
+	 * row, where the first line the tool prints would land on the
+	 * key bar (the box, 2026-09-10). One newline puts what follows
+	 * under it; with an alternate screen it costs one blank line.
+	 */
+	(void) fputc('\n', stderr);
 	if (rc != 0) {
 		/*
 		 * The window went below the floor while the picker was

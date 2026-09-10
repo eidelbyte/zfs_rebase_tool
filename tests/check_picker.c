@@ -2852,8 +2852,12 @@ test_pty_merge(void)
 	CHECK(find(pty_out.r_buf, pty_out.r_len, "<<<<<<< from") != NULL);
 	CHECK(find(pty_out.r_buf, pty_out.r_len, "=======") != NULL);
 	CHECK(find(pty_out.r_buf, pty_out.r_len, ">>>>>>> onto") != NULL);
-	/* ZP88: c folded the stable stretches into one line each */
-	CHECK(find(pty_out.r_buf, pty_out.r_len, "both sides agree on") !=
+	/*
+	 * ZP88: c folded every stretch that needs no choice into one
+	 * line per run (the author, 2026-09-10: conflicts only means
+	 * conflicts only, not just the stable stretches).
+	 */
+	CHECK(find(pty_out.r_buf, pty_out.r_len, "with no conflict") !=
 	    NULL);
 	/* ZP85: b put the hunk's base range in the result pane's place */
 	CHECK(find(pty_out.r_buf, pty_out.r_len, "bravobase") != NULL);
