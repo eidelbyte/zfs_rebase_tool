@@ -1,3 +1,2 @@
 sbin/zfs_rebase
-sbin/zfs_rebase-picker
 share/man/man8/zfs_rebase.8.gz

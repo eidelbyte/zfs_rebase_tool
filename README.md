@@ -66,7 +66,7 @@ it; a start writes a manifest and reads none, so it takes no IDENT.
 | `--quiet` | `-q` | a start option: latched in the record for the whole run, and it silences the final check's report and nothing else -- not the check, not its verdict, not the exit status |
 | `--take-onto` | `-O` | write the skeleton with every conflict answered onto |
 | `--take-from` | `-F` | write the skeleton with every conflict answered from; the two exclude each other |
-| `--interactive` | `-i` | open a child on the resolution at the conflicts gate, wait for it, and read the document back when it exits 0; anything else leaves the gate standing. Its optional value is the command that edits the file -- run as `sh -c 'CMD "$@"' CMD PATH`, so the command's own flags are part of it (`"code --wait"`) and the path is its last argument -- and with no value the built-in picker opens (this build has none yet: it says so and exits 2, which leaves the gate standing like any other non-zero exit). A bare word after -i is that command unless it is the only bare word on a verb's line, where it is IDENT; `--interactive=CMD` always names the command, and an empty value there is refused. For this invocation only (not latched: say it on each --continue) |
+| `--interactive` | `-i` | open a child on the resolution at the conflicts gate, wait for it, and read the document back when it exits 0; anything else leaves the gate standing. Its optional value is the command that edits the file -- run as `sh -c 'CMD "$@"' CMD PATH`, so the command's own flags are part of it (`"code --wait"`) and the path is its last argument -- and with no value the built-in picker opens. Not every build has one: `make PICKER=no`, and a package with its PICKER option off, leave the picker and its curses library out, and there `-i CMD` is this same flag while `-i` alone says `this build has no picker; name an editor with -i CMD` and exits 2, which leaves the gate standing like any other non-zero exit. A bare word after -i is that command unless it is the only bare word on a verb's line, where it is IDENT; `--interactive=CMD` always names the command, and an empty value there is refused. For this invocation only (not latched: say it on each --continue) |
 | `--no-merge` | `-M` | stop at the conflicts gate however the resolution reads; an error once the gate is passed |
 | `--continue` | `-c` | take the rebase on from the gate its record names |
 | `--restart` | `-R` | the result back as onto was, the manifest applied again from the first gate, the resolution back to its skeleton |
@@ -378,8 +378,9 @@ headless by default: this is a system tool, and it opens nothing of
 its own unless it is asked to.
 --interactive asks: at the gate the tool forks a child on the
 resolution -- the command -i names, or the built-in picker where it
-names none, which this build has only as a stub that says so and
-exits 2 -- ignores SIGINT and SIGQUIT while it waits the way
+names none, and a build made without the picker (`make PICKER=no`, or
+a package with its PICKER option off) says so there and exits 2 --
+ignores SIGINT and SIGQUIT while it waits the way
 system(3) does, forwards a SIGTERM of its own to it, puts the
 terminal's termios back if the child left them changed, and reads
 the document again when the child exits 0, with every refusal
@@ -699,10 +700,24 @@ Two build modes:
                     libzfs_core, libzfs, libnvpair
     make check-freebsd
                     the same tests and gates, built and linked that way
-    make gate       ASCII and style checks over the sources
+    make gate       ASCII and style checks over the sources, and the
+                    PICKER=no build, so the knob cannot rot
 
 The core alone runs end to end in --posix mode over three ordinary
 directories, which is how it is tested where there is no ZFS.
+
+And one knob, which every one of those honours:
+
+    make PICKER=no  the tool without the built-in picker
+
+PICKER=yes is the default. With PICKER=no the tool is built with a
+stub in the picker's place: no model, no screens, no merge, none of
+the carried libdiff, no curses library on any link line, and no
+standalone zfs_rebase-picker. It is the same tool otherwise -- `-i
+CMD` forks the command it names exactly as before -- and `-i` with no
+command says `this build has no picker; name an editor with -i CMD`
+and exits 2, which leaves the conflicts gate standing. The port has
+the same switch as its PICKER option, on by default.
 
 The theory behind the decision rule, the manifest format, and the
 sprint plan live in the author's freebsd-development notes (the v4

@@ -31,5 +31,21 @@ if [ -n "$srcs" ]; then
 		rc=1
 	fi
 fi
+# The picker knob, so that PICKER=no cannot rot between one release
+# and the next (tracker issue port-picker-option): the tool compiled
+# and linked whole with src/plugins/picker/stub.c in the picker's
+# place and no curses library on the line. A curses call, a picker
+# symbol or a libdiff symbol reached from anywhere outside the picker
+# fails that link, with nothing on it to satisfy them, which is the
+# whole of the check. make nopicker builds into build/nopicker under
+# a name of its own, so it neither empties the tree's build/ nor
+# relinks ./zfs_rebase -- the box builds the freebsd flavor and runs
+# this gate after it -- and it is incremental after the first run.
+if out=$(${MAKE:-make} nopicker 2>&1); then
+	echo "gate: PICKER=no builds, with no curses library on its link"
+else
+	printf '%s\n' "$out"
+	echo "gate: the PICKER=no build failed (make nopicker)"; rc=1
+fi
 [ $rc -eq 0 ] && echo "gate: clean"
 exit $rc

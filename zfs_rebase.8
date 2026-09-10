@@ -601,8 +601,24 @@ it under the same directory.
 With no
 .Ar command
 the built-in picker opens instead, which is given the path and the
-directories the four trees are at; a build with no picker in it says so
-and exits 2, which is this build.
+directories the four trees are at.
+.Pp
+Not every build carries one.
+A package built with the
+.Sy PICKER
+option off, or a build made with
+.Li PICKER=no ,
+has no picker in it and links no curses library at all.
+.Fl i Ar command
+is the same flag there, and everything said above about it holds; only
+.Fl i
+with no command differs, and it prints
+.Bd -literal -offset indent
+zfs_rebase: this build has no picker; name an editor with -i CMD
+.Ed
+.Pp
+and exits 2, which leaves the gate standing like any other non-zero
+exit from the child.
 .Pp
 The value is optional, so a bare word after
 .Fl i

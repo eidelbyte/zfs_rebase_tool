@@ -972,6 +972,27 @@ ports/sysutils/zfs_rebase/distinfo after the tag. PORTSDIR defaults
 to /usr/ports and SRC_BASE to /usr/src; KEEP=1 skips the final make
 clean.
 
+The port carries a PICKER option, on by default, and the second pass
+is the same port with it off:
+
+    sudo sh tests/box/run-port.sh --without-picker [COMMIT]
+
+which puts OPTIONS_UNSET=PICKER on every make of the run. After the
+stage it asserts that no sbin/zfs_rebase-picker was staged and that
+ldd of the staged zfs_rebase names no curses library, which is the
+whole point of the option; after the install it reads the tool's
+usage for --interactive, since -i CMD is the same flag in a package
+with no picker in it. What -i with no command does is not asserted
+here -- a port run makes no pool and reaches no gate -- and the
+tool's own make check is what says that child prints the stub's line
+and exits 2. Both passes go through check-plist, so the plist is
+right either way: the standalone binary is the option's own
+PICKER_PLIST_FILES and is not in pkg-plist. A saved options file --
+what make config writes under /var/db/ports -- is read after
+OPTIONS_UNSET and would override it, so each run reads PORT_OPTIONS
+back before it builds and stops if the answer is not the one it
+asked for, naming make rmconfig.
+
 ## What the box still owes
 
 - ZX23, the securelevel refusal: run-precond.sh prints the
@@ -991,6 +1012,10 @@ clean.
   run-largefile.sh takes; the fallback is correct either way, so
   what is owed is the number and not a verdict.
 - port-test, which run-port.sh carries out.
+- port-picker-option's two passes of run-port.sh, and with them the
+  option helper spellings -- PICKER_USES, PICKER_MAKE_ARGS_OFF,
+  PICKER_PLIST_FILES -- which only a real ports framework confirms.
+  The mac has neither a ports tree nor a package to build.
 - the eleven tests/fixtures/freebsd/ rows of replay-expect.txt,
   which are tools/replay-expect.py's model's word until run-replay.sh
   has run over them on a box.

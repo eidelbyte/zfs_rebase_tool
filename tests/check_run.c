@@ -618,11 +618,14 @@ check_terminal_restored(void)
 }
 
 /*
- * ZI22: the built-in child. The picker opens the two documents
- * before it touches a terminal, and this scratch has a resolution
- * with no manifest beside it, so the child refuses on the spot with
- * one line on stderr -- the line under this test's own output -- and
- * exits 2, with no curses anywhere near this program's terminal.
+ * ZI22: the built-in child, in either build, since what the two
+ * builds share is what this asserts. With the picker in it (PICKER=
+ * yes) the picker opens the two documents before it touches a
+ * terminal, and this scratch has a resolution with no manifest beside
+ * it, so the child refuses on the spot; with PICKER=no the stub entry
+ * says this build has no picker. Either way it is one line on stderr
+ * -- the line under this test's own output -- and an exit of 2, with
+ * no curses anywhere near this program's terminal.
  * To the launcher that is a non-zero exit like any other. Nothing
  * about it is special: the fork, the wait and the status are the
  * same code the named command goes through.
