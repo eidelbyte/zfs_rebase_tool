@@ -7,7 +7,7 @@ cd "$(dirname "$0")/.." || exit 1
 rc=0
 nonascii=$(printf '[^\t -~]')
 if LC_ALL=C grep -rn "$nonascii" Makefile README.md zfs_rebase.8 ports src \
-    tests tools; then
+    tests tools/*.sh tools/*.py tools/*.c; then
 	echo "gate: non-ASCII bytes above"; rc=1
 fi
 srcs=$(ls src/*.c src/*.h src/plugins/*/*.c src/plugins/*/*.h tests/*.c \
