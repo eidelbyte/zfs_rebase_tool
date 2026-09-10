@@ -995,13 +995,17 @@ pk_draw(const struct zr_picker *pk, const struct pk_geom *g, uint32_t top,
 			"c conflicts only  w write  esc back"
 
 /*
- * One drawn cell: the gutter, the line number and the text, in
- * PK_M_HEAD columns plus what is left for the text. The mockup's
- * "+  3  ifconfig_em0_ipv6=..." is gutter, a space, the number in
- * PK_M_NUMW columns, and two spaces.
+ * One drawn cell: the gutter, the cursor's cell, the line number and
+ * the text, in PK_M_HEAD columns plus what is left for the text:
+ * the mark (! + - f o b), a space, the cursor's one cell, a space,
+ * the number right-aligned in PK_M_NUMW columns, two spaces, the
+ * text (the author, on the box, 2026-09-10: "[!+-][space]
+ * [highlight][space][leftpad numbers]").
  */
-#define	PK_M_HEAD	8
+#define	PK_M_HEAD	10
 #define	PK_M_NUMW	4
+#define	PK_M_CUR	2	/* the cursor cell: gutter, space, it */
+#define	PK_M_NUM	4	/* the number, right-aligned, after a space */
 
 /* The rows that are not the panes: three rules, two headers, a bar. */
 #define	PK_M_CHROME	6
@@ -1537,7 +1541,7 @@ pk_draw_cell(const struct zr_m3 *m, int y, int x, int w,
 	if (c->c_num != 0) {
 		(void) snprintf(num, sizeof (num), "%*lu", PK_M_NUMW,
 		    (unsigned long)c->c_show);
-		pk_put(y, x + 2, PK_CO_DIM, sel, num);
+		pk_put(y, x + PK_M_NUM, PK_CO_DIM, sel, num);
 	}
 	pk_line_text(m, c->c_file, c->c_line, text, sizeof (text));
 	pk_putm(y, x + PK_M_HEAD, w - PK_M_HEAD, c->c_co, sel, text);
@@ -1614,8 +1618,8 @@ pk_draw_merge(struct zr_picker *pk, const struct zr_pk_merge *mg,
 		pk_draw_cell(m, ly, g->g_rx, g->g_rw, &v->v_side[i].s_onto, 0);
 		if (v->v_side[i].s_chunk == mg->pm_cursor &&
 		    mg->pm_cursor < m->nchunks) {
-			pk_mark(ly, g->g_lx + 1);
-			pk_mark(ly, g->g_rx + 1);
+			pk_mark(ly, g->g_lx + PK_M_CUR);
+			pk_mark(ly, g->g_rx + PK_M_CUR);
 		}
 	}
 	y = g->g_sidey + g->g_sideh;
@@ -1647,7 +1651,7 @@ pk_draw_merge(struct zr_picker *pk, const struct zr_pk_merge *mg,
 		    mg->pm_cursor < m->nchunks;
 		pk_draw_cell(m, ry, 1, pk_w - 2, &v->v_res[i].r_cell, 0);
 		if (sel != 0)
-			pk_mark(ry, 2);
+			pk_mark(ry, 1 + PK_M_CUR);
 	}
 	pk_rule(g->g_bary - 1, ACS_LTEE, ACS_RTEE, NULL);
 	pk_draw_bar(g->g_bary, note != NULL ? note : PK_MKEYS);
