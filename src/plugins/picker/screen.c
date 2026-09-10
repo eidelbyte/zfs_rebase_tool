@@ -144,15 +144,17 @@
 
 /*
  * The colors of the mockup, as the eight a terminal has. The cursor's
- * row is a band of the terminal's own colors swapped -- the key
- * bar's look -- and gives up the per-column colors for its one row.
- * The first cut gave it a blue background under each color, and on
- * the author's scheme that blue was a light teal that lost the text
- * (the box, 2026-09-10: "let's use grey"). Reverse video is the one
- * band every scheme can read, since it is made of the two colors the
- * scheme already puts against each other. A terminal with no colors
- * gets the same band and A_BOLD for what would have been colored.
+ * row is a band: bright black, color 8, under each column's own
+ * color, on a terminal that has more than the basic eight (the
+ * author, on the box, 2026-09-10: "use bright black as the highlight
+ * and keep the colors"); on one with only eight, the terminal's own
+ * two colors swapped, the key bar's look, with the colors given up
+ * for that row, since the first cut's blue background under each
+ * color read as a light teal that lost the text on their scheme. A
+ * terminal with no colors gets the swapped band and A_BOLD for what
+ * would have been colored.
  */
+#define	PK_BAND_BG	8	/* bright black, past the basic eight */
 #define	PK_CO_PLAIN	0
 #define	PK_CO_FROM	1	/* magenta, the mockup's from */
 #define	PK_CO_ONTO	2	/* yellow, the mockup's onto */
@@ -177,6 +179,7 @@ static volatile sig_atomic_t	pk_winch;
 static int	pk_h;
 static int	pk_w;
 static int	pk_color;
+static int	pk_grey;		/* the band has its own pairs */
 
 /* What the geometry came to for one draw. */
 struct pk_geom {
@@ -317,11 +320,11 @@ pk_saysmall(char *err, size_t errlen, int rows, int cols)
  * ---------------------------------------------------------------
  */
 
-/* Which pair a color is. */
+/* Which pair a color is, off the band and on it. */
 static short
-pk_pair(int co)
+pk_pair(int co, int sel)
 {
-	return ((short)(1 + co));
+	return ((short)(1 + co + (sel != 0 ? PK_CO_N : 0)));
 }
 
 static void
@@ -333,6 +336,7 @@ pk_colors(void)
 	short f;
 	int co;
 
+	pk_grey = 0;
 	if (!has_colors() || start_color() != OK)
 		return;
 	/*
@@ -347,15 +351,29 @@ pk_colors(void)
 		f = fg[co];
 		if (f < 0 && bg != -1)
 			f = COLOR_WHITE;
-		(void) init_pair(pk_pair(co), f, bg);
+		(void) init_pair(pk_pair(co, 0), f, bg);
 	}
 	pk_color = 1;
+	/*
+	 * The band's pairs, where color 8 exists: a scheme paints it
+	 * as its grey, and every column keeps its color on it. An
+	 * eight-color terminal has no such pair and keeps the swap.
+	 */
+	if (COLORS > PK_BAND_BG) {
+		for (co = 0; co < PK_CO_N; co++) {
+			f = fg[co];
+			if (f < 0 && bg != -1)
+				f = COLOR_WHITE;
+			(void) init_pair(pk_pair(co, 1), f, PK_BAND_BG);
+		}
+		pk_grey = 1;
+	}
 }
 
 /*
  * One style: the color, or bold where there is none; and on the
- * cursor's band the terminal's own two colors swapped, whatever the
- * column's color would have been.
+ * cursor's band the column's color over bright black where the
+ * terminal has it, else the terminal's own two colors swapped.
  */
 static chtype
 pk_style(int co, int sel)
@@ -363,15 +381,17 @@ pk_style(int co, int sel)
 	chtype at = A_NORMAL;
 
 	if (sel != 0) {
+		if (pk_grey != 0)
+			return ((chtype)COLOR_PAIR(pk_pair(co, 1)));
 		at = A_REVERSE;
 		if (pk_color != 0)
-			at |= (chtype)COLOR_PAIR(pk_pair(PK_CO_PLAIN));
+			at |= (chtype)COLOR_PAIR(pk_pair(PK_CO_PLAIN, 0));
 		return (at);
 	}
 	if (co == PK_CO_DIM)
 		at |= A_DIM;
 	if (pk_color != 0)
-		return (at | (chtype)COLOR_PAIR(pk_pair(co)));
+		return (at | (chtype)COLOR_PAIR(pk_pair(co, 0)));
 	if (co != PK_CO_PLAIN && co != PK_CO_DIM)
 		at |= A_BOLD;
 	return (at);
