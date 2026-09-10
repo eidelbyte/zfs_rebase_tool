@@ -32,11 +32,72 @@ ZFSOPS_CFLAGS =
 # what was meant to be a FreeBSD binary.
 FLAVOR = portable
 
+# The carried copy of FreeBSD's contrib/libdiff, foreign code under
+# src/plugins/picker/libdiff (plan section 3.6, and that directory's
+# UPSTREAM): the two-way diff the merge will call. Nothing calls it
+# yet; it is linked in so that both flavors prove it builds. Not one
+# byte of it is edited here, so an adaptation is a flag on these
+# lines and never a change to a file.
+#
+# The include paths are the two FreeBSD's own lib/libdiff/Makefile
+# passes: include/ for <arraylist.h> and <diff_main.h>, compat/include
+# for the stdlib.h wrapper that declares reallocarray(3) and
+# recallocarray(3) on a libc without them. The lib sources reach
+# "diff_internal.h" and "diff_debug.h" beside themselves, so the
+# source layout is kept and neither needs a path.
+LIBDIFF = src/plugins/picker/libdiff
+LIBDIFF_INCS = -I$(LIBDIFF)/include -I$(LIBDIFF)/compat/include
+
+# FreeBSD builds libdiff with WARNS= -- no warning set at all. Ours is
+# -Wall -Wextra -Werror -Wcast-qual, and three of its warnings fire on
+# this code, so three are turned back off for these objects alone.
+# The full set was tried first and each of these was added on its own:
+#
+#   -Wno-sign-compare	  diff_main.c:62, diff_myers.c:300,
+#			  diff_patience.c:484, recallocarray.c:60, and
+#			  many more, "comparison of integers of
+#			  different signs": the arraylist lengths are
+#			  unsigned and the algorithms' indices are int.
+#   -Wno-unused-parameter diff_myers.c:792, diff_patience.c:380,
+#			  diff_atomize_text.c:221: the algorithm and
+#			  atomizer entry points take the whole
+#			  signature and ignore what they do not need.
+#   -Wno-cast-qual	  diff_patience.c:191 and :192, "cast from
+#			  'const void *' to 'struct diff_atom **' drops
+#			  const qualifier": the mergesort(3) comparison
+#			  casts its arguments back to atom pointers.
+LIBDIFF_CFLAGS = $(CFLAGS) $(LIBDIFF_INCS) \
+	-Wno-sign-compare -Wno-unused-parameter -Wno-cast-qual
+
+# libdiff's two compat allocators. Neither file carries an #ifndef
+# guard of its own -- both are plain definitions -- so they cannot be
+# compiled everywhere and left to vanish on a libc that has the
+# functions. They are gated instead, the way the ZFS include set is:
+# a variable the freebsd targets clear. FreeBSD's libc has
+# reallocarray(3) and recallocarray(3), and its own lib/libdiff builds
+# neither file; the mac's libc has neither function, so the portable
+# flavor builds both.
+LIBDIFF_COMPAT_OBJS = build/reallocarray.o build/recallocarray.o
+
+# recallocarray.c wipes the old allocation with explicit_bzero(3),
+# which the mac's libc does not have either. The substitute is a flag
+# and not an edit: bzero(3) has the same signature and <string.h>
+# reaches it on both of this Makefile's platforms. It is the weaker of
+# the two -- a compiler may elide bzero, where explicit_bzero may not
+# be elided -- which costs nothing here: libdiff holds file text and
+# no secrets, and the shipped FreeBSD build does not compile this file
+# at all. An object-like macro on purpose: a function-like one would
+# also rewrite the declaration in FreeBSD's <strings.h>.
+LIBDIFF_BZERO_CFLAGS = -Dexplicit_bzero=bzero
+
+LIBDIFF_OBJS = build/diff_main.o build/diff_myers.o build/diff_patience.o \
+	build/diff_atomize_text.o $(LIBDIFF_COMPAT_OBJS)
+
 # Library objects are everything but main.o; tests link against them.
 LIB_OBJS = build/vis.o build/name.o build/decide.o build/fixture.o \
 	build/manifest.o build/walk.o build/yellow.o build/verify.o \
 	build/apply.o build/zfsops.o build/run.o build/args.o build/launch.o \
-	build/picker.o
+	build/picker.o $(LIBDIFF_OBJS)
 CORE_OBJS = build/main.o $(LIB_OBJS)
 TESTS = check_vis check_name check_fixture check_manifest check_walk \
 	check_yellow check_roundtrip check_apply check_verify check_args \
@@ -59,7 +120,7 @@ zfs_rebase: build $(CORE_OBJS)
 
 freebsd:
 	$(MAKE) FLAVOR=freebsd CFLAGS="$(CFLAGS) -DZR_FREEBSD" \
-	    ZFSOPS_CFLAGS="$(ZFS_CFLAGS)" \
+	    ZFSOPS_CFLAGS="$(ZFS_CFLAGS)" LIBDIFF_COMPAT_OBJS="" \
 	    LDFLAGS="$(LDFLAGS) $(ZFS_LIBS)" zfs_rebase
 
 # The gates for the freebsd flavor. check links the test programs and
@@ -68,10 +129,11 @@ freebsd:
 # would compile zfsops.c without the OpenZFS headers and link without
 # the ZFS libraries. The two flavors do not share build/, because the
 # objects differ, and the flavor stamp is what keeps them apart: the
-# inner make finds a portable build/ and empties it first.
+# inner make finds a portable build/ and empties it first. It clears
+# LIBDIFF_COMPAT_OBJS for the same reason the freebsd target does.
 check-freebsd:
 	$(MAKE) FLAVOR=freebsd CFLAGS="$(CFLAGS) -DZR_FREEBSD" \
-	    ZFSOPS_CFLAGS="$(ZFS_CFLAGS)" \
+	    ZFSOPS_CFLAGS="$(ZFS_CFLAGS)" LIBDIFF_COMPAT_OBJS="" \
 	    LDFLAGS="$(LDFLAGS) $(ZFS_LIBS)" check
 
 build/main.o: src/main.c src/args.h src/decide.h src/fixture.h \
@@ -90,6 +152,34 @@ build/launch.o: src/launch.c src/launch.h src/plugins/picker/picker.h
 # already on it, and launch.c names the header by its path under it.
 build/picker.o: src/plugins/picker/picker.c src/plugins/picker/picker.h
 	$(CC) $(CFLAGS) -c -o $@ src/plugins/picker/picker.c
+
+# The carried libdiff, one object per source, in the source's own
+# layout. LIBDIFF_HDRS is every header of the copy, so that a refresh
+# rebuilds all of it: these are not our files and the exact reach of
+# each include is upstream's business, not this Makefile's.
+LIBDIFF_HDRS = $(LIBDIFF)/include/arraylist.h $(LIBDIFF)/include/diff_main.h \
+	$(LIBDIFF)/lib/diff_internal.h $(LIBDIFF)/lib/diff_debug.h
+
+build/diff_main.o: $(LIBDIFF)/lib/diff_main.c $(LIBDIFF_HDRS)
+	$(CC) $(LIBDIFF_CFLAGS) -c -o $@ $(LIBDIFF)/lib/diff_main.c
+
+build/diff_myers.o: $(LIBDIFF)/lib/diff_myers.c $(LIBDIFF_HDRS)
+	$(CC) $(LIBDIFF_CFLAGS) -c -o $@ $(LIBDIFF)/lib/diff_myers.c
+
+build/diff_patience.o: $(LIBDIFF)/lib/diff_patience.c $(LIBDIFF_HDRS)
+	$(CC) $(LIBDIFF_CFLAGS) -c -o $@ $(LIBDIFF)/lib/diff_patience.c
+
+build/diff_atomize_text.o: $(LIBDIFF)/lib/diff_atomize_text.c $(LIBDIFF_HDRS)
+	$(CC) $(LIBDIFF_CFLAGS) -c -o $@ $(LIBDIFF)/lib/diff_atomize_text.c
+
+build/reallocarray.o: $(LIBDIFF)/compat/reallocarray.c \
+	$(LIBDIFF)/compat/include/stdlib.h
+	$(CC) $(LIBDIFF_CFLAGS) -c -o $@ $(LIBDIFF)/compat/reallocarray.c
+
+build/recallocarray.o: $(LIBDIFF)/compat/recallocarray.c \
+	$(LIBDIFF)/compat/include/stdlib.h
+	$(CC) $(LIBDIFF_CFLAGS) $(LIBDIFF_BZERO_CFLAGS) -c -o $@ \
+	    $(LIBDIFF)/compat/recallocarray.c
 
 build/vis.o: src/vis.c src/vis.h
 	$(CC) $(CFLAGS) -c -o $@ src/vis.c

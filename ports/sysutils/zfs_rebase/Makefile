@@ -7,8 +7,17 @@ MAINTAINER=	mail@eidelbyte.net
 COMMENT=	Rebase one ZFS filesystem onto another
 WWW=		https://github.com/eidelbyte/zfs_rebase_tool
 
-LICENSE=	BSD3CLAUSE
-LICENSE_FILE=	${WRKSRC}/LICENSE
+# Two licenses, both applying: the tool is BSD3CLAUSE, and the copy of
+# FreeBSD's contrib/libdiff that the picker's merge builds against is
+# ISC. That copy is src/plugins/picker/libdiff -- Neels Hofmeyr's diff
+# library from the Game of Trees project, carried whole and never
+# edited (see its UPSTREAM), together with the two OpenBSD compat
+# allocators under the same terms. It is compiled into the binary, so
+# it is a license of the package and not only of the source.
+LICENSE=	BSD3CLAUSE ISC
+LICENSE_COMB=	multi
+LICENSE_FILE_BSD3CLAUSE=	${WRKSRC}/LICENSE
+LICENSE_FILE_ISC=	${WRKSRC}/src/plugins/picker/libdiff/LICENCE
 
 USE_GITHUB=	yes
 GH_ACCOUNT=	eidelbyte

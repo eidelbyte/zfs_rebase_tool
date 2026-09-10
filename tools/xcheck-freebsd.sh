@@ -1,6 +1,7 @@
 #!/bin/sh
 # Cross syntax check of every source -- the plugins under src with
-# them -- and of the box probe, as the
+# them, the carried libdiff excepted, see the loop -- and of the box
+# probe, as the
 # freebsd target compiles them, on a machine that is not FreeBSD:
 # clang targeting FreeBSD, with a FreeBSD source tree's headers
 # standing in for /usr/include and the OpenZFS include set applied to
@@ -30,6 +31,19 @@ ZFS="-I$ZT/lib/libspl/include/os/freebsd -I$ZT/lib/libspl/include \
 -DNEED_SOLARIS_BOOLEAN -DHAVE_ISSETUGID -DHAVE_STRLCAT -DHAVE_STRLCPY"
 rc=0
 for f in src/*.c src/plugins/*/*.c tools/probe-mount.c; do
+	# The carried copy of FreeBSD's contrib/libdiff in
+	# src/plugins/picker/libdiff is foreign code (plan section 3.6,
+	# and that directory's UPSTREAM). It is exempt: it is not ours
+	# to fix, it needs its own include paths and its own warning
+	# exemptions, and it is FreeBSD's own code to begin with, so a
+	# cross check of it against FreeBSD's headers would say nothing
+	# this repository could act on. The box's make freebsd is what
+	# confirms it builds there. The glob above stops one level
+	# above it today; this keeps the exemption true if it is ever
+	# widened.
+	case "$f" in
+	src/plugins/picker/libdiff/*) continue ;;
+	esac
 	extra=""
 	case "$f" in
 	src/zfsops.c|tools/probe-mount.c) extra="$ZFS" ;;

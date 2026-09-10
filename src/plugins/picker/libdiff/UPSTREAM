@@ -1,0 +1,63 @@
+libdiff, carried from FreeBSD
+=============================
+
+Source	FreeBSD src, contrib/libdiff -- the Game of Trees project's
+	diff library (Neels Hofmeyr), which FreeBSD builds as the
+	internal lib/libdiff and installs neither the archive nor the
+	headers of.
+Commit	37d8a26e0e07a4a0743176d1fa897e34816f34d7
+Date	2026-09-06
+Licence	ISC. LICENCE below is upstream's; the two compat allocators
+	carry the same terms in their own headers (Otto Moerbeek,
+	OpenBSD).
+
+Carried files, each byte for byte out of that commit:
+
+	lib/diff_main.c            contrib/libdiff/lib/diff_main.c
+	lib/diff_myers.c           contrib/libdiff/lib/diff_myers.c
+	lib/diff_patience.c        contrib/libdiff/lib/diff_patience.c
+	lib/diff_atomize_text.c    contrib/libdiff/lib/diff_atomize_text.c
+	lib/diff_internal.h        contrib/libdiff/lib/diff_internal.h
+	lib/diff_debug.h           contrib/libdiff/lib/diff_debug.h
+	include/diff_main.h        contrib/libdiff/include/diff_main.h
+	include/arraylist.h        contrib/libdiff/include/arraylist.h
+	compat/reallocarray.c      contrib/libdiff/compat/reallocarray.c
+	compat/recallocarray.c     contrib/libdiff/compat/recallocarray.c
+	compat/include/stdlib.h    contrib/libdiff/compat/include/stdlib.h
+	LICENCE                    contrib/libdiff/LICENCE
+
+The layout of the source is kept, because it is what makes the
+includes work unchanged: the lib sources reach "diff_internal.h" and
+"diff_debug.h" beside themselves, and <arraylist.h> and <diff_main.h>
+through an include path. The two include paths the Makefile passes
+are the two FreeBSD's own lib/libdiff/Makefile passes.
+
+Not carried: diff_output.c, diff_output_plain.c, diff_output_unidiff.c,
+diff_output_edscript.c and include/diff_output.h, which print diffs --
+the merge walks the chunk list itself; compat/strlcpy.c, strlcat.c,
+merge.c and getprogname_linux.c, which only the output side and the
+sample program need; the test suite and the makefiles.
+
+Rules
+-----
+
+Nothing in this directory is edited locally, ever. Not a byte, not a
+trailing space. Every adaptation lives in the picker's own files, so
+that a refresh stays a plain copy. A carried file that will not build
+under the tool's warning set gets a flag on its object's line in the
+Makefile, with a comment naming the file and the diagnostic, and the
+file itself is left alone.
+
+Every carried file is ASCII, so the directory stays inside the ASCII
+check that tools/gate.sh runs over the tree. It is exempt from cstyle
+and from tools/xcheck-freebsd.sh: foreign code keeps its own style,
+and the FreeBSD build of it is the box's to confirm.
+
+Refresh
+-------
+
+	sh tools/refresh-libdiff.sh [FREEBSD_TREE] [COMMIT]
+
+with FREEBSD_TREE defaulting to $FREEBSD_SRC or /usr/src and COMMIT
+to the commit that tree is at. Then make check: the battery is what
+says whether the merge's answers moved. One commit for the refresh.
