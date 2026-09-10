@@ -1332,8 +1332,8 @@ pk_res_fill(const struct zr_pk_merge *mg, struct pk_rrow *out)
 			gut = ' ';
 			co = PK_CO_PLAIN;
 		} else if (c->kind == ZR_M3_CONFLICT) {
-			/* picked: the gutter says which key answered it */
-			gut = c->pick == ZR_M3_PICK_ONTO ? '2' : '1';
+			/* picked: the gutter says which side answered it */
+			gut = c->pick == ZR_M3_PICK_ONTO ? 'o' : 'f';
 			co = file == ZR_M3_F_ONTO ? PK_CO_ONTO : PK_CO_FROM;
 		} else {
 			gut = '+';
