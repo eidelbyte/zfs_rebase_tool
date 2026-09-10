@@ -1459,6 +1459,75 @@ removed and the gate puts back. The Mac rows are the classifier's;
 the writing is run.c's and is the box's, since a gate is a walk of
 three real trees.
 
+## ZI -- the interactive launch (check_args.c, check_run.c, box/run-resolution.sh)
+
+Plotted 2026-09-10, before its tests, for sprint 6's launcher
+(sprints/sprint-6/implementation-plan.md section 2): -i takes an
+optional value naming a command, the tool forks a child on the
+resolution at the conflicts gate and reads the document back when
+the child exits 0.
+
+Dimensions: the value form {none, a bare word after -i, attached
+with =}; the command {a fresh run, --continue, the verbs that refuse
+-i, a dry run}; the bare words on the line {none, one, two, three}
+crossed with where -i stands among them; what the child does {exits
+0 with the document complete, exits 0 with a name unanswered, exits
+0 with a document the parser refuses, exits non-zero, dies of a
+signal, cannot be run at all}; the document when the child opens
+{unanswered, complete by a --take flag, complete by hand, drift
+lines just written by the gate's verify}; the flags beside -i
+{--no-merge, --take-onto, --take-from}; the path to the gate {the
+fresh run, --continue from applying1, --continue at conflicts,
+--restart then --continue}; the child's arguments {the resolution's
+path, the value's own flags, the four tree paths of the built-in};
+signals while the tool waits {SIGINT to the group, SIGTERM to the
+tool, SIGKILL to the tool}; the terminal {left as found, left
+changed by the child}; and the built-in {no picker in the build}.
+ZI1 to ZI12 are read off struct zr_args on any machine. ZI13 to
+ZI23 run the launcher on the mac with shell scripts as the child:
+a script records its arguments, exits as told, signals its parent,
+or changes the termios of a pty the test opened with openpty(3).
+ZI24 onward are box rows in run-resolution.sh, with a script as the
+editor.
+
+| cell | scenario | disposition |
+|------|----------|-------------|
+| ZI1 | -i alone on a fresh run: interactive, and no command (the built-in) | planned: check_args.c |
+| ZI2 | -i CMD on a fresh run: the command is CMD | planned: check_args.c |
+| ZI3 | --interactive=CMD: the command is CMD, on a fresh run and on --continue | planned: check_args.c |
+| ZI4 | -c -i IDENT: the only bare word on a verb's line is IDENT, and the built-in | planned: check_args.c |
+| ZI5 | -c -i CMD IDENT: the command is CMD and IDENT the other | planned: check_args.c |
+| ZI6 | -c IDENT -i CMD: the same; the position of -i does not matter | planned: check_args.c |
+| ZI7 | -c -i CMD IDENT EXTRA: refused as a second identifier | planned: check_args.c |
+| ZI8 | -i --from A: the next word is a flag, so the built-in, and --from is parsed | planned: check_args.c |
+| ZI9 | --interactive= with an empty value: refused | planned: check_args.c |
+| ZI10 | -i on --restart, --abort and --verify: refused, with or without a value | planned: check_args.c (the rule of ZX gate flags, carried) |
+| ZI11 | -i beside --dry-run: refused, with or without a value | planned: check_args.c (ZX241, carried) |
+| ZI12 | a value with its own flags, "CMD --flag", is one command string, never split | planned: check_args.c |
+| ZI13 | the child receives the resolution's path as its last argument, byte for byte | planned: check_run.c |
+| ZI14 | the value's own flags reach the child before the path, in order | planned: check_run.c |
+| ZI15 | the child exits 0: the launcher reports 0 | planned: check_run.c |
+| ZI16 | the child exits N: the launcher reports N, and the file is as the child left it | planned: check_run.c |
+| ZI17 | the child dies of a signal: reported non-zero, with the signal named | planned: check_run.c |
+| ZI18 | the command cannot be run: reported non-zero, with the command named | planned: check_run.c |
+| ZI19 | SIGINT while the tool waits reaches the child and not the tool: a child that sends INT to its parent and exits 0 is reported 0, and the tool is still there | planned: check_run.c |
+| ZI20 | SIGTERM to the tool while it waits is forwarded to the child, and the launch reports non-zero | planned: check_run.c |
+| ZI21 | termios saved before the fork are restored after a child that changed them, on a pty | planned: check_run.c, openpty(3) |
+| ZI22 | the built-in with no picker in the build: the stub says so, exits 2, reported non-zero | planned: check_run.c |
+| ZI23 | the built-in child's argv is RESOLUTION BASE FROM ONTO RESULT, in that order | planned: check_run.c |
+| ZI24 | a fresh run with -i and a script that answers every line: done in one process, exit 0 | planned: box, box/run-resolution.sh |
+| ZI25 | the script exits 1: the gate stands, exit 1, the resolution as the script left it with its partial answers | planned: box, box/run-resolution.sh |
+| ZI26 | the script leaves a name unanswered and exits 0: the count printed, exit 1, the gate stands | planned: box, box/run-resolution.sh |
+| ZI27 | the script writes a document the parser refuses (a duplicate line): refused as --continue refuses it, the gate stands | planned: box, box/run-resolution.sh |
+| ZI28 | -c IDENT -i CMD at conflicts: the drift lines the gate's verify wrote are in the file when the script opens it | planned: box, box/run-resolution.sh |
+| ZI29 | -c -i from applying1 (killed before the gate): the apply finishes, then the script opens | planned: box, box/run-resolution.sh |
+| ZI30 | -O -i: the script opens on the complete skeleton | planned: box, box/run-resolution.sh |
+| ZI31 | -i -M: the script opens, then --no-merge holds the gate | planned: box, box/run-resolution.sh |
+| ZI32 | a rebase whose decision has no conflict, with -i: nothing opens, done | planned: box, box/run-resolution.sh |
+| ZI33 | -i alone on the box with no picker in the build: the note, exit 1, the gate stands | planned: box, box/run-resolution.sh |
+| ZI34 | the tool killed with SIGKILL while the script runs: the gate stands with the file as last saved, and -c continues | planned: box, box/run-resolution.sh |
+| ZI35 | --restart IDENT then -c IDENT -i CMD: the skeleton again, and the script opens on it | planned: box, box/run-resolution.sh |
+
 ## Positive-proof cells
 
 One per subsection, the cell that proves the phase ran at all
@@ -1476,3 +1545,5 @@ V family learned:
         the apply was complete
   ZY14  a dup with the right bytes is still pending, so the
         classifier reads the pooling and not the bytes alone
+  ZI13  the child received the resolution's path, so a process
+        was really run on the document
