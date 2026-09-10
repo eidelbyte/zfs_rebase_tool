@@ -58,7 +58,7 @@ it; a start writes a manifest and reads none, so it takes no IDENT.
 |-----------|-------|--------------|
 | `--from`, `--off-of` | `-f` | the side whose changes are replayed: a snapshot, or a dataset the tool snapshots itself and destroys at done or --abort. On a verb it is optional and names no rebase: it is checked against the header, by name and by guid |
 | `--onto`, `--to` | `-t` | the side they are replayed onto, and the form of the run: a snapshot is cloned as --result, a dataset is rebased in place |
-| `--result` | `-r` | the clone's name in one form and the pre-apply snapshot's in the other. A start's flag only: a verb names its rebase with IDENT, and --result beside one is a usage error |
+| `--result` | `-r` | the clone's name in one form and the pre-apply snapshot's in the other; a clone name with no slash goes beside onto's dataset (`rebased` beside `tank/home/main@work` is `tank/home/rebased`). A start's flag only: a verb names its rebase with IDENT, and --result beside one is a usage error |
 | `--permissive-merge` | `-p` | a hard link on one side that crosses the other side's opinion of the same file is followed rather than raised as a conflict: two pools a pivot links are joined, and a name one side made a link of a file the other side edited adopts that file's outcome. Strict, the default, raises both as conflicts (unexpressed-sharing, disagree). The mode is recorded in the manifest's `#mode` |
 | `--verbose` | `-v` | counts and steps on stderr |
 | `--manifest` | `-o` | where the manifest is written; the resolution goes beside it, and the record names the manifest. A start option, and a dry run's: the record names the path from then on, and done acts on it, so no later verb can choose |

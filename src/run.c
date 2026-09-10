@@ -783,6 +783,34 @@ unrelated_base(struct run *r)
 }
 
 /*
+ * The clone's name out of --result. A name with a slash is the
+ * dataset name as given. A name with none is placed beside onto's
+ * dataset -- its parent, then the name -- or under the pool where
+ * onto is the pool's own dataset; so "rebased" beside tank/home/main
+ * is tank/home/rebased, and beside tank it is tank/rebased (the box,
+ * 2026-09-10: "a single clone name should be legitimate for
+ * --result"). The header carries the composed name, so nothing that
+ * reads a record sees the short form. -1 when it will not fit.
+ */
+int
+zr_result_name(const char *ontods, const char *result, char *out,
+    size_t outlen)
+{
+	const char *slash;
+	size_t n;
+	int len;
+
+	if (strchr(result, '/') != NULL) {
+		len = snprintf(out, outlen, "%s", result);
+		return (len < 0 || (size_t)len >= outlen ? -1 : 0);
+	}
+	slash = strrchr(ontods, '/');
+	n = slash != NULL ? (size_t)(slash - ontods) : strlen(ontods);
+	len = snprintf(out, outlen, "%.*s/%s", (int)n, ontods, result);
+	return (len < 0 || (size_t)len >= outlen ? -1 : 0);
+}
+
+/*
  * The result must be in onto's pool, because a clone cannot cross
  * one; it must not exist yet; and its parent dataset must, because
  * the clone is created and not received and ZFS creates no
@@ -797,35 +825,35 @@ result_ok(struct run *r, const char *ontods)
 	int rc;
 
 	a = strcspn(ontods, "/");
-	b = strcspn(r->o.result, "/");
-	if (a != b || strncmp(ontods, r->o.result, a) != 0) {
+	b = strcspn(r->rds, "/");
+	if (a != b || strncmp(ontods, r->rds, a) != 0) {
 		(void) snprintf(r->err, sizeof (r->err),
-		    "%s is not in the pool %s is in", r->o.result, ontods);
+		    "%s is not in the pool %s is in", r->rds, ontods);
 		return (-1);
 	}
-	rc = zr_zfs_exists(r->zfs, r->o.result, r->err, sizeof (r->err));
+	rc = zr_zfs_exists(r->zfs, r->rds, r->err, sizeof (r->err));
 	if (rc < 0)
 		return (-1);
 	if (rc != 0) {
 		(void) snprintf(r->err, sizeof (r->err), "%s exists already",
-		    r->o.result);
+		    r->rds);
 		return (-1);
 	}
-	slash = strrchr(r->o.result, '/');
+	slash = strrchr(r->rds, '/');
 	if (slash == NULL) {
 		(void) snprintf(r->err, sizeof (r->err),
-		    "%s has no parent dataset", r->o.result);
+		    "%s has no parent dataset", r->rds);
 		return (-1);
 	}
 	(void) snprintf(parent, sizeof (parent), "%.*s",
-	    (int)(slash - r->o.result), r->o.result);
+	    (int)(slash - r->rds), r->rds);
 	rc = zr_zfs_exists(r->zfs, parent, r->err, sizeof (r->err));
 	if (rc < 0)
 		return (-1);
 	if (rc == 0) {
 		(void) snprintf(r->err, sizeof (r->err),
 		    "%s does not exist, so %s cannot be created", parent,
-		    r->o.result);
+		    r->rds);
 		return (-1);
 	}
 	return (0);
@@ -1049,7 +1077,16 @@ choose_form(struct run *r)
 			    r->o.result);
 			return (-1);
 		}
-		(void) snprintf(r->rds, sizeof (r->rds), "%s", r->o.result);
+		if (zr_result_name(r->ontods, r->o.result, r->rds,
+		    sizeof (r->rds)) != 0) {
+			(void) snprintf(r->err, sizeof (r->err), "--result %s "
+			    "beside %s is longer than a dataset name may be",
+			    r->o.result, r->ontods);
+			return (-1);
+		}
+		if (r->o.verbose && strchr(r->o.result, '/') == NULL)
+			(void) fprintf(stderr, "zfs_rebase: the result is %s, "
+			    "beside %s\n", r->rds, r->ontods);
 		return (0);
 	}
 	r->form = ZR_FORM_DATASET;
@@ -1961,7 +1998,8 @@ fill_header(struct run *r, struct zr_manifest_hdr *h, char *stamp,
     size_t stamplen)
 {
 	memset(h, 0, sizeof (*h));
-	h->result = r->o.dryrun ? ZR_NO_BASE : r->o.result;
+	h->result = r->o.dryrun ? ZR_NO_BASE :
+	    in_dataset_form(r) ? r->o.result : r->rds;
 	h->form = in_dataset_form(r) ? ZR_HFORM_DATASET : ZR_HFORM_CLONE;
 	h->base = r->base;
 	h->base_guid = r->baseguid;
@@ -2013,6 +2051,57 @@ resolve_manifest(struct run *r)
 	}
 	(void) snprintf(r->manpath, sizeof (r->manpath), "%s", real);
 	free(real);
+}
+
+/*
+ * Can a manifest be written where -o points? zr_doc_write puts a
+ * sibling .tmp in the destination's directory and renames it, so the
+ * directory must be there and writable; a run that found out at the
+ * birth manifest had already taken its run directory and touched the
+ * pool (the box, 2026-09-10: "-o /tmp/zrm-run/manifest" with no such
+ * directory failed at "manifest: /tmp/zrm-run/manifest.tmp"). Asked
+ * before anything is taken, so that the answer is a precondition and
+ * exit 2. A path with no slash is in the working directory.
+ */
+int
+zr_outdir_ok(const char *path, char *err, size_t errlen)
+{
+	const char *slash = strrchr(path, '/');
+	struct stat st;
+	char dir[ZR_NAME_MAX];
+	size_t n;
+
+	if (slash == NULL) {
+		(void) snprintf(dir, sizeof (dir), ".");
+	} else if (slash == path) {
+		(void) snprintf(dir, sizeof (dir), "/");
+	} else {
+		n = (size_t)(slash - path);
+		if (n >= sizeof (dir)) {
+			(void) snprintf(err, errlen, "-o %s: the directory's "
+			    "name is longer than %u bytes", path,
+			    (unsigned)(sizeof (dir) - 1));
+			return (-1);
+		}
+		memcpy(dir, path, n);
+		dir[n] = '\0';
+	}
+	if (stat(dir, &st) != 0) {
+		(void) snprintf(err, errlen, "-o %s: the directory %s: %s",
+		    path, dir, strerror(errno));
+		return (-1);
+	}
+	if (!S_ISDIR(st.st_mode)) {
+		(void) snprintf(err, errlen, "-o %s: %s is not a directory",
+		    path, dir);
+		return (-1);
+	}
+	if (access(dir, W_OK) != 0) {
+		(void) snprintf(err, errlen, "-o %s: the directory %s: %s",
+		    path, dir, strerror(errno));
+		return (-1);
+	}
+	return (0);
 }
 
 /*
@@ -2788,6 +2877,13 @@ zr_run(const struct zr_run_opts *o)
 		(void) fprintf(stderr, "zfs_rebase: must run as root\n");
 		return (EXIT_PRECOND);
 	}
+	/*
+	 * Where -o points, before the pool is touched: the answer is
+	 * a precondition, not a failure at the birth manifest.
+	 */
+	if (o->outpath != NULL &&
+	    zr_outdir_ok(o->outpath, r.err, sizeof (r.err)) != 0)
+		return (fail(&r, EXIT_PRECOND, "precondition"));
 	tag_make(r.tag, sizeof (r.tag), "zr-");
 	signals_install(saved);
 	if (zr_zfs_open(&r.zfs, r.err, sizeof (r.err)) != 0) {

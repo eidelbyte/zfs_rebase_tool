@@ -87,6 +87,21 @@ struct zr_run_opts {
 int zr_run(const struct zr_run_opts *);
 
 /*
+ * Can a manifest be written where -o points: the directory is there
+ * and writable. Asked before the pool is touched, so that the answer
+ * is a precondition. 0, or -1 with err naming the path and the
+ * directory.
+ */
+int zr_outdir_ok(const char *, char *, size_t);
+
+/*
+ * The clone's name out of --result: as given when it has a slash,
+ * else beside onto's dataset (its parent, or the pool where onto is
+ * the pool's own dataset). 0, or -1 when it will not fit.
+ */
+int zr_result_name(const char *, const char *, char *, size_t);
+
+/*
  * Would a system file flag stop the apply at this securelevel?
  *
  * The apply takes an object's immutable, append-only and no-unlink

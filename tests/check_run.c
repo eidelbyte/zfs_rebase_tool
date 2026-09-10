@@ -21,7 +21,9 @@
  * a pool either: the launcher knows nothing of ZFS, and the gate
  * that calls it is the box's.
  *
- * Matrix cells (tests/MATRIX.md): ZX242, and ZI13 to ZI23 of family
+ * Matrix cells (tests/MATRIX.md): ZX242, ZX243 (where -o points,
+ * asked before the pool is touched), ZX244 (the clone's name out of
+ * --result, a bare name beside onto), and ZI13 to ZI23 of family
  * ZI. ZX23, the refusal a real run makes at a real securelevel,
  * stays the box's: raising the level wants a reboot. ZI24 onward are
  * the gate after the child, on real datasets, in box/run-resolution.sh.
@@ -668,10 +670,91 @@ check_builtin_child(void)
 	scratch_close(&sc);
 }
 
+/*
+ * ZX243: where -o points is asked before the pool is touched. The
+ * directory must be there, be a directory and be writable, the
+ * answer names the path and the directory, and a path with no slash
+ * is the working directory, which is there. The unwritable case is
+ * asked only of a process that is not root, since root writes
+ * anywhere and access(2) says so.
+ */
+static void
+check_outdir(void)
+{
+	struct scratch sc;
+	char path[1024], err[512];
+	FILE *f;
+
+	scratch_open(&sc);
+	(void) snprintf(path, sizeof (path), "%s/manifest", sc.root);
+	CHECK(zr_outdir_ok(path, err, sizeof (err)) == 0);
+	CHECK(zr_outdir_ok("manifest", err, sizeof (err)) == 0);
+
+	(void) snprintf(path, sizeof (path), "%s/no-such/manifest", sc.root);
+	err[0] = '\0';
+	CHECK(zr_outdir_ok(path, err, sizeof (err)) != 0);
+	says(err, "no-such");
+	says(err, strerror(ENOENT));
+
+	(void) snprintf(path, sizeof (path), "%s/afile", sc.root);
+	f = fopen(path, "w");
+	CHECK(f != NULL);
+	if (f != NULL)
+		(void) fclose(f);
+	(void) snprintf(path, sizeof (path), "%s/afile/manifest", sc.root);
+	err[0] = '\0';
+	CHECK(zr_outdir_ok(path, err, sizeof (err)) != 0);
+	says(err, "not a directory");
+
+	if (geteuid() != 0) {
+		(void) snprintf(path, sizeof (path), "%s/shut", sc.root);
+		CHECK(mkdir(path, 0500) == 0);
+		(void) snprintf(path, sizeof (path), "%s/shut/manifest",
+		    sc.root);
+		err[0] = '\0';
+		CHECK(zr_outdir_ok(path, err, sizeof (err)) != 0);
+		says(err, strerror(EACCES));
+		(void) snprintf(path, sizeof (path), "%s/shut", sc.root);
+		(void) chmod(path, 0700);
+		CHECK(rmdir(path) == 0);
+	}
+	(void) snprintf(path, sizeof (path), "%s/afile", sc.root);
+	CHECK(unlink(path) == 0);
+	scratch_close(&sc);
+}
+
+/*
+ * ZX244: the clone's name out of --result. A name with no slash goes
+ * beside onto's dataset, under its parent, or under the pool where
+ * onto is the pool's own dataset; a name with a slash is taken as
+ * given; and a name that will not fit is refused rather than cut.
+ */
+static void
+check_result_name(void)
+{
+	char out[64], big[300];
+
+	CHECK(zr_result_name("zrm/onto", "rebased", out, sizeof (out)) == 0);
+	CHECK(strcmp(out, "zrm/rebased") == 0);
+	CHECK(zr_result_name("tank/home/main", "rebased", out,
+	    sizeof (out)) == 0);
+	CHECK(strcmp(out, "tank/home/rebased") == 0);
+	CHECK(zr_result_name("tank", "rebased", out, sizeof (out)) == 0);
+	CHECK(strcmp(out, "tank/rebased") == 0);
+	CHECK(zr_result_name("tank/home/main", "tank/x/y", out,
+	    sizeof (out)) == 0);
+	CHECK(strcmp(out, "tank/x/y") == 0);
+	memset(big, 'n', sizeof (big) - 1);
+	big[sizeof (big) - 1] = '\0';
+	CHECK(zr_result_name("tank/home/main", big, out, sizeof (out)) != 0);
+}
+
 int
 main(void)
 {
 	check_flags_guard();
+	check_outdir();
+	check_result_name();
 	check_child_arguments();
 	check_child_status();
 	check_child_signal();

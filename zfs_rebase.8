@@ -190,6 +190,13 @@ names a new dataset, created as a read-only clone of that snapshot with its
 .Sy mountpoint
 property
 .Sy none ,
+and a name with no slash in it is placed beside the snapshot's dataset:
+.Ar rebased
+beside
+.Pa tank/home/main@work
+is
+.Pa tank/home/rebased ,
+and a name with a slash is the dataset name as given,
 and mounted at the run's own private directory, which is the only place it
 is ever mounted while the rebase is open.
 The rebase is made in it and nothing of yours is written to at all.
