@@ -101,11 +101,11 @@ PICKER_OBJS = build/picker.o build/model.o
 LIB_OBJS = build/vis.o build/name.o build/decide.o build/fixture.o \
 	build/manifest.o build/walk.o build/yellow.o build/verify.o \
 	build/apply.o build/zfsops.o build/run.o build/args.o build/launch.o \
-	$(PICKER_OBJS) $(LIBDIFF_OBJS)
+	$(PICKER_OBJS) build/diff3.o build/merge.o $(LIBDIFF_OBJS)
 CORE_OBJS = build/main.o $(LIB_OBJS)
 TESTS = check_vis check_name check_fixture check_manifest check_walk \
 	check_yellow check_roundtrip check_apply check_verify check_args \
-	check_run check_picker
+	check_run check_picker check_merge
 
 all: build zfs_rebase
 
@@ -187,6 +187,23 @@ build/recallocarray.o: $(LIBDIFF)/compat/recallocarray.c \
 build/model.o: src/plugins/picker/model.c src/plugins/picker/picker.h \
 	src/manifest.h src/vis.h
 	$(CC) $(CFLAGS) -c -o $@ src/plugins/picker/model.c
+
+# The three-way merge. diff3.c is the walk, adapted from FreeBSD's
+# usr.bin/diff3/diff3.c and a file of ours: it knows nothing of libdiff
+# and builds with the plain flags. merge.c is the glue and gets
+# libdiff's own include paths, plus the copy's lib/ directory for
+# diff_internal.h, which is where struct diff_chunk is defined -- the
+# installed diff_main.h keeps it opaque and the accessors for it live
+# in the diff_output.c the copy does not carry. Reading a carried
+# header is not editing one, and the alternative would be a second
+# copy of the struct here.
+build/diff3.o: src/plugins/picker/diff3.c src/plugins/picker/merge.h
+	$(CC) $(CFLAGS) -c -o $@ src/plugins/picker/diff3.c
+
+build/merge.o: src/plugins/picker/merge.c src/plugins/picker/merge.h \
+	$(LIBDIFF_HDRS)
+	$(CC) $(CFLAGS) $(LIBDIFF_INCS) -I$(LIBDIFF)/lib -c -o $@ \
+	    src/plugins/picker/merge.c
 
 build/vis.o: src/vis.c src/vis.h
 	$(CC) $(CFLAGS) -c -o $@ src/vis.c

@@ -1616,6 +1616,12 @@ merge, which check_picker.c drives on the mac with key codes over a
 resolution and a manifest from the fixtures' expected output: no
 curses is linked and no terminal is opened, which is what plan
 section 3.5 buys by keeping model.c and merge.c free of it. The
+merge library's own cells -- the chunk kinds and their answers, the
+write rule, the hint, the two shapes that are not merges, and the
+battery of ZP104 to ZP109 -- are check_merge.c's, a second check
+program of the same kind that needs no key and no row: the merge is
+a library over three buffers of bytes and is tested as one, and what
+is left over for check_picker.c is the keys and the screen. The
 terminal cells a pty can show are check_picker.c's too, with the
 standalone binary as the child on a pty from posix_openpt(3) rather
 than openpty(3), which lives in -lutil on FreeBSD -- the trick ZI21
@@ -1706,38 +1712,38 @@ session on the box goes into the worklog.
 | ZP75 | a window narrower or shorter than the layout: drawn inside the window there is, and nothing written outside it | planned: box, by hand, in the worklog of picker-list |
 | ZP76 | the colors and the ACS line drawing, and the fallback on a terminal that has neither | planned: box, by hand, in the worklog of picker-list; the source's ASCII half is tools/gate.sh, which make gate runs |
 | ZP77 | curses under sudo with the person's TERM and TERMINFO: it opens, or it refuses cleanly, and never draws garbage (plan section 6) | planned: box, by hand, in the worklog of picker-list |
-| ZP78 | a stable chunk: shown in all three panes, with no answer to give | planned: check_picker.c |
-| ZP79 | a from-only chunk: the answer is from, with no key pressed | planned: check_picker.c |
-| ZP80 | an onto-only chunk: the answer is onto, with no key pressed | planned: check_picker.c |
-| ZP81 | a both-same chunk: not a conflict, and one copy of it in the result | planned: check_picker.c |
-| ZP82 | a conflict chunk: unanswered until 1 or 2, the two halves between markers on the screen until then | planned: check_picker.c |
+| ZP78 | a stable chunk: shown in all three panes, with no answer to give | covered: check_merge.c, the record's half -- three ranges of one length and no answer to give; the three panes are picker-merge's, planned: check_picker.c |
+| ZP79 | a from-only chunk: the answer is from, with no key pressed | covered: check_merge.c |
+| ZP80 | an onto-only chunk: the answer is onto, with no key pressed | covered: check_merge.c |
+| ZP81 | a both-same chunk: not a conflict, and one copy of it in the result | covered: check_merge.c |
+| ZP82 | a conflict chunk: unanswered until 1 or 2, the two halves between markers on the screen until then | covered: check_merge.c, the record's half -- unanswered until zr_m3_pick, and the last pick stands; the markers on the screen are picker-merge's, planned: check_picker.c |
 | ZP83 | 1 takes from and 2 takes onto for the chunk under the cursor, and for no other chunk | planned: check_picker.c |
 | ZP84 | 1 then 2 on one chunk: the last pick stands | planned: check_picker.c |
 | ZP85 | b shows the chunk's base range, which every chunk keeps, conflict chunks included (ruling 5; eager is the ceiling) | planned: check_picker.c |
 | ZP86 | n and p move between conflict chunks and stop at the ends | planned: check_picker.c |
 | ZP87 | n and p with one conflict chunk, and with none at all | planned: check_picker.c |
 | ZP88 | the conflicts-only toggle hides the stable stretches and shows them again, with the picks unchanged | planned: check_picker.c |
-| ZP89 | the inside-conflict diff marks lines within a conflict chunk and never splits it: the chunk sequence is the same with the hint computed and without it | planned: check_picker.c |
+| ZP89 | the inside-conflict diff marks lines within a conflict chunk and never splits it: the chunk sequence is the same with the hint computed and without it | covered: check_merge.c, zr_m3_hint over every conflict chunk of every battery case, the sequence held against a copy taken before |
 | ZP90 | w with every conflict chunk picked: the merged bytes go into the result's object at that name, in place | planned: check_picker.c |
-| ZP91 | w with one conflict chunk unpicked: refused, naming the first, and nothing written (ruling 7) | planned: check_picker.c |
+| ZP91 | w with one conflict chunk unpicked: refused, naming the first, and nothing written (ruling 7) | covered: check_merge.c, zr_m3_result refuses and names the first unpicked chunk; that the screen writes nothing is picker-merge's, planned: check_picker.c |
 | ZP92 | no marker ever reaches the bytes written, by any path through the screen | planned: check_picker.c |
 | ZP93 | a write from screen 2 sets the row's choice to keep, and the list shows it | planned: check_picker.c |
 | ZP94 | Esc goes back to the list with the row's choice as it was: only w changes it | planned: check_picker.c |
-| ZP95 | add/add with no base: the two-way compare with a pick, under the same write rule | planned: check_picker.c |
-| ZP96 | delete/edit: nothing opens, and the line says it is a choice and not a merge | planned: check_picker.c |
-| ZP97 | no final newline on base, on from, on onto, and in the merged result: the fact is kept and never invented | planned: check_picker.c |
-| ZP98 | an empty from, an empty onto, an empty base | planned: check_picker.c |
-| ZP99 | a merge whose result is byte-identical to one side is written all the same, and the row still set to keep | planned: check_picker.c |
+| ZP95 | add/add with no base: the two-way compare with a pick, under the same write rule | covered: check_merge.c |
+| ZP96 | delete/edit: nothing opens, and the line says it is a choice and not a merge | covered: check_merge.c, zr_m3_open refuses with that line; that nothing opens is picker-merge's, planned: check_picker.c |
+| ZP97 | no final newline on base, on from, on onto, and in the merged result: the fact is kept and never invented | covered: check_merge.c |
+| ZP98 | an empty from, an empty onto, an empty base | covered: check_merge.c |
+| ZP99 | a merge whose result is byte-identical to one side is written all the same, and the row still set to keep | covered: check_merge.c, the result is produced all the same; the row set to keep is picker-merge's, planned: check_picker.c |
 | ZP100 | a text object of tens of megabytes: the merge finishes and the panes scroll, libdiff's divide-and-conquer path taken | planned: box, by hand, in the worklog of picker-merge |
 | ZP101 | the write is in place, so the object's mode, owner, times and extended attributes stand | planned: box, by hand, in the worklog of picker-merge |
 | ZP102 | the two panes scroll together: a filler line in one is a real line in the other, and the chunk under the cursor is the same in both | planned: box, by hand, in the worklog of picker-merge |
 | ZP103 | a text conflict merged on the box, the rebase taken to done, and the final check reading that name at keep | planned: box, by hand, in the worklog of picker-merge |
-| ZP104 | every triple of merge-theory's exported battery gives the chunk sequence the battery states | planned: check_picker.c over tests/battery/ |
-| ZP105 | from unchanged merges to onto | planned: check_picker.c over tests/battery/ |
-| ZP106 | onto unchanged merges to from | planned: check_picker.c over tests/battery/ |
-| ZP107 | swapping from and onto swaps the conflict halves and nothing else | planned: check_picker.c over tests/battery/ |
-| ZP108 | partition: the chunks' base ranges cover base once, in order, with no gap and no overlap | planned: check_picker.c over tests/battery/ |
-| ZP109 | the counterexamples of Khanna, Kunal and Pierce come out as the battery states, and a disagreement of tools/merge-oracle.sh with diff3 -m or git merge-file is recorded rather than accepted in silence | planned: check_picker.c over tests/battery/, with tools/merge-oracle.sh as the outside oracle |
+| ZP104 | every triple of merge-theory's exported battery gives the chunk sequence the battery states | covered: check_merge.c over tests/battery/ |
+| ZP105 | from unchanged merges to onto | covered: check_merge.c over tests/battery/ |
+| ZP106 | onto unchanged merges to from | covered: check_merge.c over tests/battery/ |
+| ZP107 | swapping from and onto swaps the conflict halves and nothing else | covered: check_merge.c over tests/battery/ |
+| ZP108 | partition: the chunks' base ranges cover base once, in order, with no gap and no overlap | covered: check_merge.c over tests/battery/, and the from and onto ranges with them |
+| ZP109 | the counterexamples of Khanna, Kunal and Pierce come out as the battery states, and a disagreement of tools/merge-oracle.sh with diff3 -m or git merge-file is recorded rather than accepted in silence | covered: check_merge.c over tests/battery/ -- they are property-only cases and are asserted as such; the oracle was run and its disagreements are recorded in the worklog of diff3-walk |
 | ZP110 | the standalone binary takes RESOLUTION BASE FROM ONTO RESULT, the same five, and exits 0, 1 and 2 as the entry does | planned: check_picker.c on a pty, at picker-list |
 | ZP111 | too few or too many arguments: usage on stderr and exit 2, before the terminal is touched | covered for zr_pk_open's half (an argv that is not the five words is refused before anything is read): check_picker.c; the usage line and the exit at picker-list |
 | ZP112 | "" for a tree with no path is not a path of "" and is never opened | covered: check_picker.c |

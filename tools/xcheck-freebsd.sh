@@ -29,6 +29,14 @@ ZFS="-I$ZT/lib/libspl/include/os/freebsd -I$ZT/lib/libspl/include \
 -include $ZT/include/os/freebsd/spl/sys/ccompile.h \
 -include $F/sys/modules/zfs/zfs_config.h \
 -DNEED_SOLARIS_BOOLEAN -DHAVE_ISSETUGID -DHAVE_STRLCAT -DHAVE_STRLCPY"
+# The picker's merge glue is the one source of ours that includes the
+# carried libdiff, so it gets the same include paths the Makefile
+# passes for build/merge.o: include/ for <arraylist.h> and
+# <diff_main.h>, compat/include for the stdlib.h wrapper, and lib/ for
+# diff_internal.h, where struct diff_chunk is defined. Grow this the
+# way ZFS above is grown, if another picker source ever needs a path.
+LDIR=src/plugins/picker/libdiff
+LIBDIFF="-I$LDIR/include -I$LDIR/compat/include -I$LDIR/lib"
 rc=0
 for f in src/*.c src/plugins/*/*.c tools/probe-mount.c; do
 	# The carried copy of FreeBSD's contrib/libdiff in
@@ -47,6 +55,7 @@ for f in src/*.c src/plugins/*/*.c tools/probe-mount.c; do
 	extra=""
 	case "$f" in
 	src/zfsops.c|tools/probe-mount.c) extra="$ZFS" ;;
+	src/plugins/picker/merge.c) extra="$LIBDIFF" ;;
 	esac
 	if cc -fsyntax-only -target x86_64-unknown-freebsd14.0 -nostdinc \
 	    -std=c99 -Wall -Wextra -Wcast-qual -Werror -DZR_FREEBSD -Isrc \
