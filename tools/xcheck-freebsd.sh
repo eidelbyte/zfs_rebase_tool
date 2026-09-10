@@ -29,6 +29,7 @@ printf '#define __FreeBSD_version 1400097\n' > "$T/osreldate.h"
 # above stands in for the generated one. The box's make freebsd
 # compiles against the real header and links -lncursesw.
 cp tools/xcheck-stub/curses.h "$T/curses.h"
+cp tools/xcheck-stub/term.h "$T/term.h"
 R=$(cc -print-resource-dir)/include
 ZT=$F/sys/contrib/openzfs
 SYS="-isystem $T -isystem $F/include -isystem $F/sys -isystem $F/sys/sys -isystem $R"

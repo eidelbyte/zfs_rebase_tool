@@ -32,6 +32,12 @@
 int zr_picker_main(int argc, char **argv);
 
 /*
+ * altscreen.c: does the terminal database give the terminal curses
+ * is on an alternate screen (smcup)? Asked after newterm.
+ */
+int zr_pk_term_has_alt(void);
+
+/*
  * ---------------------------------------------------------------
  * The model (plan section 3.5): the picker with no terminal in it.
  * It takes the child's argv, reads the two documents, joins them

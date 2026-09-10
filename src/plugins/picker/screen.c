@@ -182,6 +182,19 @@ static int	pk_w;
 static int	pk_color;
 static int	pk_grey;		/* the band has its own pairs */
 
+/*
+ * The alternate screen, entered by our own hand where the terminal
+ * database gives curses no smcup but the terminal is an xterm kind
+ * (altscreen.c says why). pk_alt is what pk_restore has to undo, on
+ * every way out, the signal handlers' included: write(2) is
+ * async-signal-safe. The sequence is the one every xterm kind
+ * honors and every other terminal ignores.
+ */
+#define	PK_ALT_ON	"\033[?1049h"
+#define	PK_ALT_OFF	"\033[?1049l"
+static volatile sig_atomic_t	pk_alt;		/* on it now */
+static int	pk_alt_used;		/* it was, this run */
+
 /* What the geometry came to for one draw. */
 struct pk_geom {
 	int	g_head;		/* whether each block is drawn at all */
@@ -222,8 +235,27 @@ pk_restore(void)
 		pk_up = 0;
 		(void) endwin();
 	}
+	if (pk_alt != 0) {
+		pk_alt = 0;
+		(void) write(STDOUT_FILENO, PK_ALT_OFF,
+		    sizeof (PK_ALT_OFF) - 1);
+	}
 	if (pk_tio_saved != 0)
 		(void) tcsetattr(STDIN_FILENO, TCSADRAIN, &pk_tio);
+}
+
+/* An xterm kind: a terminal that honors the 1049 private mode. */
+static int
+pk_xterm_kind(const char *name)
+{
+	static const char *const kinds[] = { "xterm", "screen", "tmux",
+		"rxvt" };
+	size_t i;
+
+	for (i = 0; i < sizeof (kinds) / sizeof (kinds[0]); i++)
+		if (strncmp(name, kinds[i], strlen(kinds[i])) == 0)
+			return (1);
+	return (0);
 }
 
 /* exit(), whoever calls it: the terminal is still the person's. */
@@ -1634,7 +1666,7 @@ pk_draw_merge(struct zr_picker *pk, const struct zr_pk_merge *mg,
 	if (pk_w - 1 - (int)strlen(buf) > x + 1) {
 		pk_putm(y + 1, x, pk_w - 2 - (int)strlen(buf) - x, PK_CO_DIM,
 		    0, pk_or_dash(pk->pk_man.zp_result));
-		pk_put(y + 1, pk_w - 1 - (int)strlen(buf), PK_CO_DIM, 0, buf);
+		pk_put(y + 1, pk_w - 2 - (int)strlen(buf), PK_CO_DIM, 0, buf);
 	} else {
 		pk_putm(y + 1, x, pk_w - 1 - x, PK_CO_DIM, 0,
 		    pk_or_dash(pk->pk_man.zp_result));
@@ -2055,6 +2087,18 @@ zr_pk_screen(struct zr_picker *pk, char *err, size_t errlen)
 		return (-1);
 	}
 	pk_up = 1;
+	/*
+	 * Where the database gave curses no alternate screen and the
+	 * terminal is an xterm kind, switch to it here, before the
+	 * first refresh: the picker then leaves nothing in the
+	 * scrollback (the author, on the box, 2026-09-10).
+	 */
+	pk_alt_used = 0;
+	if (!zr_pk_term_has_alt() && pk_xterm_kind(termname)) {
+		(void) write(STDOUT_FILENO, PK_ALT_ON, sizeof (PK_ALT_ON) - 1);
+		pk_alt = 1;
+		pk_alt_used = 1;
+	}
 	(void) cbreak();
 	(void) noecho();
 	(void) nonl();
@@ -2071,9 +2115,11 @@ zr_pk_screen(struct zr_picker *pk, char *err, size_t errlen)
 	 * in the scrollback, and endwin leaves the cursor on its last
 	 * row, where the first line the tool prints would land on the
 	 * key bar (the box, 2026-09-10). One newline puts what follows
-	 * under it; with an alternate screen it costs one blank line.
+	 * under it; where the alternate screen was ours, the main screen
+	 * is back as it was and needs none.
 	 */
-	(void) fputc('\n', stderr);
+	if (pk_alt_used == 0)
+		(void) fputc('\n', stderr);
 	if (rc != 0) {
 		/*
 		 * The window went below the floor while the picker was

@@ -159,7 +159,8 @@ LIBDIFF_OBJS = $(BUILD)/diff_main.o $(BUILD)/diff_myers.o \
 # The built-in picker, an internal plugin of its own (plan section
 # 3.1). It goes into LIB_OBJS, so the tool and the tests reach it the
 # way they reach every other object.
-PICKER_OBJS = $(BUILD)/picker.o $(BUILD)/model.o $(BUILD)/screen.o
+PICKER_OBJS = $(BUILD)/picker.o $(BUILD)/model.o $(BUILD)/screen.o \
+	$(BUILD)/altscreen.o
 
 # What the tool links for -i's built-in child, which is what the knob
 # chooses: the picker whole -- its three objects, the merge and the
@@ -334,6 +335,9 @@ $(BUILD)/merge.o: src/plugins/picker/merge.c src/plugins/picker/merge.h \
 $(BUILD)/screen.o: src/plugins/picker/screen.c src/plugins/picker/picker.h \
 	src/plugins/picker/merge.h src/manifest.h src/vis.h
 	$(CC) $(CFLAGS) -c -o $@ src/plugins/picker/screen.c
+
+$(BUILD)/altscreen.o: src/plugins/picker/altscreen.c src/plugins/picker/picker.h
+	$(CC) $(CFLAGS) -c -o $@ src/plugins/picker/altscreen.c
 
 $(BUILD)/pickermain.o: src/plugins/picker/main.c src/plugins/picker/picker.h \
 	src/plugins/picker/merge.h
