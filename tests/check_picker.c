@@ -2686,10 +2686,11 @@ test_pty_quiet(void)
 	static const char *const k_quit[] = { "q", NULL };
 	static const char said[] = "is conflicted in the manifest and has "
 	    "no line here";
-	const char *endwin, *at;
+	const char *last, *at;
 	struct child c;
 	struct world w;
 	struct pty y;
+	size_t i;
 
 	if (picker_bin() == NULL) {
 		printf("skip ZP68/ZP69: zfs_rebase-picker is not built\n");
@@ -2708,14 +2709,25 @@ test_pty_quiet(void)
 	CHECK(WIFEXITED(pty_out.r_status));
 	CHECK(WEXITSTATUS(pty_out.r_status) == 2);
 	/*
-	 * xterm's exit_ca_mode, which is what endwin writes: everything
-	 * before it was written with curses up.
+	 * The last escape byte in what the master read is the end of
+	 * curses' own output: endwin's teardown is the last thing
+	 * curses writes, and the picker writes nothing through it
+	 * afterwards, so the line must lie past that byte. Which
+	 * sequence endwin ends with is the terminal database's
+	 * business and not this cell's: the first cut looked for
+	 * xterm's exit_ca_mode, which the mac's ncurses wrote and
+	 * FreeBSD's, reading its termcap, did not. An escape byte
+	 * being there at all is what says curses was up; a refusal
+	 * printed before it has none.
 	 */
-	endwin = find(pty_out.r_buf, pty_out.r_len, "\033[?1049l");
-	CHECK(endwin != NULL);
+	last = NULL;
+	for (i = 0; i < pty_out.r_len; i++)
+		if (pty_out.r_buf[i] == '\033')
+			last = pty_out.r_buf + i;
+	CHECK(last != NULL);
 	at = find(pty_out.r_buf, pty_out.r_len, said);
 	CHECK(at != NULL);
-	CHECK(at > endwin);
+	CHECK(at > last);
 	world_fini(&w);
 	pty_close(&y);
 }
