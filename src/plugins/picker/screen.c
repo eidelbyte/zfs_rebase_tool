@@ -121,10 +121,11 @@
 #define	PK_H_BAR	1
 
 /* Where the columns stand, and how the name column gives way first. */
-#define	PK_X_TY		2
-#define	PK_X_FO		6
-#define	PK_X_GRP	11
-#define	PK_X_NAME	18
+#define	PK_X_CUR	2	/* the cursor's one cell, before TY */
+#define	PK_X_TY		4
+#define	PK_X_FO		8	/* "E / E", five wide, as wide as drift */
+#define	PK_X_GRP	15
+#define	PK_X_NAME	22
 #define	PK_W_NAME_MIN	8	/* below this the choice column moves in */
 
 /* One vis-encoded name, and one line of text built for the screen. */
@@ -468,13 +469,20 @@ pk_rule(int y, chtype left, chtype right, const char *title)
 		pk_put(y, 3, PK_CO_PLAIN, 0, title);
 }
 
-/* The band under the cursor's row: the whole line, inside the box. */
+/*
+ * The cursor: one cell of the band's style in a column of its own,
+ * on the row (the list) or the rows (a hunk) the cursor is on. A
+ * whole-row band washed the row's contrast out however it was
+ * colored; one cell flipping up and down the file says where the
+ * cursor is and leaves the text alone (the author, on the box,
+ * 2026-09-10).
+ */
 static void
-pk_band(int y)
+pk_mark(int y, int x)
 {
-	if (y < 0 || y >= pk_h || pk_w < 3)
+	if (y < 0 || y >= pk_h || x < 0 || x >= pk_w)
 		return;
-	(void) mvhline(y, 1, ' ' | pk_style(PK_CO_PLAIN, 1), pk_w - 2);
+	(void) mvaddch(y, x, ' ' | pk_style(PK_CO_PLAIN, 1));
 }
 
 /*
@@ -698,21 +706,21 @@ pk_draw_row(const struct zr_picker *pk, const struct pk_geom *g, int y,
 	if (row == NULL)
 		return;
 	if (sel != 0)
-		pk_band(y);
+		pk_mark(y, PK_X_CUR);
 	one[1] = '\0';
 	one[0] = pk_ty_glyph(row->zk_ty);
-	pk_put(y, PK_X_TY, pk_ty_co(row->zk_ty), sel, one);
+	pk_put(y, PK_X_TY, pk_ty_co(row->zk_ty), 0, one);
 	one[0] = pk_fo_glyph(row->zk_fo[0]);
-	pk_put(y, PK_X_FO, pk_fo_co(row->zk_fo[0], 0), sel, one);
-	pk_put(y, PK_X_FO + 1, PK_CO_DIM, sel, "/");
+	pk_put(y, PK_X_FO, pk_fo_co(row->zk_fo[0], 0), 0, one);
+	pk_put(y, PK_X_FO + 2, PK_CO_DIM, 0, "/");
 	one[0] = pk_fo_glyph(row->zk_fo[1]);
-	pk_put(y, PK_X_FO + 2, pk_fo_co(row->zk_fo[1], 1), sel, one);
+	pk_put(y, PK_X_FO + 4, pk_fo_co(row->zk_fo[1], 1), 0, one);
 	pk_grp_field(row, field, sizeof (field), &co);
-	pk_put(y, PK_X_GRP, co, sel, field);
+	pk_put(y, PK_X_GRP, co, 0, field);
 	pk_name_field(row, g->g_namew, field, sizeof (field));
-	pk_put(y, g->g_namex, PK_CO_PLAIN, sel, field);
+	pk_put(y, g->g_namex, PK_CO_PLAIN, 0, field);
 	one[0] = pk_choice_glyph(zr_pk_choice(row));
-	pk_put(y, g->g_choicex, pk_choice_co(zr_pk_choice(row)), sel, one);
+	pk_put(y, g->g_choicex, pk_choice_co(zr_pk_choice(row)), 0, one);
 }
 
 /*
@@ -769,7 +777,7 @@ static void
 pk_draw_titles(const struct pk_geom *g, int y)
 {
 	pk_side(y);
-	pk_put(y, PK_X_TY - 1, PK_CO_DIM, 0, " TY  F/O  GRP");
+	pk_put(y, PK_X_TY, PK_CO_DIM, 0, "TY  F / O  GRP");
 	pk_put(y, g->g_namex, PK_CO_DIM, 0, "NAME");
 	pk_put(y, g->g_choicex, PK_CO_DIM, 0, "CHOICE");
 }
@@ -1604,6 +1612,11 @@ pk_draw_merge(struct zr_picker *pk, const struct zr_pk_merge *mg,
 			continue;
 		pk_draw_cell(m, ly, g->g_lx, g->g_lw, &v->v_side[i].s_from, 0);
 		pk_draw_cell(m, ly, g->g_rx, g->g_rw, &v->v_side[i].s_onto, 0);
+		if (v->v_side[i].s_chunk == mg->pm_cursor &&
+		    mg->pm_cursor < m->nchunks) {
+			pk_mark(ly, g->g_lx + 1);
+			pk_mark(ly, g->g_rx + 1);
+		}
 	}
 	y = g->g_sidey + g->g_sideh;
 	pk_rule(y, ACS_LTEE, ACS_RTEE, NULL);
@@ -1632,9 +1645,9 @@ pk_draw_merge(struct zr_picker *pk, const struct zr_pk_merge *mg,
 			continue;
 		sel = v->v_res[i].r_chunk == mg->pm_cursor &&
 		    mg->pm_cursor < m->nchunks;
+		pk_draw_cell(m, ry, 1, pk_w - 2, &v->v_res[i].r_cell, 0);
 		if (sel != 0)
-			pk_band(ry);
-		pk_draw_cell(m, ry, 1, pk_w - 2, &v->v_res[i].r_cell, sel);
+			pk_mark(ry, 2);
 	}
 	pk_rule(g->g_bary - 1, ACS_LTEE, ACS_RTEE, NULL);
 	pk_draw_bar(g->g_bary, note != NULL ? note : PK_MKEYS);
