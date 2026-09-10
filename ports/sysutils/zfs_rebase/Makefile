@@ -42,6 +42,15 @@ GH_PROJECT=	zfs_rebase_tool
 ALL_TARGET=	freebsd
 MAKE_ARGS=	ZFS_SRC=${SRC_BASE}
 
+# The built-in picker's screens are curses, so the tool links ncursesw
+# from base -- the freebsd target passes CURSES_LIBS=-lncursesw, which
+# is what base's own programs link. USES=ncurses:base says so to the
+# framework and adds no dependency, since the library is in base.
+# **To confirm on the box** with tests/box/run-port.sh: some framework
+# versions want the port to say nothing at all about a base library,
+# and portlint or the build will say which.
+USES=		ncurses:base
+
 # No TEST_TARGET. make check-freebsd in ${WRKSRC} is the gate, but its
 # FreeBSD fixtures want root and a /tmp that can hold NFSv4 ACLs and
 # system-namespace extended attributes, which is a box and not a
@@ -54,10 +63,18 @@ IGNORE=	needs the FreeBSD source tree in ${SRC_BASE}: install src.txz there, or 
 .endif
 
 # The upstream install target honors DESTDIR and PREFIX and puts the
-# binary in sbin and the page in share/man/man8, which is where this
-# tree keeps them. The framework compresses the page at stage, so
+# two binaries in sbin and the page in share/man/man8, which is where
+# this tree keeps them. The framework compresses the page at stage, so
 # pkg-plist names it with its .gz (check-plist on the box,
 # 2026-09-08: "Orphaned: share/man/man8/zfs_rebase.8.gz").
+#
+# zfs_rebase-picker goes in sbin beside the tool and not in libexec:
+# the tool never runs it -- --interactive forks and calls the picker's
+# entry in its own child -- so it is not a private helper of the
+# package but a program an administrator runs by hand, on a resolution
+# and the manifest beside it, and it needs root to read the trees for
+# the same reason the tool does. libexec is for what a package runs
+# and a person does not.
 do-install:
 	@cd ${WRKSRC} && ${MAKE_CMD} ${MAKE_ARGS} install \
 		DESTDIR=${STAGEDIR} PREFIX=${PREFIX}

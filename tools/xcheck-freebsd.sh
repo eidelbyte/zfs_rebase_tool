@@ -21,6 +21,14 @@ for h in stdint.h stdatomic.h stdbool.h; do
 	[ -f "$F/sys/sys/$h" ] && ln -s "$F/sys/sys/$h" "$T/$h"
 done
 printf '#define __FreeBSD_version 1400097\n' > "$T/osreldate.h"
+# FreeBSD carries ncurses as contrib/ncurses/include/curses.h.in, a
+# template the base build generates the header from, so the tree has
+# no <curses.h> for the picker's screen to include. tools/xcheck-stub
+# holds a minimal one -- what screen.c uses, in ncurses' own shapes --
+# and stands in for the generated header the way the osreldate.h
+# above stands in for the generated one. The box's make freebsd
+# compiles against the real header and links -lncursesw.
+cp tools/xcheck-stub/curses.h "$T/curses.h"
 R=$(cc -print-resource-dir)/include
 ZT=$F/sys/contrib/openzfs
 SYS="-isystem $T -isystem $F/include -isystem $F/sys -isystem $F/sys/sys -isystem $R"

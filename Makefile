@@ -24,6 +24,18 @@ ZFS_CFLAGS = -I$(ZFS_TOP)/lib/libspl/include/os/freebsd \
 ZFS_LIBS = -lzfs_core -lzfs -lnvpair
 ZFSOPS_CFLAGS =
 
+# The picker's screens are curses (plan section 3.1). The mac has
+# ncurses and links it as -lncurses; FreeBSD base has ncursesw, which
+# is what its own base programs link and what the port declares, so
+# the freebsd targets override this the way they override the ZFS
+# flags. Nothing wide-character is used -- every byte drawn is ASCII
+# or an ACS macro -- so the two are interchangeable here, and the
+# name is a variable only because the two systems spell it
+# differently. The whole tool links it, not only the picker binary:
+# --interactive forks and calls zr_picker_main in its own child
+# (ruling 4), so screen.o is inside the tool.
+CURSES_LIBS = -lncurses
+
 # Which flavor build/ holds: portable, or freebsd (the ZFS layer built
 # against the OpenZFS headers and linked against the libraries). The
 # two do not share objects and a timestamp cannot tell them apart, so
@@ -96,18 +108,37 @@ LIBDIFF_OBJS = build/diff_main.o build/diff_myers.o build/diff_patience.o \
 # The built-in picker, an internal plugin of its own (plan section
 # 3.1). It goes into LIB_OBJS, so the tool and the tests reach it the
 # way they reach every other object.
-PICKER_OBJS = build/picker.o build/model.o
+PICKER_OBJS = build/picker.o build/model.o build/screen.o
+
+# The standalone binary's main, which is NOT in LIB_OBJS: src/main.c
+# is out of it for the same reason, and two mains in one link is two
+# mains. The object is not build/main.o because that name is already
+# the tool's; the source is src/plugins/picker/main.c all the same,
+# since a program's main belongs in main.c.
+PICKERMAIN_OBJS = build/pickermain.o
 # Library objects are everything but main.o; tests link against them.
 LIB_OBJS = build/vis.o build/name.o build/decide.o build/fixture.o \
 	build/manifest.o build/walk.o build/yellow.o build/verify.o \
 	build/apply.o build/zfsops.o build/run.o build/args.o build/launch.o \
 	$(PICKER_OBJS) build/diff3.o build/merge.o $(LIBDIFF_OBJS)
 CORE_OBJS = build/main.o $(LIB_OBJS)
+
+# What the standalone picker links: itself, the two document parsers,
+# the name codec and the classifier the records name -- ground rule
+# 1's whole dependency list -- and never the driver or the ZFS layer.
+# That is what keeps it linkable with no libzfs on the line, on the
+# mac and in a build jail alike.
+# It is the least that links today. picker-merge adds build/merge.o,
+# build/diff3.o and $(LIBDIFF_OBJS) here when screen 2 calls them: the
+# merge is the picker's own and belongs in the picker's own binary,
+# and nothing of it is reached from screen 1.
+PICKER_BIN_OBJS = $(PICKERMAIN_OBJS) $(PICKER_OBJS) build/manifest.o \
+	build/decide.o build/name.o build/vis.o
 TESTS = check_vis check_name check_fixture check_manifest check_walk \
 	check_yellow check_roundtrip check_apply check_verify check_args \
 	check_run check_picker check_merge
 
-all: build zfs_rebase
+all: build zfs_rebase zfs_rebase-picker
 
 build: flavor
 	mkdir -p build
@@ -120,12 +151,16 @@ flavor:
 	fi
 
 zfs_rebase: build $(CORE_OBJS)
-	$(CC) $(CFLAGS) -o $@ $(CORE_OBJS) $(LDFLAGS)
+	$(CC) $(CFLAGS) -o $@ $(CORE_OBJS) $(LDFLAGS) $(CURSES_LIBS)
+
+zfs_rebase-picker: build $(PICKER_BIN_OBJS)
+	$(CC) $(CFLAGS) -o $@ $(PICKER_BIN_OBJS) $(LDFLAGS) $(CURSES_LIBS)
 
 freebsd:
 	$(MAKE) FLAVOR=freebsd CFLAGS="$(CFLAGS) -DZR_FREEBSD" \
 	    ZFSOPS_CFLAGS="$(ZFS_CFLAGS)" LIBDIFF_COMPAT_OBJS="" \
-	    LDFLAGS="$(LDFLAGS) $(ZFS_LIBS)" zfs_rebase
+	    CURSES_LIBS="-lncursesw" \
+	    LDFLAGS="$(LDFLAGS) $(ZFS_LIBS)" zfs_rebase zfs_rebase-picker
 
 # The gates for the freebsd flavor. check links the test programs and
 # relinks zfs_rebase against LIB_OBJS, which includes zfsops.o, so on
@@ -138,6 +173,7 @@ freebsd:
 check-freebsd:
 	$(MAKE) FLAVOR=freebsd CFLAGS="$(CFLAGS) -DZR_FREEBSD" \
 	    ZFSOPS_CFLAGS="$(ZFS_CFLAGS)" LIBDIFF_COMPAT_OBJS="" \
+	    CURSES_LIBS="-lncursesw" \
 	    LDFLAGS="$(LDFLAGS) $(ZFS_LIBS)" check
 
 build/main.o: src/main.c src/args.h src/decide.h src/fixture.h \
@@ -205,6 +241,13 @@ build/merge.o: src/plugins/picker/merge.c src/plugins/picker/merge.h \
 	$(CC) $(CFLAGS) $(LIBDIFF_INCS) -I$(LIBDIFF)/lib -c -o $@ \
 	    src/plugins/picker/merge.c
 
+build/screen.o: src/plugins/picker/screen.c src/plugins/picker/picker.h \
+	src/manifest.h src/vis.h
+	$(CC) $(CFLAGS) -c -o $@ src/plugins/picker/screen.c
+
+build/pickermain.o: src/plugins/picker/main.c src/plugins/picker/picker.h
+	$(CC) $(CFLAGS) -c -o $@ src/plugins/picker/main.c
+
 build/vis.o: src/vis.c src/vis.h
 	$(CC) $(CFLAGS) -c -o $@ src/vis.c
 
@@ -242,12 +285,15 @@ build/run.o: src/run.c src/run.h src/apply.h src/decide.h src/launch.h \
 	src/zfsops.h
 	$(CC) $(CFLAGS) -c -o $@ src/run.c
 
-check: unit battery fixtures replay-expect-check
+# zfs_rebase-picker is built here because check_picker's pty tests run
+# it as their child: the standalone binary and the tool's own child
+# are the same objects, and ZP114 asserts it.
+check: zfs_rebase-picker unit battery fixtures replay-expect-check
 
 unit: build $(LIB_OBJS)
 	@for t in $(TESTS); do \
 	    $(CC) $(CFLAGS) -o build/$$t tests/$$t.c $(LIB_OBJS) \
-		$(LDFLAGS) || exit 1; \
+		$(LDFLAGS) $(CURSES_LIBS) || exit 1; \
 	    ./build/$$t || { echo "FAIL $$t"; exit 1; }; \
 	    echo "ok   $$t"; \
 	done
@@ -260,7 +306,7 @@ fixtures: zfs_rebase
 # The M1 gate: every committed battery, both modes.
 battery: build $(LIB_OBJS)
 	$(CC) $(CFLAGS) -o build/check_battery tests/check_battery.c $(LIB_OBJS) \
-	    $(LDFLAGS)
+	    $(LDFLAGS) $(CURSES_LIBS)
 	./build/check_battery tests/battery/*.txt
 
 # tests/box/replay-expect.txt is what tests/box/run-replay.sh asserts
@@ -301,6 +347,7 @@ MANDIR = $(PREFIX)/share/man/man8
 install:
 	install -d $(DESTDIR)$(BINDIR)
 	install -m 0555 zfs_rebase $(DESTDIR)$(BINDIR)/zfs_rebase
+	install -m 0555 zfs_rebase-picker $(DESTDIR)$(BINDIR)/zfs_rebase-picker
 	install -d $(DESTDIR)$(MANDIR)
 	install -m 0444 zfs_rebase.8 $(DESTDIR)$(MANDIR)/zfs_rebase.8
 
@@ -314,7 +361,7 @@ probe-mount:
 	    tools/probe-mount.c $(ZFS_LIBS)
 
 clean:
-	rm -rf build zfs_rebase
+	rm -rf build zfs_rebase zfs_rebase-picker
 
 .PHONY: all flavor freebsd check check-freebsd unit battery fixtures gate \
 	probe-mount \

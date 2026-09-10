@@ -293,6 +293,32 @@ void zr_pk_fini(struct zr_picker *pk);
  */
 int zr_pk_status(const struct zr_picker *pk);
 
+/*
+ * ---------------------------------------------------------------
+ * Screen 1 (plan section 3.3): the list, in curses, over a picker
+ * that is already open. It is declared here and lives in screen.c,
+ * the one file of the picker that knows what a terminal is.
+ * ---------------------------------------------------------------
+ */
+
+/*
+ * Draw the list and take keys until the model says to leave.
+ * Returns 0 when the picker ran, and the status is then
+ * zr_pk_status's; returns -1 with one line in err when the terminal
+ * was refused before curses started -- standard input or output that
+ * is not a terminal, no TERM in the environment, a TERM terminfo
+ * does not know -- with nothing drawn and the terminal untouched,
+ * which the caller reports and leaves with 2.
+ *
+ * The picker's whole terminal discipline is in that call (ground
+ * rule 6): the termios read before curses starts and put back on
+ * every way out of it, a fatal signal's included, and not one byte
+ * written to stdout or stderr while curses is up. The messages the
+ * model queued are still queued when it returns, for the caller to
+ * print once the terminal is its own again.
+ */
+int zr_pk_screen(struct zr_picker *pk, char *err, size_t errlen);
+
 /* The rows, the cursor and the counts, for the screen. */
 uint32_t zr_pk_nrows(const struct zr_picker *pk);
 const struct zr_pk_row *zr_pk_row(const struct zr_picker *pk, uint32_t i);

@@ -1,4 +1,5 @@
 build/
 /zfs_rebase
+/zfs_rebase-picker
 *.o
 .DS_Store

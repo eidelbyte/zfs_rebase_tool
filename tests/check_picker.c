@@ -8,16 +8,20 @@
  * linked here and no terminal is opened: that is what plan section
  * 3.5 buys by keeping model.c free of both.
  *
+ * The second half of the file is the terminal, over a pty from
+ * posix_openpt(3) with the standalone binary as the child: the
+ * termios on every way out, the refusals before curses is opened,
+ * the window floor, the fatal signals, and the queue printed after
+ * endwin. It skips itself with a line where there is no pty or the
+ * binary was not built.
+ *
  * The family is ZP of tests/MATRIX.md. Covered: ZP1 to ZP12, ZP14 to
- * ZP19, ZP21 to ZP39, ZP41 to ZP60, and ZP112. ZP13 and ZP40 are
- * covered for the model's half, which is what the model answers; the
- * merge view itself is picker-merge's. ZP69 is covered for the
- * queue's half, the printing after endwin being picker-list's, and
- * ZP111 for zr_pk_open's half of the argv refusal. ZP20 is here as
- * the message at open. What is left of the family is the terminal
- * (ZP61 to ZP77), the merge (ZP78 to ZP109), the standalone binary
- * (ZP110, ZP113, ZP114) and ZP70's refusal with no terminal at all,
- * which wants the real entry point picker-list writes.
+ * ZP19, ZP21 to ZP39, ZP41 to ZP60, ZP62 to ZP63, ZP65 to ZP72,
+ * ZP75, ZP110 to ZP112 and ZP114. ZP13 is covered for the model's
+ * half, the two-way compare over an absent base being picker-merge's.
+ * ZP20 is here as the message at open. What is left of the family is
+ * the merge (ZP78 to ZP109) and what only a box can show: ZP61,
+ * ZP64, ZP73, ZP74, ZP76, ZP77 and ZP113.
  */
 
 #define	_XOPEN_SOURCE	700
@@ -28,16 +32,22 @@
 #define	_DARWIN_C_SOURCE
 #endif
 
+#include <sys/ioctl.h>
+#include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/un.h>
+#include <sys/wait.h>
 
 #include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <termios.h>
 #include <unistd.h>
 
 #include "manifest.h"
@@ -1582,6 +1592,838 @@ test_last_name(void)
 	world_fini(&w);
 }
 
+/*
+ * ---------------------------------------------------------------
+ * The terminal, over a pty. Cells ZP62 to ZP72, ZP75, ZP110, ZP111
+ * and ZP114, and the screen's halves of ZP6, ZP40 and ZP69.
+ *
+ * The child is the standalone binary, zfs_rebase-picker, which is
+ * the same objects the tool's own child is (ZP114 says so with a
+ * document driven both ways). The pty is posix_openpt(3) and not
+ * openpty(3), which lives in -lutil on FreeBSD -- the trick ZI21
+ * uses for the launcher's termios.
+ *
+ * The child does not take the pty as its controlling terminal: it
+ * dups the slave onto its three standard descriptors and no more.
+ * The picker asks isatty(3) and tcgetattr(3) and never asks for a
+ * session, and a controlling terminal would be revoked out from
+ * under this program's own slave descriptor when the child that held
+ * it exits, which is what the termios are read through.
+ *
+ * TERM is xterm, whose terminfo entry both this machine and the box
+ * have. Its cursor keys are the application-mode ones, because
+ * keypad(3) turns application mode on: the down arrow the terminal
+ * sends is then ESC O B and not ESC [ B.
+ * ---------------------------------------------------------------
+ */
+
+/* What the terminal sends for the keys that are not one byte. */
+#define	K_DOWN		"\033OB"
+#define	K_UP		"\033OA"
+
+/* The window the pty is given, and the floor the picker draws in. */
+#define	PTY_ROWS	24
+#define	PTY_COLS	100
+#define	PTY_MIN_ROWS	24
+#define	PTY_MIN_COLS	80
+
+/*
+ * How long a step of the conversation is. A read of the master ends
+ * when nothing has arrived for PTY_STEP; a screen is drawn when a
+ * whole step brought nothing new. PTY_LIMIT is the whole run's
+ * ceiling, after which the child is killed and the test fails rather
+ * than hanging a build.
+ */
+#define	PTY_STEP	150		/* milliseconds */
+#define	PTY_LIMIT	20000
+#define	PTY_BUF		(256 * 1024)
+
+struct pty {
+	int	y_master;
+	int	y_slave;
+};
+
+/* What one run of the child was told to do. */
+struct child {
+	const char	*const *c_keys;	/* NUL-terminated strings, or NULL */
+	const char	*c_term;	/* NULL takes TERM out of the child */
+	char		**c_av;		/* NULL is the world's own argv */
+	int		c_argc;
+	int		c_signal;	/* sent once the screen is up */
+	int		c_inproc;	/* the entry here, not the binary */
+	int		c_rows;		/* the window, 0 for the default */
+	int		c_cols;
+	int		c_shrink_rows;	/* a resize while it is up */
+	int		c_shrink_cols;
+};
+
+/* What became of it. */
+struct run {
+	int		r_status;	/* the wait status */
+	size_t		r_len;
+	struct termios	r_during;	/* the slave's, while it was up */
+	int		r_drew;		/* whether it drew at all */
+	char		r_buf[PTY_BUF];
+};
+
+static struct run pty_out;		/* one run at a time */
+
+/* Bytes in bytes, since what a terminal writes is not a string. */
+static const char *
+find(const char *buf, size_t len, const char *needle)
+{
+	size_t n = strlen(needle), i;
+
+	if (n == 0 || len < n)
+		return (NULL);
+	for (i = 0; i + n <= len; i++)
+		if (memcmp(buf + i, needle, n) == 0)
+			return (buf + i);
+	return (NULL);
+}
+
+/* Where the standalone binary is, or NULL when it was not built. */
+static const char *
+picker_bin(void)
+{
+	static const char *const where[] = { "./zfs_rebase-picker",
+		"build/zfs_rebase-picker" };
+	size_t i;
+
+	for (i = 0; i < sizeof (where) / sizeof (where[0]); i++)
+		if (access(where[i], X_OK) == 0)
+			return (where[i]);
+	return (NULL);
+}
+
+static int
+pty_open(struct pty *y)
+{
+	const char *name;
+
+	y->y_slave = -1;
+	y->y_master = posix_openpt(O_RDWR | O_NOCTTY);
+	if (y->y_master < 0)
+		return (-1);
+	if (grantpt(y->y_master) != 0 || unlockpt(y->y_master) != 0) {
+		(void) close(y->y_master);
+		return (-1);
+	}
+	name = ptsname(y->y_master);
+	if (name == NULL) {
+		(void) close(y->y_master);
+		return (-1);
+	}
+	y->y_slave = open(name, O_RDWR | O_NOCTTY);
+	if (y->y_slave < 0) {
+		(void) close(y->y_master);
+		return (-1);
+	}
+	return (0);
+}
+
+static void
+pty_close(struct pty *y)
+{
+	if (y->y_slave >= 0)
+		(void) close(y->y_slave);
+	if (y->y_master >= 0)
+		(void) close(y->y_master);
+}
+
+static void
+pty_size(const struct pty *y, int rows, int cols)
+{
+	struct winsize ws;
+
+	memset(&ws, 0, sizeof (ws));
+	ws.ws_row = (unsigned short)rows;
+	ws.ws_col = (unsigned short)cols;
+	CHECK(ioctl(y->y_slave, TIOCSWINSZ, &ws) == 0);
+}
+
+/* Everything the master has to say, until it has been quiet for ms. */
+static void
+pty_read(struct pty *y, int ms, struct run *out)
+{
+	struct timeval tv;
+	fd_set rd;
+	ssize_t n;
+
+	for (;;) {
+		FD_ZERO(&rd);
+		FD_SET(y->y_master, &rd);
+		tv.tv_sec = ms / 1000;
+		tv.tv_usec = (ms % 1000) * 1000;
+		if (select(y->y_master + 1, &rd, NULL, NULL, &tv) <= 0)
+			return;
+		if (out->r_len + 1 >= sizeof (out->r_buf))
+			return;
+		n = read(y->y_master, out->r_buf + out->r_len,
+		    sizeof (out->r_buf) - 1 - out->r_len);
+		if (n <= 0)
+			return;
+		out->r_len += (size_t)n;
+		out->r_buf[out->r_len] = '\0';
+	}
+}
+
+/*
+ * Wait for the screen to stop moving: a step that brought nothing
+ * new is a screen that has been drawn, and a run that never says
+ * anything is one that refused before curses started.
+ */
+static void
+pty_settle(struct pty *y, struct run *out, int *spent)
+{
+	size_t was;
+
+	for (;;) {
+		was = out->r_len;
+		pty_read(y, PTY_STEP, out);
+		*spent += PTY_STEP;
+		if (out->r_len == was)
+			return;
+		out->r_drew = 1;
+		if (*spent >= PTY_LIMIT)
+			return;
+	}
+}
+
+/*
+ * One run of the picker on the pty: the keys typed one at a time,
+ * the bytes kept, and the wait status brought back.
+ */
+static void
+pty_drive(struct pty *y, struct world *w, const struct child *c,
+    struct run *out)
+{
+	char *av[ZR_PK_ARGC + 1];
+	const char *bin = picker_bin();
+	int spent = 0, i, st;
+	pid_t pid, got;
+
+	memset(out, 0, sizeof (*out));
+	pty_size(y, c->c_rows != 0 ? c->c_rows : PTY_ROWS,
+	    c->c_cols != 0 ? c->c_cols : PTY_COLS);
+	for (i = 0; i < ZR_PK_ARGC; i++)
+		av[i] = c->c_av != NULL ? c->c_av[i] : w->w_av[i];
+	av[c->c_argc != 0 ? c->c_argc : ZR_PK_ARGC] = NULL;
+	(void) fflush(NULL);
+	pid = fork();
+	CHECK(pid >= 0);
+	if (pid == 0) {
+		(void) dup2(y->y_slave, STDIN_FILENO);
+		(void) dup2(y->y_slave, STDOUT_FILENO);
+		(void) dup2(y->y_slave, STDERR_FILENO);
+		if (y->y_slave > STDERR_FILENO)
+			(void) close(y->y_slave);
+		(void) close(y->y_master);
+		if (c->c_term == NULL)
+			(void) unsetenv("TERM");
+		else
+			(void) setenv("TERM", c->c_term, 1);
+		if (c->c_inproc != 0)
+			_exit(zr_picker_main(ZR_PK_ARGC, av));
+		(void) execv(bin, av);
+		_exit(127);
+	}
+	pty_settle(y, out, &spent);
+	if (out->r_drew != 0 &&
+	    tcgetattr(y->y_slave, &out->r_during) != 0)
+		out->r_drew = 0;
+	if (c->c_shrink_rows != 0) {
+		pty_size(y, c->c_shrink_rows, c->c_shrink_cols);
+		CHECK(kill(pid, SIGWINCH) == 0);
+	}
+	if (c->c_signal != 0)
+		CHECK(kill(pid, c->c_signal) == 0);
+	for (i = 0; c->c_keys != NULL && c->c_keys[i] != NULL; i++) {
+		size_t n = strlen(c->c_keys[i]);
+
+		CHECK(write(y->y_master, c->c_keys[i], n) == (ssize_t)n);
+		pty_settle(y, out, &spent);
+	}
+	/*
+	 * The master is read while the wait goes on, and not after it.
+	 * The picker's restore is tcsetattr(TCSADRAIN), which waits
+	 * for what has been written to the terminal to go out; a
+	 * parent that blocks in waitpid with the master unread hangs
+	 * the child inside its own teardown.
+	 */
+	for (;;) {
+		got = waitpid(pid, &st, WNOHANG);
+		if (got == pid)
+			break;
+		CHECK(got == 0);
+		pty_read(y, PTY_STEP, out);
+		spent += PTY_STEP;
+		if (spent >= PTY_LIMIT) {
+			(void) kill(pid, SIGKILL);
+			(void) waitpid(pid, &st, 0);
+			printf("the picker did not leave in %d ms\n",
+			    PTY_LIMIT);
+			exit(1);
+		}
+	}
+	pty_read(y, PTY_STEP, out);	/* endwin, and the queue after it */
+	out->r_status = st;
+}
+
+/* The two documents of the pty runs: two names, and one answered. */
+static const char res_pty[] = R_HDR("2", "2")
+	"/\n    p conflict 1 -\n    q conflict 2 -\n    ..\n";
+
+/*
+ * The bits the kernel sets for itself and the picker never asks for.
+ * A BSD tcsetattr that turns the canonical mode off with input
+ * already queued leaves PENDIN in c_lflag -- "retype what is
+ * pending" -- and the bit survives the settings going back, so a
+ * byte-for-byte comparison across the picker's own restore fails on
+ * a bit no program wrote. It is masked out of both sides. What the
+ * cell asks is whether the picker gives back what it found, and
+ * ZI21's own comparison in check_run.c errs the same way on purpose.
+ */
+#ifdef PENDIN
+#define	TTY_KERNEL	((tcflag_t)PENDIN)
+#else
+#define	TTY_KERNEL	((tcflag_t)0)
+#endif
+
+/* The terminal as it stands now, and a cooked terminal is what it is. */
+static void
+tty_mark(const struct pty *y, struct termios *before)
+{
+	CHECK(tcgetattr(y->y_slave, before) == 0);
+	CHECK((before->c_lflag & (tcflag_t)ICANON) != 0);
+	CHECK((before->c_lflag & (tcflag_t)ECHO) != 0);
+}
+
+static void
+tty_same(const struct pty *y, const struct termios *before)
+{
+	struct termios was = *before, now;
+
+	CHECK(tcgetattr(y->y_slave, &now) == 0);
+	was.c_lflag &= ~TTY_KERNEL;
+	now.c_lflag &= ~TTY_KERNEL;
+	CHECK(memcmp(&was, &now, sizeof (now)) == 0);
+}
+
+/*
+ * ZP62 and ZP110: the standalone binary on the five arguments, and
+ * the three statuses the tool reads. w over a document with nothing
+ * left is 0 and the tool goes on; s and then q is 1, the answers on
+ * the disk and the gate standing; q alone is 2. The termios are what
+ * they were on each of the three, and ICANON was off while the
+ * screen was up, so that the equality is not two terminals nobody
+ * touched.
+ */
+static void
+test_pty_exits(void)
+{
+	static const char *const k_write[] = { "f", K_DOWN, "o", "w", NULL };
+	static const char *const k_save[] = { "f", "s", "q", NULL };
+	static const char *const k_quit[] = { "q", NULL };
+	struct termios before;
+	struct child c;
+	struct world w;
+	struct pty y;
+	size_t len;
+	char *got;
+
+	if (picker_bin() == NULL) {
+		printf("skip ZP62/ZP110: zfs_rebase-picker is not built\n");
+		return;
+	}
+	if (pty_open(&y) != 0) {
+		printf("skip ZP62/ZP110: no pty here (%s)\n",
+		    strerror(errno));
+		return;
+	}
+	memset(&c, 0, sizeof (c));
+	c.c_term = "xterm";
+
+	world_init(&w);
+	world_docs(&w, man_two, res_pty);
+	tty_mark(&y, &before);
+	c.c_keys = k_write;
+	pty_drive(&y, &w, &c, &pty_out);
+	CHECK(WIFEXITED(pty_out.r_status));
+	CHECK(WEXITSTATUS(pty_out.r_status) == 0);
+	CHECK(pty_out.r_drew != 0);
+	CHECK((pty_out.r_during.c_lflag & (tcflag_t)ICANON) == 0);
+	CHECK((pty_out.r_during.c_lflag & (tcflag_t)ECHO) == 0);
+	tty_same(&y, &before);
+	got = slurp(w.w_res, &len);
+	CHECK(got != NULL);
+	CHECK(strstr(got, "#unanswered 0\n") != NULL);
+	CHECK(strstr(got, "    p conflict 1 from\n") != NULL);
+	CHECK(strstr(got, "    q conflict 2 onto\n") != NULL);
+	free(got);
+	world_fini(&w);
+
+	/* s and then q: saved, and the gate left standing */
+	world_init(&w);
+	world_docs(&w, man_two, res_pty);
+	tty_mark(&y, &before);
+	c.c_keys = k_save;
+	pty_drive(&y, &w, &c, &pty_out);
+	CHECK(WIFEXITED(pty_out.r_status));
+	CHECK(WEXITSTATUS(pty_out.r_status) == 1);
+	tty_same(&y, &before);
+	got = slurp(w.w_res, &len);
+	CHECK(got != NULL);
+	CHECK(strstr(got, "    p conflict 1 from\n") != NULL);
+	CHECK(strstr(got, "#unanswered 1\n") != NULL);
+	free(got);
+	world_fini(&w);
+
+	/* q alone: abandoned, and the document as it was */
+	world_init(&w);
+	world_docs(&w, man_two, res_pty);
+	tty_mark(&y, &before);
+	c.c_keys = k_quit;
+	pty_drive(&y, &w, &c, &pty_out);
+	CHECK(WIFEXITED(pty_out.r_status));
+	CHECK(WEXITSTATUS(pty_out.r_status) == 2);
+	tty_same(&y, &before);
+	got = slurp(w.w_res, &len);
+	CHECK(got != NULL);
+	same("q wrote nothing", got, len, res_pty, strlen(res_pty));
+	free(got);
+	world_fini(&w);
+	pty_close(&y);
+}
+
+/*
+ * ZP63, ZP71, ZP72 and ZP111: the refusals, every one of them
+ * decided before curses is opened. A document the parser will not
+ * have, TERM unset, TERM naming a terminal terminfo does not know,
+ * and an argv that is not the five words: exit 2, one line, not one
+ * escape byte written, and the termios never touched.
+ */
+static void
+test_pty_refusals(void)
+{
+	struct termios before;
+	char *av[ZR_PK_ARGC];
+	struct child c;
+	struct world w;
+	struct pty y;
+
+	if (picker_bin() == NULL) {
+		printf("skip ZP63/ZP71/ZP72: zfs_rebase-picker is not "
+		    "built\n");
+		return;
+	}
+	if (pty_open(&y) != 0) {
+		printf("skip ZP63/ZP71/ZP72: no pty here (%s)\n",
+		    strerror(errno));
+		return;
+	}
+	world_init(&w);
+	memset(&c, 0, sizeof (c));
+
+	/* ZP63: a resolution with two lines for one name */
+	world_docs(&w, man_two, R_HDR("2", "2")
+	    "/\n    p conflict 1 -\n    p conflict 2 -\n    ..\n");
+	tty_mark(&y, &before);
+	c.c_term = "xterm";
+	pty_drive(&y, &w, &c, &pty_out);
+	CHECK(WIFEXITED(pty_out.r_status));
+	CHECK(WEXITSTATUS(pty_out.r_status) == 2);
+	CHECK(find(pty_out.r_buf, pty_out.r_len, "\033") == NULL);
+	CHECK(find(pty_out.r_buf, pty_out.r_len, "zfs_rebase-picker:") !=
+	    NULL);
+	tty_same(&y, &before);
+
+	world_docs(&w, man_two, res_pty);
+
+	/* ZP71: TERM unset */
+	tty_mark(&y, &before);
+	c.c_term = NULL;
+	pty_drive(&y, &w, &c, &pty_out);
+	CHECK(WIFEXITED(pty_out.r_status));
+	CHECK(WEXITSTATUS(pty_out.r_status) == 2);
+	CHECK(find(pty_out.r_buf, pty_out.r_len, "\033") == NULL);
+	CHECK(find(pty_out.r_buf, pty_out.r_len, "TERM") != NULL);
+	tty_same(&y, &before);
+
+	/* ZP72: a name terminfo does not know */
+	tty_mark(&y, &before);
+	c.c_term = "zr-no-such-terminal";
+	pty_drive(&y, &w, &c, &pty_out);
+	CHECK(WIFEXITED(pty_out.r_status));
+	CHECK(WEXITSTATUS(pty_out.r_status) == 2);
+	CHECK(find(pty_out.r_buf, pty_out.r_len, "\033") == NULL);
+	CHECK(find(pty_out.r_buf, pty_out.r_len, "zr-no-such-terminal") !=
+	    NULL);
+	tty_same(&y, &before);
+
+	/* ZP111: the usage line, on an argv that is not the five words */
+	av[0] = w.w_av[0];
+	av[1] = w.w_av[1];
+	tty_mark(&y, &before);
+	c.c_term = "xterm";
+	c.c_av = av;
+	c.c_argc = 2;
+	pty_drive(&y, &w, &c, &pty_out);
+	CHECK(WIFEXITED(pty_out.r_status));
+	CHECK(WEXITSTATUS(pty_out.r_status) == 2);
+	CHECK(find(pty_out.r_buf, pty_out.r_len, "\033") == NULL);
+	CHECK(find(pty_out.r_buf, pty_out.r_len, "usage:") != NULL);
+	tty_same(&y, &before);
+
+	world_fini(&w);
+	pty_close(&y);
+}
+
+/*
+ * ZP75: a window below the floor is refused and not drawn into.
+ * Ruled 2026-09-10: "refuse and exit without continuing the merge
+ * (even if resolution file is complete, consider it a user-kill on
+ * gui)". At startup that is one line and exit 2 with curses never
+ * opened; a shrink while it is up ends curses, puts the termios back
+ * and gives the same line and the same status, with whatever was not
+ * saved dropped.
+ */
+static void
+test_pty_floor(void)
+{
+	static const char *const k_none[] = { NULL };
+	struct termios before;
+	struct child c;
+	struct world w;
+	struct pty y;
+	size_t len;
+	char *got;
+
+	if (picker_bin() == NULL) {
+		printf("skip ZP75: zfs_rebase-picker is not built\n");
+		return;
+	}
+	if (pty_open(&y) != 0) {
+		printf("skip ZP75: no pty here (%s)\n", strerror(errno));
+		return;
+	}
+	world_init(&w);
+	world_docs(&w, man_two, res_pty);
+	memset(&c, 0, sizeof (c));
+	c.c_term = "xterm";
+
+	/* one column short: nothing drawn, and nothing written */
+	tty_mark(&y, &before);
+	c.c_rows = PTY_MIN_ROWS;
+	c.c_cols = PTY_MIN_COLS - 1;
+	pty_drive(&y, &w, &c, &pty_out);
+	CHECK(WIFEXITED(pty_out.r_status));
+	CHECK(WEXITSTATUS(pty_out.r_status) == 2);
+	CHECK(find(pty_out.r_buf, pty_out.r_len, "\033") == NULL);
+	CHECK(find(pty_out.r_buf, pty_out.r_len, "the picker needs 80 by "
+	    "24") != NULL);
+	tty_same(&y, &before);
+
+	/* and one row short */
+	tty_mark(&y, &before);
+	c.c_rows = PTY_MIN_ROWS - 1;
+	c.c_cols = PTY_COLS;
+	pty_drive(&y, &w, &c, &pty_out);
+	CHECK(WIFEXITED(pty_out.r_status));
+	CHECK(WEXITSTATUS(pty_out.r_status) == 2);
+	CHECK(find(pty_out.r_buf, pty_out.r_len, "\033") == NULL);
+	CHECK(find(pty_out.r_buf, pty_out.r_len, "the picker needs") != NULL);
+	tty_same(&y, &before);
+
+	/*
+	 * and a shrink under a running picker, with an answer given
+	 * first that is not saved: the answer goes, the terminal comes
+	 * back, and the line is printed after endwin.
+	 */
+	tty_mark(&y, &before);
+	c.c_rows = PTY_ROWS;
+	c.c_cols = PTY_COLS;
+	c.c_keys = k_none;
+	c.c_shrink_rows = 10;
+	c.c_shrink_cols = 40;
+	pty_drive(&y, &w, &c, &pty_out);
+	CHECK(WIFEXITED(pty_out.r_status));
+	CHECK(WEXITSTATUS(pty_out.r_status) == 2);
+	CHECK(pty_out.r_drew != 0);
+	CHECK(find(pty_out.r_buf, pty_out.r_len, "the terminal is 40 by 10")
+	    != NULL);
+	tty_same(&y, &before);
+	got = slurp(w.w_res, &len);
+	CHECK(got != NULL);
+	same("the shrink wrote nothing", got, len, res_pty, strlen(res_pty));
+	free(got);
+
+	world_fini(&w);
+	pty_close(&y);
+}
+
+/*
+ * ZP65, ZP66 and ZP67: a signal that ends the process while the
+ * screen is up. The handler ends curses, puts the termios back, puts
+ * the signal's own disposition back and raises it again, so the
+ * picker dies of what killed it and the shell is told the truth.
+ * SIGQUIT is here with the five of ground rule 6 because the screen
+ * leaves ISIG on and a terminal can send it.
+ */
+static void
+test_pty_signals(void)
+{
+	static const int sigs[] = { SIGINT, SIGTERM, SIGHUP, SIGSEGV,
+		SIGBUS, SIGQUIT };
+	struct termios before;
+	struct child c;
+	struct world w;
+	struct pty y;
+	size_t i;
+
+	if (picker_bin() == NULL) {
+		printf("skip ZP65/ZP66/ZP67: zfs_rebase-picker is not "
+		    "built\n");
+		return;
+	}
+	if (pty_open(&y) != 0) {
+		printf("skip ZP65/ZP66/ZP67: no pty here (%s)\n",
+		    strerror(errno));
+		return;
+	}
+	world_init(&w);
+	world_docs(&w, man_two, res_pty);
+	memset(&c, 0, sizeof (c));
+	c.c_term = "xterm";
+	for (i = 0; i < sizeof (sigs) / sizeof (sigs[0]); i++) {
+		tty_mark(&y, &before);
+		c.c_signal = sigs[i];
+		pty_drive(&y, &w, &c, &pty_out);
+		CHECK(WIFSIGNALED(pty_out.r_status));
+		CHECK(WTERMSIG(pty_out.r_status) == sigs[i]);
+		CHECK(pty_out.r_drew != 0);
+		tty_same(&y, &before);
+	}
+	world_fini(&w);
+	pty_close(&y);
+}
+
+/*
+ * ZP68 and ZP69: nothing of the model's reaches the terminal while
+ * curses is up. The open queues a line about the marked name the
+ * document has no row for; the bytes the master read hold none of it
+ * before the terminal is put back, and hold all of it after.
+ *
+ * The message this asks about is one the screen never draws. A
+ * refusal the person's own key makes is drawn in the key bar while
+ * they are looking at it -- that is what zr_pk_last is for -- and it
+ * goes through curses, which is the write ground rule 6 allows; the
+ * rule is about a write that goes around curses to the stream.
+ */
+static void
+test_pty_quiet(void)
+{
+	static const char *const k_quit[] = { "q", NULL };
+	static const char said[] = "is conflicted in the manifest and has "
+	    "no line here";
+	const char *endwin, *at;
+	struct child c;
+	struct world w;
+	struct pty y;
+
+	if (picker_bin() == NULL) {
+		printf("skip ZP68/ZP69: zfs_rebase-picker is not built\n");
+		return;
+	}
+	if (pty_open(&y) != 0) {
+		printf("skip ZP68/ZP69: no pty here (%s)\n", strerror(errno));
+		return;
+	}
+	world_init(&w);
+	build_main(&w);
+	memset(&c, 0, sizeof (c));
+	c.c_term = "xterm";
+	c.c_keys = k_quit;
+	pty_drive(&y, &w, &c, &pty_out);
+	CHECK(WIFEXITED(pty_out.r_status));
+	CHECK(WEXITSTATUS(pty_out.r_status) == 2);
+	/*
+	 * xterm's exit_ca_mode, which is what endwin writes: everything
+	 * before it was written with curses up.
+	 */
+	endwin = find(pty_out.r_buf, pty_out.r_len, "\033[?1049l");
+	CHECK(endwin != NULL);
+	at = find(pty_out.r_buf, pty_out.r_len, said);
+	CHECK(at != NULL);
+	CHECK(at > endwin);
+	world_fini(&w);
+	pty_close(&y);
+}
+
+/*
+ * The screen's halves of ZP40 and ZP6. Enter on a text row is
+ * ZR_PK_OPEN from the model and one line in the key bar here, until
+ * picker-merge puts screen 2 behind it; and the detail pane under
+ * the list is the row the cursor is on and never the last row that
+ * had a record, which a drift line says in its own words.
+ */
+static void
+test_pty_draw(void)
+{
+	static const char *const keys[] = { "\r", K_DOWN, K_DOWN, K_DOWN,
+		K_DOWN, K_DOWN, K_DOWN, K_DOWN, "q", NULL };
+	struct child c;
+	struct world w;
+	struct pty y;
+
+	if (picker_bin() == NULL) {
+		printf("skip ZP40/ZP6: zfs_rebase-picker is not built\n");
+		return;
+	}
+	if (pty_open(&y) != 0) {
+		printf("skip ZP40/ZP6: no pty here (%s)\n", strerror(errno));
+		return;
+	}
+	world_init(&w);
+	build_main(&w);
+	memset(&c, 0, sizeof (c));
+	c.c_term = "xterm";
+	c.c_keys = keys;
+	pty_drive(&y, &w, &c, &pty_out);
+	CHECK(WIFEXITED(pty_out.r_status));
+	CHECK(WEXITSTATUS(pty_out.r_status) == 2);
+	/* the list itself, and the row the cursor opened on */
+	CHECK(find(pty_out.r_buf, pty_out.r_len, "zfs_rebase: conflicts") !=
+	    NULL);
+	CHECK(find(pty_out.r_buf, pty_out.r_len, M_WHY1) != NULL);
+	/* ZP40: Enter on a text row says what it cannot do yet */
+	CHECK(find(pty_out.r_buf, pty_out.r_len,
+	    "the merge view is not in this build yet") != NULL);
+	/*
+	 * ZP6: the drift row's own detail, seven rows down. The needle
+	 * is a fragment and not the whole line because curses writes
+	 * the difference between two screens and not the screen: the
+	 * row above it is the hand-added line, whose detail begins
+	 * with the same six characters.
+	 */
+	CHECK(find(pty_out.r_buf, pty_out.r_len, "line a gate wrote") !=
+	    NULL);
+	world_fini(&w);
+	pty_close(&y);
+}
+
+/*
+ * ZP114: the tool's child and the standalone binary are the same
+ * objects. One key sequence over one pair of documents, once through
+ * the binary and once through zr_picker_main called in a child this
+ * program forked itself, gives one file byte for byte.
+ */
+static void
+test_pty_same_child(void)
+{
+	static const char *const keys[] = { "f", K_DOWN, "o", "w", NULL };
+	size_t blen, elen;
+	char *bin, *entry;
+	struct child c;
+	struct world w;
+	struct pty y;
+
+	if (picker_bin() == NULL) {
+		printf("skip ZP114: zfs_rebase-picker is not built\n");
+		return;
+	}
+	if (pty_open(&y) != 0) {
+		printf("skip ZP114: no pty here (%s)\n", strerror(errno));
+		return;
+	}
+	memset(&c, 0, sizeof (c));
+	c.c_term = "xterm";
+	c.c_keys = keys;
+
+	/* the standalone binary */
+	world_init(&w);
+	world_docs(&w, man_two, res_pty);
+	pty_drive(&y, &w, &c, &pty_out);
+	CHECK(WIFEXITED(pty_out.r_status));
+	CHECK(WEXITSTATUS(pty_out.r_status) == 0);
+	bin = slurp(w.w_res, &blen);
+	CHECK(bin != NULL);
+	world_fini(&w);
+
+	/* and the entry the tool's own child calls, in a child of this */
+	world_init(&w);
+	world_docs(&w, man_two, res_pty);
+	c.c_inproc = 1;
+	pty_drive(&y, &w, &c, &pty_out);
+	CHECK(WIFEXITED(pty_out.r_status));
+	CHECK(WEXITSTATUS(pty_out.r_status) == 0);
+	entry = slurp(w.w_res, &elen);
+	CHECK(entry != NULL);
+	same("the binary and the entry", entry, elen, bin, blen);
+	free(entry);
+	free(bin);
+	world_fini(&w);
+	pty_close(&y);
+}
+
+/*
+ * ZP70: no terminal at all. The picker is refused before curses is
+ * opened, says so in one line and exits 2, which is what the tool
+ * reads as a gate that still stands. No pty is wanted here: the
+ * child's standard input is /dev/null and its output a pipe.
+ */
+static void
+test_no_terminal(void)
+{
+	char buf[1024], *av[ZR_PK_ARGC + 1];
+	const char *bin = picker_bin();
+	struct world w;
+	int fd[2], st, i;
+	ssize_t n;
+	pid_t pid;
+
+	if (bin == NULL) {
+		printf("skip ZP70: zfs_rebase-picker is not built\n");
+		return;
+	}
+	world_init(&w);
+	world_docs(&w, man_two, res_pty);
+	for (i = 0; i < ZR_PK_ARGC; i++)
+		av[i] = w.w_av[i];
+	av[ZR_PK_ARGC] = NULL;
+	CHECK(pipe(fd) == 0);
+	(void) fflush(NULL);
+	pid = fork();
+	CHECK(pid >= 0);
+	if (pid == 0) {
+		int null = open("/dev/null", O_RDONLY);
+
+		if (null >= 0) {
+			(void) dup2(null, STDIN_FILENO);
+			if (null > STDERR_FILENO)
+				(void) close(null);
+		}
+		(void) dup2(fd[1], STDOUT_FILENO);
+		(void) dup2(fd[1], STDERR_FILENO);
+		(void) close(fd[0]);
+		(void) close(fd[1]);
+		(void) setenv("TERM", "xterm", 1);
+		(void) execv(bin, av);
+		_exit(127);
+	}
+	CHECK(close(fd[1]) == 0);
+	n = read(fd[0], buf, sizeof (buf) - 1);
+	CHECK(n >= 0);
+	buf[n] = '\0';
+	CHECK(close(fd[0]) == 0);
+	CHECK(waitpid(pid, &st, 0) == pid);
+	CHECK(WIFEXITED(st));
+	CHECK(WEXITSTATUS(st) == 2);
+	CHECK(strstr(buf, "needs a terminal") != NULL);
+	CHECK(strchr(buf, '\033') == NULL);
+	world_fini(&w);
+}
+
 int
 main(void)
 {
@@ -1602,6 +2444,14 @@ main(void)
 	test_messages();
 	test_writefail();
 	test_last_name();
+	test_pty_exits();
+	test_pty_refusals();
+	test_pty_floor();
+	test_pty_signals();
+	test_pty_quiet();
+	test_pty_draw();
+	test_pty_same_child();
+	test_no_terminal();
 	printf("check_picker: %d checks passed\n", checks);
 	return (0);
 }

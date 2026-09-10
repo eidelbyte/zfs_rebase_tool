@@ -1625,13 +1625,17 @@ is left over for check_picker.c is the keys and the screen. The
 terminal cells a pty can show are check_picker.c's too, with the
 standalone binary as the child on a pty from posix_openpt(3) rather
 than openpty(3), which lives in -lutil on FreeBSD -- the trick ZI21
-uses for the launcher's termios -- and they close at picker-list,
-when there is a binary to run. What is left is the drawing itself:
-the colors, the ACS line drawing, a resize, TERM under sudo, and a
-merge written into a real result tree. Those are done by hand on
-the box and recorded in the worklog of picker-list or of
-picker-merge, which is the rule of plan section 3.5 -- every TUI
-session on the box goes into the worklog.
+uses for the launcher's termios -- and they closed at picker-list,
+which built the binary. The pty child dups the slave onto its three
+standard descriptors and does not take it as a controlling terminal,
+so that the slave this program reads the termios through is not
+revoked when the child exits, and TERM is xterm, whose entry both
+this machine and the box have. What is left is the drawing itself:
+the colors, the ACS line drawing, a resize that stays above the
+floor, TERM under sudo, and a merge written into a real result tree.
+Those are done by hand on the box and recorded in the worklog of
+picker-list or of picker-merge, which is the rule of plan section
+3.5 -- every TUI session on the box goes into the worklog.
 
 | cell | scenario | disposition |
 |------|----------|-------------|
@@ -1640,7 +1644,7 @@ session on the box goes into the worklog.
 | ZP3 | a drift line: no group, the GRP column says drift, the choice as the gate wrote it | covered: check_picker.c |
 | ZP4 | a hand-added conflict line, whose group no record of the manifest answers to: a row like any other | covered: check_picker.c |
 | ZP5 | a conflict line whose group the manifest has: the why line, the class and the three trees under the list | covered: check_picker.c |
-| ZP6 | a drift line and a hand-added line have no detail to show, and the picker says so rather than leaving the last row's detail up | covered for the row's half (a drift line and a hand-added line carry no record): check_picker.c; the detail pane not standing stale is picker-list's |
+| ZP6 | a drift line and a hand-added line have no detail to show, and the picker says so rather than leaving the last row's detail up | covered: check_picker.c (the row carries no record; the detail pane draws that row's own words on a pty) |
 | ZP7 | two names of one group: both rows carry the number, and the detail says how many names the group holds | covered: check_picker.c |
 | ZP8 | the object's kind per row off the three trees: text, binary, directory, link, socket, fifo | covered: check_picker.c |
 | ZP9 | the text rule: a NUL within the first 8000 bytes is binary, a NUL after them is not | covered: check_picker.c |
@@ -1674,7 +1678,7 @@ session on the box goes into the worklog.
 | ZP37 | g moves to the next row of the same group and wraps within the group | covered: check_picker.c |
 | ZP38 | g on a drift line or a hand-added line: nothing moves, and it says the line has no group | covered: check_picker.c |
 | ZP39 | g on a group of one name: the cursor stays put | covered: check_picker.c |
-| ZP40 | Enter on a text row opens screen 2; before picker-merge it says so and opens nothing | covered for the model's answer (a text conflict line returns ZR_PK_OPEN): check_picker.c; what opens, and the line before picker-merge, at picker-list |
+| ZP40 | Enter on a text row opens screen 2; before picker-merge it says so and opens nothing | covered: check_picker.c (the model answers ZR_PK_OPEN; the screen draws "the merge view is not in this build yet" in the key bar and stays) |
 | ZP41 | Enter on a binary, a directory, a link, a socket or a fifo: nothing opens and the line says why not | covered: check_picker.c |
 | ZP42 | Enter on a delete/edit row: nothing opens, it being a choice and not a merge | covered: check_picker.c |
 | ZP43 | the counts in the header after each change: conflicts, groups, unanswered, drift | covered: check_picker.c |
@@ -1696,20 +1700,20 @@ session on the box goes into the worklog.
 | ZP59 | a write that fails (a read-only directory, ENOSPC on the .tmp): the message after endwin, the destination as it was, no .tmp left, a non-zero exit | covered: check_picker.c |
 | ZP60 | s twice and then w: one document with the last choices, and no line doubled | covered: check_picker.c |
 | ZP61 | a crash between the rename and the exit: the written document stands, no .tmp beside it, and the next --continue reads it | planned: box, by hand, in the worklog of picker-list |
-| ZP62 | the termios saved before initscr are back on the normal return (w, exit 0) | planned: check_picker.c on a pty from posix_openpt(3), the standalone binary as the child, at picker-list |
-| ZP63 | back on the error return: a document the parse refuses, exit 2 | planned: check_picker.c on a pty, at picker-list |
-| ZP64 | back on exit() through the atexit hook | planned: check_picker.c on a pty, at picker-list |
-| ZP65 | back on SIGINT, and the picker dies of SIGINT: the handler calls endwin, restores and re-raises with the default disposition | planned: check_picker.c on a pty, at picker-list |
-| ZP66 | the same for SIGTERM and for SIGHUP | planned: check_picker.c on a pty, at picker-list |
-| ZP67 | the same for SIGSEGV and SIGBUS, whose default disposition still takes what it takes | planned: check_picker.c on a pty, at picker-list |
-| ZP68 | nothing of ours reaches stdout or stderr while curses is up: a pty recording every byte sees no message until after endwin | planned: check_picker.c on a pty, at picker-list |
-| ZP69 | the queued messages are printed after endwin, in the order they were queued | covered for the queue's half (the order, and the oldest dropped): check_picker.c; printed after endwin at picker-list |
-| ZP70 | no terminal at all: refused with a line and exit 2, before initscr is called | planned: check_picker.c |
-| ZP71 | TERM unset: refused, exit 2, nothing drawn | planned: check_picker.c on a pty, at picker-list |
-| ZP72 | TERM a name terminfo does not know: the same | planned: check_picker.c on a pty, at picker-list |
-| ZP73 | SIGWINCH redraws and keeps the cursor on its row | planned: box, by hand, in the worklog of picker-list |
+| ZP62 | the termios saved before initscr are back on the normal return (w, exit 0) | covered: check_picker.c on a pty, with the standalone binary as the child |
+| ZP63 | back on the error return: a document the parse refuses, exit 2 | covered: check_picker.c on a pty |
+| ZP64 | back on exit() through the atexit hook | planned: no path of the picker's own reaches exit(3) while curses is up -- it returns its status and the launcher _exits it -- so the hook is a belt against a library that does (ncurses exits on its own errors), and forcing one would mean test-only code in the product. The hook is installed before newterm and calls the same idempotent restore every other way out calls, which check_picker.c's other pty cells exercise |
+| ZP65 | back on SIGINT, and the picker dies of SIGINT: the handler calls endwin, restores and re-raises with the default disposition | covered: check_picker.c on a pty |
+| ZP66 | the same for SIGTERM and for SIGHUP | covered: check_picker.c on a pty, with SIGQUIT beside them |
+| ZP67 | the same for SIGSEGV and SIGBUS, whose default disposition still takes what it takes | covered: check_picker.c on a pty |
+| ZP68 | nothing of ours reaches stdout or stderr while curses is up: a pty recording every byte sees no message until after endwin | covered: check_picker.c on a pty (a message the open queued, held against the offset of exit_ca_mode). A refusal the person's own key makes is drawn in the key bar through curses, which is what zr_pk_last is for; the rule is about a write that goes around curses to the stream |
+| ZP69 | the queued messages are printed after endwin, in the order they were queued | covered: check_picker.c (the queue's order and its oldest dropped as a unit; the printing after endwin on a pty) |
+| ZP70 | no terminal at all: refused with a line and exit 2, before initscr is called | covered: check_picker.c, the standalone binary with /dev/null on its standard input and a pipe for its output |
+| ZP71 | TERM unset: refused, exit 2, nothing drawn | covered: check_picker.c on a pty |
+| ZP72 | TERM a name terminfo does not know: the same | covered: check_picker.c on a pty |
+| ZP73 | SIGWINCH redraws and keeps the cursor on its row | planned: box, by hand, in the worklog of picker-list. A resize that leaves the window at or above the floor redraws; one that takes it below is ZP75's refusal |
 | ZP74 | the shell's own stty after every way out on the box: echo and canonical mode as they were found | planned: box, by hand, in the worklog of picker-list |
-| ZP75 | a window narrower or shorter than the layout: drawn inside the window there is, and nothing written outside it | planned: box, by hand, in the worklog of picker-list |
+| ZP75 | a window below the floor of 80 by 24 is refused and never drawn into, at startup and on a resize alike: at startup one line naming the size and exit 2 with curses never opened; a shrink while the picker is up ends curses, puts the termios back, prints the same line and exits 2 with nothing written, dropping what was not saved (ruled 2026-09-10: "refuse and exit without continuing the merge (even if resolution file is complete, consider it a user-kill on gui)"). Between the floor and the mockup's 100 columns the name column is truncated and then the detail lines are dropped, and nothing is ever written outside the window | covered: check_picker.c on a pty (one column short, one row short, and a shrink under a running child) |
 | ZP76 | the colors and the ACS line drawing, and the fallback on a terminal that has neither | planned: box, by hand, in the worklog of picker-list; the source's ASCII half is tools/gate.sh, which make gate runs |
 | ZP77 | curses under sudo with the person's TERM and TERMINFO: it opens, or it refuses cleanly, and never draws garbage (plan section 6) | planned: box, by hand, in the worklog of picker-list |
 | ZP78 | a stable chunk: shown in all three panes, with no answer to give | covered: check_merge.c, the record's half -- three ranges of one length and no answer to give; the three panes are picker-merge's, planned: check_picker.c |
@@ -1744,11 +1748,11 @@ session on the box goes into the worklog.
 | ZP107 | swapping from and onto swaps the conflict halves and nothing else | covered: check_merge.c over tests/battery/ |
 | ZP108 | partition: the chunks' base ranges cover base once, in order, with no gap and no overlap | covered: check_merge.c over tests/battery/, and the from and onto ranges with them |
 | ZP109 | the counterexamples of Khanna, Kunal and Pierce come out as the battery states, and a disagreement of tools/merge-oracle.sh with diff3 -m or git merge-file is recorded rather than accepted in silence | covered: check_merge.c over tests/battery/ -- they are property-only cases and are asserted as such; the oracle was run and its disagreements are recorded in the worklog of diff3-walk |
-| ZP110 | the standalone binary takes RESOLUTION BASE FROM ONTO RESULT, the same five, and exits 0, 1 and 2 as the entry does | planned: check_picker.c on a pty, at picker-list |
-| ZP111 | too few or too many arguments: usage on stderr and exit 2, before the terminal is touched | covered for zr_pk_open's half (an argv that is not the five words is refused before anything is read): check_picker.c; the usage line and the exit at picker-list |
+| ZP110 | the standalone binary takes RESOLUTION BASE FROM ONTO RESULT, the same five, and exits 0, 1 and 2 as the entry does | covered: check_picker.c on a pty |
+| ZP111 | too few or too many arguments: usage on stderr and exit 2, before the terminal is touched | covered: check_picker.c (zr_pk_open's refusal as a unit; the binary's own usage line on a pty, with not one escape byte written) |
 | ZP112 | "" for a tree with no path is not a path of "" and is never opened | covered: check_picker.c |
 | ZP113 | the standalone binary run with no tool around it, on a --posix fixture's resolution and manifest: the same screens and the same statuses | planned: box, by hand, in the worklog of picker-list |
-| ZP114 | the tool's child and the standalone binary are the same objects: one key sequence through both gives one file | planned: check_picker.c |
+| ZP114 | the tool's child and the standalone binary are the same objects: one key sequence through both gives one file | covered: check_picker.c on a pty, the binary and zr_picker_main in a forked child of the test |
 
 ## Positive-proof cells
 

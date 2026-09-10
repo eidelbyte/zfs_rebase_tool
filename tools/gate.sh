@@ -7,11 +7,15 @@ cd "$(dirname "$0")/.." || exit 1
 rc=0
 nonascii=$(printf '[^\t -~]')
 if LC_ALL=C grep -rn "$nonascii" Makefile README.md zfs_rebase.8 ports src \
-    tests tools/*.sh tools/*.py tools/*.c; then
+    tests tools/xcheck-stub tools/*.sh tools/*.py tools/*.c; then
 	echo "gate: non-ASCII bytes above"; rc=1
 fi
+# tools/xcheck-stub is stand-in headers for tools/xcheck-freebsd.sh and
+# is compiled into nothing, but it is ours and it is read like any
+# other header here, so it is held to the same style and the same
+# ASCII rule as the rest.
 srcs=$(ls src/*.c src/*.h src/plugins/*/*.c src/plugins/*/*.h tests/*.c \
-    tools/probe-mount.c 2>/dev/null || true)
+    tools/probe-mount.c tools/xcheck-stub/*.h 2>/dev/null || true)
 # The carried copy of FreeBSD's contrib/libdiff in
 # src/plugins/picker/libdiff is foreign code (plan section 3.6, and
 # that directory's UPSTREAM): it is never edited here, so cstyle does

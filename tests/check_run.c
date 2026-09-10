@@ -618,11 +618,14 @@ check_terminal_restored(void)
 }
 
 /*
- * ZI22: the built-in child, with no picker in this build. The stub
- * says so on stderr -- the one line under this test's own output --
- * and exits 2, which to the launcher is a non-zero exit like any
- * other. Nothing about it is special: the fork, the wait and the
- * status are the same code the named command goes through.
+ * ZI22: the built-in child. The picker opens the two documents
+ * before it touches a terminal, and this scratch has a resolution
+ * with no manifest beside it, so the child refuses on the spot with
+ * one line on stderr -- the line under this test's own output -- and
+ * exits 2, with no curses anywhere near this program's terminal.
+ * To the launcher that is a non-zero exit like any other. Nothing
+ * about it is special: the fork, the wait and the status are the
+ * same code the named command goes through.
  *
  * ZI23: and the argv that child is given, which is the contract the
  * picker's own issues are written against: the program's name, the
