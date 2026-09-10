@@ -1023,6 +1023,7 @@ struct pk_cell {
 	unsigned char	c_num;		/* draw the line's number */
 	unsigned char	c_mark;		/* PK_MK_*, for PK_MR_MARK */
 	uint32_t	c_line;		/* the line, or the fold's count */
+	uint32_t	c_show;		/* the number drawn, when c_num */
 };
 
 /* One row of the side panes, and one of the result pane. */
@@ -1086,6 +1087,7 @@ pk_cell_line(struct pk_cell *cell, int file, uint32_t line, int gut, int co,
 	cell->c_gut = (unsigned char)gut;
 	cell->c_co = (unsigned char)co;
 	cell->c_num = (unsigned char)(num != 0);
+	cell->c_show = line + 1;
 }
 
 static void
@@ -1231,9 +1233,17 @@ static uint32_t
 pk_res_fill(const struct zr_pk_merge *mg, struct pk_rrow *out)
 {
 	const struct zr_m3 *m = &mg->pm_m3;
-	uint32_t i, r, n = 0, lo = 0, hi = 0;
+	uint32_t i, r, n = 0, lo = 0, hi = 0, nl = 0;
 	int file, gut, co;
 
+	/*
+	 * The result pane numbers the merged file's own lines, 1 up,
+	 * counted here as the rows are laid: a line that came from
+	 * from's 3 and one from onto's 3 are the result's 3 and 4
+	 * (the box, 2026-09-10: "the line numbers double up"). What
+	 * is not in the result -- the halves of an unpicked conflict,
+	 * base shown on b -- gets no number.
+	 */
 	for (i = 0; i < m->nchunks; i++) {
 		const struct zr_m3_chunk *c = &m->chunks[i];
 
@@ -1248,6 +1258,7 @@ pk_res_fill(const struct zr_pk_merge *mg, struct pk_rrow *out)
 				i++;
 			}
 			i--;
+			nl += sum;
 			if (out != NULL) {
 				out[n].r_chunk = first;
 				pk_cell_fold(&out[n].r_cell, sum);
@@ -1270,7 +1281,7 @@ pk_res_fill(const struct zr_pk_merge *mg, struct pk_rrow *out)
 				if (out != NULL) {
 					out[n].r_chunk = i;
 					pk_cell_line(&out[n].r_cell,
-					    ZR_M3_F_BASE, r, 'b', PK_CO_DIM, 1);
+					    ZR_M3_F_BASE, r, 'b', PK_CO_DIM, 0);
 				}
 				n++;
 			}
@@ -1289,7 +1300,7 @@ pk_res_fill(const struct zr_pk_merge *mg, struct pk_rrow *out)
 					out[n].r_chunk = i;
 					pk_cell_line(&out[n].r_cell,
 					    ZR_M3_F_FROM, r, '!', PK_CO_FROM,
-					    1);
+					    0);
 				}
 				n++;
 			}
@@ -1304,7 +1315,7 @@ pk_res_fill(const struct zr_pk_merge *mg, struct pk_rrow *out)
 					out[n].r_chunk = i;
 					pk_cell_line(&out[n].r_cell,
 					    ZR_M3_F_ONTO, r, '!', PK_CO_ONTO,
-					    1);
+					    0);
 				}
 				n++;
 			}
@@ -1321,17 +1332,20 @@ pk_res_fill(const struct zr_pk_merge *mg, struct pk_rrow *out)
 			gut = ' ';
 			co = PK_CO_PLAIN;
 		} else if (c->kind == ZR_M3_CONFLICT) {
-			gut = '!';
+			/* picked: the gutter says which key answered it */
+			gut = c->pick == ZR_M3_PICK_ONTO ? '2' : '1';
 			co = file == ZR_M3_F_ONTO ? PK_CO_ONTO : PK_CO_FROM;
 		} else {
 			gut = '+';
 			co = PK_CO_GREEN;
 		}
 		for (r = lo; r < hi; r++) {
+			nl++;
 			if (out != NULL) {
 				out[n].r_chunk = i;
 				pk_cell_line(&out[n].r_cell, file, r, gut, co,
 				    1);
+				out[n].r_cell.c_show = nl;
 			}
 			n++;
 		}
@@ -1514,7 +1528,7 @@ pk_draw_cell(const struct zr_m3 *m, int y, int x, int w,
 	}
 	if (c->c_num != 0) {
 		(void) snprintf(num, sizeof (num), "%*lu", PK_M_NUMW,
-		    (unsigned long)(c->c_line + 1));
+		    (unsigned long)c->c_show);
 		pk_put(y, x + 2, PK_CO_DIM, sel, num);
 	}
 	pk_line_text(m, c->c_file, c->c_line, text, sizeof (text));
