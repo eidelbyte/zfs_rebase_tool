@@ -1,0 +1,848 @@
+# battery merge3 cases=45
+# case NAME exact|property / base N / from N / onto N / lines "L text" or "X text" /
+# chunks N / KIND blo bhi flo fhi olo ohi / end. Ranges are half-open and zero-based.
+
+case both-unchanged exact
+base 3
+L a
+L b
+L c
+from 3
+L a
+L b
+L c
+onto 3
+L a
+L b
+L c
+chunks 1
+stable 0 3 0 3 0 3
+end
+
+case from-unchanged exact
+base 3
+L a
+L b
+L c
+from 3
+L a
+L b
+L c
+onto 3
+L a
+L B
+L c
+chunks 3
+stable 0 1 0 1 0 1
+onto-only 1 2 1 2 1 2
+stable 2 3 2 3 2 3
+end
+
+case onto-unchanged exact
+base 3
+L a
+L b
+L c
+from 3
+L a
+L B
+L c
+onto 3
+L a
+L b
+L c
+chunks 3
+stable 0 1 0 1 0 1
+from-only 1 2 1 2 1 2
+stable 2 3 2 3 2 3
+end
+
+case identical-change exact
+base 3
+L a
+L b
+L c
+from 3
+L a
+L B
+L c
+onto 3
+L a
+L B
+L c
+chunks 3
+stable 0 1 0 1 0 1
+both-same 1 2 1 2 1 2
+stable 2 3 2 3 2 3
+end
+
+case one-line-both-unchanged exact
+base 1
+L a
+from 1
+L a
+onto 1
+L a
+chunks 1
+stable 0 1 0 1 0 1
+end
+
+case one-line-from-edits exact
+base 1
+L a
+from 1
+L b
+onto 1
+L a
+chunks 1
+from-only 0 1 0 1 0 1
+end
+
+case one-line-both-edit exact
+base 1
+L a
+from 1
+L b
+onto 1
+L c
+chunks 1
+conflict 0 1 0 1 0 1
+end
+
+case disjoint-changes exact
+base 7
+L a
+L b
+L c
+L d
+L e
+L f
+L g
+from 7
+L a
+L B
+L c
+L d
+L e
+L f
+L g
+onto 7
+L a
+L b
+L c
+L d
+L e
+L F
+L g
+chunks 5
+stable 0 1 0 1 0 1
+from-only 1 2 1 2 1 2
+stable 2 5 2 5 2 5
+onto-only 5 6 5 6 5 6
+stable 6 7 6 7 6 7
+end
+
+case adjacent-one-stable-line exact
+base 5
+L a
+L b
+L c
+L d
+L e
+from 5
+L a
+L B
+L c
+L d
+L e
+onto 5
+L a
+L b
+L c
+L D
+L e
+chunks 5
+stable 0 1 0 1 0 1
+from-only 1 2 1 2 1 2
+stable 2 3 2 3 2 3
+onto-only 3 4 3 4 3 4
+stable 4 5 4 5 4 5
+end
+
+case adjacent-no-stable-line exact
+base 4
+L a
+L b
+L c
+L d
+from 4
+L a
+L B
+L c
+L d
+onto 4
+L a
+L b
+L C
+L d
+chunks 3
+stable 0 1 0 1 0 1
+conflict 1 3 1 3 1 3
+stable 3 4 3 4 3 4
+end
+
+case same-stretch-both-edit exact
+base 3
+L a
+L b
+L c
+from 3
+L a
+L B
+L c
+onto 3
+L a
+L C
+L c
+chunks 3
+stable 0 1 0 1 0 1
+conflict 1 2 1 2 1 2
+stable 2 3 2 3 2 3
+end
+
+case insert-both-same-spot-differ exact
+base 2
+L a
+L z
+from 3
+L a
+L X
+L z
+onto 3
+L a
+L Y
+L z
+chunks 3
+stable 0 1 0 1 0 1
+conflict 1 1 1 2 1 2
+stable 1 2 2 3 2 3
+end
+
+case insert-both-same-spot-same exact
+base 2
+L a
+L z
+from 3
+L a
+L X
+L z
+onto 3
+L a
+L X
+L z
+chunks 3
+stable 0 1 0 1 0 1
+both-same 1 1 1 2 1 2
+stable 1 2 2 3 2 3
+end
+
+case insert-from-only exact
+base 2
+L a
+L z
+from 3
+L a
+L X
+L z
+onto 2
+L a
+L z
+chunks 3
+stable 0 1 0 1 0 1
+from-only 1 1 1 2 1 1
+stable 1 2 2 3 1 2
+end
+
+case insert-both-different-spots exact
+base 3
+L a
+L m
+L z
+from 4
+L a
+L X
+L m
+L z
+onto 4
+L a
+L m
+L Y
+L z
+chunks 5
+stable 0 1 0 1 0 1
+from-only 1 1 1 2 1 1
+stable 1 2 2 3 1 2
+onto-only 2 2 3 3 2 3
+stable 2 3 3 4 3 4
+end
+
+case delete-one-side-edit-other exact
+base 3
+L a
+L b
+L c
+from 2
+L a
+L c
+onto 3
+L a
+L B
+L c
+chunks 3
+stable 0 1 0 1 0 1
+conflict 1 2 1 1 1 2
+stable 2 3 1 2 2 3
+end
+
+case delete-both-same-stretch exact
+base 3
+L a
+L b
+L c
+from 2
+L a
+L c
+onto 2
+L a
+L c
+chunks 3
+stable 0 1 0 1 0 1
+both-same 1 2 1 1 1 1
+stable 2 3 1 2 1 2
+end
+
+case delete-from-only exact
+base 3
+L a
+L b
+L c
+from 2
+L a
+L c
+onto 3
+L a
+L b
+L c
+chunks 3
+stable 0 1 0 1 0 1
+from-only 1 2 1 1 1 2
+stable 2 3 1 2 2 3
+end
+
+case delete-adjacent-stretches exact
+base 4
+L a
+L b
+L c
+L d
+from 3
+L a
+L c
+L d
+onto 3
+L a
+L b
+L d
+chunks 3
+stable 0 1 0 1 0 1
+conflict 1 3 1 2 1 2
+stable 3 4 2 3 2 3
+end
+
+case empty-base-add-add-differ exact
+base 0
+from 1
+L a
+onto 1
+L b
+chunks 1
+conflict 0 0 0 1 0 1
+end
+
+case empty-base-add-add-same exact
+base 0
+from 1
+L a
+onto 1
+L a
+chunks 1
+both-same 0 0 0 1 0 1
+end
+
+case empty-base-one-side-adds exact
+base 0
+from 1
+L a
+onto 0
+chunks 1
+from-only 0 0 0 1 0 0
+end
+
+case empty-from exact
+base 2
+L a
+L b
+from 0
+onto 2
+L a
+L b
+chunks 1
+from-only 0 2 0 0 0 2
+end
+
+case empty-onto exact
+base 2
+L a
+L b
+from 2
+L a
+L b
+onto 0
+chunks 1
+onto-only 0 2 0 2 0 0
+end
+
+case empty-from-and-onto exact
+base 2
+L a
+L b
+from 0
+onto 0
+chunks 1
+both-same 0 2 0 0 0 0
+end
+
+case all-three-empty exact
+base 0
+from 0
+onto 0
+chunks 0
+end
+
+case no-final-newline-in-base exact
+base 2
+L a
+X b
+from 2
+L a
+L b
+onto 2
+L a
+X b
+chunks 2
+stable 0 1 0 1 0 1
+from-only 1 2 1 2 1 2
+end
+
+case no-final-newline-in-from exact
+base 2
+L a
+L b
+from 2
+L a
+X b
+onto 2
+L a
+L b
+chunks 2
+stable 0 1 0 1 0 1
+from-only 1 2 1 2 1 2
+end
+
+case no-final-newline-in-onto exact
+base 2
+L a
+L b
+from 2
+L a
+L b
+onto 2
+L a
+X b
+chunks 2
+stable 0 1 0 1 0 1
+onto-only 1 2 1 2 1 2
+end
+
+case no-final-newline-in-all-three exact
+base 2
+L a
+X b
+from 2
+L a
+X B
+onto 2
+L a
+X b
+chunks 2
+stable 0 1 0 1 0 1
+from-only 1 2 1 2 1 2
+end
+
+case no-final-newline-both-sides-differ exact
+base 2
+L a
+L b
+from 2
+L a
+X X
+onto 2
+L a
+X Y
+chunks 2
+stable 0 1 0 1 0 1
+conflict 1 2 1 2 1 2
+end
+
+case no-final-newline-one-line exact
+base 1
+X a
+from 1
+L a
+onto 1
+X a
+chunks 1
+from-only 0 1 0 1 0 1
+end
+
+case leading-whitespace-is-a-difference exact
+base 3
+L a
+L b
+L c
+from 3
+L a
+L  b
+L c
+onto 3
+L a
+L b
+L c
+chunks 3
+stable 0 1 0 1 0 1
+from-only 1 2 1 2 1 2
+stable 2 3 2 3 2 3
+end
+
+case empty-line-is-a-line exact
+base 3
+L a
+L
+L c
+from 4
+L a
+L
+L B
+L c
+onto 3
+L a
+L
+L c
+chunks 3
+stable 0 2 0 2 0 2
+from-only 2 2 2 3 2 2
+stable 2 3 3 4 2 3
+end
+
+case paper-locality property
+base 8
+L 1
+L 2
+L 1
+L 2
+L 1
+L 2
+L 1
+L 2
+from 10
+L 1
+L 2
+L 1
+L 2
+L 1
+L 2
+L 1
+L 2
+L 1
+L 2
+onto 7
+L 1
+L 2
+L 1
+L 2
+L 1
+L 2
+L 3
+end
+
+case paper-tiling property
+base 10
+L a
+L m
+L c
+L n
+L p
+L q
+L r
+L s
+L t
+L u
+from 9
+L p
+L q
+L r
+L s
+L t
+L u
+L m
+L c
+L n
+onto 9
+L a
+L m
+L n
+L p
+L q
+L r
+L s
+L t
+L u
+end
+
+case paper-idempotence property
+base 10
+L 1
+L 2
+L 3
+L 4
+L 5
+L 5
+L 5
+L 6
+L 7
+L 8
+from 5
+L 1
+L 2
+L 4
+L 6
+L 8
+onto 10
+L 1
+L 4
+L 5
+L 5
+L 5
+L 6
+L 2
+L 3
+L 4
+L 8
+end
+
+case paper-idempotence-again property
+base 7
+L 1
+L 2
+L 3
+L 4
+L 6
+L 7
+L 8
+from 5
+L 1
+L 2
+L 4
+L 6
+L 8
+onto 7
+L 1
+L 4
+L 6
+L 2
+L 3
+L 4
+L 8
+end
+
+case paper-near-success property
+base 8
+L 1
+L 2
+L 3
+L 4
+L 5
+L 6
+L 7
+L 8
+from 8
+L 1
+L 5
+L 6
+L 7
+L 2
+L 3
+L 4
+L 8
+onto 8
+L 1
+L 2
+L 5
+L 6
+L 7
+L 3
+L 4
+L 8
+end
+
+case paper-stability-a property
+base 9
+L 1
+L 2
+L 3
+L 4
+L 0
+L 3
+L 4
+L 1
+L 2
+from 6
+L 1
+L 2
+L 3
+L 4
+L 1
+L 2
+onto 7
+L 3
+L 4
+L 1
+L 2
+L 0
+L 3
+L 4
+end
+
+case paper-stability-b property
+base 9
+L 1
+L 2
+L 3
+L 4
+L 0
+L 3
+L 4
+L 1
+L 2
+from 6
+L 1
+L 2
+L 3
+L 4
+L 1
+L 2
+onto 7
+L 0
+L 3
+L 4
+L 1
+L 2
+L 3
+L 4
+end
+
+case paper-joint-match property
+base 6
+L 1
+L 2
+L 3
+L 4
+L 5
+L 6
+from 5
+L 4
+L 5
+L 6
+L 1
+L 2
+onto 5
+L 4
+L 5
+L 1
+L 2
+L 3
+end
+
+case repeat-brace-block property
+base 6
+L f
+L {
+L }
+L g
+L {
+L }
+from 9
+L f
+L {
+L }
+L h
+L {
+L }
+L g
+L {
+L }
+onto 9
+L f
+L {
+L }
+L g
+L {
+L }
+L i
+L {
+L }
+end
+
+case repeat-one-line-many-times property
+base 3
+L x
+L x
+L x
+from 2
+L x
+L x
+onto 4
+L x
+L x
+L x
+L x
+end
+
+case repeat-move-a-block property
+base 4
+L a
+L b
+L c
+L d
+from 4
+L c
+L d
+L a
+L b
+onto 5
+L a
+L b
+L c
+L d
+L e
+end
