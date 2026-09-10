@@ -7,6 +7,7 @@
 #include <stdint.h>
 
 #include "manifest.h"
+#include "merge.h"
 
 /*
  * The entry the launcher calls in the forked child
@@ -66,7 +67,20 @@ enum zr_pk_key {
 	ZR_PK_ENTER,	/* the merge view, where there is one */
 	ZR_PK_SAVE,	/* s: write and stay */
 	ZR_PK_WRITE,	/* w: write and go, when nothing is unanswered */
-	ZR_PK_QUIT	/* q */
+	ZR_PK_QUIT,	/* q */
+	/*
+	 * Screen 2's own, which mean nothing on the list and which the
+	 * list's keys mean nothing beside: while a merge is open every
+	 * key goes to it and to nothing else. ZR_PK_WRITE is in both
+	 * screens and means the merge write in this one.
+	 */
+	ZR_PK_PICK_FROM,	/* 1: this hunk takes from's lines */
+	ZR_PK_PICK_ONTO,	/* 2: this hunk takes onto's */
+	ZR_PK_BASE,		/* b: the hunk's base range in its place */
+	ZR_PK_NEXT,		/* n: the next conflicting hunk */
+	ZR_PK_PREV,		/* p: the one before */
+	ZR_PK_TOGGLE,		/* c: the stable stretches folded away */
+	ZR_PK_BACK		/* Esc: back to the list, the choice kept */
 };
 
 /* What the screen must do about a key the model has just taken. */
@@ -119,6 +133,14 @@ enum zr_pk_tree {
 };
 
 #define	ZR_PK_NTREE	4
+
+/*
+ * The three trees a merge is made of, which are the first three of
+ * the four: base, from and onto. The result is not one of them -- it
+ * is where the answer lands -- and the enum's order is what lets a
+ * side be indexed by ZR_PK_T_BASE, ZR_PK_T_FROM and ZR_PK_T_ONTO.
+ */
+#define	ZR_PK_NSIDE	3
 
 /*
  * The F/O column: what each side did to the name, read off the three
@@ -205,6 +227,40 @@ struct zr_pk_counts {
 #define	ZR_PK_MSGLEN	200
 
 /*
+ * ---------------------------------------------------------------
+ * Screen 2 (plan section 3.4): a text conflict opened three ways.
+ * ---------------------------------------------------------------
+ *
+ * What a row carries while its merge is open: the three objects read
+ * whole off the trees, the merge over them, and where the keys are
+ * pointing. It is opened by zr_pk_merge_open on the cursor's row and
+ * closed by Esc, by a write that went through, or by zr_pk_fini.
+ *
+ * The three buffers are OWNED here and BORROWED by the struct zr_m3
+ * (merge.h): the merge copies nothing and holds pointers into them,
+ * so they are freed only after zr_m3_fini, which zr_pk_merge_close
+ * does in that order. pm_bytes[ZR_PK_T_BASE] is NULL where the row
+ * has no base object at all, which is the add/add form and which
+ * zr_m3_open reads as such; an empty base OBJECT is a pointer with a
+ * length of 0, which is a different thing.
+ *
+ * pm_cursor is a chunk index, always a ZR_M3_CONFLICT chunk, and is
+ * pm_m3.nchunks -- past the end -- when the merge has no conflicting
+ * hunk at all. The picks live on the chunks and nowhere else, so
+ * folding the stable stretches away cannot lose one.
+ */
+struct zr_pk_merge {
+	int		pm_open;	/* a merge is open on pm_row */
+	uint32_t	pm_row;		/* the row it was opened on */
+	struct zr_m3	pm_m3;		/* the chunks, and the picks on them */
+	unsigned char	*pm_bytes[ZR_PK_NSIDE];
+	size_t		pm_len[ZR_PK_NSIDE];
+	uint32_t	pm_cursor;	/* the hunk the keys act on */
+	int		pm_only;	/* c: the stable stretches folded */
+	int		pm_base;	/* b: base in place of the answer */
+};
+
+/*
  * The picker. Everything it has is here: the two documents as the
  * parsers gave them, the rows over the resolution's lines, the
  * cursor, the counts, the queue, and the five paths it was given.
@@ -229,6 +285,7 @@ struct zr_picker {
 	char			pk_msg[ZR_PK_NMSG][ZR_PK_MSGLEN];
 	uint32_t		pk_nmsg;
 	uint32_t		pk_msghead;
+	struct zr_pk_merge	pk_merge;
 };
 
 /*
@@ -263,11 +320,20 @@ int zr_pk_open(struct zr_picker *out, int argc, char **argv, char *err,
  * line, since only a conflict line starts unanswered; g moves to the
  * next name of this row's group and wraps inside it; Enter asks for
  * the merge view, which exists for a conflict line whose base, from
- * and onto objects are all text and for nothing else; s writes and
- * stays; w writes and leaves with 0 when nothing is unanswered and
- * otherwise says which name is the first that is; q leaves with 2, or
- * with 1 when something was saved. A key that refuses says why in the
- * queue.
+ * and onto objects are all text, and for one whose base is absent
+ * with both sides text -- the add/add form, which gets the two-way
+ * compare (plan section 3.4); s writes and stays; w writes and
+ * leaves with 0 when nothing is unanswered and otherwise says which
+ * name is the first that is; q leaves with 2, or with 1 when
+ * something was saved. A key that refuses says why in the queue.
+ *
+ * While a merge is open (zr_pk_merge_open) every key goes to screen
+ * 2 instead and the list's own keys do nothing: 1 and 2 answer the
+ * hunk the cursor is on, b shows its base range, n and p move
+ * between the conflicting hunks, c folds the stable stretches away,
+ * Esc closes the merge with the row's choice as it was, and w writes
+ * the merged bytes into the result's object -- refused, with the
+ * library's line, while any hunk is unpicked (ruling 7).
  */
 enum zr_pk_act zr_pk_key(struct zr_picker *pk, enum zr_pk_key key);
 
@@ -333,14 +399,41 @@ enum zr_choice zr_pk_choice(const struct zr_pk_row *row);
 uint32_t zr_pk_group_names(const struct zr_picker *pk, uint32_t group);
 
 /*
- * Can the row at i be opened three ways, and if not, why not? The
- * reason goes into buf as a sentence fragment ("onto is binary") and
- * is what comes back; NULL comes back where the row opens. That is
- * the answer ZR_PK_ENTER gives, asked without pressing the key.
+ * Can the row at i be opened three ways -- two, in the add/add form
+ * -- and if not, why not? The reason goes into buf as a sentence
+ * fragment ("onto is binary") and is what comes back; NULL comes
+ * back where the row opens. That is the answer ZR_PK_ENTER gives,
+ * asked without pressing the key.
  */
 int zr_pk_can_open(const struct zr_picker *pk, uint32_t i);
 const char *zr_pk_why_not(const struct zr_picker *pk, uint32_t i, char *buf,
     size_t buflen);
+
+/*
+ * Open the merge on the cursor's row: the three objects read whole
+ * off the trees the row names, and zr_m3_open over them. Returns 0
+ * with the merge open and the keys of screen 2 live, or -1 with one
+ * line queued and nothing open -- a row that has no merge view, an
+ * object that will not read, and the library's own refusals, of
+ * which delete/edit is the one a row can still reach.
+ *
+ * zr_pk_merge is what the screen draws from and is NULL while no
+ * merge is open. zr_pk_merge_hunk is the cursor's place among the
+ * conflicting hunks, 1-based, and 0 where there is no such hunk:
+ * the title's "hunk N of M", whose M is pm_m3.nconflict.
+ */
+int zr_pk_merge_open(struct zr_picker *pk);
+void zr_pk_merge_close(struct zr_picker *pk);
+struct zr_pk_merge *zr_pk_merge(struct zr_picker *pk);
+uint32_t zr_pk_merge_hunk(const struct zr_picker *pk);
+
+/*
+ * One line into the queue the screen drains after endwin, for the
+ * screen's own use: it has no other way to say anything, since
+ * nothing may be written to a stream while curses is up (ground
+ * rule 6). The model queues its own lines and does not need this.
+ */
+void zr_pk_note(struct zr_picker *pk, const char *line);
 
 /* The paths it was given: the four trees, "" for a tree with none. */
 const char *zr_pk_path(const struct zr_picker *pk, enum zr_pk_tree tree);

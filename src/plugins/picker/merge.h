@@ -212,6 +212,27 @@ int zr_m3_result(const struct zr_m3 *m, unsigned char **out, size_t *outlen,
     char *err, size_t errlen);
 
 /*
+ * Which file one chunk answers with, and which of its records: the
+ * answer table of v4-merge3.md section 6, which is what zr_m3_result
+ * concatenates and what a screen must draw in its result pane. One
+ * table, read from two places, so that what is shown and what is
+ * written can never differ.
+ *
+ * Returns ZR_M3_F_BASE, ZR_M3_F_FROM or ZR_M3_F_ONTO with *lo and
+ * *hi that file's half-open range, or -1 for a chunk index out of
+ * range. A ZR_M3_CONFLICT chunk that has not been picked has no
+ * answer to give and comes back as from's range: the caller is
+ * expected to have refused already, which is what zr_m3_result does
+ * and what the screen's markers stand in for.
+ */
+#define	ZR_M3_F_BASE	0
+#define	ZR_M3_F_FROM	1
+#define	ZR_M3_F_ONTO	2
+
+int zr_m3_answer(const struct zr_m3 *m, uint32_t chunk, uint32_t *lo,
+    uint32_t *hi);
+
+/*
  * The inside-conflict diff of one conflict chunk's two halves,
  * computed on demand. Returns 0 and fills *h, or -1 with err: a chunk
  * that is not a conflict, or out of memory. Free it with

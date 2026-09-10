@@ -15,13 +15,18 @@
  * endwin. It skips itself with a line where there is no pty or the
  * binary was not built.
  *
- * The family is ZP of tests/MATRIX.md. Covered: ZP1 to ZP12, ZP14 to
- * ZP19, ZP21 to ZP39, ZP41 to ZP60, ZP62 to ZP63, ZP65 to ZP72,
- * ZP75, ZP110 to ZP112 and ZP114. ZP13 is covered for the model's
- * half, the two-way compare over an absent base being picker-merge's.
- * ZP20 is here as the message at open. What is left of the family is
- * the merge (ZP78 to ZP109) and what only a box can show: ZP61,
- * ZP64, ZP73, ZP74, ZP76, ZP77 and ZP113.
+ * The third part is screen 2, the merge: the rows of one text
+ * conflict opened over trees this program builds, driven with the
+ * key codes of plan section 3.4 and asked what it picked, what it
+ * refused and what it wrote into the result's own object.
+ *
+ * The family is ZP of tests/MATRIX.md. Covered: ZP1 to ZP19, ZP21 to
+ * ZP39, ZP40 to ZP60, ZP62 to ZP63, ZP65 to ZP72, ZP75, ZP78 (the
+ * panes), ZP82 to ZP88, ZP90 to ZP96, ZP99 and ZP110 to ZP114. ZP20
+ * is here as the message at open. What is left of the family is the
+ * merge library's own cells (check_merge.c) and what only a box can
+ * show: ZP61, ZP64, ZP73, ZP74, ZP76, ZP77, ZP100 to ZP103 and
+ * ZP113.
  */
 
 #define	_XOPEN_SOURCE	700
@@ -1249,7 +1254,14 @@ test_kinds(void)
 	CHECK(zr_pk_can_open(&pk, K_LATE) == 0);
 	CHECK(strcmp(zr_pk_path(&pk, ZR_PK_T_BASE), "") == 0);
 	zr_pk_fini(&pk);
-	/* base alone with no path: the other two are still read */
+	/*
+	 * base alone with no path: the other two are still read, and
+	 * every text name on them is an add/add, since a base nobody
+	 * gave a path for holds nothing. That is the second half of
+	 * ZP13 -- "every merge is the two-way compare" -- and it is
+	 * why the row opens here where picker-model left it refused
+	 * (ZP95, the form the merge library already answers).
+	 */
 	(void) snprintf(w.w_arg[ZR_PK_ARGV_TREE + ZR_PK_T_FROM],
 	    sizeof (w.w_arg[0]), "%s", w.w_tree[ZR_PK_T_FROM]);
 	(void) snprintf(w.w_arg[ZR_PK_ARGV_TREE + ZR_PK_T_ONTO],
@@ -1261,7 +1273,9 @@ test_kinds(void)
 	CHECK(zr_pk_row(&pk, K_LATE)->zk_obj[ZR_PK_T_FROM] == ZR_PK_O_TEXT);
 	CHECK(zr_pk_row(&pk, K_LATE)->zk_ty == ZR_PK_O_TEXT);
 	CHECK(zr_pk_row(&pk, K_LATE)->zk_fo[0] == ZR_PK_FO_ADD);
-	CHECK(zr_pk_can_open(&pk, K_LATE) == 0);
+	CHECK(zr_pk_can_open(&pk, K_LATE) == 1);
+	/* the binary one is still refused, base or no base */
+	CHECK(zr_pk_can_open(&pk, K_EARLY) == 0);
 	zr_pk_fini(&pk);
 	world_fini(&w);
 }
@@ -1588,6 +1602,452 @@ test_last_name(void)
 	CHECK(strstr(got, "    p conflict 1 keep\n") != NULL);
 	CHECK(strstr(got, "    q conflict 2 onto\n") != NULL);
 	free(got);
+	zr_pk_fini(&pk);
+	world_fini(&w);
+}
+
+/*
+ * ---------------------------------------------------------------
+ * Screen 2: a text conflict opened three ways, driven with key
+ * codes and no terminal. Cells ZP13, ZP83 to ZP88, ZP90 to ZP96 and
+ * ZP99; the chunk sequence itself is check_merge.c's.
+ * ---------------------------------------------------------------
+ */
+
+static const char man_merge[] =
+	M_HDR("0", "4")
+	"/\n"
+	"    add.txt conflict 1\n"
+	"    del.txt conflict 2\n"
+	"    m2.txt conflict 3\n"
+	"    one.txt conflict 4\n"
+	"    ..\n"
+	REC("1", "contested-home", "/add.txt was created on both sides")
+	REC("2", "changed-both", "/del.txt went one way and changed another")
+	REC("3", "changed-both", "/m2.txt changed on both sides")
+	REC("4", "changed-both", "/one.txt changed on from");
+
+static const char res_merge[] =
+	R_HDR("4", "4")
+	"/\n"
+	"    add.txt conflict 1 -\n"
+	"    del.txt conflict 2 -\n"
+	"    m2.txt conflict 3 -\n"
+	"    one.txt conflict 4 -\n"
+	"    ..\n";
+
+/* Where the four lines sit, and what the merge of each comes to. */
+#define	G_ADD		0
+#define	G_DEL		1
+#define	G_M2		2
+#define	G_ONE		3
+
+#define	G_M2_BASE	"a\nb\nc\nd\ne\n"
+#define	G_M2_FROM	"a\nF1\nc\nF2\ne\n"
+#define	G_M2_ONTO	"a\nO1\nc\nO2\ne\n"
+#define	G_M2_MIXED	"a\nF1\nc\nO2\ne\n"
+
+/*
+ * m2.txt is five chunks -- stable, conflict, stable, conflict,
+ * stable -- so that a key can be shown to answer the hunk under the
+ * cursor and no other; add.txt has no base at all; del.txt has no
+ * from; one.txt is a from-only chunk with nothing to answer.
+ */
+static void
+build_merge(struct world *w)
+{
+	world_docs(w, man_merge, res_merge);
+	w_text(w, ZR_PK_T_BASE, "/m2.txt", G_M2_BASE);
+	w_text(w, ZR_PK_T_FROM, "/m2.txt", G_M2_FROM);
+	w_text(w, ZR_PK_T_ONTO, "/m2.txt", G_M2_ONTO);
+	w_text(w, ZR_PK_T_RESULT, "/m2.txt", G_M2_BASE);
+	w_text(w, ZR_PK_T_FROM, "/add.txt", "addfrom\n");
+	w_text(w, ZR_PK_T_ONTO, "/add.txt", "addonto\n");
+	w_text(w, ZR_PK_T_RESULT, "/add.txt", "addfrom\n");
+	w_text(w, ZR_PK_T_BASE, "/del.txt", "del\n");
+	w_text(w, ZR_PK_T_ONTO, "/del.txt", "del2\n");
+	w_text(w, ZR_PK_T_RESULT, "/del.txt", "del2\n");
+	w_text(w, ZR_PK_T_BASE, "/one.txt", "s1\ns2\n");
+	w_text(w, ZR_PK_T_FROM, "/one.txt", "s1\nFF\n");
+	w_text(w, ZR_PK_T_ONTO, "/one.txt", "s1\ns2\n");
+	w_text(w, ZR_PK_T_RESULT, "/one.txt", "s1\ns2\n");
+}
+
+/* Enter on a row, and the merge the screen would then open. */
+static struct zr_pk_merge *
+merge_on(struct zr_picker *pk, uint32_t row)
+{
+	cursor_to(pk, row);
+	CHECK(zr_pk_key(pk, ZR_PK_ENTER) == ZR_PK_OPEN);
+	CHECK(zr_pk_merge_open(pk) == 0);
+	CHECK(zr_pk_merge(pk) != NULL);
+	return (zr_pk_merge(pk));
+}
+
+/* What one tree holds at one name now, as bytes. */
+static char *
+w_slurp(const struct world *w, int t, const char *rel, size_t *lenp)
+{
+	char path[PATHMAX];
+
+	w_path(w, t, rel, path, sizeof (path));
+	return (slurp(path, lenp));
+}
+
+static void
+w_stat(const struct world *w, int t, const char *rel, struct stat *st)
+{
+	char path[PATHMAX];
+
+	w_path(w, t, rel, path, sizeof (path));
+	CHECK(lstat(path, st) == 0);
+}
+
+/*
+ * ZP13 and ZP95: what opens. A conflict line whose three objects are
+ * text opens on the walk; one whose base is absent with both sides
+ * text opens on the two-way compare, which is the add/add form and
+ * which picker-model left to this issue; the rest say why not.
+ */
+static void
+test_merge_open(void)
+{
+	const struct zr_pk_merge *mg;
+	struct zr_picker pk;
+	struct world w;
+
+	world_init(&w);
+	build_merge(&w);
+	open_ok("merge open", &w, &pk);
+	drain(&pk);
+	/* the three-way form: five chunks, two of them conflicts */
+	mg = merge_on(&pk, G_M2);
+	CHECK(mg->pm_m3.has_base == 1);
+	CHECK(mg->pm_m3.nchunks == 5);
+	CHECK(mg->pm_m3.nconflict == 2);
+	CHECK(mg->pm_m3.chunks[1].kind == ZR_M3_CONFLICT);
+	CHECK(mg->pm_m3.chunks[3].kind == ZR_M3_CONFLICT);
+	CHECK(mg->pm_cursor == 1);
+	CHECK(zr_pk_merge_hunk(&pk) == 1);
+	CHECK(mg->pm_only == 0 && mg->pm_base == 0);
+	/* the three buffers are the picker's and the merge borrows them */
+	CHECK(mg->pm_bytes[ZR_PK_T_BASE] != NULL);
+	CHECK(mg->pm_len[ZR_PK_T_BASE] == strlen(G_M2_BASE));
+	CHECK(mg->pm_m3.base.bytes == mg->pm_bytes[ZR_PK_T_BASE]);
+	zr_pk_merge_close(&pk);
+	CHECK(zr_pk_merge(&pk) == NULL);
+	/* ZP95: add/add, where there is no base to anchor against */
+	mg = merge_on(&pk, G_ADD);
+	CHECK(mg->pm_m3.has_base == 0);
+	CHECK(mg->pm_bytes[ZR_PK_T_BASE] == NULL);
+	CHECK(mg->pm_m3.nconflict == 1);
+	zr_pk_merge_close(&pk);
+	/* a from-only change: a merge with nothing left to answer */
+	mg = merge_on(&pk, G_ONE);
+	CHECK(mg->pm_m3.nconflict == 0);
+	CHECK(mg->pm_cursor == mg->pm_m3.nchunks);
+	CHECK(zr_pk_merge_hunk(&pk) == 0);
+	zr_pk_merge_close(&pk);
+	zr_pk_fini(&pk);
+	world_fini(&w);
+}
+
+/*
+ * ZP96: delete against edit is a choice and not a merge, and nothing
+ * opens. The model refuses before the library is asked, and says
+ * which tree is missing; zr_m3_open refuses the same shape as a belt
+ * behind it (check_merge.c holds that half).
+ */
+static void
+test_merge_refused(void)
+{
+	struct zr_picker pk;
+	const char *msg;
+	struct world w;
+
+	world_init(&w);
+	build_merge(&w);
+	open_ok("merge refused", &w, &pk);
+	drain(&pk);
+	cursor_to(&pk, G_DEL);
+	CHECK(zr_pk_key(&pk, ZR_PK_ENTER) == ZR_PK_REDRAW);
+	msg = zr_pk_msg(&pk);
+	CHECK(msg != NULL && strstr(msg, "/del.txt") != NULL);
+	CHECK(strstr(msg, "from is absent") != NULL);
+	CHECK(zr_pk_merge_open(&pk) == -1);
+	CHECK(zr_pk_merge(&pk) == NULL);
+	CHECK(zr_pk_choice(zr_pk_row(&pk, G_DEL)) == ZR_CH_NONE);
+	zr_pk_fini(&pk);
+	world_fini(&w);
+}
+
+/*
+ * ZP83, ZP84, ZP85, ZP86, ZP87 and ZP88: the keys of screen 2. 1 and
+ * 2 answer the hunk the cursor is on and no other; the last pick on
+ * one hunk stands; n and p move between the conflicting hunks and
+ * stop at the ends; b and c are toggles that leave every pick alone.
+ */
+static void
+test_merge_keys(void)
+{
+	const struct zr_pk_merge *mg;
+	struct zr_picker pk;
+	struct world w;
+
+	world_init(&w);
+	build_merge(&w);
+	open_ok("merge keys", &w, &pk);
+	drain(&pk);
+	mg = merge_on(&pk, G_M2);
+	/* ZP83: 1 answers the hunk under the cursor, and only it */
+	CHECK(zr_pk_key(&pk, ZR_PK_PICK_FROM) == ZR_PK_REDRAW);
+	CHECK(mg->pm_m3.chunks[1].pick == ZR_M3_PICK_FROM);
+	CHECK(mg->pm_m3.chunks[3].pick == ZR_M3_PICK_NONE);
+	CHECK(zr_m3_unpicked(&mg->pm_m3) == 1);
+	/* ZP84: 2 over it, and the last pick is the one that stands */
+	CHECK(zr_pk_key(&pk, ZR_PK_PICK_ONTO) == ZR_PK_REDRAW);
+	CHECK(mg->pm_m3.chunks[1].pick == ZR_M3_PICK_ONTO);
+	CHECK(zr_pk_key(&pk, ZR_PK_PICK_ONTO) == ZR_PK_NOTHING);
+	CHECK(mg->pm_m3.chunks[1].pick == ZR_M3_PICK_ONTO);
+	/* ZP86: n to the second hunk, and no further */
+	CHECK(zr_pk_key(&pk, ZR_PK_NEXT) == ZR_PK_REDRAW);
+	CHECK(mg->pm_cursor == 3);
+	CHECK(zr_pk_merge_hunk(&pk) == 2);
+	CHECK(zr_pk_key(&pk, ZR_PK_NEXT) == ZR_PK_NOTHING);
+	CHECK(mg->pm_cursor == 3);
+	/* 1 there answers that one and leaves the first as it was */
+	CHECK(zr_pk_key(&pk, ZR_PK_PICK_FROM) == ZR_PK_REDRAW);
+	CHECK(mg->pm_m3.chunks[3].pick == ZR_M3_PICK_FROM);
+	CHECK(mg->pm_m3.chunks[1].pick == ZR_M3_PICK_ONTO);
+	/* ZP86: p back to the first, and no further */
+	CHECK(zr_pk_key(&pk, ZR_PK_PREV) == ZR_PK_REDRAW);
+	CHECK(mg->pm_cursor == 1);
+	CHECK(zr_pk_key(&pk, ZR_PK_PREV) == ZR_PK_NOTHING);
+	CHECK(mg->pm_cursor == 1);
+	/* ZP88 and ZP85: the two toggles, and the picks unchanged */
+	CHECK(zr_pk_key(&pk, ZR_PK_TOGGLE) == ZR_PK_REDRAW);
+	CHECK(mg->pm_only == 1);
+	CHECK(zr_pk_key(&pk, ZR_PK_BASE) == ZR_PK_REDRAW);
+	CHECK(mg->pm_base == 1);
+	CHECK(mg->pm_m3.chunks[1].pick == ZR_M3_PICK_ONTO);
+	CHECK(mg->pm_m3.chunks[3].pick == ZR_M3_PICK_FROM);
+	CHECK(zr_pk_key(&pk, ZR_PK_TOGGLE) == ZR_PK_REDRAW);
+	CHECK(zr_pk_key(&pk, ZR_PK_BASE) == ZR_PK_REDRAW);
+	CHECK(mg->pm_only == 0 && mg->pm_base == 0);
+	CHECK(mg->pm_m3.chunks[1].pick == ZR_M3_PICK_ONTO);
+	CHECK(mg->pm_m3.chunks[3].pick == ZR_M3_PICK_FROM);
+	/* the list's own keys do nothing at all while a merge is open */
+	CHECK(zr_pk_key(&pk, ZR_PK_DOWN) == ZR_PK_NOTHING);
+	CHECK(zr_pk_key(&pk, ZR_PK_FROM) == ZR_PK_NOTHING);
+	CHECK(zr_pk_cursor(&pk) == G_M2);
+	CHECK(zr_pk_choice(zr_pk_row(&pk, G_M2)) == ZR_CH_NONE);
+	zr_pk_merge_close(&pk);
+	/* ZP87: a merge with no conflicting hunk has nowhere to move */
+	mg = merge_on(&pk, G_ONE);
+	CHECK(zr_pk_key(&pk, ZR_PK_NEXT) == ZR_PK_NOTHING);
+	CHECK(zr_pk_key(&pk, ZR_PK_PREV) == ZR_PK_NOTHING);
+	CHECK(zr_pk_key(&pk, ZR_PK_PICK_FROM) == ZR_PK_NOTHING);
+	CHECK(mg->pm_cursor == mg->pm_m3.nchunks);
+	zr_pk_merge_close(&pk);
+	zr_pk_fini(&pk);
+	world_fini(&w);
+}
+
+/*
+ * ZP94: Esc goes back to the list with the row's choice as it was.
+ * The picks go with the merge, since they lived on its chunks, and
+ * the result's object is not touched: only w writes.
+ */
+static void
+test_merge_back(void)
+{
+	struct zr_picker pk;
+	struct world w;
+	size_t len;
+	char *got;
+
+	world_init(&w);
+	build_merge(&w);
+	open_ok("merge back", &w, &pk);
+	drain(&pk);
+	(void) merge_on(&pk, G_M2);
+	CHECK(zr_pk_key(&pk, ZR_PK_PICK_FROM) == ZR_PK_REDRAW);
+	CHECK(zr_pk_key(&pk, ZR_PK_BACK) == ZR_PK_REDRAW);
+	CHECK(zr_pk_merge(&pk) == NULL);
+	CHECK(zr_pk_choice(zr_pk_row(&pk, G_M2)) == ZR_CH_NONE);
+	CHECK(zr_pk_counts(&pk)->zc_unanswered == 4);
+	CHECK(zr_pk_dirty(&pk) == 0);
+	got = w_slurp(&w, ZR_PK_T_RESULT, "/m2.txt", &len);
+	CHECK(got != NULL);
+	same("esc wrote nothing", got, len, G_M2_BASE, strlen(G_M2_BASE));
+	free(got);
+	/* and the merge opens again from where the row stands */
+	(void) merge_on(&pk, G_M2);
+	CHECK(zr_pk_merge(&pk)->pm_m3.chunks[1].pick == ZR_M3_PICK_NONE);
+	zr_pk_fini(&pk);
+	world_fini(&w);
+}
+
+/*
+ * ZP90, ZP91, ZP92 and ZP93: the write. w refuses while a hunk is
+ * unpicked and names the first; with every hunk answered it puts the
+ * merged bytes into the result's object at that name, in place, and
+ * sets the row to keep. No marker reaches the file by this path: the
+ * bytes are zr_m3_result's and the markers are drawn and nowhere
+ * else.
+ *
+ * The in-place half of ZP101 as far as this machine can show it: the
+ * object keeps its inode and its mode, because the write opens what
+ * is there rather than making a new file. The extended attributes
+ * and the owner are the box's, in the worklog.
+ */
+static void
+test_merge_write(void)
+{
+	struct stat before, after;
+	struct zr_picker pk;
+	char path[PATHMAX];
+	const char *msg;
+	struct world w;
+	size_t len;
+	char *got;
+
+	world_init(&w);
+	build_merge(&w);
+	open_ok("merge write", &w, &pk);
+	drain(&pk);
+	w_path(&w, ZR_PK_T_RESULT, "/m2.txt", path, sizeof (path));
+	CHECK(chmod(path, 0641) == 0);
+	w_stat(&w, ZR_PK_T_RESULT, "/m2.txt", &before);
+	(void) merge_on(&pk, G_M2);
+	/* ZP91: neither hunk answered, so there is nothing to write */
+	CHECK(zr_pk_key(&pk, ZR_PK_WRITE) == ZR_PK_REDRAW);
+	msg = zr_pk_msg(&pk);
+	CHECK(msg != NULL && strstr(msg, "/m2.txt") != NULL);
+	CHECK(strstr(msg, "chunk 1") != NULL);
+	CHECK(zr_pk_merge(&pk) != NULL);
+	CHECK(zr_pk_choice(zr_pk_row(&pk, G_M2)) == ZR_CH_NONE);
+	got = w_slurp(&w, ZR_PK_T_RESULT, "/m2.txt", &len);
+	CHECK(got != NULL);
+	same("a refused write wrote nothing", got, len, G_M2_BASE,
+	    strlen(G_M2_BASE));
+	free(got);
+	/* one hunk each way, which is ZP92's case: neither side alone */
+	CHECK(zr_pk_key(&pk, ZR_PK_PICK_FROM) == ZR_PK_REDRAW);
+	CHECK(zr_pk_key(&pk, ZR_PK_NEXT) == ZR_PK_REDRAW);
+	CHECK(zr_pk_key(&pk, ZR_PK_PICK_ONTO) == ZR_PK_REDRAW);
+	/* one still unpicked and the write still refused, in either order */
+	CHECK(zr_pk_key(&pk, ZR_PK_WRITE) == ZR_PK_REDRAW);
+	CHECK(zr_pk_merge(&pk) == NULL || zr_m3_unpicked(
+	    &zr_pk_merge(&pk)->pm_m3) == 0);
+	/* ZP90: the merged bytes, and the merged bytes alone */
+	got = w_slurp(&w, ZR_PK_T_RESULT, "/m2.txt", &len);
+	CHECK(got != NULL);
+	same("the merged bytes", got, len, G_M2_MIXED, strlen(G_M2_MIXED));
+	/* ZP92: no marker line of any kind is in what was written */
+	CHECK(strstr(got, "<<<<<<<") == NULL);
+	CHECK(strstr(got, "=======") == NULL);
+	CHECK(strstr(got, ">>>>>>>") == NULL);
+	free(got);
+	/* the write was in place: the same object, with its mode */
+	w_stat(&w, ZR_PK_T_RESULT, "/m2.txt", &after);
+	CHECK(after.st_ino == before.st_ino);
+	CHECK((after.st_mode & 07777) == 0641);
+	CHECK(after.st_uid == before.st_uid);
+	/* ZP93: the row reads keep, and the merge is closed */
+	CHECK(zr_pk_merge(&pk) == NULL);
+	CHECK(zr_pk_choice(zr_pk_row(&pk, G_M2)) == ZR_CH_KEEP);
+	CHECK(zr_pk_dirty(&pk) == 1);
+	CHECK(zr_pk_counts(&pk)->zc_unanswered == 3);
+	msg = zr_pk_msg(&pk);
+	CHECK(msg != NULL && strstr(msg, "set to keep") != NULL);
+	/* ZP93: and the resolution s writes carries that keep */
+	CHECK(zr_pk_key(&pk, ZR_PK_SAVE) == ZR_PK_REDRAW);
+	got = slurp(w.w_res, &len);
+	CHECK(got != NULL);
+	CHECK(strstr(got, "    m2.txt conflict 3 keep\n") != NULL);
+	CHECK(strstr(got, "#unanswered 3\n") != NULL);
+	free(got);
+	zr_pk_fini(&pk);
+	world_fini(&w);
+}
+
+/*
+ * ZP95 and ZP99. The add/add form takes a pick and writes like any
+ * other; a merge whose result is byte-identical to one side -- here
+ * a from-only chunk with nothing to answer at all -- is written all
+ * the same and the row set to keep, since the object under the
+ * result mount is base's until somebody puts something else there.
+ */
+static void
+test_merge_shapes(void)
+{
+	struct zr_picker pk;
+	struct world w;
+	size_t len;
+	char *got;
+
+	world_init(&w);
+	build_merge(&w);
+	open_ok("merge shapes", &w, &pk);
+	drain(&pk);
+	/* ZP95: no base, one conflict, and onto taken */
+	(void) merge_on(&pk, G_ADD);
+	CHECK(zr_pk_key(&pk, ZR_PK_WRITE) == ZR_PK_REDRAW);
+	CHECK(zr_pk_merge(&pk) != NULL);
+	CHECK(zr_pk_key(&pk, ZR_PK_PICK_ONTO) == ZR_PK_REDRAW);
+	CHECK(zr_pk_key(&pk, ZR_PK_WRITE) == ZR_PK_REDRAW);
+	CHECK(zr_pk_merge(&pk) == NULL);
+	CHECK(zr_pk_choice(zr_pk_row(&pk, G_ADD)) == ZR_CH_KEEP);
+	got = w_slurp(&w, ZR_PK_T_RESULT, "/add.txt", &len);
+	CHECK(got != NULL);
+	same("the add/add result", got, len, "addonto\n", 8);
+	free(got);
+	/* ZP99: nothing to answer, and the result is from's bytes */
+	drain(&pk);
+	(void) merge_on(&pk, G_ONE);
+	CHECK(zr_pk_key(&pk, ZR_PK_WRITE) == ZR_PK_REDRAW);
+	CHECK(zr_pk_merge(&pk) == NULL);
+	CHECK(zr_pk_choice(zr_pk_row(&pk, G_ONE)) == ZR_CH_KEEP);
+	got = w_slurp(&w, ZR_PK_T_RESULT, "/one.txt", &len);
+	CHECK(got != NULL);
+	same("the one-sided result", got, len, "s1\nFF\n", 6);
+	free(got);
+	zr_pk_fini(&pk);
+	world_fini(&w);
+}
+
+/*
+ * The write's own refusals. A result tree with no path at all, and a
+ * name the result tree does not hold: both are one queued line and a
+ * row that did not move, and neither creates a thing. O_CREAT is not
+ * in the open, on purpose (plan section 3.4).
+ */
+static void
+test_merge_writefail(void)
+{
+	char path[PATHMAX];
+	struct zr_picker pk;
+	const char *msg;
+	struct world w;
+	struct stat st;
+
+	world_init(&w);
+	build_merge(&w);
+	w_path(&w, ZR_PK_T_RESULT, "/m2.txt", path, sizeof (path));
+	CHECK(unlink(path) == 0);
+	open_ok("merge writefail", &w, &pk);
+	drain(&pk);
+	(void) merge_on(&pk, G_M2);
+	CHECK(zr_pk_key(&pk, ZR_PK_PICK_FROM) == ZR_PK_REDRAW);
+	CHECK(zr_pk_key(&pk, ZR_PK_NEXT) == ZR_PK_REDRAW);
+	CHECK(zr_pk_key(&pk, ZR_PK_PICK_FROM) == ZR_PK_REDRAW);
+	CHECK(zr_pk_key(&pk, ZR_PK_WRITE) == ZR_PK_REDRAW);
+	msg = zr_pk_msg(&pk);
+	CHECK(msg != NULL && strstr(msg, "no object at this name") != NULL);
+	CHECK(zr_pk_merge(&pk) != NULL);
+	CHECK(zr_pk_choice(zr_pk_row(&pk, G_M2)) == ZR_CH_NONE);
+	CHECK(lstat(path, &st) != 0);
 	zr_pk_fini(&pk);
 	world_fini(&w);
 }
@@ -2261,27 +2721,26 @@ test_pty_quiet(void)
 }
 
 /*
- * The screen's halves of ZP40 and ZP6. Enter on a text row is
- * ZR_PK_OPEN from the model and one line in the key bar here, until
- * picker-merge puts screen 2 behind it; and the detail pane under
- * the list is the row the cursor is on and never the last row that
- * had a record, which a drift line says in its own words.
+ * The screen's half of ZP6: the detail pane under the list is the row
+ * the cursor is on and never the last row that had a record, which a
+ * drift line says in its own words. Enter is test_pty_merge's now
+ * that there is a screen 2 behind it.
  */
 static void
 test_pty_draw(void)
 {
-	static const char *const keys[] = { "\r", K_DOWN, K_DOWN, K_DOWN,
+	static const char *const keys[] = { K_DOWN, K_DOWN, K_DOWN,
 		K_DOWN, K_DOWN, K_DOWN, K_DOWN, "q", NULL };
 	struct child c;
 	struct world w;
 	struct pty y;
 
 	if (picker_bin() == NULL) {
-		printf("skip ZP40/ZP6: zfs_rebase-picker is not built\n");
+		printf("skip ZP6: zfs_rebase-picker is not built\n");
 		return;
 	}
 	if (pty_open(&y) != 0) {
-		printf("skip ZP40/ZP6: no pty here (%s)\n", strerror(errno));
+		printf("skip ZP6: no pty here (%s)\n", strerror(errno));
 		return;
 	}
 	world_init(&w);
@@ -2296,9 +2755,6 @@ test_pty_draw(void)
 	CHECK(find(pty_out.r_buf, pty_out.r_len, "zfs_rebase: conflicts") !=
 	    NULL);
 	CHECK(find(pty_out.r_buf, pty_out.r_len, M_WHY1) != NULL);
-	/* ZP40: Enter on a text row says what it cannot do yet */
-	CHECK(find(pty_out.r_buf, pty_out.r_len,
-	    "the merge view is not in this build yet") != NULL);
 	/*
 	 * ZP6: the drift row's own detail, seven rows down. The needle
 	 * is a fragment and not the whole line because curses writes
@@ -2308,6 +2764,98 @@ test_pty_draw(void)
 	 */
 	CHECK(find(pty_out.r_buf, pty_out.r_len, "line a gate wrote") !=
 	    NULL);
+	world_fini(&w);
+	pty_close(&y);
+}
+
+
+/*
+ * ZP40, and the screen halves of ZP78, ZP82, ZP85 and ZP88: screen 2
+ * drawn on a pty by the standalone binary. One session opens a text
+ * row with Enter, folds the stable stretches away and back, shows the
+ * hunk's base range and puts it away, answers the hunk with 1, writes
+ * with w, and then writes the document with w on the list and leaves
+ * with 0. The bytes the terminal was sent are what the assertions
+ * read, and the two files are read afterwards.
+ */
+static const char man_merge_pty[] =
+	M_HDR("0", "1")
+	"/\n    conf.txt conflict 1\n    ..\n"
+	REC("1", "changed-both", "/conf.txt changed on both sides");
+
+static const char res_merge_pty[] =
+	R_HDR("1", "1") "/\n    conf.txt conflict 1 -\n    ..\n";
+
+#define	P_BASE		"alpha\nbravobase\ncharlie\n"
+#define	P_FROM		"alpha\nbravofrom\ncharlie\n"
+#define	P_ONTO		"alpha\nbravoonto\ncharlie\n"
+
+static void
+test_pty_merge(void)
+{
+	static const char *const keys[] = { "\r", "c", "c", "b", "b", "1",
+		"w", "w", NULL };
+	struct termios before;
+	struct child c;
+	struct world w;
+	struct pty y;
+	size_t len;
+	char *got;
+
+	if (picker_bin() == NULL) {
+		printf("skip ZP40/ZP82: zfs_rebase-picker is not built\n");
+		return;
+	}
+	if (pty_open(&y) != 0) {
+		printf("skip ZP40/ZP82: no pty here (%s)\n", strerror(errno));
+		return;
+	}
+	world_init(&w);
+	world_docs(&w, man_merge_pty, res_merge_pty);
+	w_text(&w, ZR_PK_T_BASE, "/conf.txt", P_BASE);
+	w_text(&w, ZR_PK_T_FROM, "/conf.txt", P_FROM);
+	w_text(&w, ZR_PK_T_ONTO, "/conf.txt", P_ONTO);
+	w_text(&w, ZR_PK_T_RESULT, "/conf.txt", P_BASE);
+	tty_mark(&y, &before);
+	memset(&c, 0, sizeof (c));
+	c.c_term = "xterm";
+	c.c_keys = keys;
+	pty_drive(&y, &w, &c, &pty_out);
+	CHECK(WIFEXITED(pty_out.r_status));
+	CHECK(WEXITSTATUS(pty_out.r_status) == 0);
+	CHECK(pty_out.r_drew != 0);
+	tty_same(&y, &before);
+	/* ZP40: Enter drew screen 2, with the row and the hunk in its rule */
+	CHECK(find(pty_out.r_buf, pty_out.r_len, "/conf.txt") != NULL);
+	CHECK(find(pty_out.r_buf, pty_out.r_len, "hunk 1 of 1") != NULL);
+	CHECK(find(pty_out.r_buf, pty_out.r_len, "FROM ") != NULL);
+	CHECK(find(pty_out.r_buf, pty_out.r_len, "ONTO ") != NULL);
+	CHECK(find(pty_out.r_buf, pty_out.r_len, "RESULT ") != NULL);
+	/* ZP78: a stable chunk stands in all three panes */
+	CHECK(find(pty_out.r_buf, pty_out.r_len, "alpha") != NULL);
+	CHECK(find(pty_out.r_buf, pty_out.r_len, "charlie") != NULL);
+	/* ZP82: the two halves between the markers, until 1 answered it */
+	CHECK(find(pty_out.r_buf, pty_out.r_len, "bravofrom") != NULL);
+	CHECK(find(pty_out.r_buf, pty_out.r_len, "bravoonto") != NULL);
+	CHECK(find(pty_out.r_buf, pty_out.r_len, "<<<<<<< from") != NULL);
+	CHECK(find(pty_out.r_buf, pty_out.r_len, "=======") != NULL);
+	CHECK(find(pty_out.r_buf, pty_out.r_len, ">>>>>>> onto") != NULL);
+	/* ZP88: c folded the stable stretches into one line each */
+	CHECK(find(pty_out.r_buf, pty_out.r_len, "both sides agree on") !=
+	    NULL);
+	/* ZP85: b put the hunk's base range in the result pane's place */
+	CHECK(find(pty_out.r_buf, pty_out.r_len, "bravobase") != NULL);
+	/* the merged bytes in the result's own object, and no marker */
+	got = w_slurp(&w, ZR_PK_T_RESULT, "/conf.txt", &len);
+	CHECK(got != NULL);
+	same("the merged object", got, len, P_FROM, strlen(P_FROM));
+	free(got);
+	/* and the resolution the second w wrote, with the row at keep */
+	got = slurp(w.w_res, &len);
+	CHECK(got != NULL);
+	CHECK(strstr(got, "    conf.txt conflict 1 keep\n") != NULL);
+	CHECK(strstr(got, "#unanswered 0\n") != NULL);
+	free(got);
 	world_fini(&w);
 	pty_close(&y);
 }
@@ -2444,12 +2992,20 @@ main(void)
 	test_messages();
 	test_writefail();
 	test_last_name();
+	test_merge_open();
+	test_merge_refused();
+	test_merge_keys();
+	test_merge_back();
+	test_merge_write();
+	test_merge_shapes();
+	test_merge_writefail();
 	test_pty_exits();
 	test_pty_refusals();
 	test_pty_floor();
 	test_pty_signals();
 	test_pty_quiet();
 	test_pty_draw();
+	test_pty_merge();
 	test_pty_same_child();
 	test_no_terminal();
 	printf("check_picker: %d checks passed\n", checks);

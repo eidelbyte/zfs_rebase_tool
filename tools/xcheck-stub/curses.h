@@ -60,6 +60,8 @@ extern WINDOW *stdscr;
 #define	ACS_URCORNER	((chtype)'k')
 #define	ACS_LTEE	((chtype)'t')
 #define	ACS_RTEE	((chtype)'u')
+#define	ACS_BTEE	((chtype)'v')
+#define	ACS_TTEE	((chtype)'w')
 #define	ACS_HLINE	((chtype)'q')
 #define	ACS_VLINE	((chtype)'x')
 

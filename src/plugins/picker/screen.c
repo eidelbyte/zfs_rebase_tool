@@ -1,14 +1,14 @@
 /*
- * The built-in picker's screen 1: the list, in curses, and the
- * terminal discipline around it.
+ * The built-in picker's screens: the list and the merge, in curses,
+ * and the terminal discipline around them.
  *
  * The model (model.c) holds the two documents and answers key codes;
  * this file is the only one of the picker that knows what a terminal
  * is. It draws the rows the model built -- the mockup's layout, in
  * sprints/sprint-6/picker-mockup.html -- maps the keys of plan
- * section 3.3 onto enum zr_pk_key, and acts on the four answers:
- * nothing, redraw, open (screen 2, which this build says it has not
- * got), and exit.
+ * sections 3.3 and 3.4 onto enum zr_pk_key, and acts on the four
+ * answers: nothing, redraw, open (screen 2, the merge, which is the
+ * second half of this file) and exit.
  *
  * Ground rule 6 is the heart of the file: "graphical startup and
  * tear down is critical to not destroying the terminal of the user
@@ -80,13 +80,6 @@
 
 #include "picker.h"
 #include "vis.h"
-
-/*
- * What Enter says until picker-merge lands. The model has already
- * decided the row can be opened three ways (ZR_PK_OPEN); the screen
- * it would open is the next issue's.
- */
-#define	PK_NOMERGE	"the merge view is not in this build yet"
 
 /* The key bar of the mockup, drawn when there is nothing to say. */
 #define	PK_KEYS		"up/dn move  f/o/k choose  - clear  enter open " \
@@ -883,10 +876,11 @@ pk_draw_detail(const struct zr_picker *pk, int y)
  * The key bar, which is also where a refused key says why. The
  * message is peeked at and never taken off the queue: the caller
  * prints the whole queue after endwin, and a line printed here would
- * be a line printed while curses is up.
+ * be a line printed while curses is up. The line to draw is the
+ * caller's, since the two screens have two sets of keys.
  */
 static void
-pk_draw_bar(int y, const char *note)
+pk_draw_bar(int y, const char *line)
 {
 	chtype at = pk_style(PK_CO_DIM, 0);
 	char buf[PK_LINEBUF];
@@ -896,8 +890,7 @@ pk_draw_bar(int y, const char *note)
 	(void) mvaddch(y, 0, ACS_VLINE | at);
 	(void) mvhline(y, 1, ' ' | (chtype)A_REVERSE, pk_w - 2);
 	(void) mvaddch(y, pk_w - 1, ACS_VLINE | at);
-	(void) snprintf(buf, sizeof (buf), " %s",
-	    note != NULL ? note : PK_KEYS);
+	(void) snprintf(buf, sizeof (buf), " %s", line);
 	(void) attrset(A_REVERSE);
 	(void) mvaddnstr(y, 1, buf, pk_w - 2);
 	(void) attrset(A_NORMAL);
@@ -924,8 +917,718 @@ pk_draw(const struct zr_picker *pk, const struct pk_geom *g, uint32_t top,
 		y += PK_H_DETAIL;
 	}
 	if (g->g_bar != 0)
-		pk_draw_bar(y, note);
+		pk_draw_bar(y, note != NULL ? note : PK_KEYS);
 	(void) refresh();
+}
+
+/*
+ * ---------------------------------------------------------------
+ * Screen 2: a text conflict, three ways (plan section 3.4).
+ * ---------------------------------------------------------------
+ *
+ * The chunk sequence the merge library built is the whole of what is
+ * drawn here (v4-merge3.md section 1: "The screens are built from the
+ * chunk sequence and nothing else"). One walk of that array with the
+ * three cursors builds two row lists:
+ *
+ *   - the side rows, one row shared by the FROM and ONTO panes, so
+ *     that one chunk occupies the same screen rows in both (ZP102).
+ *     A chunk is as tall as the largest of its three ranges; a pane
+ *     with fewer lines than that fills the rest with base's lines
+ *     where that side removed them -- the mockup's minus line -- and
+ *     with nothing where it did not.
+ *   - the result rows, which are the answer of v4-merge3.md section
+ *     6, asked of zr_m3_answer so that what is drawn and what
+ *     zr_m3_result writes come off one table. A conflict chunk that
+ *     has not been picked draws its two halves between the three
+ *     marker lines; the markers live here, on the screen, and reach
+ *     no file by any path (ruling 7).
+ *
+ * The keys are the model's: 1 and 2 answer the hunk under the cursor,
+ * b puts its base range in the result pane's place, n and p move
+ * between the conflicting hunks, c folds the stable stretches away, w
+ * writes and Esc goes back. Nothing here changes a chunk or a choice
+ * itself, and nothing here writes a file.
+ */
+
+/* The key bar of screen 2. There is no result editor this sprint. */
+#define	PK_MKEYS	"1/2 take from/onto  b base  n/p hunk  " \
+			"c conflicts only  w write  esc back"
+
+/*
+ * One drawn cell: the gutter, the line number and the text, in
+ * PK_M_HEAD columns plus what is left for the text. The mockup's
+ * "+  3  ifconfig_em0_ipv6=..." is gutter, a space, the number in
+ * PK_M_NUMW columns, and two spaces.
+ */
+#define	PK_M_HEAD	8
+#define	PK_M_NUMW	4
+
+/* The rows that are not the panes: three rules, two headers, a bar. */
+#define	PK_M_CHROME	6
+
+/* What a cell holds. A blank one is a filler row and draws nothing. */
+#define	PK_MR_BLANK	0
+#define	PK_MR_LINE	1
+#define	PK_MR_MARK	2
+#define	PK_MR_FOLD	3
+
+/* The four fixed lines a cell can be, by index into pk_markword. */
+#define	PK_MK_FROM	0
+#define	PK_MK_MID	1
+#define	PK_MK_ONTO	2
+#define	PK_MK_NOBASE	3
+
+static const char *const pk_markword[] = {
+	"<<<<<<< from", "=======", ">>>>>>> onto",
+	"... base holds no lines here ..."
+};
+
+struct pk_cell {
+	unsigned char	c_kind;		/* PK_MR_* */
+	unsigned char	c_file;		/* ZR_M3_F_*, for PK_MR_LINE */
+	unsigned char	c_gut;		/* the gutter character */
+	unsigned char	c_co;		/* PK_CO_* */
+	unsigned char	c_num;		/* draw the line's number */
+	unsigned char	c_mark;		/* PK_MK_*, for PK_MR_MARK */
+	uint32_t	c_line;		/* the line, or the fold's count */
+};
+
+/* One row of the side panes, and one of the result pane. */
+struct pk_srow {
+	uint32_t	s_chunk;
+	struct pk_cell	s_from;
+	struct pk_cell	s_onto;
+};
+
+struct pk_rrow {
+	uint32_t	r_chunk;
+	struct pk_cell	r_cell;
+};
+
+/*
+ * What one draw of screen 2 needs: the two row lists, where each
+ * pane is scrolled to, and the inside-conflict hint for the hunk the
+ * cursor is on. The hint is the cursor's alone -- it is one libdiff
+ * run per conflict chunk and the hunk being decided is the one whose
+ * agreeing lines are worth dimming; every other conflict line draws
+ * as a difference, which it is.
+ */
+struct pk_view {
+	struct pk_srow		*v_side;
+	uint32_t		v_nside;
+	uint32_t		v_stop;
+	struct pk_rrow		*v_res;
+	uint32_t		v_nres;
+	uint32_t		v_rtop;
+	struct zr_m3_hint	v_hint;
+	int			v_hinted;
+	uint32_t		v_hchunk;
+};
+
+static void
+pk_view_fini(struct pk_view *v)
+{
+	if (v->v_hinted != 0)
+		zr_m3_hint_fini(&v->v_hint);
+	free(v->v_side);
+	free(v->v_res);
+	memset(v, 0, sizeof (*v));
+}
+
+static uint32_t
+pk_max3(uint32_t a, uint32_t b, uint32_t c)
+{
+	uint32_t n = a > b ? a : b;
+
+	return (n > c ? n : c);
+}
+
+static void
+pk_cell_line(struct pk_cell *cell, int file, uint32_t line, int gut, int co,
+    int num)
+{
+	memset(cell, 0, sizeof (*cell));
+	cell->c_kind = PK_MR_LINE;
+	cell->c_file = (unsigned char)file;
+	cell->c_line = line;
+	cell->c_gut = (unsigned char)gut;
+	cell->c_co = (unsigned char)co;
+	cell->c_num = (unsigned char)(num != 0);
+}
+
+static void
+pk_cell_mark(struct pk_cell *cell, int mark, int co)
+{
+	memset(cell, 0, sizeof (*cell));
+	cell->c_kind = PK_MR_MARK;
+	cell->c_mark = (unsigned char)mark;
+	cell->c_co = (unsigned char)co;
+	cell->c_gut = '!';
+}
+
+static void
+pk_cell_fold(struct pk_cell *cell, uint32_t lines)
+{
+	memset(cell, 0, sizeof (*cell));
+	cell->c_kind = PK_MR_FOLD;
+	cell->c_line = lines;
+	cell->c_co = PK_CO_DIM;
+	cell->c_gut = ' ';
+}
+
+/*
+ * What color a conflict line takes in a side pane: dim where the
+ * hint says the two sides hold that line in common, and the
+ * difference color where they do not. The hint is a hint and nothing
+ * more -- it never splits a chunk and never reaches the sequence
+ * (merge.h) -- so a chunk with no hint of its own draws every line
+ * as a difference.
+ */
+static int
+pk_hint_co(const struct pk_view *v, uint32_t chunk, int side, uint32_t r)
+{
+	const unsigned char *marks;
+	uint32_t n;
+
+	if (v->v_hinted == 0 || v->v_hchunk != chunk)
+		return (PK_CO_RED);
+	marks = side == 0 ? v->v_hint.from_marks : v->v_hint.onto_marks;
+	n = side == 0 ? v->v_hint.from_n : v->v_hint.onto_n;
+	if (marks == NULL || r >= n || marks[r] != ZR_M3_HINT_SAME)
+		return (PK_CO_RED);
+	return (PK_CO_DIM);
+}
+
+/*
+ * One side pane's cell for row r of chunk ci. The side is 0 for from
+ * and 1 for onto. A side that did not touch the chunk draws its lines
+ * plain; one that did draws them with a plus, or a bang inside a
+ * conflict, and then base's lines with a minus for the rows it has
+ * left over, which is where the lines it removed are.
+ */
+static void
+pk_side_cell(struct pk_cell *cell, const struct zr_pk_merge *mg,
+    const struct pk_view *v, uint32_t ci, int side, uint32_t r)
+{
+	const struct zr_m3_chunk *c = &mg->pm_m3.chunks[ci];
+	uint32_t nb = c->base_hi - c->base_lo;
+	uint32_t lo = side == 0 ? c->from_lo : c->onto_lo;
+	uint32_t ns = side == 0 ? c->from_hi - c->from_lo :
+	    c->onto_hi - c->onto_lo;
+	int changed;
+
+	memset(cell, 0, sizeof (*cell));
+	changed = c->kind != ZR_M3_STABLE &&
+	    !(c->kind == ZR_M3_FROM && side == 1) &&
+	    !(c->kind == ZR_M3_ONTO && side == 0);
+	if (r < ns) {
+		int file = side == 0 ? ZR_M3_F_FROM : ZR_M3_F_ONTO;
+
+		if (c->kind == ZR_M3_CONFLICT)
+			pk_cell_line(cell, file, lo + r, '!',
+			    pk_hint_co(v, ci, side, r), 1);
+		else if (changed != 0)
+			pk_cell_line(cell, file, lo + r, '+', PK_CO_GREEN, 1);
+		else
+			pk_cell_line(cell, file, lo + r, ' ', PK_CO_PLAIN, 1);
+		return;
+	}
+	if (changed != 0 && r < nb)
+		pk_cell_line(cell, ZR_M3_F_BASE, c->base_lo + r, '-',
+		    PK_CO_RED, 0);
+}
+
+/*
+ * The side panes' rows, counted when out is NULL and filled when it
+ * is not, so that the two passes cannot fall out of step.
+ */
+static uint32_t
+pk_side_fill(const struct zr_pk_merge *mg, const struct pk_view *v,
+    struct pk_srow *out)
+{
+	const struct zr_m3 *m = &mg->pm_m3;
+	uint32_t i, r, n = 0;
+
+	for (i = 0; i < m->nchunks; i++) {
+		const struct zr_m3_chunk *c = &m->chunks[i];
+		uint32_t nf = c->from_hi - c->from_lo;
+		uint32_t no = c->onto_hi - c->onto_lo;
+		uint32_t tall;
+
+		if (mg->pm_only != 0 && c->kind == ZR_M3_STABLE) {
+			if (out != NULL) {
+				out[n].s_chunk = i;
+				pk_cell_fold(&out[n].s_from, nf);
+				pk_cell_fold(&out[n].s_onto, no);
+			}
+			n++;
+			continue;
+		}
+		tall = pk_max3(c->base_hi - c->base_lo, nf, no);
+		for (r = 0; r < tall; r++) {
+			if (out != NULL) {
+				out[n].s_chunk = i;
+				pk_side_cell(&out[n].s_from, mg, v, i, 0, r);
+				pk_side_cell(&out[n].s_onto, mg, v, i, 1, r);
+			}
+			n++;
+		}
+	}
+	return (n);
+}
+
+/* The result pane's rows, counted and filled the same way. */
+static uint32_t
+pk_res_fill(const struct zr_pk_merge *mg, struct pk_rrow *out)
+{
+	const struct zr_m3 *m = &mg->pm_m3;
+	uint32_t i, r, n = 0, lo = 0, hi = 0;
+	int file, gut, co;
+
+	for (i = 0; i < m->nchunks; i++) {
+		const struct zr_m3_chunk *c = &m->chunks[i];
+
+		if (mg->pm_only != 0 && c->kind == ZR_M3_STABLE) {
+			(void) zr_m3_answer(m, i, &lo, &hi);
+			if (out != NULL) {
+				out[n].r_chunk = i;
+				pk_cell_fold(&out[n].r_cell, hi - lo);
+			}
+			n++;
+			continue;
+		}
+		if (mg->pm_base != 0 && i == mg->pm_cursor) {
+			/* b: the hunk's base range, which every chunk keeps */
+			if (c->base_hi == c->base_lo) {
+				if (out != NULL) {
+					out[n].r_chunk = i;
+					pk_cell_mark(&out[n].r_cell,
+					    PK_MK_NOBASE, PK_CO_DIM);
+				}
+				n++;
+				continue;
+			}
+			for (r = c->base_lo; r < c->base_hi; r++) {
+				if (out != NULL) {
+					out[n].r_chunk = i;
+					pk_cell_line(&out[n].r_cell,
+					    ZR_M3_F_BASE, r, 'b', PK_CO_DIM, 1);
+				}
+				n++;
+			}
+			continue;
+		}
+		if (c->kind == ZR_M3_CONFLICT && c->pick == ZR_M3_PICK_NONE) {
+			/* the two halves between the markers, until picked */
+			if (out != NULL) {
+				out[n].r_chunk = i;
+				pk_cell_mark(&out[n].r_cell, PK_MK_FROM,
+				    PK_CO_FROM);
+			}
+			n++;
+			for (r = c->from_lo; r < c->from_hi; r++) {
+				if (out != NULL) {
+					out[n].r_chunk = i;
+					pk_cell_line(&out[n].r_cell,
+					    ZR_M3_F_FROM, r, '!', PK_CO_FROM,
+					    1);
+				}
+				n++;
+			}
+			if (out != NULL) {
+				out[n].r_chunk = i;
+				pk_cell_mark(&out[n].r_cell, PK_MK_MID,
+				    PK_CO_DIM);
+			}
+			n++;
+			for (r = c->onto_lo; r < c->onto_hi; r++) {
+				if (out != NULL) {
+					out[n].r_chunk = i;
+					pk_cell_line(&out[n].r_cell,
+					    ZR_M3_F_ONTO, r, '!', PK_CO_ONTO,
+					    1);
+				}
+				n++;
+			}
+			if (out != NULL) {
+				out[n].r_chunk = i;
+				pk_cell_mark(&out[n].r_cell, PK_MK_ONTO,
+				    PK_CO_ONTO);
+			}
+			n++;
+			continue;
+		}
+		file = zr_m3_answer(m, i, &lo, &hi);
+		if (c->kind == ZR_M3_STABLE) {
+			gut = ' ';
+			co = PK_CO_PLAIN;
+		} else if (c->kind == ZR_M3_CONFLICT) {
+			gut = '!';
+			co = file == ZR_M3_F_ONTO ? PK_CO_ONTO : PK_CO_FROM;
+		} else {
+			gut = '+';
+			co = PK_CO_GREEN;
+		}
+		for (r = lo; r < hi; r++) {
+			if (out != NULL) {
+				out[n].r_chunk = i;
+				pk_cell_line(&out[n].r_cell, file, r, gut, co,
+				    1);
+			}
+			n++;
+		}
+	}
+	return (n);
+}
+
+/*
+ * Build both row lists for the state the merge is in now. The two
+ * scroll positions are kept across a rebuild and clipped afterwards,
+ * so that a pick redraws in place rather than jumping to the top.
+ * Returns -1 out of memory, with the view emptied.
+ */
+static int
+pk_view_build(const struct zr_pk_merge *mg, struct pk_view *v)
+{
+	uint32_t stop = v->v_stop, rtop = v->v_rtop;
+	char err[PK_LINEBUF];
+
+	pk_view_fini(v);
+	v->v_stop = stop;
+	v->v_rtop = rtop;
+	if (mg->pm_cursor < mg->pm_m3.nchunks &&
+	    zr_m3_hint(&mg->pm_m3, mg->pm_cursor, &v->v_hint, err,
+	    sizeof (err)) == 0) {
+		v->v_hinted = 1;
+		v->v_hchunk = mg->pm_cursor;
+	}
+	v->v_nside = pk_side_fill(mg, v, NULL);
+	v->v_nres = pk_res_fill(mg, NULL);
+	if (v->v_nside != 0) {
+		v->v_side = calloc(v->v_nside, sizeof (*v->v_side));
+		if (v->v_side == NULL)
+			goto fail;
+		(void) pk_side_fill(mg, v, v->v_side);
+	}
+	if (v->v_nres != 0) {
+		v->v_res = calloc(v->v_nres, sizeof (*v->v_res));
+		if (v->v_res == NULL)
+			goto fail;
+		(void) pk_res_fill(mg, v->v_res);
+	}
+	return (0);
+fail:
+	pk_view_fini(v);
+	return (-1);
+}
+
+/*
+ * ---------------------------------------------------------------
+ * Screen 2, drawn.
+ * ---------------------------------------------------------------
+ */
+
+/* Where the blocks of screen 2 stand in the window there is. */
+struct pk_mgeom {
+	int	g_sidey;	/* the first row of the two side panes */
+	int	g_sideh;
+	int	g_resy;		/* the first row of the result pane */
+	int	g_resh;
+	int	g_lx;		/* the from pane */
+	int	g_lw;
+	int	g_divx;		/* the line between the two */
+	int	g_rx;		/* the onto pane */
+	int	g_rw;
+	int	g_bary;
+};
+
+static void
+pk_mgeom(struct pk_mgeom *g)
+{
+	int avail;
+
+	getmaxyx(stdscr, pk_h, pk_w);
+	avail = pk_h - PK_M_CHROME;
+	if (avail < 2)
+		avail = 2;
+	g->g_sidey = 2;
+	g->g_sideh = avail / 2;
+	g->g_resh = avail - g->g_sideh;
+	g->g_resy = g->g_sidey + g->g_sideh + 2;
+	g->g_bary = g->g_resy + g->g_resh + 1;
+	g->g_lx = 1;
+	g->g_lw = (pk_w - 3) / 2;
+	if (g->g_lw < 1)
+		g->g_lw = 1;
+	g->g_divx = g->g_lx + g->g_lw;
+	g->g_rx = g->g_divx + 1;
+	g->g_rw = pk_w - 1 - g->g_rx;
+	if (g->g_rw < 1)
+		g->g_rw = 1;
+}
+
+/* One string, clipped to a pane's own width as well as the window's. */
+static void
+pk_putm(int y, int x, int w, int co, int sel, const char *s)
+{
+	char buf[PK_LINEBUF];
+
+	if (w <= 0)
+		return;
+	if ((size_t)w >= sizeof (buf))
+		w = (int)sizeof (buf) - 1;
+	(void) snprintf(buf, (size_t)w + 1, "%s", s);
+	pk_put(y, x, co, sel, buf);
+}
+
+/*
+ * One line of one file, as bytes a terminal may be shown: a tab to
+ * the next multiple of eight, a printable byte as itself, and every
+ * other byte as a backslash and three octal digits, which is the
+ * manifest's own escaping (vis.h) said over file text rather than
+ * over a name. The trailing newline is not drawn; that a line lacks
+ * one is a fact the merge keeps and the write carries, and it is not
+ * something the screen can show in a column.
+ */
+static void
+pk_line_text(const struct zr_m3 *m, int file, uint32_t idx, char *out,
+    size_t outlen)
+{
+	const struct zr_m3_file *f;
+	const struct zr_m3_line *ln;
+	size_t at = 0, i, n;
+	unsigned char ch;
+
+	out[0] = '\0';
+	if (file == ZR_M3_F_BASE)
+		f = &m->base;
+	else if (file == ZR_M3_F_ONTO)
+		f = &m->onto;
+	else
+		f = &m->from;
+	if (idx >= f->nlines)
+		return;
+	ln = &f->lines[idx];
+	n = ln->len;
+	while (n > 0 && f->bytes[ln->off + n - 1] == '\n')
+		n--;
+	for (i = 0; i < n && at + 5 < outlen; i++) {
+		ch = f->bytes[ln->off + i];
+		if (ch == '\t') {
+			out[at++] = ' ';
+			while ((at % 8) != 0 && at + 5 < outlen)
+				out[at++] = ' ';
+			continue;
+		}
+		if (ch < 0x20 || ch >= 0x7f) {
+			(void) snprintf(out + at, outlen - at, "\\%03o", ch);
+			at += 4;
+			continue;
+		}
+		out[at++] = (char)ch;
+	}
+	out[at] = '\0';
+}
+
+/* One cell: the gutter, the number, and what is left for the text. */
+static void
+pk_draw_cell(const struct zr_m3 *m, int y, int x, int w,
+    const struct pk_cell *c, int sel)
+{
+	char text[PK_LINEBUF], num[PK_M_NUMW + 1], gut[2];
+
+	if (c->c_kind == PK_MR_BLANK || w <= 0)
+		return;
+	gut[0] = (char)c->c_gut;
+	gut[1] = '\0';
+	pk_put(y, x, c->c_co, sel, gut);
+	if (c->c_kind == PK_MR_FOLD) {
+		(void) snprintf(text, sizeof (text),
+		    "... %lu line%s both sides agree on ...",
+		    (unsigned long)c->c_line, c->c_line == 1 ? "" : "s");
+		pk_putm(y, x + PK_M_HEAD, w - PK_M_HEAD, PK_CO_DIM, sel, text);
+		return;
+	}
+	if (c->c_kind == PK_MR_MARK) {
+		pk_putm(y, x + PK_M_HEAD, w - PK_M_HEAD, c->c_co, sel,
+		    pk_markword[c->c_mark]);
+		return;
+	}
+	if (c->c_num != 0) {
+		(void) snprintf(num, sizeof (num), "%*lu", PK_M_NUMW,
+		    (unsigned long)(c->c_line + 1));
+		pk_put(y, x + 2, PK_CO_DIM, sel, num);
+	}
+	pk_line_text(m, c->c_file, c->c_line, text, sizeof (text));
+	pk_putm(y, x + PK_M_HEAD, w - PK_M_HEAD, c->c_co, sel, text);
+}
+
+/* The title in the top rule: the name, what it is, and which hunk. */
+static void
+pk_merge_title(const struct zr_picker *pk, const struct zr_pk_merge *mg,
+    char *out, size_t outlen)
+{
+	const struct zr_pk_row *row = zr_pk_row(pk, mg->pm_row);
+	char name[PK_NAMEBUF], grp[32], hunk[64];
+	int nw = pk_w - 44;
+
+	if (nw < 8)
+		nw = 8;
+	pk_name_field(row, nw, name, sizeof (name));
+	if (row->zk_kind == ZR_PK_L_DRIFT)
+		(void) snprintf(grp, sizeof (grp), "drift");
+	else if (row->zk_group == 0)
+		(void) snprintf(grp, sizeof (grp), "hand");
+	else
+		(void) snprintf(grp, sizeof (grp), "group %u",
+		    (unsigned)row->zk_group);
+	if (mg->pm_m3.nconflict == 0)
+		(void) snprintf(hunk, sizeof (hunk), "nothing to answer");
+	else
+		(void) snprintf(hunk, sizeof (hunk), "hunk %u of %u",
+		    (unsigned)zr_pk_merge_hunk(pk),
+		    (unsigned)mg->pm_m3.nconflict);
+	(void) snprintf(out, outlen, " %s  text  %c/%c  %s  %s ", name,
+	    pk_fo_glyph(row->zk_fo[0]), pk_fo_glyph(row->zk_fo[1]), grp, hunk);
+}
+
+static void
+pk_draw_merge(struct zr_picker *pk, const struct zr_pk_merge *mg,
+    const struct pk_view *v, const struct pk_mgeom *g, const char *note)
+{
+	const struct zr_m3 *m = &mg->pm_m3;
+	chtype at = pk_style(PK_CO_DIM, 0);
+	char buf[PK_LINEBUF];
+	uint32_t i;
+	int y, x;
+
+	(void) erase();
+	/*
+	 * The rule, then the line between the panes hanging from it,
+	 * then the title over both: a title long enough to reach the
+	 * divider is worth more than the tee it covers.
+	 */
+	pk_rule(0, ACS_ULCORNER, ACS_URCORNER, NULL);
+	if (g->g_divx < pk_w - 1)
+		(void) mvaddch(0, g->g_divx, ACS_TTEE | at);
+	pk_merge_title(pk, mg, buf, sizeof (buf));
+	pk_put(0, 3, PK_CO_PLAIN, 0, buf);
+	/* the two pane headers, each cut to its own pane */
+	pk_side(1);
+	x = pk_putx(1, g->g_lx, PK_CO_FROM, 0, " FROM ");
+	pk_putm(1, x, g->g_divx - x, PK_CO_DIM, 0,
+	    pk_or_dash(pk->pk_res.zs_from));
+	x = pk_putx(1, g->g_rx, PK_CO_ONTO, 0, " ONTO ");
+	pk_putm(1, x, pk_w - 1 - x, PK_CO_DIM, 0,
+	    pk_or_dash(pk->pk_res.zs_onto));
+	(void) mvaddch(1, g->g_divx, ACS_VLINE | at);
+	for (y = 0; y < g->g_sideh; y++) {
+		int ly = g->g_sidey + y;
+
+		pk_side(ly);
+		(void) mvaddch(ly, g->g_divx, ACS_VLINE | at);
+		i = v->v_stop + (uint32_t)y;
+		if (i >= v->v_nside)
+			continue;
+		pk_draw_cell(m, ly, g->g_lx, g->g_lw, &v->v_side[i].s_from, 0);
+		pk_draw_cell(m, ly, g->g_rx, g->g_rw, &v->v_side[i].s_onto, 0);
+	}
+	y = g->g_sidey + g->g_sideh;
+	pk_rule(y, ACS_LTEE, ACS_RTEE, NULL);
+	if (g->g_divx < pk_w - 1)
+		(void) mvaddch(y, g->g_divx, ACS_BTEE | at);
+	/* the result pane's own header, with the two toggles it has */
+	pk_side(y + 1);
+	x = pk_putx(y + 1, 1, PK_CO_GREEN, 0, " RESULT ");
+	(void) snprintf(buf, sizeof (buf), "[%c] base  [%c] conflicts only",
+	    mg->pm_base != 0 ? 'x' : ' ', mg->pm_only != 0 ? 'x' : ' ');
+	if (pk_w - 1 - (int)strlen(buf) > x + 1) {
+		pk_putm(y + 1, x, pk_w - 2 - (int)strlen(buf) - x, PK_CO_DIM,
+		    0, pk_or_dash(pk->pk_man.zp_result));
+		pk_put(y + 1, pk_w - 1 - (int)strlen(buf), PK_CO_DIM, 0, buf);
+	} else {
+		pk_putm(y + 1, x, pk_w - 1 - x, PK_CO_DIM, 0,
+		    pk_or_dash(pk->pk_man.zp_result));
+	}
+	for (y = 0; y < g->g_resh; y++) {
+		int ry = g->g_resy + y;
+		int sel;
+
+		pk_side(ry);
+		i = v->v_rtop + (uint32_t)y;
+		if (i >= v->v_nres)
+			continue;
+		sel = v->v_res[i].r_chunk == mg->pm_cursor &&
+		    mg->pm_cursor < m->nchunks;
+		if (sel != 0)
+			pk_band(ry);
+		pk_draw_cell(m, ry, 1, pk_w - 2, &v->v_res[i].r_cell, sel);
+	}
+	pk_rule(g->g_bary - 1, ACS_LTEE, ACS_RTEE, NULL);
+	pk_draw_bar(g->g_bary, note != NULL ? note : PK_MKEYS);
+	(void) refresh();
+}
+
+/*
+ * The two panes scrolled so that the hunk the cursor is on is in
+ * both. A hunk taller than a pane shows its head; a merge with no
+ * conflicting hunk at all is left where it stands.
+ */
+static void
+pk_fit(uint32_t *top, uint32_t first, uint32_t last, int h)
+{
+	uint32_t hh = (uint32_t)(h > 0 ? h : 1);
+
+	if (last >= *top + hh)
+		*top = last - hh + 1;
+	if (first < *top)
+		*top = first;
+}
+
+static void
+pk_clamp(uint32_t *top, uint32_t n, int h)
+{
+	uint32_t hh = (uint32_t)(h > 0 ? h : 1);
+
+	if (n <= hh) {
+		*top = 0;
+		return;
+	}
+	if (*top > n - hh)
+		*top = n - hh;
+}
+
+static void
+pk_mscroll(const struct zr_pk_merge *mg, struct pk_view *v,
+    const struct pk_mgeom *g)
+{
+	uint32_t i, first = 0, last = 0;
+	int have = 0;
+
+	for (i = 0; i < v->v_nside; i++) {
+		if (v->v_side[i].s_chunk != mg->pm_cursor)
+			continue;
+		if (have == 0)
+			first = i;
+		have = 1;
+		last = i;
+	}
+	if (have != 0)
+		pk_fit(&v->v_stop, first, last, g->g_sideh);
+	pk_clamp(&v->v_stop, v->v_nside, g->g_sideh);
+	have = 0;
+	for (i = 0; i < v->v_nres; i++) {
+		if (v->v_res[i].r_chunk != mg->pm_cursor)
+			continue;
+		if (have == 0)
+			first = i;
+		have = 1;
+		last = i;
+	}
+	if (have != 0)
+		pk_fit(&v->v_rtop, first, last, g->g_resh);
+	pk_clamp(&v->v_rtop, v->v_nres, g->g_resh);
 }
 
 /*
@@ -976,6 +1679,37 @@ pk_map(int c)
 	}
 }
 
+/*
+ * The same for screen 2, whose keys are its own: the list's keys mean
+ * nothing while a merge is open, and these mean nothing on the list.
+ * Escape is one byte and is read as one, since keypad(3) has already
+ * folded every escape SEQUENCE into a KEY_ code of its own.
+ */
+static int
+pk_map_merge(int c)
+{
+	switch (c) {
+	case '1':
+		return (ZR_PK_PICK_FROM);
+	case '2':
+		return (ZR_PK_PICK_ONTO);
+	case 'b':
+		return (ZR_PK_BASE);
+	case 'n':
+		return (ZR_PK_NEXT);
+	case 'p':
+		return (ZR_PK_PREV);
+	case 'c':
+		return (ZR_PK_TOGGLE);
+	case 'w':
+		return (ZR_PK_WRITE);
+	case '\033':
+		return (ZR_PK_BACK);
+	default:
+		return (-1);
+	}
+}
+
 /* The window the list scrolls in, so that the cursor is always in it. */
 static void
 pk_scroll(const struct zr_picker *pk, const struct pk_geom *g, uint32_t *top)
@@ -1011,6 +1745,67 @@ pk_resize(void)
 }
 
 /*
+ * Screen 2's loop, which is screen 1's shape with screen 2's keys.
+ * It ends when the merge closes -- Esc, or a write that went through
+ * -- and the model is what closes it, so the condition is simply
+ * whether one is still open.
+ *
+ * Returns 0 to go back to the list, 1 where the input went away (the
+ * picker leaves, the way it leaves on the list) and -1 where the
+ * window went below the floor, which pk_loop hands on unchanged: a
+ * resize under screen 2 is a kill of the same screen (ZP75), and
+ * leaving through pk_loop is what keeps every way out on the one
+ * pk_restore.
+ */
+static int
+pk_merge_loop(struct zr_picker *pk)
+{
+	const char *note = NULL, *before, *now;
+	const struct zr_pk_merge *mg;
+	struct pk_mgeom g;
+	struct pk_view v;
+	int c, k, rc = 0;
+
+	memset(&v, 0, sizeof (v));
+	while ((mg = zr_pk_merge(pk)) != NULL) {
+		if (pk_winch != 0) {
+			pk_winch = 0;
+			pk_resize();
+		}
+		pk_mgeom(&g);
+		if (pk_toosmall(pk_h, pk_w) != 0) {
+			rc = -1;
+			break;
+		}
+		if (pk_view_build(mg, &v) != 0) {
+			zr_pk_note(pk, "the merge view ran out of memory");
+			zr_pk_merge_close(pk);
+			break;
+		}
+		pk_mscroll(mg, &v, &g);
+		pk_draw_merge(pk, mg, &v, &g, note);
+		c = getch();
+		if (c == ERR) {
+			if (pk_winch != 0)
+				continue;
+			rc = 1;
+			break;
+		}
+		if (c == KEY_RESIZE)
+			continue;
+		k = pk_map_merge(c);
+		if (k < 0)
+			continue;
+		before = zr_pk_last(pk);
+		(void) zr_pk_key(pk, (enum zr_pk_key)k);
+		now = zr_pk_last(pk);
+		note = (now != NULL && now != before) ? now : NULL;
+	}
+	pk_view_fini(&v);
+	return (rc);
+}
+
+/*
  * Draw, take a key, act. The model decides everything a key means;
  * this reads the four answers.
  *
@@ -1035,7 +1830,7 @@ pk_loop(struct zr_picker *pk)
 	const char *note = NULL, *before, *now;
 	struct pk_geom g;
 	uint32_t top = 0;
-	int c, k, n;
+	int c, k, n, rc;
 
 	for (;;) {
 		if (pk_winch != 0) {
@@ -1071,7 +1866,22 @@ pk_loop(struct zr_picker *pk)
 		case ZR_PK_EXIT:
 			return (0);
 		case ZR_PK_OPEN:
-			note = PK_NOMERGE;
+			/*
+			 * Screen 2, on the row the cursor is on. A merge
+			 * that will not open is a queued line and the
+			 * list still up; one that opens takes the keys
+			 * until it closes, and what it says on the way
+			 * out is the note the list then carries.
+			 */
+			if (zr_pk_merge_open(pk) == 0) {
+				rc = pk_merge_loop(pk);
+				if (rc < 0)
+					return (-1);
+				if (rc > 0)
+					return (0);
+			}
+			now = zr_pk_last(pk);
+			note = (now != NULL && now != before) ? now : NULL;
 			continue;
 		default:
 			now = zr_pk_last(pk);

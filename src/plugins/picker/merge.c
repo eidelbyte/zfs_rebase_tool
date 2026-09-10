@@ -533,31 +533,37 @@ zr_m3_first_unpicked(const struct zr_m3 *m, uint32_t *chunk)
 	return (-1);
 }
 
-/* Which file and which of its records one chunk contributes. */
-static void
-m3_choice(const struct zr_m3 *m, const struct zr_m3_chunk *c,
-    const struct zr_m3_file **f, uint32_t *lo, uint32_t *hi)
+/*
+ * Which file and which of its records one chunk contributes: the
+ * answer table of v4-merge3.md section 6. A stable chunk takes
+ * base's records, or from's in the add/add form, where base has none
+ * and the two sides agree.
+ */
+int
+zr_m3_answer(const struct zr_m3 *m, uint32_t chunk, uint32_t *lo, uint32_t *hi)
 {
+	const struct zr_m3_chunk *c;
+
+	if (chunk >= m->nchunks)
+		return (-1);
+	c = &m->chunks[chunk];
 	switch (c->kind) {
 	case ZR_M3_STABLE:
 		if (m->has_base) {
-			*f = &m->base;
 			*lo = c->base_lo;
 			*hi = c->base_hi;
-			return;
+			return (ZR_M3_F_BASE);
 		}
 		break;
 	case ZR_M3_ONTO:
-		*f = &m->onto;
 		*lo = c->onto_lo;
 		*hi = c->onto_hi;
-		return;
+		return (ZR_M3_F_ONTO);
 	case ZR_M3_CONFLICT:
 		if (c->pick == ZR_M3_PICK_ONTO) {
-			*f = &m->onto;
 			*lo = c->onto_lo;
 			*hi = c->onto_hi;
-			return;
+			return (ZR_M3_F_ONTO);
 		}
 		break;
 	case ZR_M3_FROM:
@@ -565,9 +571,27 @@ m3_choice(const struct zr_m3 *m, const struct zr_m3_chunk *c,
 	default:
 		break;
 	}
-	*f = &m->from;
 	*lo = c->from_lo;
 	*hi = c->from_hi;
+	return (ZR_M3_F_FROM);
+}
+
+/* The same answer, as the file the result copies its bytes out of. */
+static void
+m3_choice(const struct zr_m3 *m, uint32_t chunk, const struct zr_m3_file **f,
+    uint32_t *lo, uint32_t *hi)
+{
+	switch (zr_m3_answer(m, chunk, lo, hi)) {
+	case ZR_M3_F_BASE:
+		*f = &m->base;
+		break;
+	case ZR_M3_F_ONTO:
+		*f = &m->onto;
+		break;
+	default:
+		*f = &m->from;
+		break;
+	}
 }
 
 int
@@ -589,7 +613,7 @@ zr_m3_result(const struct zr_m3 *m, unsigned char **out, size_t *outlen,
 		return (-1);
 	}
 	for (i = 0; i < m->nchunks; i++) {
-		m3_choice(m, &m->chunks[i], &f, &lo, &hi);
+		m3_choice(m, i, &f, &lo, &hi);
 		total += m3_span(f, lo, hi);
 	}
 	buf = malloc(total != 0 ? total : 1);
@@ -600,7 +624,7 @@ zr_m3_result(const struct zr_m3 *m, unsigned char **out, size_t *outlen,
 	for (i = 0; i < m->nchunks; i++) {
 		size_t n;
 
-		m3_choice(m, &m->chunks[i], &f, &lo, &hi);
+		m3_choice(m, i, &f, &lo, &hi);
 		n = m3_span(f, lo, hi);
 		if (n != 0) {
 			memcpy(buf + at, m3_at(f, lo), n);

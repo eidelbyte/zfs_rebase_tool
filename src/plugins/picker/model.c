@@ -61,10 +61,8 @@
 /* Room for one vis-encoded name inside a message. */
 #define	PK_NAMEBUF	128
 
-/* The three trees a merge view wants, and the words for them. */
-#define	PK_NSIDE	3
-
-static const char *const pk_treeword[PK_NSIDE] = { "base", "from", "onto" };
+/* The words for the three trees a merge view wants (ZR_PK_NSIDE). */
+static const char *const pk_treeword[ZR_PK_NSIDE] = { "base", "from", "onto" };
 
 /* What an object is, said in a sentence fragment. */
 static const char *const pk_objword[] = {
@@ -377,7 +375,7 @@ pk_ty(const enum zr_pk_obj *obj)
 	enum zr_pk_obj seen = ZR_PK_O_ABSENT;
 	int binary = 0, i;
 
-	for (i = 0; i < PK_NSIDE; i++) {
+	for (i = 0; i < ZR_PK_NSIDE; i++) {
 		enum zr_pk_obj k = obj[i];
 
 		if (k == ZR_PK_O_ABSENT)
@@ -708,6 +706,7 @@ zr_pk_fini(struct zr_picker *pk)
 
 	if (pk == NULL)
 		return;
+	zr_pk_merge_close(pk);
 	zr_resolution_fini(&pk->pk_res);
 	zr_parsed_fini(&pk->pk_man);
 	free(pk->pk_rows);
@@ -754,10 +753,20 @@ pk_goto(struct zr_picker *pk, uint32_t to)
 }
 
 /*
- * One choice. The line is the one place a choice lives, so this is
- * the one place that writes one; the unanswered count is taken again
- * from the document, never carried.
+ * One choice on one row. The line is the one place a choice lives, so
+ * this is the one place that writes one; the unanswered count is
+ * taken again from the document, never carried. Screen 2's write
+ * comes through here too, with ZR_CH_KEEP.
  */
+static void
+pk_set(struct zr_picker *pk, struct zr_pk_row *row, enum zr_choice ch)
+{
+	row->zk_line->zl_choice = ch;
+	pk->pk_dirty = 1;
+	pk->pk_counts.zc_unanswered = zr_resolution_unanswered(&pk->pk_res);
+}
+
+/* The cursor's row, and nothing to do where the choice is the one it has. */
 static enum zr_pk_act
 pk_choose(struct zr_picker *pk, enum zr_choice ch)
 {
@@ -765,9 +774,7 @@ pk_choose(struct zr_picker *pk, enum zr_choice ch)
 
 	if (row == NULL || row->zk_line->zl_choice == ch)
 		return (ZR_PK_NOTHING);
-	row->zk_line->zl_choice = ch;
-	pk->pk_dirty = 1;
-	pk->pk_counts.zc_unanswered = zr_resolution_unanswered(&pk->pk_res);
+	pk_set(pk, row, ch);
 	return (ZR_PK_REDRAW);
 }
 
@@ -842,7 +849,18 @@ zr_pk_why_not(const struct zr_picker *pk, uint32_t i, char *buf, size_t buflen)
 		    "merged");
 		return (buf);
 	}
-	for (t = 0; t < PK_NSIDE; t++) {
+	/*
+	 * add/add: neither side's name was there before, so there is no
+	 * base to anchor against and the two sides are compared with
+	 * each other (plan section 3.4, cells ZP13 and ZP95). Every
+	 * other absent tree is a choice and not a merge, and falls to
+	 * the loop below -- delete/edit loudest of all.
+	 */
+	if (row->zk_obj[ZR_PK_T_BASE] == ZR_PK_O_ABSENT &&
+	    row->zk_obj[ZR_PK_T_FROM] == ZR_PK_O_TEXT &&
+	    row->zk_obj[ZR_PK_T_ONTO] == ZR_PK_O_TEXT)
+		return (NULL);
+	for (t = 0; t < ZR_PK_NSIDE; t++) {
 		if (row->zk_obj[t] == ZR_PK_O_TEXT)
 			continue;
 		(void) snprintf(buf, buflen, "%s is %s", pk_treeword[t],
@@ -927,11 +945,399 @@ pk_writekey(struct zr_picker *pk)
 	return (ZR_PK_EXIT);
 }
 
+/*
+ * ---------------------------------------------------------------
+ * Screen 2: the merge a row carries while it is open.
+ * ---------------------------------------------------------------
+ */
+
+/*
+ * One object read whole. The merge borrows these bytes and copies
+ * none of them (merge.h), so the buffer lives until zr_m3_fini and
+ * the read happens once per name and not once per draw.
+ *
+ * The size the line table can hold is a uint32_t of bytes, which is
+ * the library's own limit, and it is checked here as well so that a
+ * refusal names the tree and the name rather than coming back out of
+ * the walk. Ruling 11 of 2026-09-10 stands over all of it: a large
+ * text is future work and nothing here promises more than the read
+ * and the library finish.
+ */
+static int
+pk_slurp(const char *path, unsigned char **bytesp, size_t *lenp, char *err,
+    size_t errlen)
+{
+	unsigned char *buf;
+	struct stat st;
+	size_t len, at = 0;
+	ssize_t n;
+	int fd;
+
+	*bytesp = NULL;
+	*lenp = 0;
+	fd = open(path, O_RDONLY);
+	if (fd < 0) {
+		pk_err(err, errlen, "%s", strerror(errno));
+		return (-1);
+	}
+	if (fstat(fd, &st) != 0) {
+		pk_err(err, errlen, "%s", strerror(errno));
+		(void) close(fd);
+		return (-1);
+	}
+	if (!S_ISREG(st.st_mode)) {
+		pk_err(err, errlen, "it is not a regular file");
+		(void) close(fd);
+		return (-1);
+	}
+	if ((uint64_t)st.st_size > (uint64_t)UINT32_MAX) {
+		pk_err(err, errlen, "it is too large to merge");
+		(void) close(fd);
+		return (-1);
+	}
+	len = (size_t)st.st_size;
+	buf = malloc(len != 0 ? len : 1);
+	if (buf == NULL) {
+		pk_err(err, errlen, "out of memory");
+		(void) close(fd);
+		return (-1);
+	}
+	while (at < len) {
+		n = read(fd, buf + at, len - at);
+		if (n < 0 && errno == EINTR)
+			continue;
+		if (n < 0) {
+			pk_err(err, errlen, "%s", strerror(errno));
+			free(buf);
+			(void) close(fd);
+			return (-1);
+		}
+		if (n == 0)
+			break;		/* it shrank under us: what is there */
+		at += (size_t)n;
+	}
+	(void) close(fd);
+	*bytesp = buf;
+	*lenp = at;
+	return (0);
+}
+
+/*
+ * The merged bytes into the object that is already there, in place,
+ * so that its mode, its owner, its times and its extended attributes
+ * stand (plan section 3.4, cell ZP101).
+ *
+ * O_WRONLY | O_TRUNC and never O_CREAT: the result's object exists at
+ * the conflicts gate -- the tool put it there -- and a name that is
+ * not there is a tree that is not the one this resolution belongs to,
+ * which is a refusal and not a file to create. fsync before the close
+ * because the tool's own gates are durable and a merge somebody hand
+ * answered should not be the one thing a crash loses.
+ */
+static int
+pk_write_object(const char *path, const unsigned char *bytes, size_t len,
+    char *err, size_t errlen)
+{
+	size_t at = 0;
+	ssize_t n;
+	int fd;
+
+	fd = open(path, O_WRONLY | O_TRUNC);
+	if (fd < 0) {
+		if (errno == ENOENT)
+			pk_err(err, errlen, "the result tree holds no object "
+			    "at this name to write into");
+		else
+			pk_err(err, errlen, "%s", strerror(errno));
+		return (-1);
+	}
+	while (at < len) {
+		n = write(fd, bytes + at, len - at);
+		if (n < 0 && errno == EINTR)
+			continue;
+		if (n <= 0) {
+			pk_err(err, errlen, "%s", strerror(errno));
+			(void) close(fd);
+			return (-1);
+		}
+		at += (size_t)n;
+	}
+	if (fsync(fd) != 0) {
+		pk_err(err, errlen, "%s", strerror(errno));
+		(void) close(fd);
+		return (-1);
+	}
+	if (close(fd) != 0) {
+		pk_err(err, errlen, "%s", strerror(errno));
+		return (-1);
+	}
+	return (0);
+}
+
+/* The first conflicting hunk, or past the end where there is none. */
+static void
+pk_merge_first(struct zr_pk_merge *mg)
+{
+	uint32_t i;
+
+	mg->pm_cursor = mg->pm_m3.nchunks;
+	for (i = 0; i < mg->pm_m3.nchunks; i++) {
+		if (mg->pm_m3.chunks[i].kind == ZR_M3_CONFLICT) {
+			mg->pm_cursor = i;
+			return;
+		}
+	}
+}
+
+int
+zr_pk_merge_open(struct zr_picker *pk)
+{
+	char name[PK_NAMEBUF], err[ZR_PK_MSGLEN], why[ZR_PK_MSGLEN];
+	struct zr_pk_merge *mg;
+	struct zr_pk_row *row;
+	const char *no;
+	char *path;
+	int t;
+
+	if (pk == NULL)
+		return (-1);
+	mg = &pk->pk_merge;
+	if (mg->pm_open != 0)
+		return (0);
+	row = pk_here(pk);
+	if (row == NULL)
+		return (-1);
+	pk_rowname(row, name, sizeof (name));
+	no = zr_pk_why_not(pk, pk->pk_cursor, why, sizeof (why));
+	if (no != NULL) {
+		pk_say(pk, "%s has no merge view: %s", name, no);
+		return (-1);
+	}
+	memset(mg, 0, sizeof (*mg));
+	mg->pm_row = pk->pk_cursor;
+	for (t = 0; t < ZR_PK_NSIDE; t++) {
+		/*
+		 * Base alone may be missing, and its buffer stays NULL,
+		 * which is what zr_m3_open reads as the add/add form. An
+		 * empty base OBJECT is a buffer with a length of 0 and is
+		 * a different thing, which is why the test is the row's
+		 * object kind and not the length that comes back.
+		 */
+		if (row->zk_obj[t] == ZR_PK_O_ABSENT)
+			continue;
+		path = pk_join(pk->pk_tree[t], row->zk_name, row->zk_namelen);
+		if (path == NULL) {
+			pk_say(pk, "%s: %s has no tree path", name,
+			    pk_treeword[t]);
+			goto fail;
+		}
+		if (pk_slurp(path, &mg->pm_bytes[t], &mg->pm_len[t], err,
+		    sizeof (err)) != 0) {
+			pk_say(pk, "%s: %s: %s", name, pk_treeword[t], err);
+			free(path);
+			goto fail;
+		}
+		free(path);
+	}
+	if (zr_m3_open(&mg->pm_m3, mg->pm_bytes[ZR_PK_T_BASE],
+	    mg->pm_len[ZR_PK_T_BASE], mg->pm_bytes[ZR_PK_T_FROM],
+	    mg->pm_len[ZR_PK_T_FROM], mg->pm_bytes[ZR_PK_T_ONTO],
+	    mg->pm_len[ZR_PK_T_ONTO], err, sizeof (err)) != 0) {
+		pk_say(pk, "%s: %s", name, err);
+		goto fail;
+	}
+	pk_merge_first(mg);
+	mg->pm_open = 1;
+	return (0);
+fail:
+	zr_pk_merge_close(pk);
+	return (-1);
+}
+
+void
+zr_pk_merge_close(struct zr_picker *pk)
+{
+	struct zr_pk_merge *mg;
+	int t;
+
+	if (pk == NULL)
+		return;
+	mg = &pk->pk_merge;
+	/* the chunks first: the three buffers are what they point into */
+	zr_m3_fini(&mg->pm_m3);
+	for (t = 0; t < ZR_PK_NSIDE; t++)
+		free(mg->pm_bytes[t]);
+	memset(mg, 0, sizeof (*mg));
+}
+
+struct zr_pk_merge *
+zr_pk_merge(struct zr_picker *pk)
+{
+	if (pk == NULL || pk->pk_merge.pm_open == 0)
+		return (NULL);
+	return (&pk->pk_merge);
+}
+
+uint32_t
+zr_pk_merge_hunk(const struct zr_picker *pk)
+{
+	const struct zr_pk_merge *mg;
+	uint32_t i, n = 0;
+
+	if (pk == NULL || pk->pk_merge.pm_open == 0)
+		return (0);
+	mg = &pk->pk_merge;
+	if (mg->pm_cursor >= mg->pm_m3.nchunks)
+		return (0);
+	for (i = 0; i <= mg->pm_cursor; i++)
+		if (mg->pm_m3.chunks[i].kind == ZR_M3_CONFLICT)
+			n++;
+	return (n);
+}
+
+/* 1 and 2: the hunk the cursor is on, and no other (cell ZP83). */
+static enum zr_pk_act
+pk_merge_pick(struct zr_picker *pk, int pick)
+{
+	struct zr_pk_merge *mg = &pk->pk_merge;
+
+	if (mg->pm_cursor >= mg->pm_m3.nchunks)
+		return (ZR_PK_NOTHING);
+	if (mg->pm_m3.chunks[mg->pm_cursor].pick == pick)
+		return (ZR_PK_NOTHING);
+	zr_m3_pick(&mg->pm_m3, mg->pm_cursor, pick);
+	return (ZR_PK_REDRAW);
+}
+
+/*
+ * n and p: the next and the previous conflicting hunk, stopping at
+ * the ends. A merge with no conflicting hunk at all -- every chunk
+ * decided by the walk -- has nowhere to go and says nothing (ZP87).
+ */
+static enum zr_pk_act
+pk_merge_move(struct zr_picker *pk, int back)
+{
+	struct zr_pk_merge *mg = &pk->pk_merge;
+	uint32_t i;
+
+	if (mg->pm_cursor >= mg->pm_m3.nchunks)
+		return (ZR_PK_NOTHING);
+	if (back == 0) {
+		for (i = mg->pm_cursor + 1; i < mg->pm_m3.nchunks; i++) {
+			if (mg->pm_m3.chunks[i].kind == ZR_M3_CONFLICT) {
+				mg->pm_cursor = i;
+				return (ZR_PK_REDRAW);
+			}
+		}
+		return (ZR_PK_NOTHING);
+	}
+	for (i = mg->pm_cursor; i > 0; i--) {
+		if (mg->pm_m3.chunks[i - 1].kind == ZR_M3_CONFLICT) {
+			mg->pm_cursor = i - 1;
+			return (ZR_PK_REDRAW);
+		}
+	}
+	return (ZR_PK_NOTHING);
+}
+
+/*
+ * w on screen 2: the merged bytes into the result's object, the row
+ * set to keep, and back to the list.
+ *
+ * The gate is the library's: zr_m3_result refuses while any conflict
+ * chunk is unpicked and its line names the first, which is queued as
+ * it comes and the cursor moved there so that the title says which
+ * hunk it is (ruling 7, cell ZP91). No marker byte can reach the file
+ * by this path or any other: the bytes written are zr_m3_result's and
+ * nothing else, and no function of the merge emits a marker at all.
+ *
+ * keep, because that is what the result standing as it is means
+ * (v4-manifest.md section 8) and what the tool's verify leaves alone.
+ * A write that fails is a queued line and a row that did not move.
+ */
+static enum zr_pk_act
+pk_merge_write(struct zr_picker *pk)
+{
+	char name[PK_NAMEBUF], err[ZR_PK_MSGLEN];
+	struct zr_pk_merge *mg = &pk->pk_merge;
+	struct zr_pk_row *row = &pk->pk_rows[mg->pm_row];
+	unsigned char *bytes = NULL;
+	size_t len = 0;
+	uint32_t first;
+	char *path;
+	int rc;
+
+	pk_rowname(row, name, sizeof (name));
+	if (zr_m3_result(&mg->pm_m3, &bytes, &len, err, sizeof (err)) != 0) {
+		pk_say(pk, "%s: %s", name, err);
+		if (zr_m3_first_unpicked(&mg->pm_m3, &first) == 0)
+			mg->pm_cursor = first;
+		return (ZR_PK_REDRAW);
+	}
+	path = pk_join(pk->pk_tree[ZR_PK_T_RESULT], row->zk_name,
+	    row->zk_namelen);
+	if (path == NULL) {
+		free(bytes);
+		pk_say(pk, "%s: there is no result tree to write into", name);
+		return (ZR_PK_REDRAW);
+	}
+	rc = pk_write_object(path, bytes, len, err, sizeof (err));
+	free(bytes);
+	free(path);
+	if (rc != 0) {
+		pk_say(pk, "%s: %s", name, err);
+		return (ZR_PK_REDRAW);
+	}
+	pk_set(pk, row, ZR_CH_KEEP);
+	pk_say(pk, "%s: the merged bytes are written and the name is set to "
+	    "keep", name);
+	zr_pk_merge_close(pk);
+	return (ZR_PK_REDRAW);
+}
+
+/*
+ * Every key, while a merge is open. The list's own keys mean nothing
+ * here: the cursor cannot move under a merge that was opened on the
+ * row it stands on, and a choice pressed by hand would be a choice
+ * the merge is about to overwrite.
+ */
+static enum zr_pk_act
+pk_merge_key(struct zr_picker *pk, enum zr_pk_key key)
+{
+	struct zr_pk_merge *mg = &pk->pk_merge;
+
+	switch (key) {
+	case ZR_PK_PICK_FROM:
+		return (pk_merge_pick(pk, ZR_M3_PICK_FROM));
+	case ZR_PK_PICK_ONTO:
+		return (pk_merge_pick(pk, ZR_M3_PICK_ONTO));
+	case ZR_PK_BASE:
+		mg->pm_base = mg->pm_base == 0;
+		return (ZR_PK_REDRAW);
+	case ZR_PK_NEXT:
+		return (pk_merge_move(pk, 0));
+	case ZR_PK_PREV:
+		return (pk_merge_move(pk, 1));
+	case ZR_PK_TOGGLE:
+		mg->pm_only = mg->pm_only == 0;
+		return (ZR_PK_REDRAW);
+	case ZR_PK_BACK:
+		zr_pk_merge_close(pk);
+		return (ZR_PK_REDRAW);
+	case ZR_PK_WRITE:
+		return (pk_merge_write(pk));
+	default:
+		return (ZR_PK_NOTHING);
+	}
+}
+
 enum zr_pk_act
 zr_pk_key(struct zr_picker *pk, enum zr_pk_key key)
 {
 	if (pk == NULL)
 		return (ZR_PK_NOTHING);
+	if (pk->pk_merge.pm_open != 0)
+		return (pk_merge_key(pk, key));
 	switch (key) {
 	case ZR_PK_UP:
 		return (pk->pk_cursor == 0 ? ZR_PK_NOTHING :
@@ -1048,6 +1454,14 @@ zr_pk_manpath(const struct zr_picker *pk)
 	if (pk == NULL || pk->pk_manpath == NULL)
 		return ("");
 	return (pk->pk_manpath);
+}
+
+void
+zr_pk_note(struct zr_picker *pk, const char *line)
+{
+	if (pk == NULL || line == NULL)
+		return;
+	pk_say(pk, "%s", line);
 }
 
 const char *

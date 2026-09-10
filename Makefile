@@ -195,12 +195,12 @@ CORE_OBJS = $(BUILD)/main.o $(LIB_OBJS)
 # 1's whole dependency list -- and never the driver or the ZFS layer.
 # That is what keeps it linkable with no libzfs on the line, on the
 # mac and in a build jail alike.
-# It is the least that links today. picker-merge adds build/merge.o,
-# build/diff3.o and $(LIBDIFF_OBJS) here when screen 2 calls them: the
-# merge is the picker's own and belongs in the picker's own binary,
-# and nothing of it is reached from screen 1.
+# The merge is on the line since picker-merge: screen 2 calls it, it
+# is the picker's own, and it brings the carried libdiff with it. It
+# is still the least that links -- no driver, no ZFS layer.
 PICKER_BIN_OBJS = $(PICKERMAIN_OBJS) $(PICKER_OBJS) $(BUILD)/manifest.o \
-	$(BUILD)/decide.o $(BUILD)/name.o $(BUILD)/vis.o
+	$(BUILD)/decide.o $(BUILD)/name.o $(BUILD)/vis.o $(BUILD)/merge.o $(BUILD)/diff3.o \
+	$(LIBDIFF_OBJS)
 
 # check_picker and check_merge call what a PICKER=no build does not
 # carry, so the knob picks the list too. Every other test links the
@@ -264,14 +264,16 @@ $(BUILD)/main.o: src/main.c src/args.h src/decide.h src/fixture.h \
 $(BUILD)/args.o: src/args.c src/args.h src/decide.h
 	$(CC) $(CFLAGS) -c -o $@ src/args.c
 
-$(BUILD)/launch.o: src/launch.c src/launch.h src/plugins/picker/picker.h
+$(BUILD)/launch.o: src/launch.c src/launch.h src/plugins/picker/picker.h \
+	src/plugins/picker/merge.h
 	$(CC) $(CFLAGS) -c -o $@ src/launch.c
 
 # The built-in picker, an internal plugin of its own: it depends on
 # the documents and the name codec and never on the driver, so it
 # builds with the same flags and no include path of its own -- src is
 # already on it, and launch.c names the header by its path under it.
-$(BUILD)/picker.o: src/plugins/picker/picker.c src/plugins/picker/picker.h
+$(BUILD)/picker.o: src/plugins/picker/picker.c src/plugins/picker/picker.h \
+	src/plugins/picker/merge.h
 	$(CC) $(CFLAGS) -c -o $@ src/plugins/picker/picker.c
 
 # The stub entry, which is the whole of the picker in a PICKER=no
@@ -309,7 +311,7 @@ $(BUILD)/recallocarray.o: $(LIBDIFF)/compat/recallocarray.c \
 	$(CC) $(LIBDIFF_CFLAGS) $(LIBDIFF_BZERO_CFLAGS) -c -o $@ \
 	    $(LIBDIFF)/compat/recallocarray.c
 $(BUILD)/model.o: src/plugins/picker/model.c src/plugins/picker/picker.h \
-	src/manifest.h src/vis.h
+	src/plugins/picker/merge.h src/manifest.h src/vis.h
 	$(CC) $(CFLAGS) -c -o $@ src/plugins/picker/model.c
 
 # The three-way merge. diff3.c is the walk, adapted from FreeBSD's
@@ -330,10 +332,11 @@ $(BUILD)/merge.o: src/plugins/picker/merge.c src/plugins/picker/merge.h \
 	    src/plugins/picker/merge.c
 
 $(BUILD)/screen.o: src/plugins/picker/screen.c src/plugins/picker/picker.h \
-	src/manifest.h src/vis.h
+	src/plugins/picker/merge.h src/manifest.h src/vis.h
 	$(CC) $(CFLAGS) -c -o $@ src/plugins/picker/screen.c
 
-$(BUILD)/pickermain.o: src/plugins/picker/main.c src/plugins/picker/picker.h
+$(BUILD)/pickermain.o: src/plugins/picker/main.c src/plugins/picker/picker.h \
+	src/plugins/picker/merge.h
 	$(CC) $(CFLAGS) -c -o $@ src/plugins/picker/main.c
 
 $(BUILD)/vis.o: src/vis.c src/vis.h
