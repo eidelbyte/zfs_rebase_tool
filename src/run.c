@@ -2691,11 +2691,11 @@ teardown(struct run *r, int keep)
 		 */
 		release_holds(r);
 		if (r->cloned) {
-			if (zr_zfs_destroy(r->zfs, r->o.result, r->err,
+			if (zr_zfs_destroy(r->zfs, r->rds, r->err,
 			    sizeof (r->err)) != 0)
 				(void) fprintf(stderr,
 				    "zfs_rebase: destroy %s: %s\n",
-				    r->o.result, r->err);
+				    r->rds, r->err);
 		} else if (r->recorded) {
 			/*
 			 * The dataset form wrote the record on a
@@ -3024,14 +3024,14 @@ zr_run(const struct zr_run_opts *o)
 			 * and is the only place it is ever mounted
 			 * while the rebase is open.
 			 */
-			if (zr_zfs_clone(r.zfs, r.ontosnap, o->result, &rec,
+			if (zr_zfs_clone(r.zfs, r.ontosnap, r.rds, &rec,
 			    r.err, sizeof (r.err)) != 0) {
 				rc = fail(&r, EXIT_PRECOND, "clone");
 				goto done;
 			}
 			r.cloned = 1;
 			r.recorded = 1;
-			if (zr_zfs_mount_at(r.zfs, o->result, r.workmnt,
+			if (zr_zfs_mount_at(r.zfs, r.rds, r.workmnt,
 			    r.err, sizeof (r.err)) != 0) {
 				rc = fail(&r, EXIT_PRECOND, "clone");
 				goto done;
