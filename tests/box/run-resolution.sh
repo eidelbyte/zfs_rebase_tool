@@ -137,6 +137,34 @@
 #    takes the directory away. Made by hand: the window it stands for
 #    is between two system calls. Cells: ZX231.
 #
+# 12. --interactive, with a shell script as the editor. The launcher
+#    forks the command -i names on the resolution at the conflicts
+#    gate, waits, and reads the document back through --continue's
+#    own parser when the child exits 0. One script serves every case
+#    and ZR_ED_MODE says what it does with the document it is handed.
+#    (a) it answers the whole of it and the one process goes on to
+#    done, having opened one child and not two. (b) it answers one
+#    line and exits 1: anything but 0 leaves the gate standing with
+#    the file as the child saved it, and the next --continue is
+#    refused with the count. (c) it leaves one name and exits 0: the
+#    count is printed after the child, never before it. (d) it writes
+#    a duplicate line: refused as --continue refuses one, exit 2,
+#    and the file left as it is. (e) the resume path, where the
+#    gate's own verify writes a drift line before the fork, so the
+#    child's copy holds it. (f) a --continue from applying1, where
+#    the stage finishes first and the child opens after the gate's
+#    line. (g) -O -i, which opens on a skeleton that needs nothing,
+#    and (h) -i -M, which opens and then holds. (i) a rebase whose
+#    decision declares no conflict, which reaches no such gate and
+#    opens nothing: its onto is a clone of base@base rather than the
+#    fixture's, so that case makes and destroys its own datasets.
+#    (j) -i with no command, which is the built-in picker, of which
+#    this build has a stub that says so and exits 2. (k) the tool
+#    killed while the child runs: the child is orphaned and
+#    finishes, and the gate stands with what it saved. (l) --restart
+#    and then -c -i, which opens on the skeleton the restart wrote.
+#    Cells: ZI24 to ZI35.
+#
 # Every case ends by taking the rebase away -- --abort where one is
 # still open, and by hand where it reached done, since done takes the
 # record off and leaves --abort nothing to find -- and the pool is
@@ -1400,6 +1428,529 @@ case_rundir() {
 	cases=$((cases + 1))
 }
 
+# --- 12. the interactive launcher, with a script as the editor ------
+#
+# -i CMD forks CMD on the resolution at the conflicts gate, waits,
+# and reads the document back through the parser --continue reads it
+# with when the child exits 0 (plan section 2). Everything below the
+# fork is the same for an editor somebody named and for the built-in
+# picker, so a shell script standing in for the editor is what proves
+# the gate on real datasets.
+#
+# One script serves every case, written into the scratch directory
+# once, and ZR_ED_MODE says which of the six things it does. The tool
+# passes its environment to the child, so the mode is set in the
+# harness's own environment before the tool is run. Whatever the
+# mode, the script says it ran -- a line appended to $ed_run, which
+# is how a case knows whether a child opened at all, and never
+# whether one merely could have -- and keeps a copy of the document
+# as it found it in $ed_copy, which is how the cases about what the
+# child sees are made. It writes one line to standard error too, so
+# that its place among the tool's own lines can be read off the one
+# log they both write to.
+#
+# Both value forms are used below: the bare word after -i, which on a
+# verb's line is the command only because an identifier is there too
+# (-c IDENT -i CMD), and the attached --interactive=CMD, which needs
+# no such rule. The cases say which they use.
+ed=$tmp/editor.sh
+ed_run=$tmp/ed.run
+ed_copy=$tmp/ed.copy
+ed_done=$tmp/ed.done
+export ZR_ED_OUT=$tmp/ed
+cat > "$ed" <<'ZR_EDITOR'
+#!/bin/sh
+# The editor -i names in run-resolution.sh's case 12. The tool runs
+# it as /bin/sh -c 'CMD "$@"' CMD RESOLUTION, so the resolution is
+# the last argument and, with no flags in the value, the only one.
+# ZR_ED_MODE says what to do with it and ZR_ED_OUT where to say what
+# was done. Answering is one field per line and the header's count
+# with it, as any hand edit must do: the parser refuses a count that
+# does not match its lines. 9 is this script's own failure and is no
+# mode's answer, so a 9 out of the tool is never the gate's doing.
+set -u
+res=""
+for a in "$@"; do res=$a; done
+: "${ZR_ED_MODE:?no mode}"
+: "${ZR_ED_OUT:?no output path}"
+[ -f "$res" ] || exit 9
+printf '%s %s %s\n' "$ZR_ED_MODE" "$#" "$res" >> "$ZR_ED_OUT.run"
+cp "$res" "$ZR_ED_OUT.copy" || exit 9
+printf 'zr-editor: opened %s\n' "$res" >&2
+case "$ZR_ED_MODE" in
+open)
+	# Nothing is written at all: the copy above is the whole
+	# point, and a non-zero exit leaves the gate standing.
+	exit 1
+	;;
+keep|linger)
+	sed -e 's/ -$/ keep/' -e 's/^#unanswered .*$/#unanswered 0/' \
+	    "$res" > "$res.ed" || exit 9
+	mv "$res.ed" "$res" || exit 9
+	;;
+one)
+	left=$(sed -n 's/^#unanswered //p' "$res")
+	awk -v left="$left" '
+	/^#unanswered / { print "#unanswered " (left - 1); next }
+	!hit && / -$/ { sub(/ -$/, " keep"); hit = 1 }
+	{ print }' "$res" > "$res.ed" || exit 9
+	mv "$res.ed" "$res" || exit 9
+	;;
+allbutone)
+	# Every unanswered line but the last, so that one name is
+	# left however many the document has.
+	awk '
+	{ line[NR] = $0 }
+	/ -$/ { last = NR }
+	END {
+		for (i = 1; i <= NR; i++) {
+			s = line[i]
+			if (s ~ /^#unanswered /) {
+				print "#unanswered 1"
+				continue
+			}
+			if (i != last)
+				sub(/ -$/, " keep", s)
+			print s
+		}
+	}' "$res" > "$res.ed" || exit 9
+	mv "$res.ed" "$res" || exit 9
+	;;
+dup)
+	# Answered in full, and then one leaf line written twice with
+	# #names moved with it, so that the only thing wrong with the
+	# document is the repeated name.
+	sed -e 's/ -$/ keep/' -e 's/^#unanswered .*$/#unanswered 0/' \
+	    "$res" > "$res.ed" || exit 9
+	mv "$res.ed" "$res" || exit 9
+	n=$(sed -n 's/^#names //p' "$res")
+	awk -v n="$((n + 1))" '
+	/^#names / { print "#names " n; next }
+	!dup && $2 == "conflict" && $1 !~ /\/$/ { print; print; dup = 1; next }
+	{ print }' "$res" > "$res.ed" || exit 9
+	mv "$res.ed" "$res" || exit 9
+	;;
+*)
+	printf 'zr-editor: no such mode: %s\n' "$ZR_ED_MODE" >&2
+	exit 9
+	;;
+esac
+case "$ZR_ED_MODE" in
+one)
+	# Saved and stopped, which is the picker's exit 1 too.
+	exit 1
+	;;
+linger)
+	# The document is answered and the script is still running:
+	# the window the tool is killed in.
+	sleep 5
+	: > "$ZR_ED_OUT.done"
+	;;
+esac
+exit 0
+ZR_EDITOR
+chmod 755 "$ed" || exit 2
+
+# The mode the next child runs in, and the three files it writes
+# cleared. It is exported rather than written in front of the tool's
+# own line, because some of the cases reach the tool through fresh()
+# and an assignment in front of a function is the shell's own
+# variable and not the environment the tool would hand its child.
+ed_mode() {
+	export ZR_ED_MODE=$1
+	rm -f "$ed_run" "$ed_copy" "$ed_done"
+}
+
+# How many children opened. A case that expects none says 0, which
+# is the only way to tell "nothing opened" from "something opened
+# and did nothing".
+ed_ran() {			# WANT
+	n=0
+	[ -f "$ed_run" ] && n=$(grep -c . "$ed_run")
+	[ "$n" = "$1" ] || \
+	    { [ -f "$ed_run" ] && cat "$ed_run"; fail "the editor ran $n time$(sfx "$n"), want $1"; }
+	return 0
+}
+
+# (a) the child answers the whole document. The gate reads it back,
+# finds nothing left to answer and no --no-merge, and this one
+# process goes on through applying2 to done -- the hand-off the
+# complete skeleton already had, which is given no -i of its own, so
+# the child opened once and not twice. -i CMD on a fresh run, where a
+# bare word after -i is always the command. ZI24.
+case_i_done() {
+	case_id="$fixture $form -i answers the whole document"
+	ed_mode keep
+	fresh -i "$ed"
+	st=$?
+	[ $st -eq 0 ] || { cat "$log"; fail "the run with -i exited $st, want 0"; }
+	ed_ran 1
+	# One argument, and it is the resolution's path: the contract
+	# of plan section 2.3, on a gate a real rebase reached.
+	[ "$(cat "$ed_run")" = "keep 1 $res" ] || \
+	    { cat "$ed_run"; fail "the editor's record is not 'keep 1 $res'"; }
+	grep -q "the resolution $res is answered in full; going on" "$log" || \
+	    { cat "$log"; fail "the run did not pass its own conflicts gate"; }
+	at_done "$rds"
+	[ "$(holdcount)" = 0 ] || fail "done left holds behind"
+	answered_all_as "$res" keep "$nconf"
+	echo "ok   $case_id: one child, $nconf name$(sfx "$nconf") kept, done in one process"
+	end_case
+}
+
+# (b) the child answers one line and exits 1. Anything but 0 leaves
+# the gate standing whatever the document says, the file is what the
+# child saved and nothing of the tool is written over it, and the
+# next --continue without -i is refused with the count. The attached
+# form here. ZI25.
+case_i_partial() {
+	case_id="$fixture $form -i answers one line and stops"
+	ed_mode one
+	fresh "--interactive=$ed"
+	st=$?
+	[ $st -eq 1 ] || { cat "$log"; fail "the run with -i exited $st, want 1"; }
+	ed_ran 1
+	grep -q '^zfs_rebase: the editor exited 1$' "$log" || \
+	    { cat "$log"; fail "the run did not say what the editor did"; }
+	grep -q "the resolution $res stands at the conflicts gate; continue with: zfs_rebase -c $rds -i" "$log" || \
+	    { cat "$log"; fail "the run did not say the gate stands"; }
+	[ "$(phasenow "$rds")" = conflicts ] || \
+	    fail "the run is at '$(phasenow "$rds")', want conflicts"
+	left=$((nconf - 1))
+	[ "$(res_left "$res")" = "$left" ] || \
+	    { head -8 "$res"; fail "$(res_left "$res") unanswered, want $left"; }
+	[ "$(grep -c ' keep$' "$res" || true)" = 1 ] || \
+	    { cat "$res"; fail "the editor's one answer is not the only one"; }
+	"$bin" -c "$rds" > "$tmp/zi25" 2>&1
+	st=$?
+	[ $st -eq 1 ] || \
+	    { cat "$tmp/zi25"; fail "--continue after it exited $st, want 1"; }
+	grep -q "^zfs_rebase: $left of $nconf name$(sfx "$nconf") unanswered in the resolution $res\$" "$tmp/zi25" || \
+	    { cat "$tmp/zi25"; fail "--continue did not name what is left"; }
+	echo "ok   $case_id: one answered, $left left, and the gate held twice"
+	end_case
+}
+
+# (c) the child exits 0 with a name still unanswered. The document is
+# read back and the gate's own messages are printed over it -- after
+# the child and never before it -- and this is the one that says how
+# many are missing. ZI26.
+case_i_leftover() {
+	case_id="$fixture $form -i leaves one name unanswered"
+	ed_mode allbutone
+	fresh -i "$ed"
+	st=$?
+	[ $st -eq 1 ] || { cat "$log"; fail "the run with -i exited $st, want 1"; }
+	ed_ran 1
+	grep -q "^zfs_rebase: 1 name unanswered in the resolution $res\$" "$log" || \
+	    { cat "$log"; fail "the run did not name the one unanswered name"; }
+	[ "$(res_left "$res")" = 1 ] || \
+	    { head -8 "$res"; fail "$(res_left "$res") unanswered, want 1"; }
+	[ "$(phasenow "$rds")" = conflicts ] || \
+	    fail "the run is at '$(phasenow "$rds")', want conflicts"
+	echo "ok   $case_id: 1 of $nconf left, exit 1, the gate stands"
+	end_case
+}
+
+# (d) the child exits 0 with a document the parser refuses. The
+# re-read is the read --continue makes, so the refusal is the one
+# --continue gives -- exit 2, the parser's own line with the line
+# number in it -- and the file is left exactly as the child saved it
+# for the next hand or the next child to mend. The attached form.
+# ZI27.
+case_i_refused() {
+	case_id="$fixture $form -i writes a document the parser refuses"
+	ed_mode dup
+	fresh "--interactive=$ed"
+	st=$?
+	[ $st -eq 2 ] || { cat "$log"; fail "the run with -i exited $st, want 2"; }
+	ed_ran 1
+	grep -q '^zfs_rebase: resolution: line [0-9][0-9]*: this name is already in the tree section$' "$log" || \
+	    { cat "$log"; fail "the refusal is not the parser's own"; }
+	[ "$(phasenow "$rds")" = conflicts ] || \
+	    fail "the refusal moved the gate to '$(phasenow "$rds")'"
+	dupname=$(awk '$2 == "conflict" && $1 !~ /\/$/ { print $1; exit }' "$res")
+	[ -n "$dupname" ] || { cat "$res"; fail "no leaf conflict line in $res"; }
+	[ "$(grep -c "^ *$dupname conflict " "$res" || true)" = 2 ] || \
+	    { cat "$res"; fail "the duplicate line the editor wrote is gone"; }
+	[ "$(res_names "$res")" = "$((nconf + 1))" ] || \
+	    { head -8 "$res"; fail "#names is $(res_names "$res"), want $((nconf + 1))"; }
+	echo "ok   $case_id: refused as --continue refuses one, exit 2, the file as the child left it"
+	end_case
+}
+
+# (e) the resume path, where the gate has work of its own to do
+# first: a clean name is edited behind the tool's back, and the one
+# verify writes it into the document as a drift line before the child
+# is forked, so the copy the child took holds that line. -c IDENT -i
+# CMD, the order the bare-word rule wants when both words are on the
+# line. ZI28.
+case_i_drift() {
+	case_id="$fixture $form -i opens on the drift the gate just wrote"
+	at_conflicts
+	kept=$(kept_name "$man" "$hmnt")
+	[ -n "$kept" ] || fail "the fixture has no untouched file to edit"
+	ro_off
+	printf 'drift\n' >> "$hmnt$kept" || { ro_back; fail "cannot edit $kept"; }
+	ro_back
+	ed_mode open
+	"$bin" -c "$rds" -i "$ed" > "$tmp/zi28" 2>&1
+	st=$?
+	[ $st -eq 1 ] || \
+	    { cat "$tmp/zi28"; fail "-c IDENT -i at the gate exited $st, want 1"; }
+	ed_ran 1
+	grep -q '1 drift line added to the resolution' "$tmp/zi28" || \
+	    { cat "$tmp/zi28"; fail "the gate added no drift line"; }
+	leaf=$(basename "$kept")
+	grep -q "^ *$leaf drift keep\$" "$ed_copy" || \
+	    { cat "$ed_copy"; fail "the document the child opened has no drift line for $kept"; }
+	[ "$(phasenow "$rds")" = conflicts ] || \
+	    fail "the gate moved to '$(phasenow "$rds")'"
+	echo "ok   $case_id: $kept was a drift line before the child saw it"
+	end_case
+}
+
+# (f) the resume path from further back. A run killed inside
+# applying1 is continued with -i: the stage runs again to its end,
+# the gate is written and its line printed, and only then is the
+# child forked. The two lines are in the one log the tool and the
+# child share -- the launcher flushes the tool's streams before the
+# fork -- so their order is the assertion. ZI29.
+case_i_fromapply() {
+	case_id="$fixture $form -c -i from applying1"
+	fresh_bg applying1
+	kill -KILL "$pid" || fail "cannot kill the stopped tool"
+	wait "$pid"
+	pid=
+	[ "$(phasenow "$rds")" = applying1 ] || \
+	    fail "the kill left '$(phasenow "$rds")', want applying1"
+	ed_mode keep
+	"$bin" -c "$rds" -i "$ed" > "$tmp/zi29" 2>&1
+	st=$?
+	[ $st -eq 0 ] || \
+	    { cat "$tmp/zi29"; fail "-c IDENT -i from applying1 exited $st, want 0"; }
+	ed_ran 1
+	gl=$(grep -n 'waits at conflicts' "$tmp/zi29" | head -1 | cut -d: -f1)
+	el=$(grep -n '^zr-editor: opened ' "$tmp/zi29" | head -1 | cut -d: -f1)
+	[ -n "$gl" ] && [ -n "$el" ] || \
+	    { cat "$tmp/zi29"; fail "the log has no gate line or no editor line"; }
+	[ "$gl" -lt "$el" ] || \
+	    { cat "$tmp/zi29"; fail "the child opened before the apply reached the gate"; }
+	at_done "$rds"
+	[ "$(holdcount)" = 0 ] || fail "done left holds behind"
+	echo "ok   $case_id: the apply finished, then the child, then done"
+	end_case
+}
+
+# (g) a document that needs nothing. -O writes the skeleton answered
+# onto, and -i opens the child on it all the same: what -i asks for
+# is the child at the gate, not a document to mend (ruling 2). The
+# copy says what it opened on. ZI30.
+case_i_takeonto() {
+	case_id="$fixture $form -O -i opens on a complete skeleton"
+	ed_mode open
+	fresh -O -i "$ed"
+	st=$?
+	[ $st -eq 1 ] || { cat "$log"; fail "-O -i exited $st, want 1"; }
+	ed_ran 1
+	answered_all_as "$ed_copy" onto "$nconf"
+	grep -q '^zfs_rebase: the editor exited 1$' "$log" || \
+	    { cat "$log"; fail "the run did not say what the editor did"; }
+	[ "$(phasenow "$rds")" = conflicts ] || \
+	    fail "the run is at '$(phasenow "$rds")', want conflicts"
+	echo "ok   $case_id: complete from the start, and the child still opened"
+	end_case
+}
+
+# (h) and the flag that holds the gate whatever the document says.
+# The child runs and answers it in full; --no-merge is the command
+# saying not yet, so the gate is left where it is with its own
+# message. ZI31.
+case_i_nomerge() {
+	case_id="$fixture $form -i -M opens and then holds the gate"
+	ed_mode keep
+	fresh -i "$ed" -M
+	st=$?
+	[ $st -eq 1 ] || { cat "$log"; fail "-i -M exited $st, want 1"; }
+	ed_ran 1
+	grep -q "the resolution $res is answered in full, and --no-merge leaves the merge to you" "$log" || \
+	    { cat "$log"; fail "the run did not say why it stopped"; }
+	[ "$(phasenow "$rds")" = conflicts ] || \
+	    fail "the run is at '$(phasenow "$rds")', want conflicts"
+	answered_all_as "$res" keep "$nconf"
+	echo "ok   $case_id: the child answered it and --no-merge held it"
+	end_case
+}
+
+# (i) a rebase that reaches no such gate. onto here is a clone of
+# base@base and has nothing of its own, so every action from's tree
+# asks for applies clean and the decision declares no conflict: the
+# run goes from applying1 to the done gate and -i has nothing to
+# open. It is the one case here whose onto is not the fixture's, so
+# it makes and destroys its own datasets and does its own end rather
+# than going through end_case. ZI32.
+case_i_noconflict() {
+	case_id="$fixture $form -i on a rebase with no conflict"
+	cman=$tmp/noconf.manifest
+	cres=$cman.resolution
+	rm -f "$cman" "$cres"
+	zfs clone "$POOL/base@base" "$POOL/clean" || \
+	    fail "cannot clone base for a conflict-free onto"
+	ed_mode keep
+	if [ "$form" = clone ]; then
+		crds=$POOL/noconf
+		zfs snapshot "$POOL/clean@work" || fail "cannot snapshot clean"
+		"$bin" $flag -v -o "$cman" -i "$ed" \
+		    --off-of "$POOL/from@work" --onto "$POOL/clean@work" \
+		    --result "$crds" > "$tmp/zi32" 2>&1
+		st=$?
+	else
+		crds=$POOL/clean
+		"$bin" $flag -v -o "$cman" -i "$ed" \
+		    --from "$POOL/from@work" --onto "$POOL/clean" \
+		    --result pre > "$tmp/zi32" 2>&1
+		st=$?
+	fi
+	[ $st -eq 0 ] || \
+	    { cat "$tmp/zi32"; fail "the conflict-free run exited $st, want 0"; }
+	grep -q '^#conflicts 0$' "$cman" || \
+	    { grep '^#conflicts' "$cman"; fail "from onto base declares a conflict"; }
+	ed_ran 0
+	# The skeleton is written beside every manifest, conflicts or
+	# none, so the proof that there was no gate is that it has no
+	# name in it at all -- not that the file is missing.
+	[ -f "$cres" ] || \
+	    fail "the conflict-free run wrote no resolution at $cres"
+	[ "$(res_names "$cres")" = 0 ] || \
+	    { head -8 "$cres"; fail "the skeleton has $(res_names "$cres") names, want 0"; }
+	[ -z "$(localprops "$crds")" ] || \
+	    fail "the conflict-free run left $(localprops "$crds") on $crds"
+	[ ! -d "/var/db/zfs_rebase/$crds" ] || \
+	    fail "the conflict-free run left its run directory"
+	if [ "$form" = clone ]; then
+		zfs destroy "$POOL/noconf" || fail "cannot destroy $POOL/noconf"
+	fi
+	zfs destroy -r "$POOL/clean" || fail "cannot destroy $POOL/clean"
+	rmdir "$MNT/clean" 2>/dev/null
+	rm -f "$cman" "$cres"
+	[ "$(holdcount)" = 0 ] || fail "the conflict-free run left holds behind"
+	n=$(allsnaps | grep -c .)
+	[ "$n" -eq 3 ] || { allsnaps; fail "the pool has $n snapshots, want 3"; }
+	echo "ok   $case_id: no gate, no child, done in one process"
+	cases=$((cases + 1))
+}
+
+# (j) -i with no command, which is the built-in picker, of which
+# this build has a stub: it says so and exits 2, and to the tool that
+# is a non-zero exit like any other. The bare word after -i here is
+# --off-of or --from, a flag, so nothing is taken as a command.
+# ZI33.
+case_i_nopicker() {
+	case_id="$fixture $form -i with no command and no picker in the build"
+	ed_mode keep
+	fresh -i
+	st=$?
+	[ $st -eq 1 ] || { cat "$log"; fail "-i alone exited $st, want 1"; }
+	grep -q '^zfs_rebase: this build has no picker; name an editor with -i CMD$' "$log" || \
+	    { cat "$log"; fail "the stub did not say there is no picker"; }
+	grep -q '^zfs_rebase: the editor exited 2$' "$log" || \
+	    { cat "$log"; fail "the run did not report the stub's exit"; }
+	grep -q "the resolution $res stands at the conflicts gate; continue with: zfs_rebase -c $rds -i" "$log" || \
+	    { cat "$log"; fail "the run did not say the gate stands"; }
+	ed_ran 0
+	[ "$(phasenow "$rds")" = conflicts ] || \
+	    fail "the run is at '$(phasenow "$rds")', want conflicts"
+	[ "$(res_left "$res")" = "$nconf" ] || \
+	    { head -8 "$res"; fail "something answered the skeleton"; }
+	echo "ok   $case_id: the stub's note, exit 1, and the whole skeleton stands"
+	end_case
+}
+
+# (k) the tool killed while the child runs. The child is orphaned and
+# finishes on its own; the rebase is where the gate left it, with the
+# document the child had already saved, and a --continue takes it on.
+# The attached form, backgrounded by hand: the pause hook is no use
+# here, since what this case wants is the tool inside its wait.
+# ZI34.
+case_i_killed() {
+	case_id="$fixture $form SIGKILL while the editor runs"
+	ed_mode linger
+	if [ "$form" = clone ]; then
+		"$bin" $flag -v -o "$man" "--interactive=$ed" \
+		    --off-of "$POOL/from@work" --onto "$POOL/onto@work" \
+		    --result "$POOL/result" > "$log" 2>&1 &
+	else
+		"$bin" $flag -v -o "$man" "--interactive=$ed" \
+		    --from "$POOL/from@work" --onto "$POOL/onto" \
+		    --result pre > "$log" 2>&1 &
+	fi
+	pid=$!
+	i=0
+	while [ $i -lt 600 ]; do
+		[ -f "$ed_run" ] && break
+		sleep 0.2
+		i=$((i + 1))
+	done
+	[ -f "$ed_run" ] || { cat "$log"; fail "the editor never opened"; }
+	kill -KILL "$pid" || fail "cannot kill the waiting tool"
+	wait "$pid"
+	st=$?
+	pid=
+	[ "$st" -eq 137 ] || { cat "$log"; fail "the kill left exit $st, want 137"; }
+	i=0
+	while [ $i -lt 600 ]; do
+		[ -f "$ed_done" ] && break
+		sleep 0.2
+		i=$((i + 1))
+	done
+	[ -f "$ed_done" ] || fail "the orphaned editor never finished"
+	[ "$(phasenow "$rds")" = conflicts ] || \
+	    fail "the kill left '$(phasenow "$rds")', want conflicts"
+	answered_all_as "$res" keep "$nconf"
+	sethere
+	"$bin" -c "$rds" > "$tmp/zi34" 2>&1
+	st=$?
+	[ $st -eq 0 ] || \
+	    { cat "$tmp/zi34"; fail "--continue after the kill exited $st, want 0"; }
+	at_done "$rds"
+	[ "$(holdcount)" = 0 ] || fail "done left holds behind"
+	echo "ok   $case_id: the child's answers stood and --continue took them on"
+	end_case
+}
+
+# (l) --restart under a record with no --take, which writes the
+# skeleton again from the recorded manifest and discards the
+# answering: the child that opens after it opens on a document with
+# nothing answered, whatever was answered before. -c IDENT -i CMD.
+# ZI35.
+case_i_restart() {
+	case_id="$fixture $form --restart, then -c IDENT -i"
+	at_conflicts
+	answer_all "$res" keep
+	[ "$(res_left "$res")" = 0 ] || \
+	    { head -8 "$res"; fail "the document is not answered"; }
+	"$bin" --restart "$rds" > "$tmp/zi35a" 2>&1
+	st=$?
+	[ $st -eq 1 ] || \
+	    { cat "$tmp/zi35a"; fail "--restart exited $st, want 1"; }
+	[ "$(res_left "$res")" = "$nconf" ] || \
+	    { head -8 "$res"; fail "--restart did not write a whole skeleton"; }
+	ed_mode open
+	"$bin" -c "$rds" -i "$ed" > "$tmp/zi35b" 2>&1
+	st=$?
+	[ $st -eq 1 ] || \
+	    { cat "$tmp/zi35b"; fail "-c IDENT -i after the restart exited $st, want 1"; }
+	ed_ran 1
+	[ "$(res_left "$ed_copy")" = "$nconf" ] || \
+	    { head -8 "$ed_copy"; fail "the child opened on a document with $(res_left "$ed_copy") unanswered, want $nconf"; }
+	[ "$(grep -c ' -$' "$ed_copy" || true)" = "$nconf" ] || \
+	    { cat "$ed_copy"; fail "not every line of what the child opened is unanswered"; }
+	[ "$(phasenow "$rds")" = conflicts ] || \
+	    fail "the run is at '$(phasenow "$rds")', want conflicts"
+	echo "ok   $case_id: the restart's own skeleton is what the child opened on"
+	end_case
+}
+
 # ---------------------------------------------------------------
 # One fixture in one form: the cases above, each ending in --abort.
 # The ones that want more of a fixture than it has say so and are
@@ -1482,6 +2033,31 @@ res_pass() {
 		echo "skip $fixture $form the ACL strip: no untouched directory"
 	fi
 	case_rundir
+	# And the launcher, whose child is the script written above.
+	case_i_done
+	# One line answered and the rest not wants a document with a
+	# rest: on one conflicted name, answering one is answering all.
+	if [ "$nconf" -gt 1 ]; then
+		case_i_partial
+	else
+		echo "skip $fixture $form -i answers one line: one"
+		echo "     conflicted name, and the case wants two"
+	fi
+	case_i_leftover
+	case_i_refused
+	if [ -n "$haskept" ]; then
+		case_i_drift
+	else
+		echo "skip $fixture $form -i on a drift line: every name of"
+		echo "     this fixture is the manifest's or a conflict's"
+	fi
+	case_i_fromapply
+	case_i_takeonto
+	case_i_nomerge
+	case_i_noconflict
+	case_i_nopicker
+	case_i_killed
+	case_i_restart
 	return 0
 }
 

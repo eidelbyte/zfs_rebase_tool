@@ -1491,8 +1491,15 @@ with posix_openpt(3) and not openpty(3), which lives in -lutil on
 FreeBSD and would put a library on the unit tests' link line for one
 cell; the slave goes on the test's own standard input, which is what
 the launcher's isatty reads.
-ZI24 onward are box rows in run-resolution.sh, with a script as the
-editor.
+ZI24 onward are box rows in run-resolution.sh case 12, whose editor
+is one script written into the scratch directory, with ZR_ED_MODE
+saying what it does to the document it is handed: answer it whole,
+answer one line and stop, leave one name, write a duplicate line,
+copy it and touch nothing, or answer it and then linger so that the
+tool can be killed while it runs. It appends a line per run, so a
+cell can say that no child opened at all, and it keeps a copy of
+what it was handed, which is how the cells about what the child sees
+are made.
 
 | cell | scenario | disposition |
 |------|----------|-------------|
@@ -1519,18 +1526,18 @@ editor.
 | ZI21 | termios saved before the fork are restored after a child that changed them, on a pty | covered: check_run.c, posix_openpt(3) rather than openpty(3), which wants -lutil |
 | ZI22 | the built-in with no picker in the build: the stub says so, exits 2, reported non-zero | covered: check_run.c |
 | ZI23 | the built-in child's argv is RESOLUTION BASE FROM ONTO RESULT, in that order | covered: check_run.c |
-| ZI24 | a fresh run with -i and a script that answers every line: done in one process, exit 0 | planned: box, box/run-resolution.sh |
-| ZI25 | the script exits 1: the gate stands, exit 1, the resolution as the script left it with its partial answers | planned: box, box/run-resolution.sh |
-| ZI26 | the script leaves a name unanswered and exits 0: the count printed, exit 1, the gate stands | planned: box, box/run-resolution.sh |
-| ZI27 | the script writes a document the parser refuses (a duplicate line): refused as --continue refuses it, the gate stands | planned: box, box/run-resolution.sh |
-| ZI28 | -c IDENT -i CMD at conflicts: the drift lines the gate's verify wrote are in the file when the script opens it | planned: box, box/run-resolution.sh |
-| ZI29 | -c -i from applying1 (killed before the gate): the apply finishes, then the script opens | planned: box, box/run-resolution.sh |
-| ZI30 | -O -i: the script opens on the complete skeleton | planned: box, box/run-resolution.sh |
-| ZI31 | -i -M: the script opens, then --no-merge holds the gate | planned: box, box/run-resolution.sh |
-| ZI32 | a rebase whose decision has no conflict, with -i: nothing opens, done | planned: box, box/run-resolution.sh |
-| ZI33 | -i alone on the box with no picker in the build: the note, exit 1, the gate stands | planned: box, box/run-resolution.sh |
-| ZI34 | the tool killed with SIGKILL while the script runs: the gate stands with the file as last saved, and -c continues | planned: box, box/run-resolution.sh |
-| ZI35 | --restart IDENT then -c IDENT -i CMD: the skeleton again, and the script opens on it | planned: box, box/run-resolution.sh |
+| ZI24 | a fresh run with -i and a script that answers every line: done in one process, exit 0 | covered: box, box/run-resolution.sh case 12a |
+| ZI25 | the script exits 1: the gate stands, exit 1, the resolution as the script left it with its partial answers | covered: box, box/run-resolution.sh case 12b |
+| ZI26 | the script leaves a name unanswered and exits 0: the count printed, exit 1, the gate stands | covered: box, box/run-resolution.sh case 12c |
+| ZI27 | the script writes a document the parser refuses (a duplicate line): refused as --continue refuses it, the gate stands | covered: box, box/run-resolution.sh case 12d |
+| ZI28 | -c IDENT -i CMD at conflicts: the drift lines the gate's verify wrote are in the file when the script opens it | covered: box, box/run-resolution.sh case 12e |
+| ZI29 | -c -i from applying1 (killed before the gate): the apply finishes, then the script opens | covered: box, box/run-resolution.sh case 12f |
+| ZI30 | -O -i: the script opens on the complete skeleton | covered: box, box/run-resolution.sh case 12g |
+| ZI31 | -i -M: the script opens, then --no-merge holds the gate | covered: box, box/run-resolution.sh case 12h |
+| ZI32 | a rebase whose decision has no conflict, with -i: nothing opens, done | covered: box, box/run-resolution.sh case 12i |
+| ZI33 | -i alone on the box with no picker in the build: the note, exit 1, the gate stands | covered: box, box/run-resolution.sh case 12j |
+| ZI34 | the tool killed with SIGKILL while the script runs: the gate stands with the file as last saved, and -c continues | covered: box, box/run-resolution.sh case 12k |
+| ZI35 | --restart IDENT then -c IDENT -i CMD: the skeleton again, and the script opens on it | covered: box, box/run-resolution.sh case 12l |
 
 ## ZP -- the built-in picker (check_picker.c, the box by hand)
 

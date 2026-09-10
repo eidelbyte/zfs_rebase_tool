@@ -603,7 +603,8 @@ tool's.
 
     sudo sh tests/box/run-resolution.sh [FIXTURE.zrt ...]
 
-is where a choice of onto or from is carried out. Its default set is
+is where a choice of onto or from is carried out, and where
+--interactive is proven on real datasets. Its default set is
 tests/fixtures/probe.zrt, tests/fixtures/h-s2-two-conflicts.zrt and
 tests/fixtures/freebsd/acl-conflict.zrt, each in both forms, and
 every fixture it is given must declare a conflict: a rebase with
@@ -620,6 +621,9 @@ against the side's own object. Both sides are given as snapshots in
 both forms, so that from's tree is still there to compare against
 after done, and onto's own tree is read out of the pre-apply
 snapshot in the dataset form and out of onto@work in the clone form.
+The --interactive cases want one thing more: a scratch directory a
+script can be executed from, since the editor they hand -i is a
+shell script the harness writes there.
 
 The cases, in the order they run, per fixture and form:
 
@@ -711,12 +715,53 @@ The cases, in the order they run, per fixture and form:
   before the record leaves. --continue, --restart and --verify each
   exit 2, name the directory, name --abort and leave the directory
   standing; --abort takes it away.
+- --interactive, twelve cases of it, with a shell script as the
+  editor. The script is written into the scratch directory once and
+  ZR_ED_MODE chooses what it does with the document it is handed;
+  the tool passes its environment to the child, so a case sets that
+  variable before it runs the tool. The script appends a line every
+  time it runs, which is how a case says that no child opened at
+  all, and keeps a copy of the document as it found it, which is how
+  the cases about what the child sees are made. Both value forms are
+  used: the bare word after -i, which on a verb's line is the
+  command only because an identifier is there too (-c IDENT -i CMD),
+  and the attached --interactive=CMD. In order: the child answers the
+  whole document and the one process goes on to done, having opened
+  one child and not two; it answers one line and exits 1, and the
+  gate stands with what it saved while the next --continue is
+  refused with the count; it leaves one name and exits 0, and the
+  count is printed after the child and never before it; it writes a
+  duplicate line, which is refused the way --continue refuses one,
+  exit 2, with the file left as the child saved it; -c IDENT -i at
+  the gate, where the verify's drift line is in the document before
+  the fork; a --continue from applying1, where the stage finishes
+  and the gate's line is printed before the child opens, which the
+  order of the two lines in the one log they share says; -O -i,
+  which opens on a skeleton that needs nothing (ruling 2), and -i
+  -M, which opens and then holds the gate; a rebase whose decision
+  declares no conflict, which reaches no such gate and opens
+  nothing; -i with no command, which is the built-in picker, of
+  which this build has a stub that says so and exits 2; the tool
+  killed with SIGKILL while the child runs, where the child is
+  orphaned and finishes and the gate stands with what it saved; and
+  --restart and then -c IDENT -i, which opens on the skeleton the
+  restart wrote.
 
 A case that wants more of a fixture than it has says so and is
 passed over: the hand-edited choices want a second conflicted name,
-the drift lines want a name the manifest says nothing about, and the
-ACL strip wants a directory of the same kind. A fixture whose every
-name is conflicted has none of the last two.
+so does the --interactive case that answers one line and leaves the
+rest; the drift lines and the --interactive case that opens on one
+want a name the manifest says nothing about; and the ACL strip wants
+a directory of the same kind. A fixture whose every name is
+conflicted has neither.
+
+The conflict-free rebase is the one case whose onto is not the
+fixture's: it clones base@base into a dataset of its own, whose tree
+is base's exactly, so that every action from's tree asks for applies
+clean and the decision declares no conflict at all. It makes and
+destroys those datasets itself rather than going through the
+harness's own reset, and proves the pool is back to its three
+snapshots afterwards.
 
 ## run-probe.sh
 
@@ -962,7 +1007,7 @@ clean.
     sudo sh tests/box/run-kills.sh          # every gate, three signals
     sudo sh tests/box/run-strays.sh         # edits the tool did not make
     sudo sh tests/box/run-precond.sh        # the cells no fixture states
-    sudo sh tests/box/run-resolution.sh     # the choices carried out
+    sudo sh tests/box/run-resolution.sh     # the choices, and -i
 
 run-fixture.sh on probe.zrt first, because it is the shortest way to
 find out that the box, the build and the pool are working at all;
