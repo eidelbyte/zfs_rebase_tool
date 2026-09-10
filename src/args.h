@@ -44,6 +44,13 @@ enum zr_verb {
  *
  * za_arg holds the operands of the harness verbs, in the order they
  * were given: two for --build-fixture and three for the other two.
+ *
+ * za_editor is -i's optional value, the command that edits the
+ * resolution, and NULL where the flag was given without one and the
+ * built-in picker is meant. It sits with the other strings rather
+ * than beside za_interactive, which is the flag it belongs to: the
+ * struct keeps its pointers together, and every one of them points
+ * into argv.
  */
 struct zr_args {
 	enum zr_verb	za_verb;
@@ -53,6 +60,7 @@ struct zr_args {
 	const char	*za_manifest;	/* -o, --manifest */
 	const char	*za_base;	/* -b, --base */
 	const char	*za_ident;	/* IDENT, the one operand */
+	const char	*za_editor;	/* -i's value; NULL is the built-in */
 	const char	*za_arg[3];
 	zr_mode_t	za_mode;	/* -p, --permissive-merge */
 	int		za_dryrun;	/* -n, --dry-run */
@@ -77,6 +85,10 @@ struct zr_args {
  * the same struct. A long form takes its value as --name VALUE or as
  * --name=VALUE; a short form takes the next argument. Short flags do
  * not bundle: -nv is not -n -v, it is an unknown option.
+ *
+ * --interactive is the one flag whose value is optional, and the
+ * rule that says whether the word after it is that value or the
+ * identifier is written out in args.c, above za_editor_word.
  */
 int zr_args_parse(int argc, char **argv, struct zr_args *out, char *err,
     size_t errlen);

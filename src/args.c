@@ -41,10 +41,19 @@ enum zr_optid {
 	ZO_BASE
 };
 
+/*
+ * What a flag does with a value. Every flag of the tool but one
+ * either takes one or takes none; --interactive takes one or none,
+ * and which it is depends on the rest of the line (za_editor_word).
+ */
+#define	ZA_NOVAL	0
+#define	ZA_VALUE	1
+#define	ZA_OPTVAL	2
+
 struct zr_opt {
 	const char	*zo_long;	/* the word after "--" */
 	char		zo_short;	/* the letter, or 0 for none */
-	char		zo_takes;	/* it takes a value */
+	char		zo_takes;	/* ZA_NOVAL, ZA_VALUE or ZA_OPTVAL */
 	int		zo_id;
 };
 
@@ -55,26 +64,26 @@ struct zr_opt {
  * letter of its own is the alias, never the primary.
  */
 static const struct zr_opt zr_opts[] = {
-	{ "from",		'f', 1, ZO_FROM },
-	{ "off-of",		 0,  1, ZO_FROM },
-	{ "onto",		't', 1, ZO_ONTO },
-	{ "to",			 0,  1, ZO_ONTO },
-	{ "result",		'r', 1, ZO_RESULT },
-	{ "permissive-merge",	'p', 0, ZO_PERM },
-	{ "verbose",		'v', 0, ZO_VERBOSE },
-	{ "manifest",		'o', 1, ZO_MANIFEST },
-	{ "verify",		'V', 0, ZO_VERIFY },
-	{ "quiet",		'q', 0, ZO_QUIET },
-	{ "take-onto",		'O', 0, ZO_TAKEONTO },
-	{ "take-from",		'F', 0, ZO_TAKEFROM },
-	{ "interactive",	'i', 0, ZO_INTERACTIVE },
-	{ "no-merge",		'M', 0, ZO_NOMERGE },
-	{ "continue",		'c', 0, ZO_CONTINUE },
-	{ "restart",		'R', 0, ZO_RESTART },
-	{ "abort",		'A', 0, ZO_ABORT },
-	{ "dry-run",		'n', 0, ZO_DRYRUN },
-	{ "allow-unrelated",	'u', 0, ZO_UNRELATED },
-	{ "base",		'b', 1, ZO_BASE }
+	{ "from",		'f', ZA_VALUE, ZO_FROM },
+	{ "off-of",		 0,  ZA_VALUE, ZO_FROM },
+	{ "onto",		't', ZA_VALUE, ZO_ONTO },
+	{ "to",			 0,  ZA_VALUE, ZO_ONTO },
+	{ "result",		'r', ZA_VALUE, ZO_RESULT },
+	{ "permissive-merge",	'p', ZA_NOVAL, ZO_PERM },
+	{ "verbose",		'v', ZA_NOVAL, ZO_VERBOSE },
+	{ "manifest",		'o', ZA_VALUE, ZO_MANIFEST },
+	{ "verify",		'V', ZA_NOVAL, ZO_VERIFY },
+	{ "quiet",		'q', ZA_NOVAL, ZO_QUIET },
+	{ "take-onto",		'O', ZA_NOVAL, ZO_TAKEONTO },
+	{ "take-from",		'F', ZA_NOVAL, ZO_TAKEFROM },
+	{ "interactive",	'i', ZA_OPTVAL, ZO_INTERACTIVE },
+	{ "no-merge",		'M', ZA_NOVAL, ZO_NOMERGE },
+	{ "continue",		'c', ZA_NOVAL, ZO_CONTINUE },
+	{ "restart",		'R', ZA_NOVAL, ZO_RESTART },
+	{ "abort",		'A', ZA_NOVAL, ZO_ABORT },
+	{ "dry-run",		'n', ZA_NOVAL, ZO_DRYRUN },
+	{ "allow-unrelated",	'u', ZA_NOVAL, ZO_UNRELATED },
+	{ "base",		'b', ZA_VALUE, ZO_BASE }
 };
 
 #define	ZA_NOPT	(sizeof (zr_opts) / sizeof (zr_opts[0]))
@@ -158,13 +167,22 @@ za_one(int argc, char **argv, int *i, const struct zr_opt **opt,
 	}
 	if (*opt == NULL)
 		return (za_no(err, errlen, "unknown option \"%s\"", a));
-	if ((*opt)->zo_takes == 0) {
+	if ((*opt)->zo_takes == ZA_NOVAL) {
 		if (eq != NULL)
 			return (za_no(err, errlen, "%s takes no value", a));
 		return (0);
 	}
 	if (eq != NULL) {
 		*val = eq + 1;
+	} else if ((*opt)->zo_takes == ZA_OPTVAL) {
+		/*
+		 * The attached form always names the value; the
+		 * detached one may or may not, and this function
+		 * cannot tell -- the word after it might be the
+		 * identifier -- so it takes nothing and the caller,
+		 * which sees the whole line, decides (za_editor_word).
+		 */
+		return (0);
 	} else if (*i + 1 < argc) {
 		*val = argv[++(*i)];
 	} else {
@@ -213,6 +231,13 @@ za_set(struct zr_args *out, const struct zr_opt *opt, const char *val,
 		break;
 	case ZO_INTERACTIVE:
 		out->za_interactive = 1;
+		/*
+		 * The attached form, --interactive=CMD, names the
+		 * command outright. A detached one reaches here with
+		 * no value and the caller settles it afterwards.
+		 */
+		if (val != NULL)
+			out->za_editor = val;
 		break;
 	case ZO_NOMERGE:
 		out->za_nomerge = 1;
@@ -507,12 +532,74 @@ za_run_flags(const struct zr_args *out, char *err, size_t errlen)
 	return (0);
 }
 
+/*
+ * -i's optional value, which is the one place in this grammar where
+ * a word cannot be read without the rest of the line (ruled
+ * 2026-09-09, plan section 2.1): "a bare word after -i should be
+ * allowed, but if there's only one word, it's the ident".
+ *
+ *	-i                       the built-in picker
+ *	-i nvim                  nvim
+ *	--interactive=nvim       nvim, the attached form every flag has
+ *	-c -i myrun              one bare word on a verb: IDENT, built-in
+ *	-c -i nvim myrun         nvim, and myrun is IDENT
+ *	-c myrun -i nvim         the same; position does not matter
+ *	-i --from a --onto b     the next word is a flag; built-in
+ *	-c -i nvim myrun extra   refused, as a second identifier is today
+ *
+ * cand is the argv index of the bare word that stood after -i, or -1
+ * where none did. It is that command whenever the line is a fresh
+ * run -- a start takes no identifier, so there is nothing else the
+ * word could be -- and on a verb whenever some other bare word is on
+ * the line for the identifier to be. Nothing is split: "code --wait"
+ * is one command, since the word is taken whole and the shell is
+ * handed it whole (launch.h).
+ */
+static int
+za_editor_word(struct zr_args *out, char **argv, int cand, int nbare)
+{
+	if (cand < 0)
+		return (0);
+	if (out->za_verb != ZR_VERB_RUN && nbare < 2)
+		return (0);
+	out->za_editor = argv[cand];
+	return (1);
+}
+
+/*
+ * The bare words of a line, once -i has taken the one that was its
+ * value: the first is the identifier and a second is a refusal, as
+ * it has always been. bare holds the first three, which is one more
+ * than the refusal ever has to name.
+ */
+#define	ZA_NBARE	3
+
+static int
+za_ident_word(struct zr_args *out, char **argv, const int *bare, int nbare,
+    int cand, char *err, size_t errlen)
+{
+	int k, n = nbare < ZA_NBARE ? nbare : ZA_NBARE;
+
+	for (k = 0; k < n; k++) {
+		if (bare[k] == cand)
+			continue;
+		if (out->za_ident == NULL) {
+			out->za_ident = argv[bare[k]];
+			continue;
+		}
+		return (za_no(err, errlen, "one identifier names one "
+		    "rebase; \"%s\" is a second", argv[bare[k]]));
+	}
+	return (0);
+}
+
 int
 zr_args_parse(int argc, char **argv, struct zr_args *out, char *err,
     size_t errlen)
 {
 	const struct zr_opt *opt;
 	const char *val;
+	int bare[ZA_NBARE], nbare = 0, cand = -1;
 	int i, cont = 0, rest = 0, abrt = 0;
 
 	memset(out, 0, sizeof (*out));
@@ -544,18 +631,36 @@ zr_args_parse(int argc, char **argv, struct zr_args *out, char *err,
 			if (argv[i][0] == '\0')
 				return (za_no(err, errlen, "an empty "
 				    "argument names no rebase"));
-			if (out->za_ident != NULL)
-				return (za_no(err, errlen, "one identifier "
-				    "names one rebase; \"%s\" is a second",
-				    argv[i]));
-			out->za_ident = argv[i];
+			/*
+			 * Which of them is the identifier is settled
+			 * after the loop: -i may take one of them,
+			 * and only the whole line says whether it
+			 * does.
+			 */
+			if (nbare < ZA_NBARE)
+				bare[nbare] = i;
+			nbare++;
 			continue;
 		}
 		if (za_one(argc, argv, &i, &opt, &val, err, errlen) != 0)
 			return (-1);
 		za_set(out, opt, val, &cont, &rest, &abrt);
+		/*
+		 * The word after a detached -i, if there is one and it
+		 * is bare. A word beginning with a dash is a flag and
+		 * never the value, which is what lets "-i --from A"
+		 * mean the built-in picker.
+		 */
+		if (opt->zo_id == ZO_INTERACTIVE && val == NULL &&
+		    i + 1 < argc && argv[i + 1][0] != '-' &&
+		    argv[i + 1][0] != '\0')
+			cand = i + 1;
 	}
 	if (za_verb(out, cont, rest, abrt, err, errlen) != 0)
+		return (-1);
+	if (za_editor_word(out, argv, cand, nbare) == 0)
+		cand = -1;
+	if (za_ident_word(out, argv, bare, nbare, cand, err, errlen) != 0)
 		return (-1);
 	if (za_gate_flags(out, err, errlen) != 0)
 		return (-1);

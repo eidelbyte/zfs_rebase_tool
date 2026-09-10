@@ -35,7 +35,8 @@ FLAVOR = portable
 # Library objects are everything but main.o; tests link against them.
 LIB_OBJS = build/vis.o build/name.o build/decide.o build/fixture.o \
 	build/manifest.o build/walk.o build/yellow.o build/verify.o \
-	build/apply.o build/zfsops.o build/run.o build/args.o
+	build/apply.o build/zfsops.o build/run.o build/args.o build/launch.o \
+	build/picker.o
 CORE_OBJS = build/main.o $(LIB_OBJS)
 TESTS = check_vis check_name check_fixture check_manifest check_walk \
 	check_yellow check_roundtrip check_apply check_verify check_args \
@@ -80,6 +81,16 @@ build/main.o: src/main.c src/args.h src/decide.h src/fixture.h \
 build/args.o: src/args.c src/args.h src/decide.h
 	$(CC) $(CFLAGS) -c -o $@ src/args.c
 
+build/launch.o: src/launch.c src/launch.h src/plugins/picker/picker.h
+	$(CC) $(CFLAGS) -c -o $@ src/launch.c
+
+# The built-in picker, an internal plugin of its own: it depends on
+# the documents and the name codec and never on the driver, so it
+# builds with the same flags and no include path of its own -- src is
+# already on it, and launch.c names the header by its path under it.
+build/picker.o: src/plugins/picker/picker.c src/plugins/picker/picker.h
+	$(CC) $(CFLAGS) -c -o $@ src/plugins/picker/picker.c
+
 build/vis.o: src/vis.c src/vis.h
 	$(CC) $(CFLAGS) -c -o $@ src/vis.c
 
@@ -112,7 +123,7 @@ build/apply.o: src/apply.c src/apply.h src/verify.h src/manifest.h src/walk.h \
 build/zfsops.o: src/zfsops.c src/zfsops.h
 	$(CC) $(CFLAGS) $(ZFSOPS_CFLAGS) -c -o $@ src/zfsops.c
 
-build/run.o: src/run.c src/run.h src/apply.h src/decide.h \
+build/run.o: src/run.c src/run.h src/apply.h src/decide.h src/launch.h \
 	src/manifest.h src/name.h src/verify.h src/walk.h src/yellow.h \
 	src/zfsops.h
 	$(CC) $(CFLAGS) -c -o $@ src/run.c

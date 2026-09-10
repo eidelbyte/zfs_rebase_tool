@@ -418,8 +418,9 @@ from the start; --no-merge, which stops a run or a --continue at the
 gate however the resolution reads; and --no-merge on a --continue
 whose record is already past the merge, which is refused. The gate
 is headless under no flag at all, which is what every run here
-relies on; --interactive is accepted on a fresh run and on
---continue and changes nothing while there is no picker.
+relies on; --interactive is what breaks that, forking a child on the
+resolution at the gate and reading the document back when the child
+exits 0, and no run in this harness gives it yet.
 
 ## run-strays.sh
 

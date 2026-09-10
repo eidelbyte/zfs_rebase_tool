@@ -169,6 +169,7 @@
 
 #include "apply.h"
 #include "decide.h"
+#include "launch.h"
 #include "manifest.h"
 #include "name.h"
 #include "run.h"
@@ -2665,6 +2666,101 @@ teardown(struct run *r, int keep)
 }
 
 /*
+ * The resolution read off the file again, through the parser
+ * --continue reads it with, and the count of what is still
+ * unanswered taken from it. It is what the fresh run does after a
+ * child of its own has edited the document: the skeleton this run
+ * wrote is no longer what is on the disk, and r->unanswered was a
+ * fact about the skeleton.
+ *
+ * Returns 0 with r->unanswered true of the file, or -1 with the
+ * reason in r->err. The header's three input lines are not checked
+ * against this run here: a document that goes on hands off to
+ * --continue, whose own read of it checks them by name and by guid
+ * before anything is applied.
+ */
+static int
+reread_skeleton(struct run *r)
+{
+	struct zr_resolution res;
+	FILE *fp;
+	int rc;
+
+	memset(&res, 0, sizeof (res));
+	fp = fopen(r->respath, "r");
+	if (fp == NULL) {
+		(void) snprintf(r->err, sizeof (r->err), "%s: %s", r->respath,
+		    strerror(errno));
+		return (-1);
+	}
+	rc = zr_resolution_parse(fp, &res, r->err, sizeof (r->err));
+	(void) fclose(fp);
+	if (rc == 0)
+		r->unanswered = zr_resolution_unanswered(&res);
+	zr_resolution_fini(&res);
+	return (rc);
+}
+
+/*
+ * --interactive at the fresh run's conflicts gate: the child on the
+ * resolution, and the document read back after it (plan sections 2.2
+ * to 2.5). Everything the gate does is done before this -- the phase
+ * written, the skeleton written, the line saying the rebase waits
+ * printed -- so the child opens on the document as it stands, and
+ * the messages that say how it reads are printed after the child and
+ * never before it.
+ *
+ * The built-in picker is handed the four directories the run read
+ * its trees at: the three snapshots through their .zfs/snapshot
+ * paths, and the result at the private mount. A run with no base has
+ * none to give and gives "".
+ *
+ * Returns 0 with r->unanswered true of the file the child left, or
+ * the status to give up with, the reason already printed. Either way
+ * the rebase is at the conflicts gate and a --continue takes it on.
+ */
+static int
+run_interactive(struct run *r)
+{
+	struct zr_launch lp;
+	char basedir[ZR_NAME_MAX * 2], fromdir[ZR_NAME_MAX * 2];
+	char ontodir[ZR_NAME_MAX * 2];
+	char e[512];
+
+	basedir[0] = '\0';
+	if (r->base[0] != '\0')
+		snapdir(basedir, sizeof (basedir), r->basemnt, r->base);
+	snapdir(fromdir, sizeof (fromdir), r->frommnt, r->fromsnap);
+	snapdir(ontodir, sizeof (ontodir), r->ontomnt, r->ontosnap);
+	memset(&lp, 0, sizeof (lp));
+	lp.command = r->o.editor;
+	lp.resolution = r->respath;
+	lp.base = basedir;
+	lp.from = fromdir;
+	lp.onto = ontodir;
+	lp.result = r->workmnt;
+	if (zr_launch(&lp, e, sizeof (e)) != 0) {
+		(void) fprintf(stderr, "zfs_rebase: %s\n", e);
+		(void) fprintf(stderr, "zfs_rebase: the resolution %s stands "
+		    "at the conflicts gate; continue with: zfs_rebase -c %s "
+		    "-i\n", r->respath, r->rds);
+		return (EXIT_CONFLICTS);
+	}
+	/*
+	 * A document the parser refuses is refused here the way
+	 * --continue refuses one, and the gate stands with the file as
+	 * the child left it: the person edits it again, by hand or
+	 * with another -i.
+	 */
+	if (reread_skeleton(r) != 0) {
+		(void) fprintf(stderr, "zfs_rebase: resolution: %s\n",
+		    r->err);
+		return (EXIT_PRECOND);
+	}
+	return (0);
+}
+
+/*
  * The done gate, which is the verbs' own and is written with them
  * below: the run reaches it at the end of its last stage, and a
  * --continue reaches the same function at the same gate.
@@ -3033,6 +3129,22 @@ zr_run(const struct zr_run_opts *o)
 		    "actions are applied and %s waits at conflicts\n",
 		    r.d.zd_nconflicts, r.d.zd_nconflicts == 1 ? "" : "s",
 		    r.rds);
+		/*
+		 * And the child, where -i asked for one: after all of
+		 * that and before any of the three messages below,
+		 * whether or not the skeleton came out complete
+		 * (ruling 2). What the child exits with settles
+		 * nothing by itself -- the document it leaves does --
+		 * except that anything but 0 leaves the gate standing.
+		 */
+		if (o->interactive) {
+			rc = run_interactive(&r);
+			if (rc != 0) {
+				manifest_note(&r);
+				kept_hint(&r);
+				goto done;
+			}
+		}
 		if (r.unanswered != 0) {
 			(void) fprintf(stderr, "zfs_rebase: %u name%s "
 			    "unanswered in the resolution %s\n", r.unanswered,
@@ -3198,6 +3310,8 @@ struct resume {
 	int			zfslent;	/* the caller's, not to close */
 	char			result[ZR_NAME_MAX];
 	int			nomerge;	/* --no-merge on the command */
+	int			interactive;	/* --interactive on it */
+	const char		*editor;	/* its value, or NULL */
 	int			report;		/* the verb is --verify */
 	int			verbose;
 	int			dataset;	/* the dataset form */
@@ -3216,6 +3330,14 @@ struct resume {
 	 * there itself (documents-design.md, sections 7 and 11.6).
 	 */
 	char			workmnt[ZR_NAME_MAX];
+	/*
+	 * And where each side's tree was read, by ZS_: the path
+	 * walk_side walked, which is "" for a side that is gone. They
+	 * are what the built-in picker is handed for from and onto
+	 * (launch.h); the result's slot is unused, since the result is
+	 * read at workmnt, and no verb reads base at all.
+	 */
+	char			sidedir[3][ZR_NAME_MAX * 2];
 	char			respath[ZR_NAME_MAX];	/* the resolution */
 	char			given[ZR_NAME_MAX];	/* MANIFEST, resolved */
 	char			tmptag[ZR_TAG_MAX];	/* the report's hold */
@@ -4242,6 +4364,8 @@ walk_side(struct resume *s, int which, int slot)
 		if (zr_walk(path, s->names, &s->w[slot], s->err,
 		    sizeof (s->err)) != 0)
 			return (-1);
+		(void) snprintf(s->sidedir[slot], sizeof (s->sidedir[slot]),
+		    "%s", path);
 		s->walked |= 1 << slot;
 		return (0);
 	}
@@ -4267,6 +4391,8 @@ walk_side(struct resume *s, int which, int slot)
 	if (zr_walk(path, s->names, &s->w[slot], s->err,
 	    sizeof (s->err)) != 0)
 		return (-1);
+	(void) snprintf(s->sidedir[slot], sizeof (s->sidedir[slot]), "%s",
+	    path);
 	s->walked |= 1 << slot;
 	return (0);
 }
@@ -5512,6 +5638,46 @@ out:
 }
 
 /*
+ * --interactive at the resume path's conflicts gate: the same child
+ * on the same document, opened after the gate's own verify has
+ * written its drift lines, so that what the editor sees is the file
+ * as this gate leaves it (plan section 2.2).
+ *
+ * The built-in picker is handed the directories walk_side read the
+ * two sides at and the private mount the result is at; base is no
+ * verb's and is given as "". Returns 0 with s->res read again off
+ * the file, or the status to give up with, the reason printed.
+ */
+static int
+resume_interactive(struct resume *s)
+{
+	struct zr_launch lp;
+	char e[512];
+
+	memset(&lp, 0, sizeof (lp));
+	lp.command = s->editor;
+	lp.resolution = s->respath;
+	lp.base = "";
+	lp.from = s->sidedir[ZS_FROM];
+	lp.onto = s->sidedir[ZS_ONTO];
+	lp.result = s->workmnt;
+	if (zr_launch(&lp, e, sizeof (e)) != 0) {
+		(void) fprintf(stderr, "zfs_rebase: %s\n", e);
+		(void) fprintf(stderr, "zfs_rebase: the resolution %s stands "
+		    "at the conflicts gate; continue with: zfs_rebase -c %s "
+		    "-i\n", s->respath, s->result);
+		return (EXIT_CONFLICTS);
+	}
+	if (reread_resolution(s) < 0) {
+		(void) snprintf(s->err, sizeof (s->err), "%s", s->reserr);
+		return (vfail(s, EXIT_PRECOND, "resolution"));
+	}
+	if (s->hasres == 0)
+		return (no_resolution(s));
+	return (0);
+}
+
+/*
  * The conflicts gate. The resolution is complete, in which case the
  * rebase goes on into applying2, or a name of it is still unanswered,
  * in which case this is where it waits and the phase does not move.
@@ -5540,6 +5706,7 @@ static int
 stage_conflicts(struct resume *s, int checked)
 {
 	uint32_t left, total;
+	int rc;
 
 	if (s->hasres < 0) {
 		(void) snprintf(s->err, sizeof (s->err), "%s", s->reserr);
@@ -5549,6 +5716,17 @@ stage_conflicts(struct resume *s, int checked)
 		return (no_resolution(s));
 	if (checked == 0 && conflicts_check(s) != 0)
 		return (vfail(s, EXIT_INTERNAL, "verify"));
+	/*
+	 * And the child, where -i asked for one: after the verify and
+	 * its drift lines, and before the document is read for what
+	 * it says, whether or not it is already complete (ruling 2).
+	 * -M -i therefore opens the child and then holds the gate.
+	 */
+	if (s->interactive != 0) {
+		rc = resume_interactive(s);
+		if (rc != 0)
+			return (rc);
+	}
 	left = zr_resolution_unanswered(&s->res);
 	total = s->res.zs_nlines;
 	if (left != 0) {
@@ -5608,8 +5786,14 @@ stage1(struct resume *s)
 	 * on the way the fresh run does, through the one gate function.
 	 * Under --no-merge, or with a name still unanswered, it stops,
 	 * and that function says which.
+	 *
+	 * -i is such a command too, and is one whatever the document
+	 * says: what it asks for is the child at this gate, and the
+	 * gate function is where that child opens. The same three
+	 * tests are made after it, over the document the child left.
 	 */
-	if (s->hasres > 0 && zr_resolution_unanswered(&s->res) == 0)
+	if (s->interactive != 0 ||
+	    (s->hasres > 0 && zr_resolution_unanswered(&s->res) == 0))
 		return (stage_conflicts(s, 1));
 	return (EXIT_CONFLICTS);
 }
@@ -6031,6 +6215,8 @@ zr_continue(const struct zr_verb_opts *o)
 
 	memset(&s, 0, sizeof (s));
 	s.nomerge = o->nomerge;
+	s.interactive = o->interactive;
+	s.editor = o->editor;
 	s.verbose = o->verbose;
 	zr_pause_open();
 	signals_install(saved);

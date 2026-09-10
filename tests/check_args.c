@@ -16,6 +16,12 @@
  * every verb takes, the --result that is a start's flag alone, and
  * the two steps of the resolution that read a document.
  *
+ * Family ZI: ZI1 to ZI12, --interactive's optional value -- the bare
+ * word that is the command unless it is the only one on a verb's
+ * line, the attached form, the word beginning with a dash that is a
+ * flag and not a value, and the refusals -i keeps beside the verbs
+ * and beside a dry run.
+ *
  * The last of those, and ZX187 with them, are src/run.c's rules for
  * reading a run's dataset out of a header and for a manifest an
  * identifier names: they take a parsed header, or a file, and open
@@ -110,6 +116,10 @@ static char v_fdir[] = "/tmp/f";
 static char v_odir[] = "/tmp/o";
 static char v_fixture[] = "tests/fixtures/x.zrt";
 static char v_tree[] = "from";
+static char v_editor[] = "nvim";
+static char v_editorf[] = "code --wait";
+static char v_ident[] = "myrun";
+static char v_extra[] = "extra";
 
 /* The long word this letter stands for, so a pair can be respelled. */
 static const struct {
@@ -1192,6 +1202,165 @@ test_run_dataset(void)
 	CHECK(zr_run_dataset(&p, ds, 4, err, sizeof (err)) == -1);
 }
 
+/*
+ * ZI1 to ZI12: --interactive's optional value (tests/MATRIX.md,
+ * family ZI; plan section 2.1, ruled 2026-09-09). It is the one
+ * flag of this grammar whose value cannot be read off the word
+ * beside it alone: a bare word after -i is the command, unless it is
+ * the only bare word on a verb's line, where it is the identifier
+ * the verb needs. A fresh run has no identifier, so a bare word
+ * after -i is always its command there; a word beginning with a dash
+ * is a flag either way; and a value carries its own flags whole,
+ * since it is one string the tool never splits.
+ */
+static void
+test_interactive_value(void)
+{
+	static char eq[] = "--interactive=nvim";
+	static char eqempty[] = "--interactive=";
+	static char eqflags[] = "--interactive=code --wait";
+	char *verb[] = { w_restart, w_abort, w_verify };
+	char *cmd[10];
+	struct zr_args a;
+	size_t i;
+
+	/* ZI1: -i alone on a fresh run: the flag, and no command. */
+	{
+		char *run[] = { w_prog, w_from, v_from, w_onto, v_onto,
+		    w_result, v_result, w_interactive };
+
+		a = parse_ok(run, (int)NELEM(run));
+		CHECK(a.za_verb == ZR_VERB_RUN);
+		CHECK(a.za_interactive == 1 && a.za_editor == NULL);
+		check_pair(run, (int)NELEM(run));
+	}
+	/* ZI2: and with a bare word after it, which is the command. */
+	{
+		char *run[] = { w_prog, w_from, v_from, w_onto, v_onto,
+		    w_result, v_result, w_interactive, v_editor };
+
+		a = parse_ok(run, (int)NELEM(run));
+		CHECK(a.za_verb == ZR_VERB_RUN);
+		CHECK(a.za_interactive == 1 && a.za_editor == v_editor);
+		CHECK(a.za_ident == NULL);
+		check_pair(run, (int)NELEM(run));
+	}
+	/* ZI3: the attached form, on a fresh run and on a verb. */
+	{
+		char *run[] = { w_prog, w_from, v_from, w_onto, v_onto,
+		    w_result, v_result, eq };
+		char *cont[] = { w_prog, w_continue, eq, v_ident };
+
+		a = parse_ok(run, (int)NELEM(run));
+		CHECK(a.za_interactive == 1);
+		CHECK(strcmp(a.za_editor, "nvim") == 0);
+		CHECK(a.za_ident == NULL);
+		a = parse_ok(cont, (int)NELEM(cont));
+		CHECK(a.za_verb == ZR_VERB_CONTINUE);
+		CHECK(a.za_interactive == 1);
+		CHECK(strcmp(a.za_editor, "nvim") == 0);
+		CHECK(a.za_ident == v_ident);
+	}
+	/* ZI4: one bare word on a verb's line is the identifier. */
+	{
+		char *cont[] = { w_prog, w_continue, w_interactive, v_ident };
+
+		a = parse_ok(cont, (int)NELEM(cont));
+		CHECK(a.za_verb == ZR_VERB_CONTINUE);
+		CHECK(a.za_interactive == 1 && a.za_editor == NULL);
+		CHECK(a.za_ident == v_ident);
+		check_pair(cont, (int)NELEM(cont));
+	}
+	/* ZI5, ZI6: two of them, and -i's position does not matter. */
+	{
+		char *after[] = { w_prog, w_continue, w_interactive, v_editor,
+		    v_ident };
+		char *before[] = { w_prog, w_continue, v_ident, w_interactive,
+		    v_editor };
+
+		a = parse_ok(after, (int)NELEM(after));
+		CHECK(a.za_verb == ZR_VERB_CONTINUE);
+		CHECK(a.za_editor == v_editor && a.za_ident == v_ident);
+		check_pair(after, (int)NELEM(after));
+		a = parse_ok(before, (int)NELEM(before));
+		CHECK(a.za_verb == ZR_VERB_CONTINUE);
+		CHECK(a.za_editor == v_editor && a.za_ident == v_ident);
+		check_pair(before, (int)NELEM(before));
+	}
+	/* ZI7: and a third is a second identifier, refused as ever. */
+	{
+		char *three[] = { w_prog, w_continue, w_interactive, v_editor,
+		    v_ident, v_extra };
+
+		parse_bad(three, (int)NELEM(three));
+	}
+	/* ZI8: a word beginning with a dash is a flag, not the value. */
+	{
+		char *run[] = { w_prog, w_interactive, w_from, v_from,
+		    w_onto, v_onto, w_result, v_result };
+
+		a = parse_ok(run, (int)NELEM(run));
+		CHECK(a.za_interactive == 1 && a.za_editor == NULL);
+		CHECK(a.za_from == v_from && a.za_onto == v_onto);
+		check_pair(run, (int)NELEM(run));
+	}
+	/* ZI9: an attached value that is empty is no value at all. */
+	{
+		char *run[] = { w_prog, w_from, v_from, w_onto, v_onto,
+		    w_result, v_result, eqempty };
+		char *cont[] = { w_prog, w_continue, eqempty, v_ident };
+
+		parse_bad(run, (int)NELEM(run));
+		parse_bad(cont, (int)NELEM(cont));
+	}
+	/*
+	 * ZI10: the three verbs that reach no conflicts gate refuse
+	 * -i, with a value and without one, in either form. What the
+	 * refusal must never do is read the value as the identifier
+	 * or the identifier as the value and then accept the line.
+	 */
+	for (i = 0; i < NELEM(verb); i++) {
+		cmd[0] = w_prog;
+		cmd[1] = verb[i];
+		cmd[2] = w_interactive;
+		cmd[3] = v_ident;
+		parse_bad(cmd, 4);
+		cmd[2] = w_interactive;
+		cmd[3] = v_editor;
+		cmd[4] = v_ident;
+		parse_bad(cmd, 5);
+		cmd[2] = eq;
+		cmd[3] = v_ident;
+		parse_bad(cmd, 4);
+	}
+	/* ZI11: and a dry run refuses it, with a value and without. */
+	{
+		char *dry[] = { w_prog, w_dryrun, w_from, v_from, w_onto,
+		    v_onto, w_interactive, v_editor };
+
+		parse_bad(dry, (int)NELEM(dry));
+		parse_bad(dry, (int)NELEM(dry) - 1);
+		dry[6] = eq;
+		parse_bad(dry, (int)NELEM(dry) - 1);
+	}
+	/* ZI12: a value carrying its own flags is one string. */
+	{
+		char *run[] = { w_prog, w_from, v_from, w_onto, v_onto,
+		    w_result, v_result, w_interactive, v_editorf };
+		char *att[] = { w_prog, w_from, v_from, w_onto, v_onto,
+		    w_result, v_result, eqflags };
+
+		a = parse_ok(run, (int)NELEM(run));
+		CHECK(a.za_editor == v_editorf);
+		CHECK(strcmp(a.za_editor, "code --wait") == 0);
+		CHECK(a.za_ident == NULL && a.za_result == v_result);
+		check_pair(run, (int)NELEM(run));
+		a = parse_ok(att, (int)NELEM(att));
+		CHECK(strcmp(a.za_editor, "code --wait") == 0);
+		CHECK(a.za_ident == NULL);
+	}
+}
+
 int
 main(void)
 {
@@ -1217,6 +1386,7 @@ main(void)
 	test_verify_is_a_verb();
 	test_ident_manifest();
 	test_run_dataset();
+	test_interactive_value();
 	printf("check_args: %lu checks passed\n", checks);
 	return (0);
 }

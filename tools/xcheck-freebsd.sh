@@ -1,5 +1,6 @@
 #!/bin/sh
-# Cross syntax check of every source, and of the box probe, as the
+# Cross syntax check of every source -- the plugins under src with
+# them -- and of the box probe, as the
 # freebsd target compiles them, on a machine that is not FreeBSD:
 # clang targeting FreeBSD, with a FreeBSD source tree's headers
 # standing in for /usr/include and the OpenZFS include set applied to
@@ -28,7 +29,7 @@ ZFS="-I$ZT/lib/libspl/include/os/freebsd -I$ZT/lib/libspl/include \
 -include $F/sys/modules/zfs/zfs_config.h \
 -DNEED_SOLARIS_BOOLEAN -DHAVE_ISSETUGID -DHAVE_STRLCAT -DHAVE_STRLCPY"
 rc=0
-for f in src/*.c tools/probe-mount.c; do
+for f in src/*.c src/plugins/*/*.c tools/probe-mount.c; do
 	extra=""
 	case "$f" in
 	src/zfsops.c|tools/probe-mount.c) extra="$ZFS" ;;

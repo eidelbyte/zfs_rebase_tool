@@ -11,7 +11,8 @@ if LC_ALL=C grep -rn "$nonascii" Makefile README.md zfs_rebase.8 ports src \
     tools/*.py; then
 	echo "gate: non-ASCII bytes above"; rc=1
 fi
-srcs=$(ls src/*.c src/*.h tests/*.c tools/probe-mount.c 2>/dev/null || true)
+srcs=$(ls src/*.c src/*.h src/plugins/*/*.c src/plugins/*/*.h tests/*.c \
+    tools/probe-mount.c 2>/dev/null || true)
 if [ -n "$srcs" ]; then
 	if perl tools/cstyle.pl -cpP $srcs; then
 		echo "gate: cstyle ok on $(echo $srcs | wc -w | tr -d ' ') files"

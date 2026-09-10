@@ -35,13 +35,13 @@
 static const char usage[] =
 	"usage: zfs_rebase [-p] [-v] [-q] [--manifest FILE]\n"
 	"                  [--allow-unrelated --base SNAP]\n"
-	"                  [--take-onto | --take-from] [--interactive] "
+	"                  [--take-onto | --take-from] [--interactive [CMD]] "
 	    "[--no-merge]\n"
 	"                  --from SNAP|DATASET --onto SNAP|DATASET --result "
 	    "NAME\n"
 	"       zfs_rebase --dry-run [-p] [--manifest FILE]\n"
 	"                  --from SNAP|DATASET --onto SNAP|DATASET\n"
-	"       zfs_rebase --continue [--interactive] [--no-merge]\n"
+	"       zfs_rebase --continue [--interactive [CMD]] [--no-merge]\n"
 	"                  [--from SNAP] [--onto SNAP] IDENT\n"
 	"       zfs_rebase --restart IDENT\n"
 	"       zfs_rebase --abort   IDENT\n"
@@ -80,10 +80,17 @@ static const char usage[] =
 	"                          run\n"
 	"  -O, --take-onto         answer every conflict of the skeleton onto\n"
 	"  -F, --take-from         answer every conflict of the skeleton from\n"
-	"  -i, --interactive       ask for the picker at the conflicts gate,\n"
-	"                          this invocation only (say it on each\n"
-	"                          --continue); this build has no picker, so\n"
-	"                          the gate is headless with it or without\n"
+	"  -i, --interactive [CMD] open a child on the resolution at the\n"
+	"                          conflicts gate and read the document back\n"
+	"                          when it exits 0; anything else and the\n"
+	"                          gate stands. CMD is the command that edits\n"
+	"                          it, run as sh -c with the path as its last\n"
+	"                          argument, and its own flags are part of it\n"
+	"                          (\"code --wait\"); with none the built-in\n"
+	"                          picker opens. A bare word after -i is CMD\n"
+	"                          unless it is the only one on a verb's\n"
+	"                          line, where it is IDENT. This invocation\n"
+	"                          only: say it on each --continue\n"
 	"  -M, --no-merge          stop at the conflicts gate however the\n"
 	"                          resolution is answered; an error past it\n"
 	"  -c, --continue          take the rebase on from the gate it left\n"
@@ -329,11 +336,11 @@ edit_fixture(const char *path, const char *tree, const char *dir)
  * The command line is args.c's; what is left here is the dispatch
  * over what it parsed. Nothing below reads argv again.
  *
- * --interactive is parsed, refused where it does not belong, and
- * goes no further: what it asks for is the picker at the conflicts
- * gate, and there is none to launch in this build, so the gate is
- * headless with the flag or without it and there is nothing for the
- * run or the verb to do differently under it.
+ * --interactive and its optional value go through to the run and to
+ * the verb as two fields: the flag, which says a child opens at the
+ * conflicts gate, and the command that child is, which is NULL where
+ * the built-in picker is meant. Neither is latched anywhere: they
+ * belong to this invocation and nothing writes them down.
  */
 int
 main(int argc, char **argv)
@@ -354,6 +361,8 @@ main(int argc, char **argv)
 	vo.ident = a.za_ident;
 	vo.from = a.za_from;
 	vo.onto = a.za_onto;
+	vo.editor = a.za_editor;
+	vo.interactive = a.za_interactive;
 	vo.nomerge = a.za_nomerge;
 	vo.verbose = a.za_verbose;
 	switch (a.za_verb) {
@@ -388,12 +397,14 @@ main(int argc, char **argv)
 	ro.result = a.za_dryrun ? NULL : a.za_result;
 	ro.outpath = a.za_manifest;
 	ro.base = a.za_base;
+	ro.editor = a.za_editor;
 	ro.mode = a.za_mode;
 	ro.dryrun = a.za_dryrun;
 	ro.quiet = a.za_quiet;
 	ro.unrelated = a.za_unrelated;
 	ro.takeonto = a.za_takeonto;
 	ro.takefrom = a.za_takefrom;
+	ro.interactive = a.za_interactive;
 	ro.nomerge = a.za_nomerge;
 	ro.verbose = a.za_verbose;
 	return (zr_run(&ro));

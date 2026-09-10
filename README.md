@@ -7,11 +7,11 @@ which files it could not decide and why.
 
     zfs_rebase [-p] [-v] [-q] [--manifest FILE] \
         [--allow-unrelated --base SNAP] \
-        [--take-onto | --take-from] [--interactive] [--no-merge] \
+        [--take-onto | --take-from] [--interactive [CMD]] [--no-merge] \
         --from SNAP|DATASET --onto SNAP|DATASET --result NAME
     zfs_rebase --dry-run [-p] [--manifest FILE] \
         --from SNAP|DATASET --onto SNAP|DATASET
-    zfs_rebase --continue [--interactive] [--no-merge] \
+    zfs_rebase --continue [--interactive [CMD]] [--no-merge] \
         [--from SNAP] [--onto SNAP] IDENT
     zfs_rebase --restart IDENT
     zfs_rebase --abort IDENT
@@ -66,7 +66,7 @@ it; a start writes a manifest and reads none, so it takes no IDENT.
 | `--quiet` | `-q` | a start option: latched in the record for the whole run, and it silences the final check's report and nothing else -- not the check, not its verdict, not the exit status |
 | `--take-onto` | `-O` | write the skeleton with every conflict answered onto |
 | `--take-from` | `-F` | write the skeleton with every conflict answered from; the two exclude each other |
-| `--interactive` | `-i` | open the picker at the conflicts gate, for this invocation only (not latched: say it on each --continue); this build has no picker, so the gate is headless with or without it |
+| `--interactive` | `-i` | open a child on the resolution at the conflicts gate, wait for it, and read the document back when it exits 0; anything else leaves the gate standing. Its optional value is the command that edits the file -- run as `sh -c 'CMD "$@"' CMD PATH`, so the command's own flags are part of it (`"code --wait"`) and the path is its last argument -- and with no value the built-in picker opens (this build has none yet: it says so and exits 2, which leaves the gate standing like any other non-zero exit). A bare word after -i is that command unless it is the only bare word on a verb's line, where it is IDENT; `--interactive=CMD` always names the command, and an empty value there is refused. For this invocation only (not latched: say it on each --continue) |
 | `--no-merge` | `-M` | stop at the conflicts gate however the resolution reads; an error once the gate is passed |
 | `--continue` | `-c` | take the rebase on from the gate its record names |
 | `--restart` | `-R` | the result back as onto was, the manifest applied again from the first gate, the resolution back to its skeleton |
@@ -374,12 +374,29 @@ out complete -- which is what --take-onto and --take-from make it --
 hands the result back and goes on to done in the same process, by
 the one code path a --continue uses. --no-merge holds it at the gate
 instead, and is refused once the gate is passed. The gate is
-headless: this is a system tool, and it opens nothing of its own.
---interactive asks for the picker, which this build does not have,
-so the gate reads the same with the flag and without it. The flag is
+headless by default: this is a system tool, and it opens nothing of
+its own unless it is asked to.
+--interactive asks: at the gate the tool forks a child on the
+resolution -- the command -i names, or the built-in picker where it
+names none, which this build has only as a stub that says so and
+exits 2 -- ignores SIGINT and SIGQUIT while it waits the way
+system(3) does, forwards a SIGTERM of its own to it, puts the
+terminal's termios back if the child left them changed, and reads
+the document again when the child exits 0, with every refusal
+--continue makes of one. Anything else and the gate stands with the
+file as the child left it, exit 1, and nothing reopens the child by
+itself: `zfs_rebase -c IDENT -i` carries on. The child opens
+whenever the gate is reached, complete document or not, so -O -i
+opens it on the answered skeleton and -M -i opens it and then holds
+the gate; a rebase whose decision declared no conflict reaches no
+gate and opens nothing. The gate's own work comes first -- the phase
+written, and on a --continue the check whose drift lines go into the
+document -- so the child sees the resolution as it stands, and the
+line saying how many names are unanswered is printed after the child
+and not before it. The flag is
 not latched: it belongs to the invocation, so a --continue that
-should open the picker says -i each time, and a start given -i that
-reaches the gate in the same process is still interactive there.
+should open a child says -i each time, and a start given -i that
+reaches the gate in the same process is interactive there.
 applying2 carries the choices out. done is no phase and is never
 written: when the result has verified and is read-only again, it is
 handed back -- home, or to the void -- and then the holds are given
@@ -513,7 +530,7 @@ of them stand beside IDENT; --result is what a start calls the thing
 it makes, and beside any verb it is refused, exit 2, saying what a
 verb takes instead.
 
-    zfs_rebase --continue [--interactive] [--no-merge] \
+    zfs_rebase --continue [--interactive [CMD]] [--no-merge] \
         [--from SNAP] [--onto SNAP] IDENT
 
 takes the rebase on from the gate its record names, through the

@@ -1486,35 +1486,39 @@ changed by the child}; and the built-in {no picker in the build}.
 ZI1 to ZI12 are read off struct zr_args on any machine. ZI13 to
 ZI23 run the launcher on the mac with shell scripts as the child:
 a script records its arguments, exits as told, signals its parent,
-or changes the termios of a pty the test opened with openpty(3).
+or changes the termios of a pty the test opened. The pty is opened
+with posix_openpt(3) and not openpty(3), which lives in -lutil on
+FreeBSD and would put a library on the unit tests' link line for one
+cell; the slave goes on the test's own standard input, which is what
+the launcher's isatty reads.
 ZI24 onward are box rows in run-resolution.sh, with a script as the
 editor.
 
 | cell | scenario | disposition |
 |------|----------|-------------|
-| ZI1 | -i alone on a fresh run: interactive, and no command (the built-in) | planned: check_args.c |
-| ZI2 | -i CMD on a fresh run: the command is CMD | planned: check_args.c |
-| ZI3 | --interactive=CMD: the command is CMD, on a fresh run and on --continue | planned: check_args.c |
-| ZI4 | -c -i IDENT: the only bare word on a verb's line is IDENT, and the built-in | planned: check_args.c |
-| ZI5 | -c -i CMD IDENT: the command is CMD and IDENT the other | planned: check_args.c |
-| ZI6 | -c IDENT -i CMD: the same; the position of -i does not matter | planned: check_args.c |
-| ZI7 | -c -i CMD IDENT EXTRA: refused as a second identifier | planned: check_args.c |
-| ZI8 | -i --from A: the next word is a flag, so the built-in, and --from is parsed | planned: check_args.c |
-| ZI9 | --interactive= with an empty value: refused | planned: check_args.c |
-| ZI10 | -i on --restart, --abort and --verify: refused, with or without a value | planned: check_args.c (the rule of ZX gate flags, carried) |
-| ZI11 | -i beside --dry-run: refused, with or without a value | planned: check_args.c (ZX241, carried) |
-| ZI12 | a value with its own flags, "CMD --flag", is one command string, never split | planned: check_args.c |
-| ZI13 | the child receives the resolution's path as its last argument, byte for byte | planned: check_run.c |
-| ZI14 | the value's own flags reach the child before the path, in order | planned: check_run.c |
-| ZI15 | the child exits 0: the launcher reports 0 | planned: check_run.c |
-| ZI16 | the child exits N: the launcher reports N, and the file is as the child left it | planned: check_run.c |
-| ZI17 | the child dies of a signal: reported non-zero, with the signal named | planned: check_run.c |
-| ZI18 | the command cannot be run: reported non-zero, with the command named | planned: check_run.c |
-| ZI19 | SIGINT while the tool waits reaches the child and not the tool: a child that sends INT to its parent and exits 0 is reported 0, and the tool is still there | planned: check_run.c |
-| ZI20 | SIGTERM to the tool while it waits is forwarded to the child, and the launch reports non-zero | planned: check_run.c |
-| ZI21 | termios saved before the fork are restored after a child that changed them, on a pty | planned: check_run.c, openpty(3) |
-| ZI22 | the built-in with no picker in the build: the stub says so, exits 2, reported non-zero | planned: check_run.c |
-| ZI23 | the built-in child's argv is RESOLUTION BASE FROM ONTO RESULT, in that order | planned: check_run.c |
+| ZI1 | -i alone on a fresh run: interactive, and no command (the built-in) | covered: check_args.c |
+| ZI2 | -i CMD on a fresh run: the command is CMD | covered: check_args.c |
+| ZI3 | --interactive=CMD: the command is CMD, on a fresh run and on --continue | covered: check_args.c |
+| ZI4 | -c -i IDENT: the only bare word on a verb's line is IDENT, and the built-in | covered: check_args.c |
+| ZI5 | -c -i CMD IDENT: the command is CMD and IDENT the other | covered: check_args.c |
+| ZI6 | -c IDENT -i CMD: the same; the position of -i does not matter | covered: check_args.c |
+| ZI7 | -c -i CMD IDENT EXTRA: refused as a second identifier | covered: check_args.c |
+| ZI8 | -i --from A: the next word is a flag, so the built-in, and --from is parsed | covered: check_args.c |
+| ZI9 | --interactive= with an empty value: refused | covered: check_args.c |
+| ZI10 | -i on --restart, --abort and --verify: refused, with or without a value | covered: check_args.c (the rule of ZX gate flags, carried) |
+| ZI11 | -i beside --dry-run: refused, with or without a value | covered: check_args.c (ZX241, carried) |
+| ZI12 | a value with its own flags, "CMD --flag", is one command string, never split | covered: check_args.c |
+| ZI13 | the child receives the resolution's path as its last argument, byte for byte | covered: check_run.c |
+| ZI14 | the value's own flags reach the child before the path, in order | covered: check_run.c |
+| ZI15 | the child exits 0: the launcher reports 0 | covered: check_run.c |
+| ZI16 | the child exits N: the launcher reports N, and the file is as the child left it | covered: check_run.c |
+| ZI17 | the child dies of a signal: reported non-zero, with the signal named | covered: check_run.c |
+| ZI18 | the command cannot be run: reported non-zero, with the command named | covered: check_run.c |
+| ZI19 | SIGINT while the tool waits reaches the child and not the tool: a child that sends INT to its parent and exits 0 is reported 0, and the tool is still there | covered: check_run.c |
+| ZI20 | SIGTERM to the tool while it waits is forwarded to the child, and the launch reports non-zero, naming the signal, even when the child catches it and exits 0 | covered: check_run.c |
+| ZI21 | termios saved before the fork are restored after a child that changed them, on a pty | covered: check_run.c, posix_openpt(3) rather than openpty(3), which wants -lutil |
+| ZI22 | the built-in with no picker in the build: the stub says so, exits 2, reported non-zero | covered: check_run.c |
+| ZI23 | the built-in child's argv is RESOLUTION BASE FROM ONTO RESULT, in that order | covered: check_run.c |
 | ZI24 | a fresh run with -i and a script that answers every line: done in one process, exit 0 | planned: box, box/run-resolution.sh |
 | ZI25 | the script exits 1: the gate stands, exit 1, the resolution as the script left it with its partial answers | planned: box, box/run-resolution.sh |
 | ZI26 | the script leaves a name unanswered and exits 0: the count printed, exit 1, the gate stands | planned: box, box/run-resolution.sh |

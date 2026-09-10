@@ -22,7 +22,7 @@
 .Op Fl q | Fl -quiet
 .Oo Fl u | Fl -allow-unrelated Fl b | Fl -base Ar snapshot Oc
 .Oo Fl O | Fl -take-onto | Fl F | Fl -take-from Oc
-.Op Fl i | Fl -interactive
+.Op Fl i | Fl -interactive Op Ar command
 .Op Fl M | Fl -no-merge
 .Fl f | Fl -from Ar snapshot Ns | Ns Ar dataset
 .Fl t | Fl -onto Ar snapshot Ns | Ns Ar dataset
@@ -35,7 +35,7 @@
 .Fl t | Fl -onto Ar snapshot Ns | Ns Ar dataset
 .Nm
 .Fl c | Fl -continue
-.Op Fl i | Fl -interactive
+.Op Fl i | Fl -interactive Op Ar command
 .Op Fl M | Fl -no-merge
 .Op Fl v | Fl -verbose
 .Op Fl f | Fl -from Ar snapshot
@@ -575,21 +575,103 @@ is a usage error.
 The same, answering every conflict
 .Sy from .
 The two exclude each other.
-.It Fl i , Fl -interactive
-Open the picker at the
+.It Fl i , Fl -interactive Op Ar command
+Open a child on the resolution at the
 .Sy conflicts
-gate.
+gate, wait for it, and read the document back.
 Without it the gate is headless, which is what a system tool does by
 default: it goes on when the resolution is complete and stops when it is
 not.
+.Pp
+.Ar command
+is the command line that edits the file, and the tool never splits it: the
+child is
+.Bd -literal -offset indent
+/bin/sh -c 'command "$@"' command resolution
+.Ed
+.Pp
+which is how git runs an editor.
+The command's own flags therefore survive \(em
+.Ql code --wait
+is one command \(em and the resolution's path arrives as the last
+argument, a positional parameter the shell never interpolates into
+anything.
+An editor gets that path and nothing else, and finds the manifest beside
+it under the same directory.
+With no
+.Ar command
+the built-in picker opens instead, which is given the path and the
+directories the four trees are at; a build with no picker in it says so
+and exits 2, which is this build.
+.Pp
+The value is optional, so a bare word after
+.Fl i
+is that command
+.Em unless
+it is the only bare word on a verb's line, where it is
+.Ar ident :
+.Bd -literal -offset indent
+zfs_rebase -c -i myrun          myrun is ident, and the built-in opens
+zfs_rebase -c -i nvim myrun     nvim is the command, myrun is ident
+zfs_rebase -c myrun -i nvim     the same; the position does not matter
+zfs_rebase -i nvim -f a -t b -r c   a start takes no ident: nvim it is
+zfs_rebase -i --from a          a word with a dash is a flag, not a value
+.Ed
+.Pp
+The attached form
+.Fl -interactive Ns = Ns Ar command
+always names the command, and an empty value there is a usage error.
+.Pp
+The child opens whenever the gate is reached, whether or not the
+resolution is already complete:
+.Fl -take-onto Fl i
+opens it on the answered skeleton, a
+.Fl -continue Fl i
+that arrives with a hand-answered file opens it, and
+.Fl M Fl i
+opens it and then holds the gate.
+A rebase whose decision declared no conflict reaches no gate and opens
+nothing.
+The gate's own work comes first \(em the phase written, and on a
+.Fl -continue
+the check whose drift lines go into the document \(em so the child sees
+the resolution as it stands, and the line saying how many names are
+unanswered is printed after the child and not before it.
+.Pp
+Exit 0 from the child, and the document is read again with every refusal
+.Fl -continue
+makes of one, and the gate is then decided as it always is: complete and
+no
+.Fl -no-merge
+goes on, an unanswered name stops.
+Anything else \(em a status, a signal, a command that could not be run at
+all \(em and the gate stands with the file as the child last saved it,
+the exit is 1, and nothing reopens the child by itself: the rebase carries
+on with
+.Bd -literal -offset indent
+zfs_rebase -c ident -i
+.Ed
+.Pp
+While it waits the tool ignores
+.Dv SIGINT
+and
+.Dv SIGQUIT
+the way
+.Xr system 3
+does, so a Ctrl-C reaches the editor and not the tool, and it forwards a
+.Dv SIGTERM
+of its own to the child.
+Where its standard input is a terminal it saves the termios before the
+fork and puts them back after the wait if the child left them changed, so
+that an editor that crashed cannot leave the terminal raw.
+A kill of the tool while the child runs leaves the gate the same way, with
+the child orphaned and finishing on its own.
+.Pp
 The flag is not latched: it belongs to the invocation, so a
 .Fl -continue
-that should open the picker says it each time, and a start given it that
-reaches the gate in the same process is still interactive there.
-This build has no picker to open, so the flag changes nothing today: it is
-accepted on a fresh run and on
-.Fl -continue ,
-and the gate reads the same either way.
+that should open a child says it each time, and a start given it that
+reaches the gate in the same process is interactive there.
+Nothing about it is written into the record or the header.
 .It Fl M , Fl -no-merge
 Stop at the
 .Sy conflicts
@@ -1087,8 +1169,10 @@ it is for the next
 past the gate the flag is refused, since there is nothing left for it to
 stop.
 .Fl -interactive
-asks for the picker, which this build does not have, so the gate is
-headless with the flag and without it.
+opens a child on the resolution there instead \(em an editor named with
+.Fl i Ar command ,
+or the built-in picker \(em and reads the document back when it exits 0;
+anything else leaves the gate standing.
 .Sy applying2
 carries the choices out.
 .Sy done

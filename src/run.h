@@ -49,6 +49,7 @@ struct zr_run_opts {
 	const char	*result;	/* the clone, or the snapshot name */
 	const char	*outpath;	/* manifest file, or NULL */
 	const char	*base;		/* --base SNAP, or NULL */
+	const char	*editor;	/* -i's value; NULL is the built-in */
 	zr_mode_t	mode;
 	int		dryrun;		/* manifest only, nothing created */
 	int		unrelated;	/* --allow-unrelated: no derivation */
@@ -65,13 +66,20 @@ struct zr_run_opts {
 	 * itself, since a complete resolution plus the command that
 	 * asked for the rebase is the signal the gate waits for.
 	 *
-	 * --interactive is not here. What it asks for is the picker
-	 * at the gate, and there is none to launch in this build, so
-	 * the gate is headless with the flag or without it and
-	 * nothing in the run reads it.
+	 * interactive is --interactive: at the gate the run forks a
+	 * child on the resolution -- the command editor names, or the
+	 * built-in picker where it is NULL -- waits for it, and reads
+	 * the document back off the disk. It opens whether the
+	 * skeleton came out complete or not (ruling 2 of the plan),
+	 * and it opens after everything else the gate does, so that
+	 * the child sees the document as it stands. A child that
+	 * exits anything but 0 leaves the gate standing. The flag is
+	 * not latched: it belongs to the invocation, and nothing of
+	 * it is written into the record or the header.
 	 */
 	int		takeonto;
 	int		takefrom;
+	int		interactive;
 	int		nomerge;
 	int		verbose;
 };
@@ -150,12 +158,17 @@ int zr_flags_refused(const struct zr_decision *d, const struct zr_walk *onto,
  * which rebase they think this is, which is checked against the
  * header by name and by guid.
  *
- * nomerge is --continue's alone; the others read it not at all.
+ * nomerge and interactive are --continue's alone; the others read
+ * them not at all. editor is interactive's optional value, the
+ * command that edits the resolution, and NULL asks for the built-in
+ * picker.
  */
 struct zr_verb_opts {
 	const char	*ident;		/* IDENT, the one operand */
 	const char	*from;		/* -f, or NULL */
 	const char	*onto;		/* -t, or NULL */
+	const char	*editor;	/* -i's value; NULL is the built-in */
+	int		interactive;
 	int		nomerge;
 	int		verbose;
 };
@@ -224,10 +237,14 @@ int zr_run_dataset(const struct zr_parsed *p, char *buf, size_t buflen,
  * with the choice keep, and at the done gate the final check reports
  * and exits 3 where it finds drift, done being reached all the same.
  * Nothing here repairs: the one fix is applying1's own self-check.
- * With nomerge it stops at the conflicts gate
+ * With interactive it forks a child on the resolution at that gate,
+ * after the check has written what it found, and reads the document
+ * back when the child exits 0. With nomerge it stops at the
+ * conflicts gate
  * whatever the resolution says, and refuses altogether from a
  * record already past the merge: applying2 and done have no gate
- * left for the flag to hold.
+ * left for the flag to hold. The two go together: -M -i opens the
+ * child and then holds the gate.
  *
  * zr_restart puts the result back as onto was and applies again from
  * the first gate: the clone form destroys the clone and makes it
