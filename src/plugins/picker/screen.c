@@ -83,7 +83,7 @@
 
 /* The key bar of the mockup, drawn when there is nothing to say. */
 #define	PK_KEYS		"up/dn move  f/o/k choose  - clear  enter open " \
-			"(text)  g group  s save  w write+continue  q quit"
+			"(text)  g group  s save  w write+continue  q/esc quit"
 
 /* The title in the top rule. */
 #define	PK_TITLE	" zfs_rebase: conflicts "
@@ -1024,7 +1024,7 @@ pk_draw(const struct zr_picker *pk, const struct pk_geom *g, uint32_t top,
 
 /* The key bar of screen 2. There is no result editor this sprint. */
 #define	PK_MKEYS	"1/2 take from/onto  b base  n/p hunk  " \
-			"c conflicts only  w write  esc back"
+			"c conflicts only  w write  q/esc back"
 
 /*
  * One drawn cell: the gutter, the cursor's cell, the line number and
@@ -1793,6 +1793,7 @@ pk_map(int c)
 	case 'w':
 		return (ZR_PK_WRITE);
 	case 'q':
+	case '\033':
 		return (ZR_PK_QUIT);
 	default:
 		return (-1);
@@ -1824,6 +1825,7 @@ pk_map_merge(int c)
 	case 'w':
 		return (ZR_PK_WRITE);
 	case '\033':
+	case 'q':
 		return (ZR_PK_BACK);
 	default:
 		return (-1);

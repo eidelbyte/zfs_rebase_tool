@@ -1881,6 +1881,17 @@ test_merge_back(void)
 	CHECK(got != NULL);
 	same("esc wrote nothing", got, len, G_M2_BASE, strlen(G_M2_BASE));
 	free(got);
+	/*
+	 * And q does what Esc does on screen 2, as Esc does what q
+	 * does on the list: either key leaves the screen it is on (the
+	 * author, on the box, 2026-09-10).
+	 */
+	(void) merge_on(&pk, G_M2);
+	CHECK(zr_pk_merge(&pk) != NULL);
+	CHECK(zr_pk_key(&pk, ZR_PK_QUIT) == ZR_PK_REDRAW);
+	CHECK(zr_pk_merge(&pk) == NULL);
+	CHECK(zr_pk_key(&pk, ZR_PK_BACK) == ZR_PK_EXIT);
+	CHECK(zr_pk_status(&pk) == 2);
 	/* and the merge opens again from where the row stands */
 	(void) merge_on(&pk, G_M2);
 	CHECK(zr_pk_merge(&pk)->pm_m3.chunks[1].pick == ZR_M3_PICK_NONE);

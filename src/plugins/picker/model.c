@@ -1322,6 +1322,8 @@ pk_merge_key(struct zr_picker *pk, enum zr_pk_key key)
 		mg->pm_only = mg->pm_only == 0;
 		return (ZR_PK_REDRAW);
 	case ZR_PK_BACK:
+	case ZR_PK_QUIT:
+		/* either key leaves the screen it is on (the author) */
 		zr_pk_merge_close(pk);
 		return (ZR_PK_REDRAW);
 	case ZR_PK_WRITE:
@@ -1367,6 +1369,8 @@ zr_pk_key(struct zr_picker *pk, enum zr_pk_key key)
 	case ZR_PK_WRITE:
 		return (pk_writekey(pk));
 	case ZR_PK_QUIT:
+	case ZR_PK_BACK:
+		/* and on the list, either leaves the picker */
 		return (ZR_PK_EXIT);
 	default:
 		return (ZR_PK_NOTHING);
