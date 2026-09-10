@@ -86,7 +86,7 @@ extern int keypad(WINDOW *, int);
 extern int scrollok(WINDOW *, int);
 extern int clearok(WINDOW *, int);
 extern int curs_set(int);
-extern extern int COLORS;
+extern int COLORS;
 int has_colors(void);
 extern int start_color(void);
 extern int use_default_colors(void);
