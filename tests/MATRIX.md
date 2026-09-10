@@ -1541,6 +1541,7 @@ are made.
 | ZI34 | the tool killed with SIGKILL while the script runs: the gate stands with the file as last saved, and -c continues | covered: box, box/run-resolution.sh case 12k |
 | ZI35 | --restart IDENT then -c IDENT -i CMD: the skeleton again, and the script opens on it | covered: box, box/run-resolution.sh case 12l |
 | ZI36 | on the resume path the built-in child gets base's directory as the fresh run's does, found from the record like a side's; add/add only where the header has no base | planned: box, by hand: the ZP103 session through -c IDENT -i, the title reading E/E and not A/A |
+| ZI37 | the clone is writable for the child's life and read-only again the moment the child is back, on both paths, whatever the child did; the picker's merge write lands | planned: box, by hand: the ZP103 session, w on screen 2 writing where it read "Read-only file system" before |
 
 ## ZP -- the built-in picker (check_picker.c, the box by hand)
 

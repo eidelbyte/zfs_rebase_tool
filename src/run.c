@@ -2815,6 +2815,7 @@ run_interactive(struct run *r)
 	char basedir[ZR_NAME_MAX * 2], fromdir[ZR_NAME_MAX * 2];
 	char ontodir[ZR_NAME_MAX * 2];
 	char e[512];
+	int rc;
 
 	basedir[0] = '\0';
 	if (r->base[0] != '\0')
@@ -2828,7 +2829,20 @@ run_interactive(struct run *r)
 	lp.from = fromdir;
 	lp.onto = ontodir;
 	lp.result = r->workmnt;
-	if (zr_launch(&lp, e, sizeof (e)) != 0) {
+	/*
+	 * The clone is read-only outside a stage, and the picker's
+	 * merge writes into it (the box, 2026-09-10: "/A: Read-only
+	 * file system"): writable for the child's life, read-only
+	 * again the moment it is back, whatever it did.
+	 */
+	if (!in_dataset_form(r) && zr_zfs_set_readonly(r->zfs, r->rds, 0,
+	    r->err, sizeof (r->err)) != 0)
+		return (fail(r, EXIT_INTERNAL, "readonly"));
+	rc = zr_launch(&lp, e, sizeof (e));
+	if (!in_dataset_form(r) && zr_zfs_set_readonly(r->zfs, r->rds, 1,
+	    r->err, sizeof (r->err)) != 0)
+		return (fail(r, EXIT_INTERNAL, "readonly"));
+	if (rc != 0) {
 		(void) fprintf(stderr, "zfs_rebase: %s\n", e);
 		(void) fprintf(stderr, "zfs_rebase: the resolution %s stands "
 		    "at the conflicts gate; continue with: zfs_rebase -c %s "
@@ -5785,6 +5799,7 @@ resume_interactive(struct resume *s)
 	struct zr_launch lp;
 	char basedir[ZR_NAME_MAX * 2];
 	char e[512];
+	int rc;
 
 	input_dir(s, ZI_BASE, basedir, sizeof (basedir));
 	memset(&lp, 0, sizeof (lp));
@@ -5794,7 +5809,13 @@ resume_interactive(struct resume *s)
 	lp.from = s->sidedir[ZS_FROM];
 	lp.onto = s->sidedir[ZS_ONTO];
 	lp.result = s->workmnt;
-	if (zr_launch(&lp, e, sizeof (e)) != 0) {
+	/* writable for the child's life, as the fresh run does it */
+	if (ro_off(s) != 0)
+		return (vfail(s, EXIT_INTERNAL, "readonly"));
+	rc = zr_launch(&lp, e, sizeof (e));
+	if (ro_on(s) != 0)
+		return (EXIT_INTERNAL);
+	if (rc != 0) {
 		(void) fprintf(stderr, "zfs_rebase: %s\n", e);
 		(void) fprintf(stderr, "zfs_rebase: the resolution %s stands "
 		    "at the conflicts gate; continue with: zfs_rebase -c %s "
