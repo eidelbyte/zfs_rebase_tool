@@ -1524,7 +1524,7 @@ are made.
 | ZI19 | SIGINT while the tool waits reaches the child and not the tool: a child that sends INT to its parent and exits 0 is reported 0, and the tool is still there | covered: check_run.c |
 | ZI20 | SIGTERM to the tool while it waits is forwarded to the child, and the launch reports non-zero, naming the signal, even when the child catches it and exits 0 | covered: check_run.c |
 | ZI21 | termios saved before the fork are restored after a child that changed them, on a pty | covered: check_run.c, posix_openpt(3) rather than openpty(3), which wants -lutil |
-| ZI22 | the built-in with no picker in the build: the stub says so, exits 2, reported non-zero | covered: check_run.c |
+| ZI22 | the built-in child on a document it cannot open: in a PICKER=no build the stub says there is no picker, in the default build the picker refuses before it touches a terminal; either way one line, exit 2, reported non-zero | covered: check_run.c, in both builds (make check and make PICKER=no check) |
 | ZI23 | the built-in child's argv is RESOLUTION BASE FROM ONTO RESULT, in that order | covered: check_run.c |
 | ZI24 | a fresh run with -i and a script that answers every line: done in one process, exit 0 | covered: box, box/run-resolution.sh case 12a |
 | ZI25 | the script exits 1: the gate stands, exit 1, the resolution as the script left it with its partial answers | covered: box, box/run-resolution.sh case 12b |
