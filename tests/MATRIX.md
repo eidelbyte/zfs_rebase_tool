@@ -1540,6 +1540,7 @@ are made.
 | ZI33 | -i alone on the box with no picker in the build: the note, exit 1, the gate stands | covered: box, box/run-resolution.sh case 12j |
 | ZI34 | the tool killed with SIGKILL while the script runs: the gate stands with the file as last saved, and -c continues | covered: box, box/run-resolution.sh case 12k |
 | ZI35 | --restart IDENT then -c IDENT -i CMD: the skeleton again, and the script opens on it | covered: box, box/run-resolution.sh case 12l |
+| ZI36 | on the resume path the built-in child gets base's directory as the fresh run's does, found from the record like a side's; add/add only where the header has no base | planned: box, by hand: the ZP103 session through -c IDENT -i, the title reading E/E and not A/A |
 
 ## ZP -- the built-in picker (check_picker.c, the box by hand)
 

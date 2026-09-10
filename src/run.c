@@ -5740,20 +5740,57 @@ out:
  * as this gate leaves it (plan section 2.2).
  *
  * The built-in picker is handed the directories walk_side read the
- * two sides at and the private mount the result is at; base is no
- * verb's and is given as "". Returns 0 with s->res read again off
- * the file, or the status to give up with, the reason printed.
+ * two sides at, base's directory found the same way, and the private
+ * mount the result is at. Returns 0 with s->res read again off the
+ * file, or the status to give up with, the reason printed.
  */
+
+/*
+ * The directory a recorded input can be read at, for the picker. No
+ * verb walks base, but the picker anchors its merge on it, and given
+ * "" it falls back to the two-way compare of add/add, where every
+ * difference is a conflict (the box, 2026-09-10: a --continue -i
+ * showed exactly that). "" where the input is gone, is not a
+ * snapshot (the empty base of --allow-unrelated), or cannot be
+ * read, and a line on stderr says so before the picker opens.
+ */
+static void
+input_dir(struct resume *s, int which, char *out, size_t outlen)
+{
+	char mnt[ZR_NAME_MAX], ds[ZR_SNAP_MAX], e[512];
+	uint64_t mounted;
+
+	out[0] = '\0';
+	if (s->gone[which] != 0 || strchr(s->found[which], '@') == NULL)
+		return;
+	dataset_of(s->found[which], ds, sizeof (ds));
+	if (s->dataset && strcmp(ds, s->result) == 0) {
+		snapdir(out, outlen, s->workmnt, s->found[which]);
+		return;
+	}
+	if (zr_zfs_get_int(s->zfs, ds, "mounted", &mounted, e,
+	    sizeof (e)) != 0 || mounted == ZR_NOT_MOUNTED ||
+	    zr_zfs_get(s->zfs, ds, "mountpoint", mnt, sizeof (mnt), e,
+	    sizeof (e)) != 0) {
+		(void) fprintf(stderr, "zfs_rebase: %s cannot be read, so "
+		    "the picker's merge view has no base\n", s->found[which]);
+		return;
+	}
+	snapdir(out, outlen, mnt, s->found[which]);
+}
+
 static int
 resume_interactive(struct resume *s)
 {
 	struct zr_launch lp;
+	char basedir[ZR_NAME_MAX * 2];
 	char e[512];
 
+	input_dir(s, ZI_BASE, basedir, sizeof (basedir));
 	memset(&lp, 0, sizeof (lp));
 	lp.command = s->editor;
 	lp.resolution = s->respath;
-	lp.base = "";
+	lp.base = basedir;
 	lp.from = s->sidedir[ZS_FROM];
 	lp.onto = s->sidedir[ZS_ONTO];
 	lp.result = s->workmnt;
