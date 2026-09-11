@@ -59,10 +59,12 @@
 #      exactly one per input snapshot for a conflicted one, under
 #      the tag the record carries, since a stopped rebase holds on
 #      purpose;
-#   3. the result and its record: exactly $POOL/result, read-only,
-#      its mountpoint property none and the clone itself mounted at
-#      /var/db/zfs_rebase/$POOL/result/mnt while the rebase is open,
-#      or unmounted with that property still none once the rebase
+#   3. the result and its record: exactly $POOL/result, writable and
+#      its mountpoint property none, the clone itself mounted at
+#      /var/db/zfs_rebase/$POOL/result/mnt while the rebase is open
+#      -- readonly is off from the clone to the done gate, one rule
+#      for the whole of it -- or read-only and unmounted with that
+#      property still none once the rebase
 #      has reached done, which is the void the tool hands it to and
 #      the placement line on stderr says how to leave (the harness
 #      places it with zfs set mountpoint to read its tree); the record
@@ -115,12 +117,14 @@
 #      and a copy of this rebase's own manifest, which its header
 #      names but its record does not;
 #  3b. for probe.zrt, drift and what nothing repairs: /n, which the
-#      manifest copied, is edited behind the tool's back with
-#      readonly off and on again, --verify then exits 3 naming
+#      manifest copied, is edited behind the tool's back -- the open
+#      clone is writable, so the edit needs no property flipped for
+#      it -- --verify then exits 3 naming
 #      "drifted 1, first /n" and fixes nothing, a plain --continue
 #      checks at the gate under no flag, reports the same drift,
 #      writes nothing into the tree and exits per the branch, and
-#      --verify still reports it with the result read-only;
+#      --verify still reports it with the clone writable and its
+#      tree untouched;
 #  3c. for probe.zrt, --restart: the clone is destroyed and made
 #      again from the onto snapshot the header names, with the same
 #      record, the manifest is applied from the first gate, and the
@@ -610,11 +614,12 @@ fi
 say "3. the result and its record"
 [ "$(zfs list -H -o name "$POOL/result" 2>/dev/null)" = "$POOL/result" ] \
     || fail "no result dataset $POOL/result"
-[ "$(zfs get -H -o value readonly "$POOL/result")" = on ] || fail "the result is not read-only"
 # The clone's mountpoint property is none from the create on and
 # stays none: while the rebase is open the clone is at the run's own
 # place, mounted there with zfs_mount_at, and at done it is unmounted
-# and handed to the user to place.
+# and handed to the user to place. readonly is the one rule of
+# 2026-09-10: off from the moment the clone is made until the done
+# gate puts it on, which is the deliverable and nothing else.
 if [ $clean -eq 1 ]; then
 	placement_line "$tmp/run2"
 	clone_placed
@@ -622,8 +627,11 @@ if [ $clean -eq 1 ]; then
 	echo "     on, mountpoint none; the harness placed it at $cmnt"
 else
 	clone_open
+	[ "$(zfs get -H -o value readonly "$POOL/result")" = off ] || \
+	    fail "the clone of an open rebase is read-only"
 	echo "ok   the clone is at the private mount $cmnt with mountpoint"
-	echo "     none, which it never leaves while the rebase is open"
+	echo "     none and readonly off, which is how it stands from the"
+	echo "     clone until done"
 fi
 
 # The record is four properties at most, and here it is two or three:
@@ -984,9 +992,10 @@ case "$fixture" in
 	# It is there at all only because applying1 ran before the run
 	# stopped at conflicts, which is the whole point of the stage.
 	[ -f "$cmnt/n" ] || fail "the clean action n cp /n was not applied"
-	zfs set readonly=off "$POOL/result" || fail "readonly=off"
+	# No property is flipped for the edit: the clone is writable
+	# where the rebase is open, which is what the drift this step
+	# is about is made of.
 	printf 'stray\n' >> "$cmnt/n" || fail "cannot edit $cmnt/n"
-	zfs set readonly=on "$POOL/result" || fail "readonly=on"
 	"$bin" --verify "$POOL/result" > "$tmp/verify2" 2>&1
 	st=$?
 	[ $st -eq 3 ] || \
@@ -1013,8 +1022,8 @@ case "$fixture" in
 	    { cat "$tmp/verify3"; fail "--verify after it exited $st, want 3"; }
 	grep -q 'drifted 1, first /n' "$tmp/verify3" || \
 	    { cat "$tmp/verify3"; fail "the drift is not reported any more"; }
-	[ "$(zfs get -H -o value readonly "$POOL/result")" = on ] || \
-	    fail "a verb left the result writable"
+	[ "$(zfs get -H -o value readonly "$POOL/result")" = off ] || \
+	    fail "a verb took the open clone's writability away"
 	echo "ok   --continue reported it and wrote nothing"
 
 	say "3c. restart (probe.zrt)"
@@ -1032,10 +1041,12 @@ case "$fixture" in
 	    fail "--restart did not land at $phase"
 	[ "$(recval zfs_rebase:tag "$POOL/result")" = "$tag" ] || \
 	    fail "--restart changed the tag"
-	[ "$(zfs get -H -o value readonly "$POOL/result")" = on ] || \
-	    fail "--restart left the result writable"
+	[ "$(zfs get -H -o value readonly "$POOL/result")" = off ] || \
+	    fail "--restart left the fresh clone read-only"
 	# The clone was destroyed and made again, so it is at the
-	# private mount again, with the mountpoint property none.
+	# private mount again, with the mountpoint property none, and
+	# the fresh clone is writable as the first one was: a re-clone
+	# is a birth and gets the one flip.
 	clone_open
 	if [ $clean -eq 0 ]; then
 		for s in "$POOL/base@base" "$POOL/from@work" \
@@ -1084,7 +1095,7 @@ case "$fixture" in
 		[ -z "$held" ] || fail "$s is still held after done: $held"
 	done
 	[ "$(zfs get -H -o value readonly "$POOL/result")" = on ] || \
-	    fail "done left the result writable"
+	    fail "done left the clone writable"
 	# This case answers every conflict with keep, the one choice
 	# that changes nothing, so the tree is still the one stage 1
 	# made: a second rebase has no action and the same conflicts.

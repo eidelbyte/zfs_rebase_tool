@@ -12,11 +12,12 @@
  * The clone form, onto given as a snapshot. --result names a new
  * dataset, cloned from that snapshot read-only and with the
  * mountpoint property none, and mounted at the run's private
- * directory with zfs_mount_at; the record lives on the clone.
- * Nothing of the user's is written to at all. At done the clone is
- * unmounted and handed to the void -- readonly on, mountpoint still
- * none -- and the tool says how to place it, which is the user's
- * work and not the tool's.
+ * directory with zfs_mount_at, where readonly goes off once and
+ * stays off for the whole of the rebase (clone_rw); the record
+ * lives on the clone. Nothing of the user's is written to at all.
+ * At done the clone is unmounted and handed to the void -- readonly
+ * on, mountpoint still none -- and the tool says how to place it,
+ * which is the user's work and not the tool's.
  *
  * The dataset form, onto given as a dataset. --result names the
  * pre-apply snapshot the tool takes of it -- the short name after
@@ -92,7 +93,7 @@
  * renamed over the birth manifest, which is before the skeleton is
  * written beside it: what it says is that the document the record
  * names is the decision and not the header the run was born with.
- * "applying1" goes down immediately before readonly comes off, and
+ * "applying1" goes down immediately before the first action, and
  * the clean actions of the manifest are applied under it whether the
  * decision had conflicts or not. A conflict stops the names it
  * covers and nothing else, and whoever has to answer one should be
@@ -104,11 +105,11 @@
  * flag before it was written -- and "applying2" carries the answers
  * out. The gate keys on completeness: every line answered, and a
  * --continue, which is the human input the move needs. done is
- * reached after the re-walk verified and readonly is back on: the
- * holds are given back and then the record is taken off, in that
- * order, because the tag in the record is the only handle on those
- * holds and a kill between the two must leave the handle rather
- * than the holds.
+ * reached after the re-walk verified: readonly goes back on there,
+ * which is the hand-over, and then the holds are given back and
+ * then the record is taken off, in that order, because the tag in
+ * the record is the only handle on those holds and a kill between
+ * the two must leave the handle rather than the holds.
  *
  * At birth there is no phase at all, and a stop writes none: what a
  * stop leaves is the gate it was working under, and --continue
@@ -146,12 +147,12 @@
  * and between two actions of the apply, the flag is looked at: if it
  * is up the run stops there and says so. Before the apply that
  * destroys the clone as any other failure before the apply does;
- * inside the apply the clone is kept at applying1, put back to
- * read-only, and a later --continue resumes it or --abort takes it
- * away. The handlers do not ask for SA_RESTART, so a read or a
- * write already in a slow call fails with EINTR rather than starting
- * over, and the phase that owns it reports that failure in the
- * ordinary way.
+ * inside the apply the clone is kept at applying1, writable as it is
+ * for the whole of the rebase, and a later --continue resumes it or
+ * --abort takes it away. The handlers do not ask for SA_RESTART, so
+ * a read or a write already in a slow call fails with EINTR rather
+ * than starting over, and the phase that owns it reports that
+ * failure in the ordinary way.
  */
 
 #include <errno.h>
@@ -452,12 +453,11 @@ signals_restore(const struct sigaction *saved)
  *			other
  *	decided		the manifest and the resolution are written and
  *			recorded, before applying1 is written
- *	applying1	that gate is written and readonly is off,
- *			before the first action
+ *	applying1	that gate is written, before the first action
  *	conflicts	that gate is written, before the note that
  *			says what the run is waiting for
- *	applying2	that gate is written and readonly is off,
- *			before the choices are carried out
+ *	applying2	that gate is written, before the choices are
+ *			carried out
  *	done		that gate is written, before the release
  *	action:<n>	inside the apply, before the n'th action it
  *			performs (apply.c, zr_apply_pause_at)
@@ -1613,8 +1613,8 @@ clear_record(struct zr_zfs *z, const char *dataset, int verbose)
  * without acting for a mountpoint of none.) So a dataset that was
  * read-only is made writable once, unmounted, for the private
  * mount's whole life, the header keeping what it was; the private
- * mount is root's alone and the per-stage flips are the clone
- * form's.
+ * mount is root's alone. The clone form has one flip of its own and
+ * it is made at its birth (clone_rw).
  */
 static int
 private_rw(struct zr_zfs *z, const char *dataset, char *err, size_t errlen)
@@ -1627,6 +1627,35 @@ private_rw(struct zr_zfs *z, const char *dataset, char *err, size_t errlen)
 	if (strcmp(ro, "on") != 0)
 		return (0);
 	return (zr_zfs_set_readonly(z, dataset, 0, err, errlen));
+}
+
+/*
+ * The clone form's one flip, and it is made at the birth. The create
+ * asks for readonly=on (zfsops.c), so the clone exists as onto's
+ * image and no hand can reach into it before the run has it; this
+ * takes that off the moment the clone is the run's, and nothing puts
+ * it back until the done gate hands the result over. Writable from
+ * the moment it is made until it is the deliverable, which is one
+ * rule where there were four (ruled 2026-09-10 on the box: "why is
+ * the clone read-only outside the stage? it's in a root only
+ * location. Maybe we should allow it to be mutated, since we catch
+ * drift anyway" -- "let's do it"). So a hand merge at the conflicts
+ * gate, the picker's own write into the tree and an edit made
+ * between two gates all land with no property to flip first, and an
+ * edit nobody meant is what it always was: something the checks
+ * report and the resolution then speaks for, not something a flag
+ * prevents. The private mount is root's alone, which is what makes
+ * that a safe trade.
+ *
+ * The flip costs no remount in this form whatever is mounted where:
+ * a mountpoint of none is nothing for zfs_mount to do, which is the
+ * exemption private_rw's comment sets out in full, and the kernel
+ * applies the property to the live mount itself.
+ */
+static int
+clone_rw(struct zr_zfs *z, const char *clone, char *err, size_t errlen)
+{
+	return (zr_zfs_set_readonly(z, clone, 0, err, errlen));
 }
 
 /*
@@ -2520,14 +2549,13 @@ apply_manifest(struct run *r)
 	if (zr_manifest_parse(fp, &parsed, r->err, sizeof (r->err)) != 0)
 		goto done;
 	/*
-	 * The gate: written immediately before the result stops being
-	 * read-only, so that a kill from here on leaves a record that
-	 * says the tree was being written to.
+	 * The gate: written immediately before the first action, so
+	 * that a kill from here on leaves a record that says the tree
+	 * was being written to. There is no property to flip: the
+	 * clone has been writable since its birth (clone_rw) and the
+	 * dataset form's private mount since the take.
 	 */
 	set_phase(r, ZR_PHASE_APPLYING1);
-	if (!in_dataset_form(r) && zr_zfs_set_readonly(r->zfs, r->rds, 0,
-	    r->err, sizeof (r->err)) != 0)
-		goto done;
 	zr_pause(ZR_PHASE_APPLYING1);
 	/*
 	 * No classification: what a fresh run applies to is onto's
@@ -2554,8 +2582,7 @@ apply_manifest(struct run *r)
 	 * spoke for put back as onto had them -- the result is this
 	 * run's own until the conflicts gate, so anything else there
 	 * is a stray -- and then every action must be done or
-	 * blocked. It is made before readonly goes back on, because
-	 * the putting back writes.
+	 * blocked.
 	 */
 	if (rc == 0) {
 		struct zr_apply_kept kept;
@@ -2563,8 +2590,9 @@ apply_manifest(struct run *r)
 		/*
 		 * The walk of the result the check ends with is the
 		 * result as the done gate is about to ask about it --
-		 * read-only from here and written by nothing in
-		 * between -- so it is kept for the gate rather than
+		 * this run goes straight from here to that gate, with
+		 * no conflict to answer and nothing in between that
+		 * writes -- so it is kept for the gate rather than
 		 * thrown away and made again (R13 of the code review).
 		 * The oracle over it is not: the gate is the check a
 		 * --continue makes, and what it is handed are the
@@ -2586,9 +2614,6 @@ apply_manifest(struct run *r)
 			    (unsigned long long)rst.zs_removed,
 			    (unsigned long long)rst.zs_relinked);
 	}
-	if (!in_dataset_form(r) && zr_zfs_set_readonly(r->zfs, r->rds, 1,
-	    r->err, sizeof (r->err)) != 0)
-		rc = -1;
 done:
 	zr_parsed_fini(&parsed);
 	(void) fclose(fp);
@@ -2830,18 +2855,13 @@ run_interactive(struct run *r)
 	lp.onto = ontodir;
 	lp.result = r->workmnt;
 	/*
-	 * The clone is read-only outside a stage, and the picker's
-	 * merge writes into it (the box, 2026-09-10: "/A: Read-only
-	 * file system"): writable for the child's life, read-only
-	 * again the moment it is back, whatever it did.
+	 * The child writes into the result itself -- the picker's
+	 * merge does, and an editor the person points at a file does
+	 * -- and there is nothing to flip for it: the result has been
+	 * writable since the take in the dataset form and since the
+	 * clone's birth in the other (clone_rw).
 	 */
-	if (!in_dataset_form(r) && zr_zfs_set_readonly(r->zfs, r->rds, 0,
-	    r->err, sizeof (r->err)) != 0)
-		return (fail(r, EXIT_INTERNAL, "readonly"));
 	rc = zr_launch(&lp, e, sizeof (e));
-	if (!in_dataset_form(r) && zr_zfs_set_readonly(r->zfs, r->rds, 1,
-	    r->err, sizeof (r->err)) != 0)
-		return (fail(r, EXIT_INTERNAL, "readonly"));
 	if (rc != 0) {
 		(void) fprintf(stderr, "zfs_rebase: %s\n", e);
 		(void) fprintf(stderr, "zfs_rebase: the resolution %s stands "
@@ -3036,7 +3056,10 @@ zr_run(const struct zr_run_opts *o)
 			 * own; the private mount is put on it here,
 			 * exactly as the dataset form's take does,
 			 * and is the only place it is ever mounted
-			 * while the rebase is open.
+			 * while the rebase is open. readonly comes off
+			 * the moment it is there and stays off until
+			 * the done gate (clone_rw): this is the one
+			 * flip of the whole rebase.
 			 */
 			if (zr_zfs_clone(r.zfs, r.ontosnap, r.rds, &rec,
 			    r.err, sizeof (r.err)) != 0) {
@@ -3048,6 +3071,11 @@ zr_run(const struct zr_run_opts *o)
 			if (zr_zfs_mount_at(r.zfs, r.rds, r.workmnt,
 			    r.err, sizeof (r.err)) != 0) {
 				rc = fail(&r, EXIT_PRECOND, "clone");
+				goto done;
+			}
+			if (clone_rw(r.zfs, r.rds, r.err,
+			    sizeof (r.err)) != 0) {
+				rc = fail(&r, EXIT_PRECOND, "readonly");
 				goto done;
 			}
 		}
@@ -3463,7 +3491,6 @@ struct resume {
 	struct zr_resolution	res;		/* the recorded resolution */
 	int			hasres;		/* 1 read, 0 gone, -1 bad */
 	char			reserr[512];	/* why, when it is -1 */
-	int			writable;	/* readonly is off just now */
 	char			err[512];
 };
 
@@ -4396,35 +4423,31 @@ release_record(struct resume *s)
 }
 
 /*
- * The result is read-only except while a stage writes to it, and
- * whatever happens to a stage, read-only goes back on: the flag is
- * what stands between a rebased tree and an edit nobody meant.
+ * The hand-over, and the one moment in the clone form where readonly
+ * is written after the birth: the done gate calls this and nothing
+ * else does. The clone was writable from the moment it was made
+ * (clone_rw), through every gate and every hand that answered a
+ * conflict in it; here the rebase is over and what is left is the
+ * deliverable, so it goes read-only and then to the void, unmounted,
+ * with its mountpoint property still none.
+ *
+ * It is made unconditionally in that form -- there is no flag to
+ * read, because there is no state to keep -- and never in the
+ * dataset form, where readonly is the header's and the hand-back is
+ * what writes it.
  */
-static int
-ro_off(struct resume *s)
-{
-	/* the dataset form's private mount is writable for its life */
-	if (!s->dataset && zr_zfs_set_readonly(s->zfs, s->result, 0,
-	    s->err, sizeof (s->err)) != 0)
-		return (-1);
-	s->writable = 1;
-	return (0);
-}
-
 static int
 ro_on(struct resume *s)
 {
 	char e[512];
 
-	if (s->writable == 0)
+	if (s->dataset)
 		return (0);
-	if (!s->dataset &&
-	    zr_zfs_set_readonly(s->zfs, s->result, 1, e, sizeof (e)) != 0) {
+	if (zr_zfs_set_readonly(s->zfs, s->result, 1, e, sizeof (e)) != 0) {
 		(void) fprintf(stderr, "zfs_rebase: readonly on %s: %s\n",
 		    s->result, e);
 		return (-1);
 	}
-	s->writable = 0;
 	return (0);
 }
 
@@ -4617,8 +4640,8 @@ take_over(struct resume *s)
 		/*
 		 * The dataset form's private mount is writable for
 		 * its whole life, and the flip is made here while the
-		 * dataset is off any mountpoint; the clone's readonly
-		 * is the stages' own and is put back on below.
+		 * dataset is off any mountpoint; the clone has been
+		 * writable since its birth and this verb leaves it so.
 		 */
 		if ((s->dataset && private_rw(s->zfs, s->result, s->err,
 		    sizeof (s->err)) != 0) ||
@@ -4631,17 +4654,13 @@ take_over(struct resume *s)
 			    "alone, mounted at %s\n", s->result, s->workmnt);
 	}
 	/*
-	 * Read-only outside a stage is the clone form's rule, and the
-	 * kernel applies the change to the live private mount with no
-	 * remount at all (readonly_changed_cb; the box probe of
-	 * 2026-09-06, sprints/sprint-5/probe-mount.txt, 2a to 2d).
-	 * The dataset form's private mount is writable for its life
-	 * (private_rw), and the header says what readonly was.
+	 * And no readonly is written here, in either form: the clone
+	 * is writable from its birth to the done gate (clone_rw) and
+	 * every verb finds it that way and leaves it that way, and the
+	 * dataset form's private mount is writable for its life
+	 * (private_rw) with the header keeping what the property was.
 	 */
-	if (s->dataset)
-		return (0);
-	return (zr_zfs_set_readonly(s->zfs, s->result, 1, s->err,
-	    sizeof (s->err)));
+	return (0);
 }
 
 /*
@@ -4867,10 +4886,11 @@ print_report(const struct resume *s, const struct zr_parsed *m,
 
 /*
  * One applying stage: the gate, the classification the apply reads,
- * the apply, the re-walk and read-only again. m is the document this
- * stage applies -- the recorded manifest for applying1 -- and phase
- * is the gate to write before the first write, or NULL where the
- * gate must not move.
+ * the apply and the re-walk. m is the document this stage applies --
+ * the recorded manifest for applying1 -- and phase is the gate to
+ * write before the first write, or NULL where the gate must not
+ * move. No property is written: the result has been writable since
+ * the take, or since the clone's birth (clone_rw).
  *
  * The classification is made because the apply reads it, to know
  * what is already true and may be left alone, and it is not printed:
@@ -4902,8 +4922,6 @@ stage_apply(struct resume *s, const struct zr_parsed *m, const char *phase)
 	memset(&rep, 0, sizeof (rep));
 	if (phase != NULL)
 		put_phase(s->zfs, s->result, phase);
-	if (ro_off(s) != 0)
-		return (-1);
 	/*
 	 * The gate this stage has just written, for the harness. A
 	 * repair passes no gate and stops at none.
@@ -4957,8 +4975,6 @@ stage_apply(struct resume *s, const struct zr_parsed *m, const char *phase)
 	rc = 0;
 out:
 	zr_verify_report_fini(&rep);
-	if (ro_on(s) != 0)
-		rc = -1;
 	return (rc);
 }
 
@@ -5481,9 +5497,10 @@ done_gate(struct resume *s)
 		    "same\n", s->result);
 	zr_pause(ZR_GATE_DONE);
 	/*
-	 * The clone is read-only outside a stage, and it goes to the
-	 * void that way; the dataset form's readonly is the header's
-	 * and the hand-back writes it.
+	 * The hand-over: the clone was writable for the whole of the
+	 * rebase and goes read-only here, once, as the deliverable the
+	 * void is handed (ro_on). The dataset form's readonly is the
+	 * header's and the hand-back writes it.
 	 */
 	(void) ro_on(s);
 	close_trees(s);
@@ -5723,8 +5740,6 @@ stage2(struct resume *s)
 	}
 	put_phase(s->zfs, s->result, ZR_PHASE_APPLYING2);
 	rc = EXIT_INTERNAL;
-	if (ro_off(s) != 0)
-		goto out;
 	zr_pause(ZR_PHASE_APPLYING2);
 	/*
 	 * And the trees this verb goes on with, which the choices have
@@ -5738,8 +5753,6 @@ stage2(struct resume *s)
 		goto out;
 	rc = 0;
 out:
-	if (ro_on(s) != 0)
-		rc = EXIT_INTERNAL;
 	if (rc != 0)
 		return (vfail(s, rc, "apply"));
 	if (vstopped(s) != 0)
@@ -5809,12 +5822,8 @@ resume_interactive(struct resume *s)
 	lp.from = s->sidedir[ZS_FROM];
 	lp.onto = s->sidedir[ZS_ONTO];
 	lp.result = s->workmnt;
-	/* writable for the child's life, as the fresh run does it */
-	if (ro_off(s) != 0)
-		return (vfail(s, EXIT_INTERNAL, "readonly"));
+	/* the result is writable already, as the fresh run has it */
 	rc = zr_launch(&lp, e, sizeof (e));
-	if (ro_on(s) != 0)
-		return (EXIT_INTERNAL);
 	if (rc != 0) {
 		(void) fprintf(stderr, "zfs_rebase: %s\n", e);
 		(void) fprintf(stderr, "zfs_rebase: the resolution %s stands "
@@ -6237,9 +6246,10 @@ resume_open_result(struct resume *s, const struct zr_verb_opts *o,
  *
  * No property of the result is touched either way: a report never
  * sets readonly and moves nothing that is where it should be
- * (documents-design.md, section 11.6). A clone outside a stage has
- * readonly on, so the mount it is read at is read-only, which is all
- * a check ever wanted of it.
+ * (documents-design.md, section 11.6). An open rebase's clone is
+ * writable and a settled one is read-only, and the report reads
+ * either where it finds it: it writes nothing to the tree, so the
+ * flag is nothing it ever needed.
  *
  * The run directory is the settled check's alone to make and to take
  * away. An open rebase's is the run's, holding its documents and the
@@ -6314,9 +6324,10 @@ resume_trees(struct resume *s)
  * that refused -- leaves the result at the private mount with its
  * record and its holds, which is where the next verb takes it from
  * (documents-design.md, section 5). What is left here is this
- * process's own: the readonly flag a stage left off, the walks, the
- * two documents in memory, the mount a settled check made for
- * itself, and the libzfs handle.
+ * process's own and no property of the rebase's: the walks, the two
+ * documents in memory, the mount a settled check made for itself,
+ * and the libzfs handle. A verb that stopped short of done leaves
+ * the result writable, which is where the next one wants it.
  */
 static void
 resume_close(struct resume *s)
@@ -6324,7 +6335,6 @@ resume_close(struct resume *s)
 	char e[512];
 	int rc;
 
-	(void) ro_on(s);
 	close_trees(s);
 	if (s->parsed != 0)
 		zr_parsed_fini(&s->man);
@@ -6520,7 +6530,10 @@ zr_restart(const struct zr_verb_opts *o)
 	 * phase, because the new clone has passed no gate. Nothing is
 	 * mounted here: the new clone's mountpoint is none like the
 	 * old one's, and restart_from's take_over puts it at the
-	 * private mount as it would after a reboot. The holds
+	 * private mount as it would after a reboot. It is born
+	 * read-only like the first, so the same one flip is made on it
+	 * here, while it is mounted nowhere: writable from this birth
+	 * to the done gate, as the rule has it (clone_rw). The holds
 	 * themselves are untouched -- they are on the snapshots and
 	 * not on the clone -- and onto's snapshot cannot go while a
 	 * clone of it lives, so there is no moment here where the
@@ -6545,6 +6558,10 @@ zr_restart(const struct zr_verb_opts *o)
 		    "not be made again; %s, %s and %s are still held under "
 		    "%s, which zfs release takes back\n", s.result, s.rb.base,
 		    s.rb.from, s.rb.onto, s.rb.tag);
+		goto done;
+	}
+	if (clone_rw(s.zfs, s.result, s.err, sizeof (s.err)) != 0) {
+		rc = vfail(&s, EXIT_INTERNAL, "readonly");
 		goto done;
 	}
 	/*

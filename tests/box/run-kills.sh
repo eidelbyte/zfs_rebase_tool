@@ -46,10 +46,11 @@
 #      record and the decision over that header later -- and
 #      the result, which is at the run's private mount in both forms:
 #      the clone with its mountpoint property none, the dataset with
-#      canmount noauto. In the clone form readonly is back on
-#      wherever the tool had the chance to put it back (every SIGINT
-#      and SIGTERM, and a SIGKILL at a gate where readonly was
-#      already on) and off after a SIGKILL inside an applying stage.
+#      canmount noauto. In the clone form readonly is off at every
+#      one of those gates, whatever the signal was: the clone is
+#      writable from the moment it is made until the done gate puts
+#      it read-only as the deliverable (ruled 2026-09-10), so there
+#      is no flag for a stop to leave one way or the other.
 #      In the dataset form the stop leaves the dataset privately
 #      mounted whatever the signal was -- home is reached at done and
 #      at --abort and at no gate between them, because a half rebased
@@ -79,8 +80,9 @@
 #
 #   --continue --result reaches the gate the fixture's branch ends
 #   in -- done for a clean one, conflicts for a conflicted one -- and
-#   after it readonly is on, the holds are gone at done and there at
-#   conflicts, and a --posix rebase of the fixture's from onto the
+#   after it the clone reads readonly on where it reached done and
+#   off where it stopped at conflicts, the holds are gone at done and
+#   there at conflicts, and a --posix rebase of the fixture's from onto the
 #   result declares zero actions, which is stage 1 idempotence. Where
 #   it reached done the result is settled: the dataset home with
 #   canmount and readonly as the fixture built them, the clone
@@ -111,8 +113,7 @@
 #   gate, the holds or the tree. Nor the mount and nor readonly: the
 #   report reads the result where the kill left it, which is what a
 #   verb that writes nothing has to do (documents-design.md, section
-#   11.6), and a kill inside a stage is where the difference shows,
-#   since the stage left readonly off.
+#   11.6), and it reads the property before and after to say so.
 #
 #   At the held gate, while the tool is stopped, zfs destroy of each
 #   held snapshot must fail and leave the snapshot standing: that is
@@ -444,16 +445,16 @@ kill_case() {
 			*) wstate=""; wres=no; wdecided=no ;;
 			esac
 			# The dataset is not the run's own until the
-			# clone gate: at held it is still at home with
-			# the readonly it had.
+			# clone gate: at held it is still at home, and
+			# the take has written none of its properties.
 			if [ "$gate" = held ] && [ "$form" = dataset ]; then
-				wro=off; wmnt=home
+				wmnt=home
 			else
-				wro=on; wmnt=priv
+				wmnt=priv
 			fi
 		else
 			out=torn; wexit=3; wstate=""; wman=no; wres=no
-			wdecided=no; wro=off; wmnt=home
+			wdecided=no; wmnt=home
 		fi ;;
 	applying1|action:*)
 		# A kept rebase holds the result at the private mount
@@ -461,12 +462,12 @@ kill_case() {
 		# it back, and a caught signal at a gate is neither.
 		out=kept; wstate=applying1; wman=yes; wmnt=priv
 		if [ "$sig" = KILL ]; then
-			wexit=137; wro=off
+			wexit=137
 		else
-			wexit=3; wro=on
+			wexit=3
 		fi ;;
 	conflicts)
-		out=kept; wstate=conflicts; wman=yes; wro=on; wmnt=priv
+		out=kept; wstate=conflicts; wman=yes; wmnt=priv
 		if [ "$sig" = KILL ]; then
 			wexit=137
 		else
@@ -476,9 +477,9 @@ kill_case() {
 		out=kept; wstate=applying2; wman=yes; resumed=yes
 		wmnt=priv
 		if [ "$sig" = KILL ]; then
-			wexit=137; wro=off
+			wexit=137
 		else
-			wexit=3; wro=on
+			wexit=3
 		fi ;;
 	done)
 		# done is no phase: a SIGKILL at that gate stops before
@@ -492,7 +493,7 @@ kill_case() {
 			wstate=applying2
 			resumed=yes
 		fi
-		wman=yes; wro=on
+		wman=yes
 		if [ "$sig" = KILL ]; then
 			out=kept; wexit=137; wmnt=priv
 		else
@@ -501,13 +502,17 @@ kill_case() {
 	*)
 		fail "no such gate" ;;
 	esac
-	# wro so far is the working value: on outside an applying
-	# stage and off inside one. That is the clone's own. The
-	# dataset wears what the record says it had -- what the fixture
-	# built it with -- at the private mount and at home alike: the
-	# tool touches its readonly only while it is off its mountpoint.
-	if [ "$form" = dataset ]; then
-		wro=off
+	# And readonly, which is one rule in each form. The clone is
+	# writable from the moment it is made until the done gate puts
+	# it read-only as the deliverable, so it reads off at every
+	# gate and whatever the signal was, and on only where the run
+	# finished (ruled 2026-09-10). The dataset wears what the
+	# record says it had -- what the fixture built it with -- at
+	# the private mount and at home alike: the tool touches its
+	# readonly only while it is off its mountpoint.
+	wro=off
+	if [ "$form" = clone ] && [ $out = finished ]; then
+		wro=on
 	fi
 	# And the clone form has no home to be handed back to: what
 	# done leaves it at is the void.
@@ -797,15 +802,14 @@ kill_case() {
 		wrep=0
 	fi
 	#
-	# A kill inside a stage leaves the result where the stage had
-	# it -- at the private mount, and in the clone form with
-	# readonly off, which is what the stage flipped it to. The
-	# report reads it there and leaves both alone: it reads in
-	# place and sets readonly on nothing (ZX237, ZX238;
-	# documents-design.md, section 11.6), where it used to take
-	# the result over as a --continue does and flip readonly back
-	# on, which was a property write by a verb that writes
-	# nothing.
+	# A kill leaves the result where the stage had it -- at the
+	# private mount, and in the clone form writable, which is how
+	# the clone stands for the whole of a rebase. The report reads
+	# it there and leaves both alone: it reads in place and sets
+	# readonly on nothing (ZX237, ZX238; documents-design.md,
+	# section 11.6), where it used to take the result over as a
+	# --continue does and flip readonly on, which was a property
+	# write by a verb that writes nothing.
 	vro=$(recval readonly "$rds")
 	vat=$(mountpt "$rds")
 	"$bin" --verify "$ident" > "$tmp/verify" 2>&1
@@ -857,10 +861,10 @@ kill_case() {
 	fi
 	[ "$(holdcount)" = $whold ] || \
 	    fail "$(holdcount) holds after --continue, want $whold"
-	if [ "$form" = clone ]; then
-		endro=on
+	if [ "$form" = clone ] && [ $wsettled -eq 1 ]; then
+		endro=on		# the deliverable, at done and there only
 	else
-		endro=off		# the record's own, as above
+		endro=off		# writable while the rebase is open
 	fi
 	[ "$(recval readonly "$rds")" = "$endro" ] || \
 	    fail "readonly is $(recval readonly "$rds") after --continue, want $endro"

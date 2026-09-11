@@ -42,9 +42,9 @@
 #    never happened -- and --verify afterwards has nothing to say.
 #
 # 3. Drift after the stage, which is what a check is for and what
-#    nothing repairs: an edit to a file a clean action made, with
-#    readonly off and back on behind the tool's back, is drifted 1
-#    naming that file. --verify fixes nothing and neither does a
+#    nothing repairs: an edit to a file a clean action made, behind
+#    the tool's back and with no property flipped for it, is drifted
+#    1 naming that file. --verify fixes nothing and neither does a
 #    --continue: from the conflicts gate on the tree is
 #    being edited by hand, an edit cannot be told from a stray, and
 #    the gate reports and passes rather than blocking done for good.
@@ -377,15 +377,17 @@ place_clone() {
 }
 
 # An edit by hand to the tree the rebase holds, behind the tool's
-# back: a line appended to FILE. The clone form keeps readonly on
-# outside a stage, so there it goes off around the edit and back on
-# after. The dataset form's private mount is writable for its whole
-# life (private_rw in run.c), and a readonly flip on it is the one
-# thing that must not be made: libzfs answers a readonly change on a
-# mounted dataset with a remount at the mountpoint property, where
-# nothing is mounted while the dataset sits at the private mount,
-# and the kernel says EINVAL ("cannot mount: Invalid argument",
-# the box, 2026-09-07). So readonly is flipped only where it is on.
+# back: a line appended to FILE. An open rebase's result is writable
+# in both forms -- the clone from its birth to the done gate (ruled
+# 2026-09-10), the dataset's private mount for its whole life
+# (private_rw in run.c) -- so nothing is flipped for the edit, and a
+# readonly flip on a privately mounted dataset is the one thing that
+# must not be made: libzfs answers a readonly change on a mounted
+# dataset with a remount at the mountpoint property, where nothing
+# is mounted while the dataset sits at the private mount, and the
+# kernel says EINVAL ("cannot mount: Invalid argument", the box,
+# 2026-09-07). What is left on is a clone done has handed over, and
+# that is the only case this flips.
 edit_hand() {		# FILE TEXT
 	hro=$(recval readonly "$rds")
 	if [ "$hro" = on ]; then

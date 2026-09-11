@@ -738,10 +738,12 @@ at_conflicts() {
 	return 0
 }
 # The result writable for one edit made behind the tool's back, and
-# read-only again after it, as run-strays.sh does. Only the clone
-# form has readonly on to take off: the dataset form's private mount
-# is writable for its whole life (private_rw in run.c), and a
-# readonly flip on it is what must not be made -- libzfs answers one
+# as it was again after it, as run-strays.sh does. An open rebase's
+# result is writable in both forms -- the clone from its birth to the
+# done gate (ruled 2026-09-10), the dataset form's private mount for
+# its whole life (private_rw in run.c) -- so these flip nothing
+# there; a readonly flip on a privately mounted dataset is what must
+# not be made -- libzfs answers one
 # with a remount at the mountpoint property, where nothing is mounted
 # while the dataset sits at the private mount, and the kernel says
 # EINVAL (the box, 2026-09-07).

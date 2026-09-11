@@ -199,6 +199,13 @@ is
 and a name with a slash is the dataset name as given,
 and mounted at the run's own private directory, which is the only place it
 is ever mounted while the rebase is open.
+.Sy readonly
+goes off there and stays off for the whole of the rebase: the clone is
+writable from the moment it is made \(em to the stages, to the picker and
+to your own hand at the
+.Sy conflicts
+gate \(em and the private mount is root's alone, which is what makes that
+safe.
 The rebase is made in it and nothing of yours is written to at all.
 At done the clone is handed to the void: unmounted, read-only, its
 .Sy mountpoint
@@ -950,9 +957,9 @@ for the length of the read and unmounts it again, leaving the run directory
 to the run: the next verb takes the rebase from there.
 It sets
 .Sy readonly
-on nothing in either form, so a result a kill left writable inside a stage
-is still writable after the report and one outside a stage is still
-read-only.
+on nothing in either form, so an open rebase's clone is writable before the
+report and after it, and one a rebase has finished with is read-only before
+and after.
 .Pp
 A settled result carries no record, so its name answers to no step of the
 identifier: the tool says it is not a zfs_rebase result and asks for the
@@ -1141,7 +1148,7 @@ was born with, and before the skeleton is written beside it: it is what
 says the manifest is the decision and not that header.
 .Pp
 .Sy applying1
-goes down immediately before the result stops being read-only, and the
+goes down immediately before the first action, and the
 clean actions of the manifest are applied under it whether the decision had
 conflicts or not.
 .Sy conflicts
@@ -1199,8 +1206,10 @@ anything else leaves the gate standing.
 .Sy applying2
 carries the choices out.
 .Sy done
-is no phase and is never written: once the result has verified and is
-read-only again it is handed back \(em home, or to the void \(em and then
+is no phase and is never written: once the result has verified it is handed
+back \(em home, or to the void, where the clone goes
+.Sy readonly
+on as the deliverable, its one flip since the birth \(em and then
 the holds are given back and then every
 .Sy zfs_rebase
 property is taken off, in that order, since the tag is the only handle on
@@ -1218,12 +1227,13 @@ There is no phase at all until the decision, and a stop writes none:
 .Dv SIGTERM
 and
 .Dv SIGHUP
-stop at the next action and put readonly back, leaving the state at the
-gate;
+stop at the next action, leaving the state at the gate, and
 .Dv SIGKILL
-leaves the same gate with readonly off, which
+leaves the same gate.
+The result is writable either way, as it is for the whole of an open
+rebase, and
 .Fl -continue
-restores.
+takes it on from there.
 A stop at the last gate leaves the phase of the stage that ran before it,
 and the
 .Fl -continue
@@ -1462,9 +1472,9 @@ zfs_rebase -v --from tank/topic@work --onto tank/main@current \e
     --result tank/rebased
 .Ed
 .Pp
-While the rebase is open the result is a read-only clone at
+While the rebase is open the result is a writable clone at
 .Pa /var/db/zfs_rebase/tank/rebased/mnt ,
-and at done it is unmounted with its
+and at done it is read-only and unmounted with its
 .Sy mountpoint
 property still
 .Sy none ,
@@ -1541,10 +1551,10 @@ after it passes the gate.
 .Xr zfs-rollback 8
 .Sh CAVEATS
 The tool never promotes.
-The clone form's result is a read-only clone with no mountpoint of its own,
-mounted at a directory of the run's choosing while the rebase is open and
-unmounted at done, and placing, promoting, renaming or inheriting it is the
-user's work, deliberately.
+The clone form's result is a clone with no mountpoint of its own, mounted
+at a directory of the run's choosing and writable while the rebase is open,
+read-only and unmounted at done, and placing, promoting, renaming or
+inheriting it is the user's work, deliberately.
 .Pp
 Conflict resolution is not part of this tool.
 A run with conflicts applies its clean actions, writes the resolution as a

@@ -354,9 +354,11 @@ built around them:
   mount in both forms, the clone with its mountpoint property none
   and the dataset with canmount noauto. The one exception is the
   held gate, which is before the take: there the dataset is still at
-  home with canmount on. In the clone form readonly is back on
-  wherever the tool was given the chance to put it back, and off
-  after a SIGKILL inside an applying stage. In the dataset form
+  home with canmount on. In the clone form readonly is off at every
+  one of those gates and whatever the signal was: the clone is
+  writable from the moment it is made until the done gate puts it
+  read-only as the deliverable (ruled 2026-09-10), so a stop has no
+  flag to leave one way or the other. In the dataset form
   readonly is what the header says it was, at the private mount and
   at home alike, since the tool changes it only while the dataset is
   off its mountpoint.
@@ -373,10 +375,11 @@ is pending until the stage that makes it has run, so a rebase
 stopped before or inside applying1 exits 3 with pending actions and
 one past it exits 0, and neither moves the gate, the holds, the
 tree, the mount or readonly -- the report reads the result where the
-kill left it, which is where a kill inside a stage shows the
-difference, since the stage left readonly off. --continue then takes
+kill left it and reads the property before and after to say so.
+--continue then takes
 the rebase to its branch's gate, making the final check itself if it
-reaches done, under no flag at all; after it readonly is on, the
+reaches done, under no flag at all; after it the clone reads readonly
+on where it reached done and off where it stopped at conflicts, the
 holds are gone at done and there at conflicts, and a --posix rebase
 of the fixture's from onto the result declares zero actions, which
 is stage 1 idempotence. A kill before the decision is the exception:
@@ -807,7 +810,8 @@ next thing has not started:
     cloned      the take is done in both forms: the result is at the
                 run's private mount, the dataset with canmount
                 noauto and readonly off, the clone with its
-                mountpoint property none, and no walk has started
+                mountpoint property none and readonly off -- its one
+                flip, made at the birth -- and no walk has started
     read        the walks and the pruning are done, before anything
                 is decided
     manifest    the decision is written over the header the run was
@@ -817,12 +821,12 @@ next thing has not started:
                 of its two documents and not the other
     decided     the manifest and the resolution are both written and
                 the phase is "decided", before applying1 is written
-    applying1   that phase is written and readonly is off, before
-                the first action (a fresh run or --continue)
+    applying1   that phase is written, before the first action (a
+                fresh run or --continue)
     conflicts   that phase is written, before the message that says
                 what the run is waiting for. Nothing is handed back
                 here: the result stays at the private mount
-    applying2   that phase is written and readonly is off, before
+    applying2   that phase is written, before
                 the choices of the resolution are carried out
                 (--continue). A document answered keep throughout
                 carries out to nothing, which is what the conflicted

@@ -730,9 +730,9 @@ again.
 | ZX13 | a side given as a dataset is snapshotted as <dataset>@zfs_rebase-<tag> and recorded made=from | planned: box, box/run-fixture.sh |
 | ZX14 | one hold per input, under the record's tag | planned: box, box/run-fixture.sh |
 | ZX15 | the holds outlive the process; done and --abort release them | planned: box, box/run-fixture.sh |
-| ZX16 | the clone is created readonly=on with mountpoint=none, and that property is never a path | planned: box, box/run-fixture.sh step 3 |
+| ZX16 | the clone is created readonly=on with mountpoint=none and readonly goes off the moment it is at the private mount, and that property is never a path | planned: box, box/run-fixture.sh step 3 |
 | ZX17 | the clone is mounted at <rundir>/mnt with zfs_mount_at, which is the only place it is mounted while the rebase is open | planned: box, box/run-fixture.sh step 3 |
-| ZX18 | readonly off to apply, on after | planned: box, box/run-fixture.sh |
+| ZX18 | one readonly rule for the clone form: off at the birth, off at every gate and through every stage, hand edit and picker child, and on once at the done gate as the deliverable (ruled 2026-09-10) | planned: box, box/run-fixture.sh steps 3, 3b, 3c and 3d, and box/run-kills.sh, which reads it at every gate |
 | ZX19 | the failure path destroys it | planned: box, box/run-fixture.sh |
 | ZX20 | preconditions: mounted, one pool | planned: box, box/run-fixture.sh |
 | ZX21 | name semantics on all three | planned: box, box/run-fixture.sh |
@@ -797,11 +797,11 @@ again.
 | ZX85 | SIGINT and SIGTERM before applying1 (held, cloned, read, decided): nothing has been applied, so the run takes itself away whole -- exit 3, no record, no hold, no run directory, neither of its documents, the dataset home -- and there is nothing left to continue | planned: box, box/run-kills.sh |
 | ZX86 | SIGKILL at held, cloned or read: the record, the three holds and the birth manifest stand with no phase at all, and --continue exits 2 saying the run never reached its decision | planned: box, box/run-kills.sh; ZX205 and ZX206 are the two halves of it now |
 | ZX87 | SIGKILL at decided: the phase "decided", the manifest written and recorded, and --continue applies it from the first gate | planned: box, box/run-kills.sh |
-| ZX88 | a stop inside applying1, at the gate and before the second action alike: the state is applying1, readonly is back on after a caught signal and off after a SIGKILL, and the holds are all three | planned: box, box/run-kills.sh |
+| ZX88 | a stop inside applying1, at the gate and before the second action alike: the state is applying1, the clone reads readonly off whatever the signal was, since there is no flip for a stop to interrupt, and the holds are all three | planned: box, box/run-kills.sh |
 | ZX89 | a stop at conflicts or at applying2 leaves that state, the three holds and the manifest; a caught signal at conflicts is no stop at all, since nothing looks at the flag past that gate | planned: box, box/run-kills.sh |
 | ZX90 | a stop at the done gate: SIGKILL leaves the phase of the stage that ran before it and the three holds, and --continue redoes that stage and finishes; a caught signal lets the run finish, release the holds and clear the record | planned: box, box/run-kills.sh |
 | ZX91 | --verify over what a kill left: pending before and inside applying1, nothing pending past it, no drift, and the gate, the holds and the tree unmoved | planned: box, box/run-kills.sh |
-| ZX92 | --continue after every kill, under no flag, reaches the branch's end: readonly as the form has it, the result settled where it reached done and at the private mount where it stopped at conflicts, the holds gone and the record cleared at done and both there at conflicts, stage 1 idempotent over the result | planned: box, box/run-kills.sh |
+| ZX92 | --continue after every kill, under no flag, reaches the branch's end: the clone read-only where it reached done and writable where it stopped at conflicts, the dataset as the record says it was either way, the result settled where it reached done and at the private mount where it stopped at conflicts, the holds gone and the record cleared at done and both there at conflicts, stage 1 idempotent over the result | planned: box, box/run-kills.sh |
 | ZX93 | zfs destroy of a held input, while the run is stopped, fails and leaves the snapshot standing; where nothing is cloned from it the hold is the only reason and the message says busy | planned: box, box/run-kills.sh |
 | ZX94 | a stray write into the live from or onto while the run is reading changes nothing: the tool reads snapshots, so the manifest is the expect block to the byte and the verify is clean | planned: box, box/run-strays.sh |
 | ZX95 | in the dataset form onto's own mount point is an empty directory while the run has the dataset, and a write there lands in the pool's root dataset and is hidden the moment the dataset comes home | planned: box, box/run-strays.sh |
@@ -837,7 +837,7 @@ again.
 | ZX132 | a plain --continue at the conflicts gate with the conflicts still unanswered: the drift line is written into the document and the gate stops all the same, and the line survives the answering to be the name's word at done | planned: box, box/run-resolution.sh case 6 |
 | ZX133 | a drift line whose choice is flipped from keep to onto puts the name back as onto had it | planned: box, box/run-resolution.sh case 6 |
 | ZX134 | the manifest gate: a SIGKILL between the manifest and the skeleton leaves a manifest, no resolution, the phase "decided" and three holds, and the rebase's exits are --abort and --restart | planned: box, box/run-resolution.sh case 7; the gate is run.c's zr_pause("manifest") |
-| ZX135 | the choice:<n> gate: a SIGKILL inside applying2's choices leaves applying2 with readonly off, and --continue redoes the whole document and reaches done with nothing for a second pass to do | planned: box, box/run-resolution.sh case 7; the gate is apply.c's zr_apply_choice_pause_at |
+| ZX135 | the choice:<n> gate: a SIGKILL inside applying2's choices leaves applying2 with the clone writable, as every gate does, and --continue redoes the whole document and reaches done with nothing for a second pass to do | planned: box, box/run-resolution.sh case 7; the gate is apply.c's zr_apply_choice_pause_at |
 | ZX136 | an ACL put on a clean directory at the conflicts gate and chosen onto: the choice strips it back, and the stage's own second pass finds the directory unchanged | planned: box, box/run-resolution.sh case 8, which is the box's answer to the macOS-only strip hole apply-choices recorded beside ZA52 |
 | ZX137 | -q parses as --quiet on a fresh run, both spellings, and neither spelling given reads as 0 | covered: check_args.c |
 | ZX138 | -q on --continue, --restart, --abort, the --verify verb and --dry-run is refused, both spellings | covered: check_args.c |
@@ -850,7 +850,7 @@ again.
 | ZX145 | --abort with the manifest gone: the holds are released by walking the pool for the tag, the private mount is undone, the record is cleared, the one snapshot the run took for itself -- held under the tag and named with it -- is destroyed, the result is not destroyed and nothing is rolled back, and the two commands are printed | planned: box, box/run-fixture.sh 5a, which unlinks the -o manifest by hand: with the header written before the record there is no gate that leaves a record without its file, so a file somebody took away is the only way into this path, and the kills harness no longer reaches it; nothing on the Mac reaches zr_zfs_release_tag |
 | ZX158 | the mountpoint property of the result is never a path in the clone form: none at the create, none at every gate, none at done and none after --abort without a manifest | planned: box, box/run-fixture.sh steps 3, 3c and 5a |
 | ZX159 | the clone stays at the private mount through every gate, the conflicts gate included, since it has no home to be handed to | planned: box, box/run-fixture.sh step 3b and box/run-kills.sh |
-| ZX160 | the per-stage readonly flips of the clone form reach the kernel at the private mount, with no remount attempted at a stale path | planned: box; the probe of 2026-09-06 answered it directly (tools/probe-mount.c 2a-2d, sprints/sprint-5/probe-mount.txt), and every harness reads readonly per gate after it |
+| ZX160 | the clone form's two readonly writes -- off at the birth, on at the done gate -- reach the kernel with no remount attempted at a stale path, the first on a clone mounted at the private mount or nowhere and the second at the private mount | planned: box; the probe of 2026-09-06 answered it directly (tools/probe-mount.c 2a-2d, sprints/sprint-5/probe-mount.txt), and every harness reads readonly per gate after it |
 | ZX161 | done hands the clone to the void: unmounted, readonly on, mountpoint none, and one line on stderr saying how to place it | planned: box, box/run-fixture.sh steps 3, 3d and 5, which place it with zfs set mountpoint to read its tree |
 | ZX162 | a reboot leaves the clone unmounted, and the next verb's take_over mounts it privately again; --restart's fresh clone takes the same path | planned: box, box/run-fixture.sh 3c (the fresh clone); the reboot itself is by hand on the box |
 | ZX163 | a result mounted anywhere but the private mount is unmounted and taken back, and one somebody is using refuses with the take's own message | deferred: needs a result mounted by hand and held open; by hand on the box, as ZX69 is for the take |
@@ -940,7 +940,7 @@ again.
 | ZX235 | the manifest an identifier named is parsed once: the resolution's parse is what the verb reads, and --abort's too | covered: src/run.c, read_manifest and zr_abort adopting it (R12); box, every verb given a path |
 | ZX236 | no message of the tool tells a person to write --result on a verb: every printed command names IDENT | covered: the grep over src, README.md and zfs_rebase.8 |
 | ZX237 | --verify on an open rebase reads the result where it is mounted and takes nothing over: in both forms and at every gate the mount is where the check found it, no zfs op moves it, and the phase, the holds and the two documents are untouched | planned: box, box/run-strays.sh's verify_open cases, which assert the mount before and after, and box/run-kills.sh, which verifies after every kill |
-| ZX238 | --verify never sets readonly, in either form: a clone a kill left writable inside a stage is still writable after the report, and one outside a stage is still read-only, since the report flips nothing either way | planned: box, box/run-strays.sh case 3, which reads readonly before the report and asserts it after, and its new unmounted case |
+| ZX238 | --verify never sets readonly, in either form: an open rebase's clone is writable before the report and writable after it, a settled one read-only before and after, since the report flips nothing either way | planned: box, box/run-strays.sh case 3, which reads readonly before the report and asserts it after, and its new unmounted case |
 | ZX239 | --verify on an open rebase whose result a hand unmounted -- the mounted-nowhere branch, which is also what a reboot leaves: the check mounts it at the run directory's mnt with the run's own zfs_mount_at, reads it there and unmounts it again, leaving it mounted nowhere and the run directory, its mnt and its documents exactly as they were | planned: box, box/run-strays.sh's unmounted case |
 | ZX240 | and the --continue after that report takes the result over as usual, mounting it privately again and reaching its gate: a report that mounted for itself leaves nothing for the next verb to work around | planned: box, box/run-strays.sh's unmounted case |
 | ZX241 | a dry run refuses -O, -F, -M and -i, both spellings: it writes a manifest and stops, so there is no skeleton for a --take flag to answer and no conflicts gate for --interactive or --no-merge to hold -- nothing for the flag to act on and no record to latch it in, which is the reasoning -q meets there (ZX138) | covered: check_args.c |
@@ -1111,14 +1111,15 @@ level is this" is the box's.
 ZX237 to ZX241 are review-verify-verb's: --verify reads in place
 (documents-design.md, section 11.6). Where the verb used to call
 take_over, which unmounts a result from wherever it is, mounts it at
-the private mount and sets readonly on in the clone form, it now
+the private mount and set readonly on in the clone form there, it now
 reads the result where it is mounted and mounts it only where it is
 mounted nowhere -- the settled clone's branch, widened to serve an
 open rebase a reboot or a hand left unmounted, and giving back the
 mount without the run directory, which is the run's. So the sentence
 "writes nothing to the tree and moves nothing that is where it
-should be" is true of the verb again: the readonly flip after a kill
-inside a stage was the one real property write left, and it is gone.
+should be" is true of the verb again: that flip was the one real
+property write left, and it is gone -- and since the ruling of
+2026-09-10 take_over writes no readonly in the clone form at all.
 The four are box rows because a mount and a property on a real
 dataset are all they are about; ZX241 is the parse's and is
 check_args.c's, with ZX138.
@@ -1400,7 +1401,7 @@ snapshot, a clone and a kill need the box.
 | ZY110 | the result pool is marked for a write and for no other action: an untouched onto name a hand linked to a cp or a dup target is not exempted from the second pass, so the tear is an entry of the name list where before both halves went unseen | covered: check_verify.c |
 | ZY111 | the walk a stage's self-check ends with is the walk the stage goes on with: zr_apply_check hands it and the oracle over it back and rescan_result adopts them, and the classification after the stage is the one it was before | covered: check_apply.c and check_verify.c, which pass NULL and so still walk twice, and the whole fixture suite through run-fixtures.sh; box: run-fixture.sh steps 2 and 5 and run-kills.sh, where the stage really runs |
 | ZY112 | applying2's idempotence check over one walk: the first pass is made over the walk the verb already held, the tree is walked once between the passes, and the second pass -- which must change nothing -- leaves that walk true for the done gate | planned: box, box/run-resolution.sh cases 1, 4, 6 and 9; a second pass that did change something is the internal failure the case's message names |
-| ZY113 | the fresh run's done gate is handed the run's own three trees and its libzfs handle, and makes the same check the same function makes for a --continue: from and onto are held snapshots, the result is read-only and unwritten since the self-check walked it, and where any of that has moved -- a snapshot renamed, a tree missing, the result mounted elsewhere -- the gate reads everything for itself | planned: box, box/run-fixture.sh step 5 under -v ("the final check reads the three trees this run walked"), and box/run-kills.sh, whose --continue reaches the same gate with no lending at all |
+| ZY113 | the fresh run's done gate is handed the run's own three trees and its libzfs handle, and makes the same check the same function makes for a --continue: from and onto are held snapshots, the result is unwritten since the self-check walked it -- the run goes straight from that check to this gate, with no conflict to answer in between -- and where any of that has moved -- a snapshot renamed, a tree missing, the result mounted elsewhere -- the gate reads everything for itself | planned: box, box/run-fixture.sh step 5 under -v ("the final check reads the three trees this run walked"), and box/run-kills.sh, whose --continue reaches the same gate with no lending at all |
 
 ZY40 to ZY45 are the post-done verify's: a tree that is not there
 any more is walked as the empty tree and named in the missing mask,
@@ -1541,7 +1542,7 @@ are made.
 | ZI34 | the tool killed with SIGKILL while the script runs: the gate stands with the file as last saved, and -c continues | covered: box, box/run-resolution.sh case 12k |
 | ZI35 | --restart IDENT then -c IDENT -i CMD: the skeleton again, and the script opens on it | covered: box, box/run-resolution.sh case 12l |
 | ZI36 | on the resume path the built-in child gets base's directory as the fresh run's does, found from the record like a side's; add/add only where the header has no base | planned: box, by hand: the ZP103 session through -c IDENT -i, the title reading E/E and not A/A |
-| ZI37 | the clone is writable for the child's life and read-only again the moment the child is back, on both paths, whatever the child did; the picker's merge write lands | planned: box, by hand: the ZP103 session, w on screen 2 writing where it read "Read-only file system" before |
+| ZI37 | the child opens on a result that is writable already, on both paths, and no flip is made for it or after it; the picker's merge write lands | planned: box, by hand: the ZP103 session, w on screen 2 writing where it read "Read-only file system" before |
 
 ## ZP -- the built-in picker (check_picker.c, the box by hand)
 

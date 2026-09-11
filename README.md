@@ -88,6 +88,10 @@ itself, and --onto decides the form of the run.
 created as a read-only clone of that snapshot with its `mountpoint`
 property `none`, and mounted at the run's own private directory,
 which is the only place it is ever mounted while the rebase is open.
+`readonly` goes off there and stays off for the whole of the rebase:
+the clone is writable from the moment it is made -- to the stages,
+to the picker and to your own hand at the conflicts gate -- and the
+private mount is root's alone, which is what makes that safe.
 The rebase is made in it and nothing of yours is written to at all.
 At done the clone is handed to the void: unmounted, read-only, its
 `mountpoint` still `none`, and the tool says how to place it --
@@ -236,7 +240,7 @@ one only where you gave it a dataset instead. It reads the three
 through their .zfs/snapshot directories, takes the unchanged set off
 those walks, decides by a small rule over names, hardlink pools and
 content, writes a manifest of actions and conflicts, and applies the
-actions to the result, which it puts back read-only. All ZFS
+actions to the result, which it hands over read-only at done. All ZFS
 operations go through libzfs_core and libzfs; nothing is exec'd.
 
 The unchanged set is the prune. A pool of either side is declared to
@@ -357,8 +361,8 @@ with no phase at all is therefore a rebase born and never decided,
 which is nothing to carry out: --continue and --restart refuse it in
 those words, before they take the result over, and --abort takes it
 away with everything the header gave it.
-applying1 is written immediately before the result stops being
-read-only, and under it the clean actions of the manifest are applied
+applying1 is written immediately before the first action, and under
+it the clean actions of the manifest are applied
 -- whether the decision had conflicts or not, since a conflict stops
 the names it covers and nothing else, and conflicts are answered over
 the tree the rest of the rebase has already made. conflicts is
@@ -399,9 +403,10 @@ not latched: it belongs to the invocation, so a --continue that
 should open a child says -i each time, and a start given -i that
 reaches the gate in the same process is interactive there.
 applying2 carries the choices out. done is no phase and is never
-written: when the result has verified and is read-only again, it is
-handed back -- home, or to the void -- and then the holds are given
-back and then every zfs_rebase: property is taken off, in that
+written: when the result has verified it is handed back -- home, or
+to the void, where the clone goes read-only as the deliverable,
+which is its one flip since the birth -- and then the holds are
+given back and then every zfs_rebase: property is taken off, in that
 order, since the tag is the only handle on those holds.
 A result that carries any of them is therefore an open rebase, and
 one that carries none has no rebase to move, whatever its history:
@@ -587,7 +592,8 @@ run's private mount; where the result is mounted nowhere, which is
 what a reboot or a hand leaves, it mounts it at the run directory's
 `mnt` for the length of the read and unmounts it again, leaving the
 run directory to the run. It never sets `readonly`, in either form:
-the flag the stages flip is not a report's to touch.
+an open rebase's clone is writable before the report and after it,
+and a settled one is read-only before and after.
 
 A result whose rebase reached done carries no record, so its name
 answers to no step of the resolution: the tool says it is not a
