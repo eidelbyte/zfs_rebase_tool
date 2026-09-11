@@ -1863,6 +1863,7 @@ test_merge_back(void)
 {
 	struct zr_picker pk;
 	struct world w;
+	uint32_t open_unpicked;
 	size_t len;
 	char *got;
 
@@ -1871,6 +1872,13 @@ test_merge_back(void)
 	open_ok("merge back", &w, &pk);
 	drain(&pk);
 	(void) merge_on(&pk, G_M2);
+	open_unpicked = zr_m3_unpicked(&zr_pk_merge(&pk)->pm_m3);
+	CHECK(zr_pk_key(&pk, ZR_PK_PICK_FROM) == ZR_PK_REDRAW);
+	CHECK(zr_m3_unpicked(&zr_pk_merge(&pk)->pm_m3) == open_unpicked - 1);
+	/* - takes the pick back: the hunk is conflicted again */
+	CHECK(zr_pk_key(&pk, ZR_PK_CLEAR) == ZR_PK_REDRAW);
+	CHECK(zr_m3_unpicked(&zr_pk_merge(&pk)->pm_m3) == open_unpicked);
+	CHECK(zr_pk_key(&pk, ZR_PK_CLEAR) == ZR_PK_NOTHING);
 	CHECK(zr_pk_key(&pk, ZR_PK_PICK_FROM) == ZR_PK_REDRAW);
 	CHECK(zr_pk_key(&pk, ZR_PK_BACK) == ZR_PK_REDRAW);
 	CHECK(zr_pk_merge(&pk) == NULL);
@@ -2816,7 +2824,7 @@ static const char res_merge_pty[] =
 static void
 test_pty_merge(void)
 {
-	static const char *const keys[] = { "\r", "c", "c", "b", "b", "1",
+	static const char *const keys[] = { "\r", "c", "c", "b", "b", "f",
 		"w", "w", NULL };
 	struct termios before;
 	struct child c;

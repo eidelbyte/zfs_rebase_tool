@@ -1023,7 +1023,7 @@ pk_draw(const struct zr_picker *pk, const struct pk_geom *g, uint32_t top,
  */
 
 /* The key bar of screen 2. There is no result editor this sprint. */
-#define	PK_MKEYS	"1/2 take from/onto  b base  n/p hunk  " \
+#define	PK_MKEYS	"f/o take from/onto  - unpick  b base  n/p hunk  " \
 			"c conflicts only  w write  q/esc back"
 
 /*
@@ -1810,10 +1810,12 @@ static int
 pk_map_merge(int c)
 {
 	switch (c) {
-	case '1':
+	case 'f':
 		return (ZR_PK_PICK_FROM);
-	case '2':
+	case 'o':
 		return (ZR_PK_PICK_ONTO);
+	case '-':
+		return (ZR_PK_CLEAR);
 	case 'b':
 		return (ZR_PK_BASE);
 	case 'n':

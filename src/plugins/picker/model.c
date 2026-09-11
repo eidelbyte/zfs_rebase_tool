@@ -1195,7 +1195,11 @@ zr_pk_merge_hunk(const struct zr_picker *pk)
 	return (n);
 }
 
-/* 1 and 2: the hunk the cursor is on, and no other (cell ZP83). */
+/*
+ * f and o: the hunk the cursor is on, and no other (cell ZP83); and
+ * - takes the answer back, so the hunk is conflicted again (the
+ * author, on the box, 2026-09-10).
+ */
 static enum zr_pk_act
 pk_merge_pick(struct zr_picker *pk, int pick)
 {
@@ -1311,6 +1315,8 @@ pk_merge_key(struct zr_picker *pk, enum zr_pk_key key)
 		return (pk_merge_pick(pk, ZR_M3_PICK_FROM));
 	case ZR_PK_PICK_ONTO:
 		return (pk_merge_pick(pk, ZR_M3_PICK_ONTO));
+	case ZR_PK_CLEAR:
+		return (pk_merge_pick(pk, ZR_M3_PICK_NONE));
 	case ZR_PK_BASE:
 		mg->pm_base = mg->pm_base == 0;
 		return (ZR_PK_REDRAW);
