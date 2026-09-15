@@ -4568,6 +4568,46 @@ build_oracle(struct resume *s)
 	return (0);
 }
 
+/*
+ * The three trees into one name table, with the oracle over them:
+ * onto and from at the .zfs/snapshot directories walk_side finds,
+ * and the result at the private mount. The caller has let any
+ * earlier set go with close_trees before it asks for a new one.
+ *
+ * It is a function of its own because a verb walks more than once.
+ * A resume that opens an -i child at the conflicts gate lets the
+ * walks go before the fork and asks for them again after the wait
+ * (resume_interactive): the tree is the person's while the child
+ * has it, and a walk made before that is metadata about a tree
+ * somebody has since edited (L1 of the code review of 2026-09-11).
+ * The fresh run has the same shape and reaches it the other way --
+ * release_trees before its child, and the verb it hands off to
+ * opens everything again through here.
+ */
+static int
+walk_trees(struct resume *s)
+{
+	s->names = zr_names_create();
+	if (s->names == NULL) {
+		(void) snprintf(s->err, sizeof (s->err), "out of memory");
+		return (-1);
+	}
+	/*
+	 * onto, from and the result, and not the base. Nothing here
+	 * decides anything -- the manifest is the decision -- and the
+	 * classifier's oracle is over these three; the base is checked
+	 * like the other inputs and its tree is never read.
+	 */
+	if (walk_side(s, ZI_ONTO, ZS_ONTO) != 0 ||
+	    walk_side(s, ZI_FROM, ZS_FROM) != 0)
+		return (-1);
+	if (zr_walk(s->workmnt, s->names, &s->w[ZS_RESULT], s->err,
+	    sizeof (s->err)) != 0)
+		return (-1);
+	s->walked |= 1 << ZS_RESULT;
+	return (build_oracle(s));
+}
+
 /* The walk of the result and the oracle over it, let go of. */
 static void
 drop_result(struct resume *s)
@@ -5692,10 +5732,15 @@ apply_choices(struct resume *s, const struct zr_resolution *res)
 
 	/*
 	 * The result as this verb last read it, which is the tree the
-	 * first pass is made over: nothing has written to it since --
-	 * the conflicts gate writes the resolution and never the tree
-	 * -- so the walk in hand is the walk this call would have
-	 * made for itself (R13 of the code review).
+	 * first pass is made over. The walk in hand is the walk this
+	 * call would have made for itself (R13 of the code review),
+	 * and what makes that true is that nothing has written to the
+	 * tree since it was made: the conflicts gate writes the
+	 * resolution and never the tree, and the one writer that can
+	 * come between -- the -i child, in a result that is writable
+	 * by the ruling of 2026-09-10 -- has the walks let go before
+	 * it and made again after it (resume_interactive, L1 of the
+	 * code review of 2026-09-11).
 	 */
 	pre = (s->walked & (1 << ZS_RESULT)) != 0 ? &s->w[ZS_RESULT] : NULL;
 	if (zr_apply_choices(res, &s->man, s->workmnt, s->names,
@@ -5889,6 +5934,24 @@ out:
  * two sides at, base's directory found the same way, and the private
  * mount the result is at. Returns 0 with s->res read again off the
  * file, or the status to give up with, the reason printed.
+ *
+ * The three walks go before the fork and are made again after the
+ * wait. The clone is writable at this gate by the ruling of
+ * 2026-09-10 and the plan tells the person to hand-merge in it, so
+ * the tree is theirs for as long as the child has it: a chmod, an
+ * attribute change or a name removed at the mount makes every walk
+ * taken before the child metadata about a tree that has moved on.
+ * applying2 is what reads it -- zr_apply_choices takes the result's
+ * walk as the before-image of its first pass -- and a stale one puts
+ * a change into the second pass instead of the first, which is the
+ * exact input to the "did not make the document true" refusal, an
+ * internal failure blaming the tool for a person's edit; a name a
+ * hand removed makes the oracle's open fail outright. The fresh run
+ * has had this right from the start, letting its walks go in
+ * release_trees before its own child, and this is the same shape:
+ * let them go, and let whatever needs them next open them again
+ * (L1 of the code review of 2026-09-11). It settles G5's recovery
+ * story with it, which rests on the same assumption.
  */
 
 /*
@@ -5941,7 +6004,14 @@ resume_interactive(struct resume *s)
 	lp.from = s->sidedir[ZS_FROM];
 	lp.onto = s->sidedir[ZS_ONTO];
 	lp.result = s->workmnt;
-	/* the result is writable already, as the fresh run has it */
+	/*
+	 * The directories above are strings walk_side and input_dir
+	 * left behind and outlive the walks; the walks themselves go
+	 * here, with the oracle and the name table, before anything is
+	 * forked. The result is writable already, as the fresh run has
+	 * it, and there is nothing to flip for the child.
+	 */
+	close_trees(s);
 	rc = zr_launch(&lp, e, sizeof (e));
 	if (rc != 0) {
 		(void) fprintf(stderr, "zfs_rebase: %s\n", e);
@@ -5950,6 +6020,16 @@ resume_interactive(struct resume *s)
 		    "-i\n", s->respath, s->result);
 		return (EXIT_CONFLICTS);
 	}
+	/*
+	 * And the trees as the child left them, walked again before
+	 * the document is read and long before applying2 asks either
+	 * of them anything. A walk that cannot be made now is a
+	 * precondition of the gate that is no longer met -- a side
+	 * unmounted, a result that will not open -- and is said the
+	 * way resume_trees' own failure is said.
+	 */
+	if (walk_trees(s) != 0)
+		return (vfail(s, EXIT_PRECOND, s->result));
 	if (reread_resolution(s) < 0) {
 		(void) snprintf(s->err, sizeof (s->err), "%s", s->reserr);
 		return (vfail(s, EXIT_PRECOND, "resolution"));
@@ -6446,25 +6526,7 @@ resume_trees(struct resume *s)
 {
 	if (s->report ? report_mount(s) != 0 : take_over(s) != 0)
 		return (-1);
-	s->names = zr_names_create();
-	if (s->names == NULL) {
-		(void) snprintf(s->err, sizeof (s->err), "out of memory");
-		return (-1);
-	}
-	/*
-	 * onto, from and the result, and not the base. Nothing here
-	 * decides anything -- the manifest is the decision -- and the
-	 * classifier's oracle is over these three; the base is checked
-	 * like the other inputs and its tree is never read.
-	 */
-	if (walk_side(s, ZI_ONTO, ZS_ONTO) != 0 ||
-	    walk_side(s, ZI_FROM, ZS_FROM) != 0)
-		return (-1);
-	if (zr_walk(s->workmnt, s->names, &s->w[ZS_RESULT], s->err,
-	    sizeof (s->err)) != 0)
-		return (-1);
-	s->walked |= 1 << ZS_RESULT;
-	return (build_oracle(s));
+	return (walk_trees(s));
 }
 
 /*

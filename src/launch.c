@@ -206,12 +206,14 @@ zl_run_child(const struct zr_launch *lp, const char *script, char *argv[],
 	/*
 	 * The built-in is called and not exec'd, so no close-on-exec
 	 * ever fires for it and every descriptor of the tool's is the
-	 * child's too: the three walk roots at the private mount and
-	 * inside .zfs/snapshot, and /dev/zfs. An orphaned picker then
-	 * holds the mount the done gate has to unmount (L6 of the code
-	 * review of 2026-09-11). They are closed here instead, which
-	 * is what the exec would have done, and the picker opens
-	 * everything it needs by path from its argv.
+	 * child's too -- /dev/zfs among them, and whatever the tool was
+	 * started with. An orphaned picker then holds them (L6 of the
+	 * code review of 2026-09-11). They are closed here instead,
+	 * which is what the exec would have done, and the picker opens
+	 * everything it needs by path from its argv. Both gates let
+	 * their three walks go before they come here, so the roots at
+	 * the private mount and inside .zfs/snapshot are not in the set
+	 * any more (L1); this is the second lock on the same door.
 	 */
 	zr_launch_closefds();
 	rc = zr_picker_main(ZR_LAUNCH_ARGC, argv);
