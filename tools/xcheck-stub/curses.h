@@ -83,6 +83,8 @@ extern int cbreak(void);
 extern int noecho(void);
 extern int nonl(void);
 extern int keypad(WINDOW *, int);
+extern int nodelay(WINDOW *, int);
+extern int wtimeout(WINDOW *, int);
 extern int scrollok(WINDOW *, int);
 extern int clearok(WINDOW *, int);
 extern int curs_set(int);

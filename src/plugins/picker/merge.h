@@ -143,6 +143,30 @@ struct zr_m3_hint {
 };
 
 /*
+ * The ceiling on one file, in lines.
+ *
+ * The merge's cost is per line and not per byte: one two-way diff
+ * holds about eighty bytes per line per side in libdiff's own tables,
+ * our line table eight more per line per file, and the carried
+ * libdiff does not check the two largest of those allocations -- it
+ * dereferences what calloc refused (the review of 2026-09-11,
+ * findings G1 and G2, and the note in libdiff/UPSTREAM). A byte count
+ * is the wrong unit for that: the same twenty-three megabytes cost a
+ * hundred and ninety megabytes of memory in 286000 lines and nine
+ * hundred and twenty-six in three million.
+ *
+ * So one file of more than this many lines is refused before libdiff
+ * is asked for anything, which turns a crash under memory pressure
+ * into the refusal the contract below already promises. Four million
+ * lines is a few hundred megabytes and is the number the review
+ * argued for; it is the author's to change and nothing but the
+ * refusal depends on its value. Ruling 11 of 2026-09-10 -- a large
+ * text on screen 2 is future work -- is what says a refusal is
+ * allowed to be the answer here at all.
+ */
+#define	ZR_M3_MAXLINES	4000000u
+
+/*
  * Is this object text? git's rule, and the merge's: an object is
  * binary if a NUL byte appears in its first 8000 bytes. Returns 1 for
  * text and 0 for binary; an empty object, and a NULL one, are text.
@@ -167,8 +191,9 @@ int zr_m3_text(const unsigned char *bytes, size_t len);
  * refuses it, and says so in err.
  *
  * Returns 0, or -1 with err filled in: an object that is binary, an
- * object too large for the line table, out of memory, or delete/edit.
- * On failure nothing is left allocated.
+ * object too large for the line table or over ZR_M3_MAXLINES lines,
+ * out of memory, or delete/edit. On failure nothing is left
+ * allocated.
  */
 int zr_m3_open(struct zr_m3 *m, const unsigned char *base, size_t baselen,
     const unsigned char *from, size_t fromlen, const unsigned char *onto,

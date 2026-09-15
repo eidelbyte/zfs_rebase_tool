@@ -591,6 +591,66 @@ check_text(void)
  * conflict is writable at once. No marker reaches the bytes by any
  * path, because there is no path here that writes one.
  */
+/*
+ * ZP132: the line ceiling of merge.h, which is what keeps the carried
+ * patience diff's unchecked allocations out of reach (G2 with G1). A
+ * file of one line over it is refused before libdiff is asked for
+ * anything, with the count and the ceiling in the line; one line under
+ * it is not refused for being too long.
+ *
+ * The file is built here and never checked in: four million newlines
+ * is four megabytes of bytes and thirty-two of line table, which this
+ * allocates and frees. Where the memory is not there the case says so
+ * and passes, since what it is about is the refusal and not the
+ * machine.
+ */
+static void
+check_ceiling(void)
+{
+	size_t n = (size_t)ZR_M3_MAXLINES + 1;
+	unsigned char *big;
+	struct zr_m3 m;
+	char err[256];
+
+	big = malloc(n);
+	if (big == NULL) {
+		printf("skip ZP132: no room for %lu lines\n",
+		    (unsigned long)n);
+		return;
+	}
+	memset(big, '\n', n);
+	err[0] = '\0';
+	CHECK(zr_m3_open(&m, big, n, (const unsigned char *)"a\n", 2,
+	    (const unsigned char *)"b\n", 2, err, sizeof (err)) == -1);
+	CHECK(strstr(err, "too large") != NULL);
+	CHECK(strstr(err, "4000001") != NULL);
+	CHECK(strstr(err, "4000000") != NULL);
+	/* and from, and onto: every side is held to it */
+	err[0] = '\0';
+	CHECK(zr_m3_open(&m, (const unsigned char *)"a\n", 2, big, n,
+	    (const unsigned char *)"b\n", 2, err, sizeof (err)) == -1);
+	CHECK(strstr(err, "too large") != NULL);
+	err[0] = '\0';
+	CHECK(zr_m3_open(&m, (const unsigned char *)"a\n", 2,
+	    (const unsigned char *)"b\n", 2, big, n, err,
+	    sizeof (err)) == -1);
+	CHECK(strstr(err, "too large") != NULL);
+	/*
+	 * The line under the ceiling is not refused for its length.
+	 * The merge itself is not run here -- three files of four
+	 * million lines is what the ceiling exists to bound -- so this
+	 * asks the split alone, with two tiny sides against a base
+	 * that is exactly at the ceiling, and only that the refusal
+	 * does not name the size.
+	 */
+	err[0] = '\0';
+	if (zr_m3_open(&m, big, n - 1, (const unsigned char *)"a\n", 2,
+	    (const unsigned char *)"b\n", 2, err, sizeof (err)) == 0)
+		zr_m3_fini(&m);
+	CHECK(strstr(err, "too large") == NULL);
+	free(big);
+}
+
 static void
 check_write_rule(void)
 {
@@ -874,6 +934,7 @@ main(int argc, char **argv)
 {
 	run_battery(argc > 1 ? argv[1] : BATTERY_DEFAULT);
 	check_text();
+	check_ceiling();
 	check_write_rule();
 	check_final_newline();
 	check_add_add();

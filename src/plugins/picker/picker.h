@@ -350,6 +350,13 @@ enum zr_pk_act zr_pk_key(struct zr_picker *pk, enum zr_pk_key key);
  * (documents-design.md section 11.2). The header's two counts are the
  * emitter's own count of the lines.
  *
+ * Every line that was read is written, with its own choice; the order
+ * is the emitter's walk order and not the order the file was read in,
+ * and an empty scoping directory the parser recorded as a scope and
+ * not as a line is not written. That is the library writer's shape,
+ * shared with every gate write the tool makes, and the review of
+ * 2026-09-11 (M8) is where it was measured.
+ *
  * Returns 0, or -1 with one line in err and the document as it was.
  * s and w go through here; a caller of its own must ask whether
  * anything is unanswered first, which is what w does.

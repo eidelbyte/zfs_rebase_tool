@@ -197,6 +197,27 @@ m3_split(struct zr_m3_file *f, const unsigned char *bytes, size_t len,
 	return (0);
 }
 
+/*
+ * The line ceiling of merge.h, asked of one file once it is cut into
+ * lines and before libdiff is asked for anything (the review of
+ * 2026-09-11, G2 with G1). The count is in the line so that the
+ * person can see how far over it they are; the ceiling itself is a
+ * number the author may change and nothing here depends on its value.
+ */
+static int
+m3_toomany(const struct zr_m3_file *f, char *err, size_t errlen)
+{
+	char line[128];
+
+	if (f->nlines <= ZR_M3_MAXLINES)
+		return (0);
+	(void) snprintf(line, sizeof (line), "the object is too large to "
+	    "merge: %lu lines, and the ceiling is %lu",
+	    (unsigned long)f->nlines, (unsigned long)ZR_M3_MAXLINES);
+	m3_fail(err, errlen, line);
+	return (-1);
+}
+
 /* The first byte of line lo, which is where a range of records starts. */
 static const unsigned char *
 m3_at(const struct zr_m3_file *f, uint32_t lo)
@@ -463,9 +484,18 @@ zr_m3_open(struct zr_m3 *m, const unsigned char *base, size_t baselen,
 		return (-1);
 	}
 	m->has_base = base != NULL;
+	/*
+	 * Each file is cut into lines and then held against the
+	 * ceiling, in that order and one file at a time: the count is
+	 * what the ceiling is about, and a file over it is refused
+	 * before the next one is cut and long before libdiff runs.
+	 */
 	if (m3_split(&m->base, base, baselen, err, errlen) != 0 ||
+	    m3_toomany(&m->base, err, errlen) != 0 ||
 	    m3_split(&m->from, from, fromlen, err, errlen) != 0 ||
-	    m3_split(&m->onto, onto, ontolen, err, errlen) != 0)
+	    m3_toomany(&m->from, err, errlen) != 0 ||
+	    m3_split(&m->onto, onto, ontolen, err, errlen) != 0 ||
+	    m3_toomany(&m->onto, err, errlen) != 0)
 		goto fail;
 	if (m->has_base) {
 		if (m3_script(&m->base, &m->from, &d13, &m1, err,

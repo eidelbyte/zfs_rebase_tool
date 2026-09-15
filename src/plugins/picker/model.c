@@ -17,15 +17,21 @@
  * picker be lifted out whole.
  *
  * Two invariants run through the whole file. The first: every line
- * the document opened with is in the file it writes, in the file's
- * order, none added and none removed -- a hand may change a choice
+ * the document opened with is in the file it writes, with its own
+ * choice, none added and none removed -- a hand may change a choice
  * and may add a line, but only a gate may take a conflict away
  * (v4-manifest.md section 8), and this program acts for a hand. The
  * rows are therefore built from the resolution's lines and never
- * from the manifest's marks. The second: no count of the model's
- * ever reaches the document. #names and #unanswered are recomputed
- * by the library's emitter from the lines it writes, so the two can
- * never drift apart.
+ * from the manifest's marks. The ORDER is the library writer's and
+ * not the file's: zr_resolution_write lays the lines out in the walk
+ * order it derives from the names, so siblings a document holds out
+ * of that order come back sorted, and a directory line that scopes
+ * nothing is not a line to the parser and is not written (the review
+ * of 2026-09-11, M8; the writer is shared with every gate, so the
+ * picker is in step with the tool, which is what matters). The
+ * second: no count of the model's ever reaches the document. #names
+ * and #unanswered are recomputed by the library's emitter from the
+ * lines it writes, so the two can never drift apart.
  */
 
 #define	_XOPEN_SOURCE	700
@@ -61,8 +67,13 @@
 /* Room for one vis-encoded name inside a message. */
 #define	PK_NAMEBUF	128
 
-/* The words for the three trees a merge view wants (ZR_PK_NSIDE). */
-static const char *const pk_treeword[ZR_PK_NSIDE] = { "base", "from", "onto" };
+/*
+ * The words for the four trees. The first three are the sides a merge
+ * view wants (ZR_PK_NSIDE) and every loop over them stops there; the
+ * fourth is for the lines that name the result tree.
+ */
+static const char *const pk_treeword[ZR_PK_NTREE] = { "base", "from", "onto",
+	"result" };
 
 /* What an object is, said in a sentence fragment. */
 static const char *const pk_objword[] = {
@@ -487,18 +498,45 @@ pk_mark_find(struct pk_mark *marks, uint32_t n, const unsigned char *path,
 	return (bsearch(&key, marks, n, sizeof (*marks), pk_mark_cmp));
 }
 
-/* The manifest's record for one group, or NULL where it has none. */
+/*
+ * The manifest's record for one group, or NULL where it has none.
+ *
+ * The parser numbers the records 1 to #records and refuses a manifest
+ * whose next record is not the one after the last ("expected conflict
+ * N", manifest.c), so the number IS the index and the lookup is a
+ * subscript. It was a scan of every record per row, which is
+ * quadratic over a pool that is its own group: 50000 rows in 50000
+ * groups opened in 1.2 seconds against 0.08 in one group (the review
+ * of 2026-09-11, M4). The scan is kept as the fallback for the one
+ * case the subscript cannot answer -- a manifest whose numbering is
+ * not the parser's -- so that this reads the same document the parser
+ * accepted and no more.
+ */
 static const struct zr_record *
 pk_record(const struct zr_parsed *m, uint32_t group)
 {
 	uint32_t i;
 
-	if (group == 0)
+	if (group == 0 || m->zp_nrecords == 0)
 		return (NULL);
+	if (group <= m->zp_nrecords &&
+	    m->zp_records[group - 1].zr_num == group)
+		return (&m->zp_records[group - 1]);
 	for (i = 0; i < m->zp_nrecords; i++)
 		if (m->zp_records[i].zr_num == group)
 			return (&m->zp_records[i]);
 	return (NULL);
+}
+
+/* Group numbers, sorted, so that the distinct ones can be counted. */
+static int
+pk_group_cmp(const void *a, const void *b)
+{
+	uint32_t x = *(const uint32_t *)a, y = *(const uint32_t *)b;
+
+	if (x != y)
+		return (x < y ? -1 : 1);
+	return (0);
 }
 
 /*
@@ -531,21 +569,71 @@ pk_count(struct zr_picker *pk)
 	}
 	if (groups == NULL)
 		return;
-	for (i = 0; i < n; i++) {
-		uint32_t j;
-
-		for (j = 0; j < i; j++)
-			if (groups[j] == groups[i])
-				break;
-		if (j == i)
+	/*
+	 * The distinct groups, counted by sorting rather than by the
+	 * double loop this was: one row per group made it quadratic in
+	 * the rows, which is the shape a conflicted pool takes (M4).
+	 */
+	if (n > 1)
+		qsort(groups, n, sizeof (*groups), pk_group_cmp);
+	for (i = 0; i < n; i++)
+		if (i == 0 || groups[i] != groups[i - 1])
 			c->zc_groups++;
-	}
 	free(groups);
 }
 
 /*
- * One row per line of the resolution, in the file's order and in no
- * other: the document is what says which names are answered here.
+ * Can each tree be read at all?
+ *
+ * Every lstat of a name comes back absent when it fails, whatever the
+ * reason, so a tree that is not there or that this process cannot
+ * search reads as a tree holding nothing: a name that merges cleanly
+ * with base readable shows up as add/add with two conflicts that are
+ * not conflicts when base is not, and nothing was said either way
+ * (the review of 2026-09-11, M6). Distinguishing the errno per name
+ * would not do it, because the likeliest cause is a tree path that is
+ * simply wrong, which fails at every name alike.
+ *
+ * So each tree is asked once, here, before a single row is built: it
+ * must be there, be a directory, and be readable and searchable. One
+ * queued line names the tree, its path and what the system said; the
+ * rows are then built as before, absences and all, with the person
+ * holding the reason for them. A tree given as "" is a tree the run
+ * has no path for and is not asked about (cell ZP14).
+ */
+static void
+pk_trees_ok(struct zr_picker *pk)
+{
+	struct stat st;
+	int t;
+
+	for (t = 0; t < ZR_PK_NTREE; t++) {
+		const char *path = pk->pk_tree[t];
+
+		if (path[0] == '\0')
+			continue;
+		if (stat(path, &st) != 0) {
+			pk_say(pk, "the %s tree at %s cannot be read: %s; "
+			    "every name there reads as absent",
+			    pk_treeword[t], path, strerror(errno));
+			continue;
+		}
+		if (!S_ISDIR(st.st_mode)) {
+			pk_say(pk, "the %s tree at %s is not a directory; "
+			    "every name there reads as absent",
+			    pk_treeword[t], path);
+			continue;
+		}
+		if (access(path, R_OK | X_OK) != 0)
+			pk_say(pk, "the %s tree at %s cannot be read: %s; "
+			    "every name there reads as absent",
+			    pk_treeword[t], path, strerror(errno));
+	}
+}
+
+/*
+ * One row per line of the resolution, in the writer's own order: the
+ * document is what says which names are answered here.
  */
 static int
 pk_build(struct zr_picker *pk, char *err, size_t errlen)
@@ -671,6 +759,7 @@ zr_pk_open(struct zr_picker *out, int argc, char **argv, char *err,
 		return (-1);
 	if (pk_same_rebase(out, err, errlen) != 0)
 		return (-1);
+	pk_trees_ok(out);
 	if (pk_build(out, err, errlen) != 0)
 		return (-1);
 	pk_count(out);
@@ -1033,24 +1122,59 @@ pk_slurp(const char *path, unsigned char **bytesp, size_t *lenp, char *err,
  * which is a refusal and not a file to create. fsync before the close
  * because the tool's own gates are durable and a merge somebody hand
  * answered should not be the one thing a crash loses.
+ *
+ * O_NOFOLLOW and O_NONBLOCK with them, and an fstat of what was
+ * opened. The gate is where the plan hands the tree to the person, so
+ * what stands at the name is whatever a hand left there: without
+ * O_NOFOLLOW an absolute symbolic link had the merge written through
+ * it, outside the tree, with the real object untouched and the row
+ * set to keep; without O_NONBLOCK a fifo there wedged the picker
+ * inside open(2) with curses up and no key to get it back, which is
+ * the door the fatal-signal handlers stand behind (the review of
+ * 2026-09-11, M2 with G6). The caller has already refused what the
+ * row's own recorded kind says is not a regular file; this is the
+ * same question asked of the object that was actually opened, since
+ * the trees are the person's between the two.
+ *
+ * *damaged says whether the object was truncated before the failure,
+ * which is the whole of the caller's recovery decision (G5): the open
+ * refusing leaves it as it was, and anything after that leaves a
+ * short object.
  */
 static int
 pk_write_object(const char *path, const unsigned char *bytes, size_t len,
-    char *err, size_t errlen)
+    int *damaged, char *err, size_t errlen)
 {
+	struct stat st;
 	size_t at = 0;
 	ssize_t n;
 	int fd;
 
-	fd = open(path, O_WRONLY | O_TRUNC);
+	*damaged = 0;
+	fd = open(path, O_WRONLY | O_TRUNC | O_NOFOLLOW | O_NONBLOCK);
 	if (fd < 0) {
 		if (errno == ENOENT)
 			pk_err(err, errlen, "the result tree holds no object "
 			    "at this name to write into");
+		else if (errno == ELOOP)
+			pk_err(err, errlen, "the result tree holds a symbolic "
+			    "link at this name, which is never followed");
 		else
 			pk_err(err, errlen, "%s", strerror(errno));
 		return (-1);
 	}
+	if (fstat(fd, &st) != 0) {
+		pk_err(err, errlen, "%s", strerror(errno));
+		(void) close(fd);
+		return (-1);
+	}
+	if (!S_ISREG(st.st_mode)) {
+		pk_err(err, errlen, "the result tree holds no regular file at "
+		    "this name to write into");
+		(void) close(fd);
+		return (-1);
+	}
+	*damaged = 1;
 	while (at < len) {
 		n = write(fd, bytes + at, len - at);
 		if (n < 0 && errno == EINTR)
@@ -1257,7 +1381,21 @@ pk_merge_move(struct zr_picker *pk, int back)
  *
  * keep, because that is what the result standing as it is means
  * (v4-manifest.md section 8) and what the tool's verify leaves alone.
- * A write that fails is a queued line and a row that did not move.
+ * The message says so and says what has not happened yet: the row
+ * lives in memory until s or w writes the document, and a kill
+ * between the two leaves the tree merged and the resolution silent
+ * (the review of 2026-09-11, M9; whether q should ask is the author's
+ * open question 7 and is not answered here).
+ *
+ * A write refused before the object is opened is a queued line and a
+ * row that did not move. A write that fails after it -- the open
+ * truncated, so the object is short -- is a queued line AND the row
+ * back to unanswered, whatever it read before: a row that already
+ * read keep would otherwise ship a damaged object without a word,
+ * which is the one path in the review by which bad bytes reach the
+ * deliverable in silence (G5). Unanswered is recoverable in the way
+ * plan section 3.4 argues: the name is conflicted again, and writing
+ * again or choosing onto puts the bytes back.
  */
 static enum zr_pk_act
 pk_merge_write(struct zr_picker *pk)
@@ -1265,17 +1403,36 @@ pk_merge_write(struct zr_picker *pk)
 	char name[PK_NAMEBUF], err[ZR_PK_MSGLEN];
 	struct zr_pk_merge *mg = &pk->pk_merge;
 	struct zr_pk_row *row = &pk->pk_rows[mg->pm_row];
+	enum zr_pk_obj kind = row->zk_obj[ZR_PK_T_RESULT];
 	unsigned char *bytes = NULL;
 	size_t len = 0;
 	uint32_t first;
 	char *path;
-	int rc;
+	int rc, damaged = 0;
 
 	pk_rowname(row, name, sizeof (name));
 	if (zr_m3_result(&mg->pm_m3, &bytes, &len, err, sizeof (err)) != 0) {
 		pk_say(pk, "%s: %s", name, err);
 		if (zr_m3_first_unpicked(&mg->pm_m3, &first) == 0)
 			mg->pm_cursor = first;
+		return (ZR_PK_REDRAW);
+	}
+	/*
+	 * What the row already knows about the result tree, which the
+	 * open read and nothing read until now (M5): the merged bytes
+	 * go into a regular file and into nothing else.
+	 */
+	if (kind == ZR_PK_O_ABSENT) {
+		free(bytes);
+		pk_say(pk, "%s: the result tree holds no object at this name "
+		    "to write into", name);
+		return (ZR_PK_REDRAW);
+	}
+	if (kind != ZR_PK_O_TEXT && kind != ZR_PK_O_BINARY) {
+		free(bytes);
+		pk_say(pk, "%s: the result tree holds %s at this name, and "
+		    "the merged bytes go into a regular file or nowhere",
+		    name, pk_objword[kind]);
 		return (ZR_PK_REDRAW);
 	}
 	path = pk_join(pk->pk_tree[ZR_PK_T_RESULT], row->zk_name,
@@ -1285,16 +1442,22 @@ pk_merge_write(struct zr_picker *pk)
 		pk_say(pk, "%s: there is no result tree to write into", name);
 		return (ZR_PK_REDRAW);
 	}
-	rc = pk_write_object(path, bytes, len, err, sizeof (err));
+	rc = pk_write_object(path, bytes, len, &damaged, err, sizeof (err));
 	free(bytes);
 	free(path);
 	if (rc != 0) {
-		pk_say(pk, "%s: %s", name, err);
+		if (damaged == 0) {
+			pk_say(pk, "%s: %s", name, err);
+			return (ZR_PK_REDRAW);
+		}
+		pk_set(pk, row, ZR_CH_NONE);
+		pk_say(pk, "%s: the write failed part way (%s); the object "
+		    "is damaged and the name is unanswered again", name, err);
 		return (ZR_PK_REDRAW);
 	}
 	pk_set(pk, row, ZR_CH_KEEP);
-	pk_say(pk, "%s: the merged bytes are written and the name is set to "
-	    "keep", name);
+	pk_say(pk, "%s: the merged bytes are written and the name reads "
+	    "keep; the resolution is not saved yet", name);
 	zr_pk_merge_close(pk);
 	return (ZR_PK_REDRAW);
 }

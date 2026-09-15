@@ -22,12 +22,14 @@
  *     database has no such entry. Nothing is drawn on any of those
  *     paths and the termios are never written.
  *   - The termios are read once, before curses starts, and put back
- *     by pk_restore, which is idempotent and is called from every
- *     way out: the normal return, the error return, an atexit hook,
- *     and the handler for SIGINT, SIGQUIT, SIGTERM, SIGHUP, SIGSEGV
- *     and SIGBUS, which restores, puts the signal's own disposition
- *     back and raises it again, so that the picker dies of what
- *     killed it and the shell sees the truth.
+ *     by pk_restore, which is called from every way out: the normal
+ *     return, the error return, an atexit hook, and the handler for
+ *     SIGINT, SIGQUIT, SIGTERM, SIGHUP, SIGSEGV, SIGBUS, SIGABRT,
+ *     SIGILL and SIGFPE, which restores, puts the signal's own
+ *     disposition back and raises it again, so that the picker dies
+ *     of what killed it and the shell sees the truth. The settings go
+ *     back first and unguarded, so that a second signal during the
+ *     teardown finds them already back.
  *   - SIGWINCH sets a flag the loop reads; nothing is drawn in the
  *     handler. A resize that takes the window below the floor ends
  *     the picker the way the floor does at startup.
@@ -216,18 +218,44 @@ struct pk_geom {
  */
 
 /*
- * Put the terminal back exactly as it was found. Idempotent, so that
- * the normal return, the error return, the atexit hook and a signal
- * handler may all call it and only the first does anything.
+ * Put the terminal back exactly as it was found, in the order a
+ * second signal can survive: the settings first, then the alternate
+ * screen, then curses.
  *
- * endwin(3) is the one curses call the library documents as safe to
- * make from a signal handler, and it is what puts the screen back to
- * the shell's; tcsetattr(3) and the rest here are async-signal-safe
- * by POSIX. Nothing else is called.
+ * tcsetattr(3) is the whole of ground rule 6 and it is made first and
+ * outside the one-shot guard. It is async-signal-safe by POSIX, it is
+ * idempotent -- writing the same settings twice costs nothing -- and
+ * with TCSANOW it cannot block, where TCSADRAIN waits for the
+ * terminal's output to go out. The write of the alternate-screen exit
+ * is next and is its own one-shot, the flag being cleared before the
+ * write. Only endwin(3) is behind pk_restored, because it is the one
+ * call here that may block or fault: it writes through curses' own
+ * buffer and, called from a handler that interrupted a refresh, it
+ * re-enters that buffer.
+ *
+ * endwin is NOT signal-safe, whatever an earlier comment here said.
+ * ncurses says the opposite in curs_initscr(3X) -- "endwin calls
+ * other functions, many of which use stdio(3) or other library
+ * functions that are clearly unsafe", and "None of the Curses
+ * functions are required to be safe with respect to signals" -- and
+ * carries the same warning above its own cleanup handler in
+ * tty/lib_tstp.c. It is called from here all the same, last and as a
+ * best effort, because it is what ncurses' own handler does and what
+ * puts the screen back to the shell's; everything the rule actually
+ * promises has been done before it is reached (the review of
+ * 2026-09-11, S1 and S5: a second signal arriving while the first
+ * restore was inside endwin left the terminal raw).
  */
 static void
 pk_restore(void)
 {
+	if (pk_tio_saved != 0)
+		(void) tcsetattr(STDIN_FILENO, TCSANOW, &pk_tio);
+	if (pk_alt != 0) {
+		pk_alt = 0;
+		(void) write(STDOUT_FILENO, PK_ALT_OFF,
+		    sizeof (PK_ALT_OFF) - 1);
+	}
 	if (pk_restored != 0)
 		return;
 	pk_restored = 1;
@@ -235,13 +263,32 @@ pk_restore(void)
 		pk_up = 0;
 		(void) endwin();
 	}
-	if (pk_alt != 0) {
-		pk_alt = 0;
-		(void) write(STDOUT_FILENO, PK_ALT_OFF,
-		    sizeof (PK_ALT_OFF) - 1);
+}
+
+/*
+ * The way out the loop's own return takes: the same three steps in
+ * the display's order rather than the survival order above. endwin
+ * goes first here, so that its own teardown bytes -- the cursor moved
+ * to the last row, the attributes put back -- land on the screen
+ * curses drew, and not on the main screen a hand-switched terminal
+ * (FreeBSD's termcap xterm) has just had put back, where they would
+ * move the shell's prompt to the bottom row. Nothing is lost by the
+ * order: a fatal signal arriving inside this call lands in
+ * pk_restore, which finds pk_restored set, makes the settings and the
+ * alternate-screen exit itself, and re-raises, and nothing here is
+ * resumed after that.
+ */
+static void
+pk_leave(void)
+{
+	if (pk_restored == 0) {
+		pk_restored = 1;
+		if (pk_up != 0) {
+			pk_up = 0;
+			(void) endwin();
+		}
 	}
-	if (pk_tio_saved != 0)
-		(void) tcsetattr(STDIN_FILENO, TCSADRAIN, &pk_tio);
+	pk_restore();
 }
 
 /* An xterm kind: a terminal that honors the 1049 private mode. */
@@ -293,12 +340,20 @@ pk_onwinch(int sig)
  * screen leaves ISIG on, so Ctrl-backslash reaches the picker as
  * surely as Ctrl-C does, and a core dump with the terminal in raw
  * mode is exactly what the rule is about.
+ *
+ * SIGABRT, SIGILL and SIGFPE are in it for the same reason and cost
+ * the same three array entries (the review of 2026-09-11, S2). Each
+ * of the three ends the process with the terminal raw and on the
+ * alternate screen where it is not caught, and SIGABRT is the one the
+ * picker's own address space can raise: abort(3) runs no atexit hook,
+ * and __stack_chk_fail and a heap-corruption abort in the C library
+ * come out of the same door.
  */
 static void
 pk_arm(void)
 {
 	static const int fatal[] = { SIGINT, SIGQUIT, SIGTERM, SIGHUP,
-		SIGSEGV, SIGBUS };
+		SIGSEGV, SIGBUS, SIGABRT, SIGILL, SIGFPE };
 	struct sigaction sa;
 	size_t i;
 
@@ -1028,14 +1083,23 @@ pk_draw(const struct zr_picker *pk, const struct pk_geom *g, uint32_t top,
 
 /*
  * One drawn cell: the gutter, the cursor's cell, the line number and
- * the text, in PK_M_HEAD columns plus what is left for the text:
- * the mark (! + - f o b), a space, the cursor's one cell, a space,
- * the number right-aligned in PK_M_NUMW columns, two spaces, the
- * text (the author, on the box, 2026-09-10: "[!+-][space]
+ * the text, in PK_M_FIXED columns plus the number's own width plus
+ * what is left for the text: the mark (! + - f o b), a space, the
+ * cursor's one cell, a space, the number right-aligned, two spaces,
+ * the text (the author, on the box, 2026-09-10: "[!+-][space]
  * [highlight][space][leftpad numbers]").
+ *
+ * The number's width is the view's, not a constant: it is the digits
+ * of the largest number the view can draw, which is the longest of
+ * the three files and the result the answers make. Four columns, as
+ * it was, truncated rather than elided above 9999 -- line 50004 drew
+ * as "5000" and ten lines shared one label (the review of
+ * 2026-09-11, S6). PK_M_NUMMIN keeps the mockup's look on an
+ * ordinary file and PK_M_NUMMAX is what ZR_M3_MAXLINES needs.
  */
-#define	PK_M_HEAD	10
-#define	PK_M_NUMW	4
+#define	PK_M_NUMMIN	4
+#define	PK_M_NUMMAX	8
+#define	PK_M_FIXED	6	/* the head, without the number */
 #define	PK_M_CUR	2	/* the cursor cell: gutter, space, it */
 #define	PK_M_NUM	4	/* the number, right-aligned, after a space */
 
@@ -1100,16 +1164,66 @@ struct pk_view {
 	struct zr_m3_hint	v_hint;
 	int			v_hinted;
 	uint32_t		v_hchunk;
+	int			v_numw;		/* the number column's width */
+	int			v_head;		/* PK_M_FIXED + v_numw */
 };
+
+/* The two row lists alone: the hint outlives them (G4). */
+static void
+pk_view_rows_free(struct pk_view *v)
+{
+	free(v->v_side);
+	free(v->v_res);
+	v->v_side = NULL;
+	v->v_res = NULL;
+	v->v_nside = 0;
+	v->v_nres = 0;
+}
 
 static void
 pk_view_fini(struct pk_view *v)
 {
 	if (v->v_hinted != 0)
 		zr_m3_hint_fini(&v->v_hint);
-	free(v->v_side);
-	free(v->v_res);
+	pk_view_rows_free(v);
 	memset(v, 0, sizeof (*v));
+}
+
+/* How many columns a number of this many lines wants, within the two ends. */
+static int
+pk_numw(uint32_t n)
+{
+	int w = 1;
+
+	while (n >= 10 && w < PK_M_NUMMAX) {
+		n /= 10;
+		w++;
+	}
+	return (w < PK_M_NUMMIN ? PK_M_NUMMIN : w);
+}
+
+/*
+ * The largest number the view can draw: the longest of the three
+ * files, and the result, whose lines are the answers laid end to end
+ * and which can be longer than any one of them. Counted from the
+ * chunks and not from the rows, so that the column does not change
+ * width when c or b folds rows away.
+ */
+static uint32_t
+pk_view_high(const struct zr_m3 *m)
+{
+	uint32_t i, lo, hi, res = 0, high = 0;
+
+	for (i = 0; i < m->nchunks; i++) {
+		(void) zr_m3_answer(m, i, &lo, &hi);
+		res += hi - lo;
+	}
+	high = m->base.nlines;
+	if (m->from.nlines > high)
+		high = m->from.nlines;
+	if (m->onto.nlines > high)
+		high = m->onto.nlines;
+	return (res > high ? res : high);
 }
 
 static uint32_t
@@ -1311,7 +1425,23 @@ pk_res_fill(const struct zr_pk_merge *mg, struct pk_rrow *out)
 			continue;
 		}
 		if (mg->pm_base != 0 && i == mg->pm_cursor) {
-			/* b: the hunk's base range, which every chunk keeps */
+			/*
+			 * b: the hunk's base range, which every chunk
+			 * keeps. Base's rows are what is drawn, but what
+			 * the hunk answers with is in the result all the
+			 * same, so it is counted here: without that the
+			 * numbers after the cursor's hunk fell short by
+			 * the length of its answer for as long as b was
+			 * on (the review of 2026-09-11, S6). A conflict
+			 * nobody has picked answers with nothing and
+			 * counts as nothing, which is what its own
+			 * branch below does.
+			 */
+			if (!(c->kind == ZR_M3_CONFLICT &&
+			    c->pick == ZR_M3_PICK_NONE)) {
+				(void) zr_m3_answer(m, i, &lo, &hi);
+				nl += hi - lo;
+			}
 			if (c->base_hi == c->base_lo) {
 				if (out != NULL) {
 					out[n].r_chunk = i;
@@ -1402,22 +1532,33 @@ pk_res_fill(const struct zr_pk_merge *mg, struct pk_rrow *out)
  * scroll positions are kept across a rebuild and clipped afterwards,
  * so that a pick redraws in place rather than jumping to the top.
  * Returns -1 out of memory, with the view emptied.
+ *
+ * The inside-conflict hint is kept too, for as long as the cursor
+ * stands on the chunk it was taken for. It is one libdiff run over
+ * the chunk's two halves and nothing but the cursor moving can change
+ * it: recomputing it on every pass cost 136 milliseconds a key on a
+ * 32000-line conflict, unbound keys included, and the fields to hold
+ * it were there and always zero when the builder ran (the review of
+ * 2026-09-11, G4).
  */
 static int
 pk_view_build(const struct zr_pk_merge *mg, struct pk_view *v)
 {
-	uint32_t stop = v->v_stop, rtop = v->v_rtop;
 	char err[PK_LINEBUF];
 
-	pk_view_fini(v);
-	v->v_stop = stop;
-	v->v_rtop = rtop;
-	if (mg->pm_cursor < mg->pm_m3.nchunks &&
+	pk_view_rows_free(v);
+	if (v->v_hinted != 0 && v->v_hchunk != mg->pm_cursor) {
+		zr_m3_hint_fini(&v->v_hint);
+		v->v_hinted = 0;
+	}
+	if (v->v_hinted == 0 && mg->pm_cursor < mg->pm_m3.nchunks &&
 	    zr_m3_hint(&mg->pm_m3, mg->pm_cursor, &v->v_hint, err,
 	    sizeof (err)) == 0) {
 		v->v_hinted = 1;
 		v->v_hchunk = mg->pm_cursor;
 	}
+	v->v_numw = pk_numw(pk_view_high(&mg->pm_m3));
+	v->v_head = PK_M_FIXED + v->v_numw;
 	v->v_nside = pk_side_fill(mg, v, NULL);
 	v->v_nres = pk_res_fill(mg, NULL);
 	if (v->v_nside != 0) {
@@ -1546,12 +1687,18 @@ pk_line_text(const struct zr_m3 *m, int file, uint32_t idx, char *out,
 	out[at] = '\0';
 }
 
-/* One cell: the gutter, the number, and what is left for the text. */
+/*
+ * One cell: the gutter, the number, and what is left for the text.
+ * The number is right-aligned in the view's own column width and the
+ * text begins after it, so a file of a hundred thousand lines draws
+ * its numbers whole (S6).
+ */
 static void
-pk_draw_cell(const struct zr_m3 *m, int y, int x, int w,
-    const struct pk_cell *c, int sel)
+pk_draw_cell(const struct zr_m3 *m, const struct pk_view *v, int y, int x,
+    int w, const struct pk_cell *c, int sel)
 {
-	char text[PK_LINEBUF], num[PK_M_NUMW + 1], gut[2];
+	char text[PK_LINEBUF], num[PK_M_NUMMAX + 1], gut[2];
+	int head = v->v_head;
 
 	if (c->c_kind == PK_MR_BLANK || w <= 0)
 		return;
@@ -1562,21 +1709,21 @@ pk_draw_cell(const struct zr_m3 *m, int y, int x, int w,
 		(void) snprintf(text, sizeof (text),
 		    "... %lu line%s with no conflict ...",
 		    (unsigned long)c->c_line, c->c_line == 1 ? "" : "s");
-		pk_putm(y, x + PK_M_HEAD, w - PK_M_HEAD, PK_CO_DIM, sel, text);
+		pk_putm(y, x + head, w - head, PK_CO_DIM, sel, text);
 		return;
 	}
 	if (c->c_kind == PK_MR_MARK) {
-		pk_putm(y, x + PK_M_HEAD, w - PK_M_HEAD, c->c_co, sel,
+		pk_putm(y, x + head, w - head, c->c_co, sel,
 		    pk_markword[c->c_mark]);
 		return;
 	}
 	if (c->c_num != 0) {
-		(void) snprintf(num, sizeof (num), "%*lu", PK_M_NUMW,
+		(void) snprintf(num, sizeof (num), "%*lu", v->v_numw,
 		    (unsigned long)c->c_show);
 		pk_put(y, x + PK_M_NUM, PK_CO_DIM, sel, num);
 	}
 	pk_line_text(m, c->c_file, c->c_line, text, sizeof (text));
-	pk_putm(y, x + PK_M_HEAD, w - PK_M_HEAD, c->c_co, sel, text);
+	pk_putm(y, x + head, w - head, c->c_co, sel, text);
 }
 
 /* The title in the top rule: the name, what it is, and which hunk. */
@@ -1646,8 +1793,10 @@ pk_draw_merge(struct zr_picker *pk, const struct zr_pk_merge *mg,
 		i = v->v_stop + (uint32_t)y;
 		if (i >= v->v_nside)
 			continue;
-		pk_draw_cell(m, ly, g->g_lx, g->g_lw, &v->v_side[i].s_from, 0);
-		pk_draw_cell(m, ly, g->g_rx, g->g_rw, &v->v_side[i].s_onto, 0);
+		pk_draw_cell(m, v, ly, g->g_lx, g->g_lw, &v->v_side[i].s_from,
+		    0);
+		pk_draw_cell(m, v, ly, g->g_rx, g->g_rw, &v->v_side[i].s_onto,
+		    0);
 		if (v->v_side[i].s_chunk == mg->pm_cursor &&
 		    mg->pm_cursor < m->nchunks) {
 			pk_mark(ly, g->g_lx + PK_M_CUR);
@@ -1681,7 +1830,7 @@ pk_draw_merge(struct zr_picker *pk, const struct zr_pk_merge *mg,
 			continue;
 		sel = v->v_res[i].r_chunk == mg->pm_cursor &&
 		    mg->pm_cursor < m->nchunks;
-		pk_draw_cell(m, ry, 1, pk_w - 2, &v->v_res[i].r_cell, 0);
+		pk_draw_cell(m, v, ry, 1, pk_w - 2, &v->v_res[i].r_cell, 0);
 		if (sel != 0)
 			pk_mark(ry, 1 + PK_M_CUR);
 	}
@@ -1803,8 +1952,8 @@ pk_map(int c)
 /*
  * The same for screen 2, whose keys are its own: the list's keys mean
  * nothing while a merge is open, and these mean nothing on the list.
- * Escape is one byte and is read as one, since keypad(3) has already
- * folded every escape SEQUENCE into a KEY_ code of its own.
+ * Escape reaches either table only as a lone escape; a sequence is
+ * dropped by pk_esc_seq before the mapping is asked.
  */
 static int
 pk_map_merge(int c)
@@ -1832,6 +1981,61 @@ pk_map_merge(int c)
 	default:
 		return (-1);
 	}
+}
+
+/*
+ * A bare escape, or the head of a sequence this terminal's database
+ * does not describe? Returns 1 for a sequence, which the caller drops
+ * whole and acts on nothing for, and 0 for the key.
+ *
+ * keypad(3) folds every sequence terminfo DOES describe into a KEY_
+ * code of its own, and nothing else about a terminal is known: a
+ * cursor key in the other keypad mode, a focus report, a paste
+ * bracket, a device-attributes reply, a cursor-position reply and an
+ * SGR mouse click all arrive as an escape and then bytes, and ncurses
+ * hands back the escape and pushes the rest of it back. Mapped to
+ * quit, as it was, a mouse click or a window switch threw away every
+ * answer since the last save (the review of 2026-09-11, S3).
+ *
+ * The bytes are taken with getch and never with read(2), because the
+ * tail of the sequence is in ncurses' own pushback and not in the
+ * terminal any more. The wait is the escape delay's job: a lone
+ * escape is followed by nothing, and PK_ESC_MS is how long that is
+ * given before it is believed. A CSI or an SS3 is read to its final
+ * byte, 0x40 to 0x7e, which is where every one of them ends; anything
+ * else takes whatever is pending and stops. PK_ESC_MAX bounds both,
+ * so that a terminal spewing bytes cannot hold the loop.
+ */
+#define	PK_ESC_MS	60
+#define	PK_ESC_MAX	64
+
+static int
+pk_esc_seq(void)
+{
+	int c, n;
+
+	(void) wtimeout(stdscr, PK_ESC_MS);
+	c = getch();
+	(void) wtimeout(stdscr, -1);
+	if (c == ERR)
+		return (0);
+	if (c == '[' || c == 'O') {
+		(void) nodelay(stdscr, TRUE);
+		for (n = 0; n < PK_ESC_MAX; n++) {
+			c = getch();
+			if (c == ERR || c > 0xff)
+				break;
+			if (c >= 0x40 && c <= 0x7e)
+				break;	/* the final byte of the sequence */
+		}
+		(void) nodelay(stdscr, FALSE);
+		return (1);
+	}
+	(void) nodelay(stdscr, TRUE);
+	for (n = 0; n < PK_ESC_MAX && getch() != ERR; n++)
+		continue;
+	(void) nodelay(stdscr, FALSE);
+	return (1);
 }
 
 /* The window the list scrolls in, so that the cursor is always in it. */
@@ -1917,6 +2121,8 @@ pk_merge_loop(struct zr_picker *pk)
 		}
 		if (c == KEY_RESIZE)
 			continue;
+		if (c == '\033' && pk_esc_seq() != 0)
+			continue;	/* a sequence, and not the key */
 		k = pk_map_merge(c);
 		if (k < 0)
 			continue;
@@ -1981,6 +2187,8 @@ pk_loop(struct zr_picker *pk)
 				    ZR_PK_UP : ZR_PK_DOWN);
 			continue;
 		}
+		if (c == '\033' && pk_esc_seq() != 0)
+			continue;	/* a sequence, and not the key */
 		k = pk_map(c);
 		if (k < 0)
 			continue;
@@ -2099,9 +2307,30 @@ zr_pk_screen(struct zr_picker *pk, char *err, size_t errlen)
 	 */
 	pk_alt_used = 0;
 	if (!zr_pk_term_has_alt() && pk_xterm_kind(termname)) {
-		(void) write(STDOUT_FILENO, PK_ALT_ON, sizeof (PK_ALT_ON) - 1);
+		/*
+		 * The flag before the write, not after it: a fatal
+		 * signal between the two would otherwise leave the
+		 * terminal on the alternate screen with nothing to
+		 * undo it, and a 1049l written for a switch that never
+		 * happened is inert on every terminal that ignores the
+		 * pair (the review of 2026-09-11, S7).
+		 *
+		 * The write itself goes straight to the descriptor and
+		 * therefore ahead of whatever newterm has already
+		 * queued in curses' own buffer -- the scroll-region
+		 * reset and the cursor shape it emits into
+		 * _nc_mvcur_resume. That comes out in the right order
+		 * here because nothing has flushed yet, which is luck
+		 * and not design; the honest shapes are to ask
+		 * setupterm for smcup before newterm and write this
+		 * there, or to flush curses before the write. Left as
+		 * it is, with the question written down, because the
+		 * fix belongs with the newline of S7's third item,
+		 * which is an open question for the author.
+		 */
 		pk_alt = 1;
 		pk_alt_used = 1;
+		(void) write(STDOUT_FILENO, PK_ALT_ON, sizeof (PK_ALT_ON) - 1);
 	}
 	(void) cbreak();
 	(void) noecho();
@@ -2111,7 +2340,7 @@ zr_pk_screen(struct zr_picker *pk, char *err, size_t errlen)
 	(void) curs_set(0);
 	pk_colors();
 	rc = pk_loop(pk);
-	pk_restore();
+	pk_leave();
 	(void) delscreen(sp);
 	/*
 	 * A terminal with no alternate screen -- FreeBSD's termcap

@@ -116,7 +116,6 @@
  * changes nothing.
  */
 
-#include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -308,9 +307,11 @@ m3_merge(const struct zr_m3_file *from, const struct zr_m3_file *onto,
  * is a stable chunk, and the same cursors give a from-only chunk its
  * onto range and an onto-only chunk its from range, which is what the
  * original's keep() computes with its delta. That the three stay in
- * step is the cheapest possible check on the walk, so it is asserted
- * as it goes, and checked again in a build with assertions compiled
- * out.
+ * step is the cheapest possible check on the walk, so it is made as
+ * the walk goes -- as a checked refusal and never as an assert(3),
+ * which would abort the picker with the terminal in raw mode and on
+ * the alternate screen (the review of 2026-09-11, S2). A refusal
+ * here is one queued line and the list still up.
  */
 int
 zr_m3_walk(const struct zr_m3_file *base, const struct zr_m3_file *from,
@@ -368,7 +369,6 @@ zr_m3_walk(const struct zr_m3_file *base, const struct zr_m3_file *from,
 			r->onto_lo = op;
 			r->onto_hi = op + span;
 		}
-		assert(r->from_lo == fp && r->onto_lo == op);
 		if (r->from_lo != fp || r->onto_lo != op ||
 		    r->from_hi < r->from_lo || r->onto_hi < r->onto_lo ||
 		    r->from_hi > from->nlines || r->onto_hi > onto->nlines) {
@@ -383,7 +383,6 @@ zr_m3_walk(const struct zr_m3_file *base, const struct zr_m3_file *from,
 	}
 
 	tail = base->nlines - bp;
-	assert(from->nlines - fp == tail && onto->nlines - op == tail);
 	if (from->nlines - fp != tail || onto->nlines - op != tail) {
 		m3_fail(err, errlen, "the three files do not end together");
 		goto fail;

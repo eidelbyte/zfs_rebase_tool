@@ -53,6 +53,56 @@ check that tools/gate.sh runs over the tree. It is exempt from cstyle
 and from tools/xcheck-freebsd.sh: foreign code keeps its own style,
 and the FreeBSD build of it is the box's to confirm.
 
+Known defects, to report upstream
+---------------------------------
+
+Found by the code review of 2026-09-11 (sprints/sprint-6/
+code-review-2026-09-11.md, findings G1 and G7) and verified against
+this copy, at the line numbers this commit has. None of them is fixed
+here: the rule above is the rule. They go to the Game of Trees project
+and to FreeBSD, and a refresh is what brings the fixes back.
+
+Four allocation sites in lib/diff_patience.c, all of them inside
+diff_algo_patience, which our own configuration puts at the top of the
+nest so that every diff enters it:
+
+	387	calloc of one struct atom_patience per line of the
+		left side, unchecked; published into left->algo_data
+		at :397 and indexed by the PATIENCE macro at :56.
+	389	the same for the right side, into right->algo_data
+		at :398.
+	504	recallocarray of the LCS array, unchecked, with
+		&lcs[lcs_count - 1] formed and written through at
+		:505 in the loop below it.
+	432	a checked allocation whose "return ENOMEM" at :435
+		goes around free_and_exit, leaking both patience
+		tables and leaving root->current set.
+
+The first three are dereferenced at once when the allocation fails.
+Reproduced with an allocator that refuses above a cap: the picker dies
+of SIGSEGV on a 100000-line merge where the library's own header
+promises a refusal. The fix is four lines -- check the two callocs and
+the lcs allocation, and turn the return at :435 into "rc = ENOMEM;
+goto free_and_exit;".
+
+Our own guard against reaching them is ZR_M3_MAXLINES in
+../merge.h, a line ceiling refused in zr_m3_open before libdiff is
+asked for anything. It is a guard and not a fix.
+
+Two undefined-behaviour sites in lib/diff_main.c, inside
+diff_algo_none:
+
+	495	&r[r_idx] where the right side's atom array head is
+		NULL and r_idx is 0 (the minus chunk, a whole-file
+		deletion).
+	504	&l[l_idx] where the left side's head is NULL and
+		l_idx is 0 (the plus chunk, an empty base).
+
+A zero offset from a null pointer is undefined in C and defined by
+every compiler this is built with, so nothing misbehaves today; an
+UndefinedBehaviorSanitizer build of the merge reports these two and
+nothing else. Worth carrying upstream with the four above.
+
 Refresh
 -------
 

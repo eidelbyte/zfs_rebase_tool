@@ -22,11 +22,11 @@
  *
  * The family is ZP of tests/MATRIX.md. Covered: ZP1 to ZP19, ZP21 to
  * ZP39, ZP40 to ZP60, ZP62 to ZP63, ZP65 to ZP72, ZP75, ZP78 (the
- * panes), ZP82 to ZP88, ZP90 to ZP96, ZP99 and ZP110 to ZP114. ZP20
- * is here as the message at open. What is left of the family is the
- * merge library's own cells (check_merge.c) and what only a box can
- * show: ZP61, ZP64, ZP73, ZP74, ZP76, ZP77, ZP100 to ZP103 and
- * ZP113.
+ * panes), ZP82 to ZP88, ZP90 to ZP96, ZP99, ZP110 to ZP114, ZP119,
+ * ZP123, ZP125, ZP126 and ZP130 to ZP134 with ZP136. ZP20 is here as
+ * the message at open. What is left of the family is the merge
+ * library's own cells (check_merge.c) and what only a box can show:
+ * ZP61, ZP64, ZP73, ZP74, ZP76, ZP77, ZP100 to ZP103 and ZP113.
  */
 
 #define	_XOPEN_SOURCE	700
@@ -38,9 +38,11 @@
 #endif
 
 #include <sys/ioctl.h>
+#include <sys/resource.h>
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <sys/types.h>
 #include <sys/un.h>
 #include <sys/wait.h>
@@ -1978,8 +1980,15 @@ test_merge_write(void)
 	CHECK(zr_pk_choice(zr_pk_row(&pk, G_M2)) == ZR_CH_KEEP);
 	CHECK(zr_pk_dirty(&pk) == 1);
 	CHECK(zr_pk_counts(&pk)->zc_unanswered == 3);
+	/*
+	 * ZP136: the message says the bytes are written, that the name
+	 * reads keep, and that the resolution is not saved yet -- the
+	 * row's keep lives in memory until s or w (M9).
+	 */
 	msg = zr_pk_msg(&pk);
-	CHECK(msg != NULL && strstr(msg, "set to keep") != NULL);
+	CHECK(msg != NULL && strstr(msg, "written") != NULL);
+	CHECK(strstr(msg, "keep") != NULL);
+	CHECK(strstr(msg, "not saved yet") != NULL);
 	/* ZP93: and the resolution s writes carries that keep */
 	CHECK(zr_pk_key(&pk, ZR_PK_SAVE) == ZR_PK_REDRAW);
 	got = slurp(w.w_res, &len);
@@ -2072,6 +2081,310 @@ test_merge_writefail(void)
 }
 
 /*
+ * ZP130: the merged bytes go into a regular file or nowhere. A
+ * symbolic link at the name in the result tree is refused and never
+ * followed -- the merge would otherwise have been written through it,
+ * outside the tree, with the real object untouched and the row set to
+ * keep -- and a fifo there is refused without the open ever blocking,
+ * which is what wedged the picker with curses up (M2 with G6, over
+ * the result kind M5 found computed and unread).
+ *
+ * Both need a hand to put the object there, since the three sides
+ * must be text for the row to open at all, and the gate is exactly
+ * where the plan hands the tree to the person.
+ */
+static void
+test_merge_notregular(void)
+{
+	char path[PATHMAX], outside[PATHMAX];
+	struct zr_picker pk;
+	const char *msg;
+	struct world w;
+	struct stat st;
+	size_t len;
+	char *got;
+
+	/* a symbolic link at the name, pointing out of the tree */
+	world_init(&w);
+	build_merge(&w);
+	w_path(&w, ZR_PK_T_RESULT, "/m2.txt", path, sizeof (path));
+	join(outside, sizeof (outside), w.w_root, "/outside.txt");
+	put(outside, "not the merge\n", strlen("not the merge\n"));
+	CHECK(unlink(path) == 0);
+	CHECK(symlink(outside, path) == 0);
+	open_ok("merge symlink", &w, &pk);
+	drain(&pk);
+	(void) merge_on(&pk, G_M2);
+	CHECK(zr_pk_key(&pk, ZR_PK_PICK_FROM) == ZR_PK_REDRAW);
+	CHECK(zr_pk_key(&pk, ZR_PK_NEXT) == ZR_PK_REDRAW);
+	CHECK(zr_pk_key(&pk, ZR_PK_PICK_FROM) == ZR_PK_REDRAW);
+	CHECK(zr_pk_key(&pk, ZR_PK_WRITE) == ZR_PK_REDRAW);
+	msg = zr_pk_msg(&pk);
+	CHECK(msg != NULL && strstr(msg, "/m2.txt") != NULL);
+	CHECK(strstr(msg, "link") != NULL);
+	/* the row did not move, the merge is still open, the link is a link */
+	CHECK(zr_pk_choice(zr_pk_row(&pk, G_M2)) == ZR_CH_NONE);
+	CHECK(zr_pk_merge(&pk) != NULL);
+	CHECK(lstat(path, &st) == 0 && S_ISLNK(st.st_mode));
+	/* and nothing outside the tree was written */
+	got = slurp(outside, &len);
+	CHECK(got != NULL);
+	same("the object outside the tree", got, len, "not the merge\n",
+	    strlen("not the merge\n"));
+	free(got);
+	zr_pk_fini(&pk);
+	world_fini(&w);
+
+	/*
+	 * A fifo at the name. Nothing reads it, so an open that waited
+	 * would wait forever; this test finishing at all is half of
+	 * what it asserts.
+	 */
+	world_init(&w);
+	build_merge(&w);
+	w_path(&w, ZR_PK_T_RESULT, "/m2.txt", path, sizeof (path));
+	CHECK(unlink(path) == 0);
+	w_fifo(&w, ZR_PK_T_RESULT, "/m2.txt");
+	open_ok("merge fifo", &w, &pk);
+	drain(&pk);
+	(void) merge_on(&pk, G_M2);
+	CHECK(zr_pk_key(&pk, ZR_PK_PICK_FROM) == ZR_PK_REDRAW);
+	CHECK(zr_pk_key(&pk, ZR_PK_NEXT) == ZR_PK_REDRAW);
+	CHECK(zr_pk_key(&pk, ZR_PK_PICK_FROM) == ZR_PK_REDRAW);
+	CHECK(zr_pk_key(&pk, ZR_PK_WRITE) == ZR_PK_REDRAW);
+	msg = zr_pk_msg(&pk);
+	CHECK(msg != NULL && strstr(msg, "/m2.txt") != NULL);
+	CHECK(strstr(msg, "regular file") != NULL);
+	CHECK(zr_pk_choice(zr_pk_row(&pk, G_M2)) == ZR_CH_NONE);
+	CHECK(zr_pk_merge(&pk) != NULL);
+	CHECK(lstat(path, &st) == 0 && S_ISFIFO(st.st_mode));
+	zr_pk_fini(&pk);
+	world_fini(&w);
+}
+
+/*
+ * ZP133: a write that fails after the open has truncated. The object
+ * is short, so the row goes back to unanswered whatever it read
+ * before and one line names the object and the reason; a row that
+ * already read keep would otherwise have shipped the short object
+ * with nothing said (G5).
+ *
+ * The failure is a file-size limit with SIGXFSZ ignored, so that
+ * write(2) returns EFBIG rather than killing this program. The limit
+ * is put back before anything is asserted, and it is the soft limit
+ * alone, so nothing else this program writes is caught by it.
+ */
+static const char man_big[] =
+	M_HDR("0", "1")
+	"/\n    big.txt conflict 1\n    ..\n"
+	REC("1", "changed-both", "/big.txt changed on both sides");
+
+static const char res_big[] =
+	R_HDR("1", "1") "/\n    big.txt conflict 1 -\n    ..\n";
+
+static void
+test_merge_writeshort(void)
+{
+	char big[8192], path[PATHMAX];
+	struct rlimit was, small;
+	struct zr_picker pk;
+	const char *msg;
+	struct world w;
+	size_t at, len;
+	char *got;
+	int i;
+
+	if (getrlimit(RLIMIT_FSIZE, &was) != 0) {
+		printf("skip ZP133: no RLIMIT_FSIZE here\n");
+		return;
+	}
+	/* three sides long enough that the merged bytes are over the limit */
+	at = 0;
+	for (i = 0; i < 200; i++)
+		at += (size_t)snprintf(big + at, sizeof (big) - at,
+		    "line %d of the base\n", i);
+	world_init(&w);
+	world_docs(&w, man_big, res_big);
+	w_text(&w, ZR_PK_T_BASE, "/big.txt", big);
+	w_text(&w, ZR_PK_T_RESULT, "/big.txt", big);
+	big[5] = 'F';
+	w_text(&w, ZR_PK_T_FROM, "/big.txt", big);
+	big[5] = 'O';
+	w_text(&w, ZR_PK_T_ONTO, "/big.txt", big);
+	open_ok("merge writeshort", &w, &pk);
+	drain(&pk);
+	/* the row is keep BEFORE the merge is opened: G5's sharper order */
+	CHECK(zr_pk_key(&pk, ZR_PK_KEEP) == ZR_PK_REDRAW);
+	CHECK(zr_pk_choice(zr_pk_row(&pk, 0)) == ZR_CH_KEEP);
+	(void) merge_on(&pk, 0);
+	for (;;) {
+		if (zr_m3_unpicked(&zr_pk_merge(&pk)->pm_m3) == 0)
+			break;
+		(void) zr_pk_key(&pk, ZR_PK_PICK_FROM);
+		if (zr_pk_key(&pk, ZR_PK_NEXT) == ZR_PK_NOTHING)
+			break;
+	}
+	CHECK(zr_m3_unpicked(&zr_pk_merge(&pk)->pm_m3) == 0);
+	small = was;
+	small.rlim_cur = 1024;
+	CHECK(signal(SIGXFSZ, SIG_IGN) != SIG_ERR);
+	CHECK(setrlimit(RLIMIT_FSIZE, &small) == 0);
+	(void) zr_pk_key(&pk, ZR_PK_WRITE);
+	CHECK(setrlimit(RLIMIT_FSIZE, &was) == 0);
+	CHECK(signal(SIGXFSZ, SIG_DFL) != SIG_ERR);
+	msg = zr_pk_msg(&pk);
+	CHECK(msg != NULL && strstr(msg, "/big.txt") != NULL);
+	CHECK(strstr(msg, "damaged") != NULL);
+	CHECK(strstr(msg, "unanswered") != NULL);
+	/* the row is unanswered again, whatever it read before */
+	CHECK(zr_pk_choice(zr_pk_row(&pk, 0)) == ZR_CH_NONE);
+	/* and the object really is short: the write stopped at the limit */
+	w_path(&w, ZR_PK_T_RESULT, "/big.txt", path, sizeof (path));
+	got = slurp(path, &len);
+	CHECK(got != NULL);
+	CHECK(len <= 1024);
+	free(got);
+	zr_pk_fini(&pk);
+	world_fini(&w);
+}
+
+/*
+ * ZP131: a tree that cannot be read is one line at open, before a row
+ * is built. Every lstat there fails and every name reads absent, so
+ * without the line a name that merges cleanly shows up as add/add
+ * with conflicts that are not conflicts and nothing says why (M6).
+ *
+ * The base tree at mode 0000: stat(2) still answers for the directory
+ * itself, so this is the access(2) half. Root ignores the mode, so
+ * the case says so and passes there.
+ */
+static void
+test_tree_unreadable(void)
+{
+	struct zr_picker pk;
+	const char *msg;
+	struct world w;
+	int seen = 0;
+
+	if (geteuid() == 0) {
+		printf("skip ZP131: running as root, a mode of 0000 is "
+		    "no refusal\n");
+		return;
+	}
+	world_init(&w);
+	build_merge(&w);
+	CHECK(chmod(w.w_tree[ZR_PK_T_BASE], 0000) == 0);
+	open_ok("unreadable base", &w, &pk);
+	while ((msg = zr_pk_msg(&pk)) != NULL) {
+		if (strstr(msg, "base tree") != NULL &&
+		    strstr(msg, "cannot be read") != NULL &&
+		    strstr(msg, w.w_tree[ZR_PK_T_BASE]) != NULL)
+			seen = 1;
+	}
+	CHECK(seen == 1);
+	CHECK(chmod(w.w_tree[ZR_PK_T_BASE], 0755) == 0);
+	zr_pk_fini(&pk);
+	world_fini(&w);
+
+	/* a tree path that is not there at all, and one that is a file */
+	world_init(&w);
+	build_merge(&w);
+	(void) snprintf(w.w_arg[ZR_PK_ARGV_TREE + ZR_PK_T_ONTO],
+	    sizeof (w.w_arg[0]), "%s/gone", w.w_root);
+	(void) snprintf(w.w_arg[ZR_PK_ARGV_TREE + ZR_PK_T_RESULT],
+	    sizeof (w.w_arg[0]), "%s", w.w_man);
+	open_ok("absent onto", &w, &pk);
+	seen = 0;
+	while ((msg = zr_pk_msg(&pk)) != NULL) {
+		if (strstr(msg, "onto tree") != NULL &&
+		    strstr(msg, "cannot be read") != NULL)
+			seen |= 1;
+		if (strstr(msg, "result tree") != NULL &&
+		    strstr(msg, "not a directory") != NULL)
+			seen |= 2;
+	}
+	CHECK(seen == 3);
+	zr_pk_fini(&pk);
+	world_fini(&w);
+}
+
+/*
+ * ZP134: many groups. Every conflict row finds the manifest's record
+ * for its own group and the header counts the distinct groups, which
+ * was a scan of every record per row and a dedupe in a double loop --
+ * quadratic in the rows for the shape a conflicted pool takes, one
+ * name to a group (M4). This is the correctness half; the timing is
+ * in the worklog.
+ */
+#define	T_GROUPS	400
+
+static void
+test_many_groups(void)
+{
+	char *man, *res, why[64], name[32];
+	const struct zr_pk_row *row;
+	struct zr_picker pk;
+	size_t mcap, rcap;
+	struct world w;
+	uint32_t i;
+
+	mcap = (size_t)T_GROUPS * 160 + 1024;
+	rcap = (size_t)T_GROUPS * 64 + 1024;
+	man = malloc(mcap);
+	res = malloc(rcap);
+	CHECK(man != NULL && res != NULL);
+	(void) snprintf(man, mcap, "%s/\n", M_HDR("0", "400"));
+	for (i = 1; i <= T_GROUPS; i++) {
+		(void) snprintf(name, sizeof (name), "n%u.txt", i);
+		(void) snprintf(man + strlen(man), mcap - strlen(man),
+		    "    %s conflict %u\n", name, i);
+	}
+	(void) snprintf(man + strlen(man), mcap - strlen(man), "    ..\n");
+	for (i = 1; i <= T_GROUPS; i++) {
+		(void) snprintf(why, sizeof (why), "/n%u.txt changed on both "
+		    "sides", i);
+		(void) snprintf(name, sizeof (name), "%u", i);
+		(void) snprintf(man + strlen(man), mcap - strlen(man),
+		    "conflict %s changed-both\n  why  %s\n"
+		    "  base ()\n  from ()\n  onto ()\n", name, why);
+	}
+	(void) snprintf(res, rcap, "%s/\n", R_HDR("400", "400"));
+	for (i = 1; i <= T_GROUPS; i++)
+		(void) snprintf(res + strlen(res), rcap - strlen(res),
+		    "    n%u.txt conflict %u -\n", i, i);
+	(void) snprintf(res + strlen(res), rcap - strlen(res), "    ..\n");
+	world_init(&w);
+	world_docs(&w, man, res);
+	open_ok("many groups", &w, &pk);
+	drain(&pk);
+	CHECK(zr_pk_nrows(&pk) == T_GROUPS);
+	/*
+	 * The rows are in the writer's walk order, which sorts n10
+	 * before n2, so each row is asked for its own name's number
+	 * rather than for the number of its position.
+	 */
+	for (i = 0; i < T_GROUPS; i++) {
+		unsigned int num = 0;
+
+		row = zr_pk_row(&pk, i);
+		CHECK(row != NULL && row->zk_rec != NULL);
+		CHECK(row->zk_rec->zr_num == row->zk_group);
+		CHECK(row->zk_namelen < sizeof (name));
+		memcpy(name, row->zk_name, row->zk_namelen);
+		name[row->zk_namelen] = '\0';
+		CHECK(sscanf(name, "/n%u.txt", &num) == 1);
+		CHECK(num == row->zk_group);
+		CHECK(strstr(row->zk_rec->zr_why, name) != NULL);
+	}
+	CHECK(zr_pk_counts(&pk)->zc_groups == T_GROUPS);
+	CHECK(zr_pk_counts(&pk)->zc_conflicts == T_GROUPS);
+	zr_pk_fini(&pk);
+	world_fini(&w);
+	free(man);
+	free(res);
+}
+
+/*
  * ---------------------------------------------------------------
  * The terminal, over a pty. Cells ZP62 to ZP72, ZP75, ZP110, ZP111
  * and ZP114, and the screen's halves of ZP6, ZP40 and ZP69.
@@ -2113,6 +2426,9 @@ test_merge_writefail(void)
  * ceiling, after which the child is killed and the test fails rather
  * than hanging a build.
  */
+/* How many full input queues in a row say the picker has stopped reading. */
+#define	PTY_STALL_FULL	10
+
 #define	PTY_STEP	150		/* milliseconds */
 #define	PTY_LIMIT	20000
 #define	PTY_BUF		(256 * 1024)
@@ -2129,6 +2445,9 @@ struct child {
 	char		**c_av;		/* NULL is the world's own argv */
 	int		c_argc;
 	int		c_signal;	/* sent once the screen is up */
+	int		c_signal2;	/* and another, right behind it */
+	int		c_stall;	/* keys typed with the master unread */
+	int		c_forget;	/* the bytes before key N are dropped */
 	int		c_inproc;	/* the entry here, not the binary */
 	int		c_rows;		/* the window, 0 for the default */
 	int		c_cols;
@@ -2141,6 +2460,8 @@ struct run {
 	int		r_status;	/* the wait status */
 	size_t		r_len;
 	struct termios	r_during;	/* the slave's, while it was up */
+	struct termios	r_stalled;	/* the slave's, inside the teardown */
+	int		r_sampled;	/* whether r_stalled was taken */
 	int		r_drew;		/* whether it drew at all */
 	char		r_buf[PTY_BUF];
 };
@@ -2269,6 +2590,53 @@ pty_settle(struct pty *y, struct run *out, int *spent)
 	}
 }
 
+/* A pause, in milliseconds, without sleep(3)'s whole second. */
+static void
+pty_nap(int ms)
+{
+	struct timeval tv;
+
+	tv.tv_sec = ms / 1000;
+	tv.tv_usec = (ms % 1000) * 1000;
+	(void) select(0, NULL, NULL, NULL, &tv);
+}
+
+/*
+ * Fill the terminal's output buffer with nobody reading it, so that
+ * the picker is blocked inside curses when the signals arrive. The
+ * keys are cursor movements, which redraw rows and therefore write;
+ * they go in without blocking, since a picker that has stopped
+ * reading would otherwise fill the input queue and block this
+ * program instead. Returns once the terminal will take no more.
+ */
+static void
+pty_stall(struct pty *y, int rounds)
+{
+	int flags = fcntl(y->y_master, F_GETFL, 0), i, full = 0;
+
+	(void) fcntl(y->y_master, F_SETFL, flags | O_NONBLOCK);
+	for (i = 0; i < rounds; i++) {
+		const char *k = (i & 1) != 0 ? K_UP : K_DOWN;
+
+		if (write(y->y_master, k, strlen(k)) < 0) {
+			/*
+			 * The input queue is full, which means the
+			 * picker has stopped reading it; a few of these
+			 * in a row is a picker blocked on its own
+			 * output, which is what this is for.
+			 */
+			if (++full > PTY_STALL_FULL)
+				break;
+			pty_nap(20);
+			continue;
+		}
+		full = 0;
+		pty_nap(1);
+	}
+	(void) fcntl(y->y_master, F_SETFL, flags);
+	pty_nap(200);
+}
+
 /*
  * One run of the picker on the pty: the keys typed one at a time,
  * the bytes kept, and the wait status brought back.
@@ -2315,11 +2683,50 @@ pty_drive(struct pty *y, struct world *w, const struct child *c,
 		pty_size(y, c->c_shrink_rows, c->c_shrink_cols);
 		CHECK(kill(pid, SIGWINCH) == 0);
 	}
+	/*
+	 * ZP125: the terminal stalled, which is what makes a teardown
+	 * long enough for a second signal to land inside it. The master
+	 * is not read from here to the signals, and keys are typed
+	 * until the terminal's own output buffer is full and the picker
+	 * blocks inside curses with nothing draining it -- the pty
+	 * gotcha picker-list recorded, used on purpose. The master is
+	 * put back to blocking afterwards; the wait loop below is what
+	 * drains it.
+	 */
+	if (c->c_stall != 0)
+		pty_stall(y, c->c_stall);
 	if (c->c_signal != 0)
 		CHECK(kill(pid, c->c_signal) == 0);
+	if (c->c_signal2 != 0) {
+		pty_nap(50);
+		CHECK(kill(pid, c->c_signal2) == 0);
+	}
+	if (c->c_stall != 0) {
+		/*
+		 * The terminal as it stands while the teardown is still
+		 * under way: the master is not read until after this,
+		 * so the picker is blocked inside curses and this is
+		 * the moment the finding is about (ZP125). What has
+		 * been put back by now is what a process that dies
+		 * here leaves behind.
+		 */
+		pty_nap(150);
+		out->r_sampled = tcgetattr(y->y_slave, &out->r_stalled) == 0;
+	}
 	for (i = 0; c->c_keys != NULL && c->c_keys[i] != NULL; i++) {
 		size_t n = strlen(c->c_keys[i]);
 
+		if (c->c_forget != 0 && i == c->c_forget) {
+			/*
+			 * What the assertions read is what the screen
+			 * drew from this key on: curses writes the
+			 * difference between two screens, so a cell
+			 * that did not change writes nothing, and that
+			 * is exactly the question some cells ask.
+			 */
+			out->r_len = 0;
+			out->r_buf[0] = '\0';
+		}
 		CHECK(write(y->y_master, c->c_keys[i], n) == (ssize_t)n);
 		pty_settle(y, out, &spent);
 	}
@@ -2641,19 +3048,89 @@ test_pty_floor(void)
 	pty_close(&y);
 }
 
+/* The last place a needle is in the bytes, for the pairs that nest. */
+static const char *
+findlast(const char *buf, size_t len, const char *needle)
+{
+	const char *at = buf, *last = NULL, *hit;
+	size_t left = len;
+
+	while ((hit = find(at, left, needle)) != NULL) {
+		last = hit;
+		left -= (size_t)(hit - at) + 1;
+		at = hit + 1;
+	}
+	return (last);
+}
+
 /*
- * ZP65, ZP66 and ZP67: a signal that ends the process while the
- * screen is up. The handler ends curses, puts the termios back, puts
- * the signal's own disposition back and raises it again, so the
- * picker dies of what killed it and the shell is told the truth.
+ * Was a digit DRAWN in this stretch of what the terminal was sent?
+ * The escape sequences are stepped over -- their own parameters are
+ * digits -- so what is left is the text the screen says. A case that
+ * asks whether a number was rewritten asks this.
+ */
+static int
+drew_digit(const char *buf, size_t len)
+{
+	size_t i = 0;
+
+	while (i < len) {
+		unsigned char ch = (unsigned char)buf[i];
+
+		if (ch != 0x1b) {
+			if (ch >= '0' && ch <= '9')
+				return (1);
+			i++;
+			continue;
+		}
+		i++;
+		if (i < len && buf[i] == '[')
+			i++;
+		while (i < len) {
+			unsigned char c2 = (unsigned char)buf[i++];
+
+			if (c2 >= 0x40 && c2 <= 0x7e)
+				break;
+		}
+	}
+	return (0);
+}
+
+/* The alternate screen was entered and left, whoever did the switching. */
+#define	ALT_ON		"\033[?1049h"
+#define	ALT_OFF		"\033[?1049l"
+
+static void
+alt_left(const struct run *r)
+{
+	const char *on = findlast(r->r_buf, r->r_len, ALT_ON);
+	const char *off = findlast(r->r_buf, r->r_len, ALT_OFF);
+
+	CHECK(on != NULL);
+	CHECK(off != NULL);
+	CHECK(off > on);
+}
+
+/*
+ * ZP65, ZP66, ZP67 and ZP123: a signal that ends the process while the
+ * screen is up. The handler puts the termios back, leaves the
+ * alternate screen, ends curses, puts the signal's own disposition
+ * back and raises it again, so the picker dies of what killed it and
+ * the shell is told the truth.
+ *
  * SIGQUIT is here with the five of ground rule 6 because the screen
- * leaves ISIG on and a terminal can send it.
+ * leaves ISIG on and a terminal can send it. SIGABRT, SIGILL and
+ * SIGFPE are here because they were not caught at all and each left
+ * the terminal raw and on the alternate screen (the review of
+ * 2026-09-11, S2): SIGABRT is the one the picker's own address space
+ * can raise, through a failed assertion, a stack-check failure or a
+ * heap-corruption abort, none of which runs an atexit hook.
  */
 static void
 test_pty_signals(void)
 {
 	static const int sigs[] = { SIGINT, SIGTERM, SIGHUP, SIGSEGV,
-		SIGBUS, SIGQUIT };
+		SIGBUS, SIGQUIT, SIGABRT, SIGILL, SIGFPE };
 	struct termios before;
 	struct child c;
 	struct world w;
@@ -2682,7 +3159,79 @@ test_pty_signals(void)
 		CHECK(WTERMSIG(pty_out.r_status) == sigs[i]);
 		CHECK(pty_out.r_drew != 0);
 		tty_same(&y, &before);
+		alt_left(&pty_out);
 	}
+	world_fini(&w);
+	pty_close(&y);
+}
+
+/*
+ * ZP125: the terminal's settings are back before the teardown's
+ * blocking calls, so a second signal inside the teardown cannot leave
+ * them raw (the review of 2026-09-11, S1: "TERMINAL LEFT RAW, termios
+ * CHANGED, status: signal 15").
+ *
+ * The terminal is stalled first: the master is left unread and enough
+ * keys are typed to fill the terminal's output buffer, so the picker
+ * blocks inside curses. Then SIGINT, then SIGTERM behind it. The
+ * first handler is inside endwin, which writes and therefore blocks;
+ * the second finds the one-shot guard set and returns at once.
+ *
+ * The case reads the terminal twice: once WHILE that is going on,
+ * before anything drains it, because that is the state a process
+ * dying there leaves behind, and once at the end. Against the old
+ * order, with endwin first and the settings last, both reads are a
+ * raw terminal and the picker is dead of signal 15 -- the verifier's
+ * own result of 2026-09-11, word for word. Against this one both are
+ * the person's own settings.
+ *
+ * The stall is what makes it a reproduction rather than a race: with
+ * the master unread, the picker is blocked inside curses when the
+ * first signal arrives, so the first handler is inside endwin, which
+ * is where the old order left the settings unreachable.
+ */
+static void
+test_pty_two_signals(void)
+{
+	struct termios before;
+	struct child c;
+	struct world w;
+	struct pty y;
+
+	if (picker_bin() == NULL) {
+		printf("skip ZP125: zfs_rebase-picker is not built\n");
+		return;
+	}
+	if (pty_open(&y) != 0) {
+		printf("skip ZP125: no pty here (%s)\n", strerror(errno));
+		return;
+	}
+	world_init(&w);
+	world_docs(&w, man_two, res_pty);
+	memset(&c, 0, sizeof (c));
+	c.c_term = "xterm";
+	/*
+	 * A window wide and tall enough that one cursor movement is a
+	 * few hundred bytes of redraw, so that the terminal's own
+	 * output buffer fills while the keys are still being typed.
+	 */
+	c.c_rows = 40;
+	c.c_cols = 200;
+	c.c_stall = 1500;
+	c.c_signal = SIGINT;
+	c.c_signal2 = SIGTERM;
+	tty_mark(&y, &before);
+	pty_drive(&y, &w, &c, &pty_out);
+	CHECK(pty_out.r_drew != 0);
+	/* the screen really was up: raw while it drew */
+	CHECK((pty_out.r_during.c_lflag & (tcflag_t)ICANON) == 0);
+	/* and the person's own settings are back, mid-teardown */
+	CHECK(pty_out.r_sampled != 0);
+	CHECK((pty_out.r_stalled.c_lflag & (tcflag_t)ICANON) != 0);
+	CHECK((pty_out.r_stalled.c_lflag & (tcflag_t)ECHO) != 0);
+	CHECK(WIFSIGNALED(pty_out.r_status));
+	CHECK(WTERMSIG(pty_out.r_status) == SIGTERM);
+	tty_same(&y, &before);
 	world_fini(&w);
 	pty_close(&y);
 }
@@ -2896,6 +3445,232 @@ test_pty_merge(void)
 }
 
 /*
+ * ZP119: the merge view's line numbers.
+ *
+ * The column was four characters wide whatever the file, and
+ * snprintf truncated rather than elided, so line 50004 drew as "5000"
+ * and ten lines shared one label (the review of 2026-09-11, S6). The
+ * width is now the digits of the largest number the view can draw.
+ * The text of every line here is letters alone, so the only digits on
+ * screen 2 are the numbers themselves and a five-digit one being
+ * there is the assertion.
+ *
+ * The second half is the numbering while b is on. The hunk's own
+ * answer is in the result whatever the result pane is showing, so the
+ * numbers after the cursor's hunk must not move when b goes on; they
+ * fell short by the length of the answer. Curses writes the
+ * difference between two screens, so the case reads the bytes drawn
+ * for the b keypress alone: the base rows appear, and the row after
+ * the hunk is not rewritten, because its number did not change.
+ */
+#define	T_BIGLINES	100000
+#define	T_BIGCONF	49999		/* zero-based: the number is 50000 */
+
+/* Four letters and a newline, unique enough for the patience diff. */
+static void
+bigline(char *out, int i)
+{
+	out[0] = (char)('a' + (i / 17576) % 26);
+	out[1] = (char)('a' + (i / 676) % 26);
+	out[2] = (char)('a' + (i / 26) % 26);
+	out[3] = (char)('a' + i % 26);
+	out[4] = '\n';
+}
+
+static char *
+bigfile(const char *conflict)
+{
+	size_t n = (size_t)T_BIGLINES * 5;
+	char *out = malloc(n + 1);
+	int i;
+
+	if (out == NULL)
+		return (NULL);
+	for (i = 0; i < T_BIGLINES; i++)
+		bigline(out + (size_t)i * 5, i);
+	memcpy(out + (size_t)T_BIGCONF * 5, conflict, 4);
+	out[n] = '\0';
+	return (out);
+}
+
+static void
+test_pty_numbers(void)
+{
+	static const char *const k_open[] = { "\r", "q", "q", NULL };
+	static const char *const k_base[] = { "\r", "f", "b", "q", "q",
+		NULL };
+	char *base, *from, *onto;
+	struct child c;
+	struct world w;
+	struct pty y;
+
+	if (picker_bin() == NULL) {
+		printf("skip ZP119: zfs_rebase-picker is not built\n");
+		return;
+	}
+	if (pty_open(&y) != 0) {
+		printf("skip ZP119: no pty here (%s)\n", strerror(errno));
+		return;
+	}
+	base = bigfile("mmmm");
+	from = bigfile("FFFF");
+	onto = bigfile("OOOO");
+	if (base == NULL || from == NULL || onto == NULL) {
+		printf("skip ZP119: no room for three %d-line files\n",
+		    T_BIGLINES);
+		free(base);
+		free(from);
+		free(onto);
+		pty_close(&y);
+		return;
+	}
+	world_init(&w);
+	world_docs(&w, man_big, res_big);
+	w_text(&w, ZR_PK_T_BASE, "/big.txt", base);
+	w_text(&w, ZR_PK_T_FROM, "/big.txt", from);
+	w_text(&w, ZR_PK_T_ONTO, "/big.txt", onto);
+	w_text(&w, ZR_PK_T_RESULT, "/big.txt", base);
+	memset(&c, 0, sizeof (c));
+	c.c_term = "xterm";
+	c.c_keys = k_open;
+	pty_drive(&y, &w, &c, &pty_out);
+	CHECK(WIFEXITED(pty_out.r_status));
+	CHECK(WEXITSTATUS(pty_out.r_status) == 2);
+	/* the merge opened on the conflict, which is where the cursor goes */
+	CHECK(find(pty_out.r_buf, pty_out.r_len, "FFFF") != NULL);
+	CHECK(find(pty_out.r_buf, pty_out.r_len, "OOOO") != NULL);
+	/* and a five-digit number is drawn whole */
+	CHECK(find(pty_out.r_buf, pty_out.r_len, "49998") != NULL);
+	CHECK(find(pty_out.r_buf, pty_out.r_len, "50000") != NULL);
+	world_fini(&w);
+	free(base);
+	free(from);
+	free(onto);
+
+	/* the numbering under b, on the small fixture, one key at a time */
+	world_init(&w);
+	world_docs(&w, man_merge_pty, res_merge_pty);
+	w_text(&w, ZR_PK_T_BASE, "/conf.txt", P_BASE);
+	w_text(&w, ZR_PK_T_FROM, "/conf.txt", P_FROM);
+	w_text(&w, ZR_PK_T_ONTO, "/conf.txt", P_ONTO);
+	w_text(&w, ZR_PK_T_RESULT, "/conf.txt", P_BASE);
+	memset(&c, 0, sizeof (c));
+	c.c_term = "xterm";
+	c.c_keys = k_base;
+	c.c_forget = 2;		/* what b drew, and nothing before it */
+	pty_drive(&y, &w, &c, &pty_out);
+	CHECK(WIFEXITED(pty_out.r_status));
+	/*
+	 * What b drew, up to the moment the list came back: the base
+	 * rows in the result pane's place, and not one digit, because
+	 * no line number changed. Curses writes the difference between
+	 * two screens, so a number that had moved would be here.
+	 */
+	{
+		const char *back = find(pty_out.r_buf, pty_out.r_len,
+		    "zfs_rebase: conflicts");
+		size_t n = back != NULL ? (size_t)(back - pty_out.r_buf) :
+		    pty_out.r_len;
+
+		CHECK(find(pty_out.r_buf, n, "bravobase") != NULL);
+		CHECK(drew_digit(pty_out.r_buf, n) == 0);
+	}
+	world_fini(&w);
+	pty_close(&y);
+}
+
+/*
+ * ZP126: an escape sequence the terminal database does not describe.
+ * keypad(3) folds the sequences terminfo knows into KEY_ codes;
+ * everything else arrives as an escape and then bytes, and the escape
+ * alone was the quit key, so a focus report or a cursor key in the
+ * other keypad mode threw away every answer since the last save (the
+ * review of 2026-09-11, S3).
+ *
+ * Three runs. On the list, two such sequences and then the answers
+ * and w: the picker is still up, so the document is written and the
+ * status is 0. Inside a merge, one sequence and then the merge's own
+ * keys: the row comes out keep, which it could not if the sequence
+ * had closed screen 2 and f had answered the list row instead. And a
+ * lone escape still leaves, with nothing written.
+ */
+static void
+test_pty_escapes(void)
+{
+	static const char *const k_seq[] = { "\033[I", "\033[B", "f",
+		K_DOWN, "o", "w", NULL };
+	static const char *const k_merge[] = { "\r", "\033[I", "f", "w",
+		"w", NULL };
+	static const char *const k_esc[] = { "\033", NULL };
+	struct child c;
+	struct world w;
+	struct pty y;
+	size_t len;
+	char *got;
+
+	if (picker_bin() == NULL) {
+		printf("skip ZP126: zfs_rebase-picker is not built\n");
+		return;
+	}
+	if (pty_open(&y) != 0) {
+		printf("skip ZP126: no pty here (%s)\n", strerror(errno));
+		return;
+	}
+	memset(&c, 0, sizeof (c));
+	c.c_term = "xterm";
+
+	/* the list: a focus-in report and a cursor key in the other mode */
+	world_init(&w);
+	world_docs(&w, man_two, res_pty);
+	c.c_keys = k_seq;
+	pty_drive(&y, &w, &c, &pty_out);
+	CHECK(WIFEXITED(pty_out.r_status));
+	CHECK(WEXITSTATUS(pty_out.r_status) == 0);
+	got = slurp(w.w_res, &len);
+	CHECK(got != NULL);
+	CHECK(strstr(got, "    p conflict 1 from\n") != NULL);
+	CHECK(strstr(got, "    q conflict 2 onto\n") != NULL);
+	free(got);
+	world_fini(&w);
+
+	/* screen 2: the sequence does not close the merge either */
+	world_init(&w);
+	world_docs(&w, man_merge_pty, res_merge_pty);
+	w_text(&w, ZR_PK_T_BASE, "/conf.txt", P_BASE);
+	w_text(&w, ZR_PK_T_FROM, "/conf.txt", P_FROM);
+	w_text(&w, ZR_PK_T_ONTO, "/conf.txt", P_ONTO);
+	w_text(&w, ZR_PK_T_RESULT, "/conf.txt", P_BASE);
+	c.c_keys = k_merge;
+	pty_drive(&y, &w, &c, &pty_out);
+	CHECK(WIFEXITED(pty_out.r_status));
+	CHECK(WEXITSTATUS(pty_out.r_status) == 0);
+	got = slurp(w.w_res, &len);
+	CHECK(got != NULL);
+	CHECK(strstr(got, "    conf.txt conflict 1 keep\n") != NULL);
+	free(got);
+	got = w_slurp(&w, ZR_PK_T_RESULT, "/conf.txt", &len);
+	CHECK(got != NULL);
+	same("the merged object", got, len, P_FROM, strlen(P_FROM));
+	free(got);
+	world_fini(&w);
+
+	/* and a lone escape is still the key it was: exit 2, nothing written */
+	world_init(&w);
+	world_docs(&w, man_two, res_pty);
+	c.c_keys = k_esc;
+	pty_drive(&y, &w, &c, &pty_out);
+	CHECK(WIFEXITED(pty_out.r_status));
+	CHECK(WEXITSTATUS(pty_out.r_status) == 2);
+	got = slurp(w.w_res, &len);
+	CHECK(got != NULL);
+	same("a lone escape wrote nothing", got, len, res_pty,
+	    strlen(res_pty));
+	free(got);
+	world_fini(&w);
+	pty_close(&y);
+}
+
+/*
  * ZP114: the tool's child and the standalone binary are the same
  * objects. One key sequence over one pair of documents, once through
  * the binary and once through zr_picker_main called in a child this
@@ -3034,10 +3809,17 @@ main(void)
 	test_merge_write();
 	test_merge_shapes();
 	test_merge_writefail();
+	test_merge_notregular();
+	test_merge_writeshort();
+	test_tree_unreadable();
+	test_many_groups();
 	test_pty_exits();
 	test_pty_refusals();
 	test_pty_floor();
 	test_pty_signals();
+	test_pty_two_signals();
+	test_pty_escapes();
+	test_pty_numbers();
 	test_pty_quiet();
 	test_pty_draw();
 	test_pty_merge();
