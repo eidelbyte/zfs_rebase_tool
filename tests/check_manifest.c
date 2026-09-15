@@ -1325,10 +1325,13 @@ test_res_dup(void)
 }
 
 /*
- * ZM86: a name is one plain component. The escaping can spell ".",
- * ".." and "/" -- every byte may be written \NNN -- and the tree
- * section means none of them, so both parsers refuse them where
- * they are written and not where they are used.
+ * ZM86 and ZM95: a name is one plain component. The escaping can
+ * spell ".", ".." and "/" -- every byte may be written \NNN -- and
+ * the tree section means none of them, so both parsers refuse them
+ * where they are written and not where they are used. A NUL is
+ * refused with them: the decoded bytes reach openat and unlinkat as
+ * a C string, so a name spelled a\000zzz would address /a while the
+ * line reads the longer name.
  */
 static void
 test_components(void)
@@ -1352,13 +1355,27 @@ test_components(void)
 	    RR("1", "0") "/\n    a\\057b drift keep\n    ..\n", "line 9: ");
 	res_reject("dot dir", RR("0", "0") "/\n    ./\n    ..\n    ..\n",
 	    "line 9: ");
+	/* and the NUL, in a manifest and in a resolution alike */
+	reject("nul name", RJ("1", "0") "/\n    a\\000zzz rm\n    ..\n",
+	    "line 15: a name cannot hold a \"\\000\"");
+	reject("nul name alone", RJ("1", "0") "/\n    \\000 rm\n    ..\n",
+	    "line 15: ");
+	reject("nul dir", RJ("0", "0") "/\n    a\\000z/\n    ..\n    ..\n",
+	    "line 15: ");
+	res_reject("nul name",
+	    RR("1", "0") "/\n    a\\000zzz drift keep\n    ..\n",
+	    "line 9: a name cannot hold a \"\\000\"");
+	res_reject("nul dir",
+	    RR("0", "0") "/\n    a\\000z/\n    ..\n    ..\n", "line 9: ");
 }
 
 /*
- * ZM87: and the argument of an ln, a cp or a write, which is a free
- * path out of the document and goes to the apply as it stands. The
- * parse refuses what the apply would have refused part way through
- * a tree it had already written into.
+ * ZM87 and ZM96: and the argument of an ln, a cp or a write, which
+ * is a free path out of the document and goes to the apply as it
+ * stands. The parse refuses what the apply would have refused part
+ * way through a tree it had already written into -- a NUL among
+ * them, which is the same bytes reaching the same calls as ZM95's
+ * by the other road.
  */
 static void
 test_arguments(void)
@@ -1376,6 +1393,10 @@ test_arguments(void)
 	    "line 15: ");
 	reject("arg root", RJ("1", "0") "/\n    a cp /\n    ..\n",
 	    "line 15: ");
+	reject("arg nul", RJ("1", "0") "/\n    a cp /x\\000y\n    ..\n",
+	    "line 15: the path cannot hold a \"\\000\"");
+	reject("arg nul trailing",
+	    RJ("1", "0") "/\n    a write /x\\000\n    ..\n", "line 15: ");
 }
 
 /*

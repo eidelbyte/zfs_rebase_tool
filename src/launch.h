@@ -72,6 +72,25 @@ struct zr_launch {
 int zr_launch(const struct zr_launch *lp, char *err, size_t errlen);
 
 /*
+ * Every descriptor above the three standard ones, closed. It is the
+ * forked built-in child's first act, in place of the exec that would
+ * have fired each descriptor's close-on-exec: the child is called and
+ * not exec'd, so without this it holds every descriptor the tool had
+ * open -- the three walk roots at the private mount and inside
+ * .zfs/snapshot, and /dev/zfs -- and an orphaned picker after a
+ * SIGKILL holds the mount the done gate has to unmount (L6 of the
+ * code review of 2026-09-11). closefrom(3) where the system has it,
+ * and a loop to the open-file limit where it does not.
+ *
+ * It is exported so a test can make the call the way the argv
+ * builder above is exported so a test can read the argv: what the
+ * child does is not otherwise visible from outside it. Nothing but
+ * a child that is about to hand the process over should ever call
+ * it; standard input, output and error are left alone.
+ */
+void zr_launch_closefds(void);
+
+/*
  * The built-in child's argv, built into the caller's array:
  *
  *	zfs_rebase-picker RESOLUTION BASE FROM ONTO RESULT

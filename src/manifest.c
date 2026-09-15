@@ -1514,6 +1514,13 @@ zp_path_cmp(const unsigned char *a, size_t alen, const unsigned char *b,
  * escaped, so a hand edit can spell all four and the parse is where
  * they are refused -- not the apply, which would refuse them part
  * way through a tree it had already written into.
+ *
+ * A NUL is the fifth and is refused with them. The decoded bytes go
+ * to openat and unlinkat as a C string, so a name spelled a\000zzz
+ * addresses /a: it would describe, open and truncate a shorter name
+ * than the one the line speaks for, and nothing downstream could
+ * tell (M3 of the code review of 2026-09-11). Section 8 of
+ * v4-manifest.md puts this class of check on the parse expressly.
  */
 static int
 zp_name_ok(struct zp *p, const unsigned char *name, size_t len)
@@ -1525,6 +1532,8 @@ zp_name_ok(struct zp *p, const unsigned char *name, size_t len)
 	for (i = 0; i < len; i++) {
 		if (name[i] == '/')
 			return (zp_errf(p, "a name cannot hold a \"/\""));
+		if (name[i] == '\0')
+			return (zp_errf(p, "a name cannot hold a \"\\000\""));
 	}
 	if (len == 1 && name[0] == '.')
 		return (zp_errf(p, "a name cannot be \".\""));
@@ -1538,7 +1547,9 @@ zp_name_ok(struct zp *p, const unsigned char *name, size_t len)
  * document and goes to the apply as it stands. The same three
  * components are refused, with the two ways a whole path can be
  * wrong on its own, so that the apply's own za_path_ok is a second
- * line and never the first.
+ * line and never the first. A NUL is refused here for the reason it
+ * is refused in a name: the apply hands these bytes to openat as a
+ * C string, so one would address a shorter path than the line reads.
  */
 static int
 zp_arg_ok(struct zp *p, const unsigned char *path, size_t len)
@@ -1549,6 +1560,11 @@ zp_arg_ok(struct zp *p, const unsigned char *path, size_t len)
 		return (zp_errf(p, "the path must be absolute"));
 	if (path[len - 1] == '/')
 		return (zp_errf(p, "the path ends in a \"/\""));
+	for (i = 0; i < len; i++) {
+		if (path[i] == '\0')
+			return (zp_errf(p, "the path cannot hold a "
+			    "\"\\000\""));
+	}
 	seg = 1;
 	for (i = 1; i <= len; i++) {
 		if (i != len && path[i] != '/')

@@ -2560,6 +2560,7 @@ za_picks(const struct zr_resolution *res, const struct zr_parsed *m,
     struct za_pick *picks, struct zr_walk *onto, struct zr_walk *from)
 {
 	const struct zr_rline *l;
+	struct zr_marks marks;
 	struct za_key *keys;
 	struct za_pick *p;
 	uint32_t first = ZA_NO_ANCHOR;
@@ -2571,6 +2572,13 @@ za_picks(const struct zr_resolution *res, const struct zr_parsed *m,
 		errno = ENOMEM;
 		return (-1);
 	}
+	/*
+	 * The manifest's marks, sorted once for the whole document:
+	 * the question below is asked once a line, and a scan of every
+	 * action for each of them is quadratic over a conflicted pool
+	 * (L7 of the code review of 2026-09-11).
+	 */
+	zr_verify_marks_init(&marks, m);
 	for (i = 0; i < res->zs_nlines; i++) {
 		l = &res->zs_lines[i];
 		p = &picks[i];
@@ -2602,7 +2610,7 @@ za_picks(const struct zr_resolution *res, const struct zr_parsed *m,
 		 * pair, which is what the key table below is for.
 		 */
 		if (l->zl_kind != ZR_RL_CONFLICT ||
-		    zr_verify_marked(m, l->zl_path, l->zl_pathlen) == 0)
+		    zr_verify_marked(&marks, l->zl_path, l->zl_pathlen) == 0)
 			continue;
 		keys[nk].zy_group = l->zl_group;
 		keys[nk].zy_choice = (uint32_t)l->zl_choice;
@@ -2621,6 +2629,7 @@ za_picks(const struct zr_resolution *res, const struct zr_parsed *m,
 			picks[keys[i].zy_line].zk_anchor = first;
 	}
 	free(keys);
+	zr_verify_marks_fini(&marks);
 	return (0);
 }
 

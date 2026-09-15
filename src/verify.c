@@ -57,6 +57,7 @@ struct zv_ctx {
 	struct zr_oracle	*zc_o;
 	const struct zr_walk	*zc_w[3];
 	const struct zr_names	*zc_names;
+	struct zr_marks		zc_marks;	/* the manifest's, sorted */
 	unsigned char		*zc_mark;	/* by name id */
 	uint32_t		zc_nnames;
 	unsigned char		*zc_pmark;	/* by result pool index */
@@ -127,15 +128,35 @@ zv_same(struct zv_ctx *c, int ta, zr_pool_t pa, int tb, zr_pool_t pb)
 	    c->zc_errlen));
 }
 
-/* Does the manifest mark this exact name conflict? */
-int
-zr_verify_marked(const struct zr_parsed *m, const unsigned char *path,
+/*
+ * Two marks in path order: the bytes first and the length after
+ * them, which is the order a binary search over the index wants and
+ * says nothing about how a name sorts anywhere else.
+ */
+static int
+zv_bypath(const void *va, const void *vb)
+{
+	const struct zr_mark *a = va;
+	const struct zr_mark *b = vb;
+	size_t n = a->zv_len < b->zv_len ? a->zv_len : b->zv_len;
+	int c = n == 0 ? 0 : memcmp(a->zv_path, b->zv_path, n);
+
+	if (c != 0)
+		return (c);
+	if (a->zv_len != b->zv_len)
+		return (a->zv_len < b->zv_len ? -1 : 1);
+	return (0);
+}
+
+/* The question the index answers, asked of the manifest itself. */
+static int
+zv_marked_scan(const struct zr_parsed *m, const unsigned char *path,
     size_t len)
 {
 	const struct zr_action *a;
 	uint32_t i;
 
-	if (m == NULL || path == NULL || len == 0)
+	if (m == NULL)
 		return (0);
 	for (i = 0; i < m->zp_nactions; i++) {
 		a = &m->zp_actions[i];
@@ -144,6 +165,73 @@ zr_verify_marked(const struct zr_parsed *m, const unsigned char *path,
 			return (1);
 	}
 	return (0);
+}
+
+void
+zr_verify_marks_init(struct zr_marks *ix, const struct zr_parsed *m)
+{
+	const struct zr_action *a;
+	uint32_t i, n = 0;
+
+	if (ix == NULL)
+		return;
+	ix->zv_m = m;
+	ix->zv_at = NULL;
+	ix->zv_n = 0;
+	if (m == NULL)
+		return;
+	for (i = 0; i < m->zp_nactions; i++) {
+		if (m->zp_actions[i].za_kind == ZR_ACT_CONFLICT)
+			n++;
+	}
+	/*
+	 * One element where there are no marks at all, so that the
+	 * index is built and the question is answered by a search over
+	 * nothing rather than by a scan of every action.
+	 */
+	ix->zv_at = malloc((size_t)(n == 0 ? 1 : n) *
+	    sizeof (struct zr_mark));
+	if (ix->zv_at == NULL)
+		return;
+	for (i = 0; i < m->zp_nactions; i++) {
+		a = &m->zp_actions[i];
+		if (a->za_kind != ZR_ACT_CONFLICT)
+			continue;
+		ix->zv_at[ix->zv_n].zv_path = a->za_path;
+		ix->zv_at[ix->zv_n].zv_len = a->za_pathlen;
+		ix->zv_n++;
+	}
+	if (ix->zv_n > 1)
+		qsort(ix->zv_at, (size_t)ix->zv_n, sizeof (struct zr_mark),
+		    zv_bypath);
+}
+
+void
+zr_verify_marks_fini(struct zr_marks *ix)
+{
+	if (ix == NULL)
+		return;
+	free(ix->zv_at);
+	ix->zv_at = NULL;
+	ix->zv_n = 0;
+	ix->zv_m = NULL;
+}
+
+/* Does the manifest mark this exact name conflict? */
+int
+zr_verify_marked(const struct zr_marks *ix, const unsigned char *path,
+    size_t len)
+{
+	struct zr_mark key;
+
+	if (ix == NULL || path == NULL || len == 0)
+		return (0);
+	if (ix->zv_at == NULL)
+		return (zv_marked_scan(ix->zv_m, path, len));
+	key.zv_path = path;
+	key.zv_len = len;
+	return (bsearch(&key, ix->zv_at, (size_t)ix->zv_n,
+	    sizeof (struct zr_mark), zv_bypath) != NULL);
 }
 
 /* Is any name of the manifest's conflict marks inside this directory? */
@@ -701,14 +789,15 @@ zv_group_pooled(const struct zv_ctx *c, uint32_t li, int side, zr_pool_t ps,
 
 	if (ps == ZR_POOL_NONE || l->zl_kind != ZR_RL_CONFLICT ||
 	    l->zl_group == 0 ||
-	    zr_verify_marked(c->zc_m, l->zl_path, l->zl_pathlen) == 0)
+	    zr_verify_marked(&c->zc_marks, l->zl_path, l->zl_pathlen) == 0)
 		return (1);
 	for (i = 0; i < res->zs_nlines; i++) {
 		o = &res->zs_lines[i];
 		if (i == li || o->zl_kind != ZR_RL_CONFLICT ||
 		    o->zl_group != l->zl_group ||
 		    o->zl_choice != l->zl_choice ||
-		    zr_verify_marked(c->zc_m, o->zl_path, o->zl_pathlen) == 0)
+		    zr_verify_marked(&c->zc_marks, o->zl_path,
+		    o->zl_pathlen) == 0)
 			continue;
 		nm = zv_name(c, o->zl_path, o->zl_pathlen);
 		if (zv_pool(c, side, nm) != ps)
@@ -876,6 +965,7 @@ zr_verify_with(const struct zr_parsed *m, const struct zr_resolution *res,
 			goto done;
 		}
 	}
+	zr_verify_marks_init(&c.zc_marks, m);
 	zv_marks(&c);
 	zv_conf_marks(&c);
 	for (i = 0; i < m->zp_nactions; i++) {
@@ -917,6 +1007,7 @@ zr_verify_with(const struct zr_parsed *m, const struct zr_resolution *res,
 	}
 	rc = zv_names(&c, out);
 done:
+	zr_verify_marks_fini(&c.zc_marks);
 	free(c.zc_pmark);
 	free(c.zc_mark);
 	return (rc);

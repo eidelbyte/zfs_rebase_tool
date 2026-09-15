@@ -102,6 +102,31 @@ int zr_outdir_ok(const char *, char *, size_t);
 int zr_result_name(const char *, const char *, char *, size_t);
 
 /*
+ * The document half of the conflicts gate: every conflict line the
+ * manifest marks that the resolution no longer has, put back into
+ * it with take, which is the run's take mode read as a choice --
+ * ZR_CH_ONTO under --take-onto, ZR_CH_FROM under --take-from, and
+ * ZR_CH_NONE where the run was given neither, which puts the name
+ * back among the unanswered. A hand edit cannot take a conflict away
+ * by deleting the line that speaks for it: the manifest is what says
+ * a name is conflicted (v4-manifest.md section 8,
+ * documents-design.md section 11.5).
+ *
+ * It reads the two documents and no tree, which is why it is a
+ * function of its own: the gate is arrived at with a walk in hand
+ * and without one, and this half is owed on both arrivals. ns is the
+ * name table the walks share, which only makes the covered-already
+ * question faster, and NULL is the answer where there is no walk.
+ *
+ * *backp is how many lines were put back. Nothing is written to
+ * disk: the caller writes the document once, with whatever else it
+ * has to add. Returns 0, or -1 with one line in err.
+ */
+int zr_conflicts_back(const struct zr_parsed *m, struct zr_resolution *res,
+    const struct zr_names *ns, enum zr_choice take, uint32_t *backp,
+    char *err, size_t errlen);
+
+/*
  * Would a system file flag stop the apply at this securelevel?
  *
  * The apply takes an object's immutable, append-only and no-unlink

@@ -1770,10 +1770,10 @@ handback(struct zr_zfs *z, const char *dataset, const char *ro,
  * The clone form's end of a rebase, which is no hand-back at all:
  * the clone has no home to go to, because its mountpoint property
  * was never a path. The private mount is undone and the clone is
- * left as a finished rebase should be -- unmounted, read-only, the
- * mountpoint property still none -- and the one useful thing the
- * tool can say is how to place it, which is the user's work and not
- * the tool's.
+ * left as a finished rebase should be -- unmounted, the mountpoint
+ * property still none, and read-only the moment the caller's ro_on
+ * follows this -- and the one useful thing the tool can say is how
+ * to place it, which is the user's work and not the tool's.
  *
  * Returns 0, or -1 where the unmount refused, which stops the settle
  * exactly as it does in the dataset form: the record and the holds
@@ -2091,6 +2091,17 @@ resolve_manifest(struct run *r)
  * directory failed at "manifest: /tmp/zrm-run/manifest.tmp"). Asked
  * before anything is taken, so that the answer is a precondition and
  * exit 2. A path with no slash is in the working directory.
+ *
+ * And what stands at the path itself, which is the commonest shape
+ * of the mistake: -o given the directory to write into rather than
+ * the file to write. The containing directory of that is there and
+ * writable, so the guard used to pass it and the rename failed at
+ * the birth manifest with exit 3, after the run directory and the
+ * pre-apply snapshot -- the very cost the guard exists to spare
+ * (L5 of the code review of 2026-09-11). It is asked with lstat and
+ * not stat: rename(2) replaces a symbolic link at the destination
+ * rather than following it, so a link to a directory is a name this
+ * write lands on and only a directory itself is not.
  */
 int
 zr_outdir_ok(const char *path, char *err, size_t errlen)
@@ -2128,6 +2139,12 @@ zr_outdir_ok(const char *path, char *err, size_t errlen)
 	if (access(dir, W_OK) != 0) {
 		(void) snprintf(err, errlen, "-o %s: the directory %s: %s",
 		    path, dir, strerror(errno));
+		return (-1);
+	}
+	if (lstat(path, &st) == 0 && S_ISDIR(st.st_mode)) {
+		(void) snprintf(err, errlen, "-o %s: that is a directory, and "
+		    "-o names the file to write, not the directory to write "
+		    "it in", path);
 		return (-1);
 	}
 	return (0);
@@ -4595,9 +4612,12 @@ adopt_result(struct resume *s, const struct zr_apply_kept *kept)
 /*
  * The result taken over for the length of this verb, exactly as the
  * run took it over and in both forms alike: at the run's own place,
- * where no writer but this verb can reach it, and read-only in the
- * clone form so that nothing can be in it while a stage or a walk
- * reads it. Only a verb that moves a rebase comes here; a report
+ * where no writer but this verb can reach it. It is writable there,
+ * in both forms -- the clone from its birth to the done gate
+ * (clone_rw), the dataset form's private mount for its life
+ * (private_rw) -- which is what the closing comment below says and
+ * what this one used to contradict (L3 of the code review of
+ * 2026-09-11). Only a verb that moves a rebase comes here; a report
  * takes nothing over and reads where the result stands
  * (report_mount). Three states are possible and all three are
  * ordinary:
@@ -5034,6 +5054,11 @@ covered(const struct zr_resolution *r, const char *path, size_t len)
  * (R20 of the code review). A line a writer adds sets its bit too,
  * since the scan would have found it from then on.
  *
+ * The name table is the caller's and may be NULL, which is what the
+ * document half of the conflicts gate has when it is asked without a
+ * walk: every question then goes to the scan above, which reads the
+ * document alone and is the answer either way.
+ *
  * A path no tree ever interned has no id and so no bit; the only
  * question that can be about such a path is one that has no id
  * either, and that one still goes to the scan. Out of memory is no
@@ -5059,12 +5084,13 @@ rcover_set(struct rcover *rv, const struct zr_names *ns, const char *path,
 }
 
 static void
-rcover_init(struct rcover *rv, const struct resume *s)
+rcover_init(struct rcover *rv, const struct zr_names *ns,
+    const struct zr_resolution *res)
 {
 	uint32_t i;
 
 	rv->rv_bits = NULL;
-	rv->rv_n = s->names != NULL ? zr_names_count(s->names) : 0;
+	rv->rv_n = ns != NULL ? zr_names_count(ns) : 0;
 	if (rv->rv_n == 0)
 		return;
 	rv->rv_bits = calloc(((size_t)rv->rv_n + 7) / 8, 1);
@@ -5072,10 +5098,9 @@ rcover_init(struct rcover *rv, const struct resume *s)
 		rv->rv_n = 0;
 		return;
 	}
-	for (i = 0; i < s->res.zs_nlines; i++) {
-		rcover_set(rv, s->names,
-		    (const char *)s->res.zs_lines[i].zl_path,
-		    s->res.zs_lines[i].zl_pathlen);
+	for (i = 0; i < res->zs_nlines; i++) {
+		rcover_set(rv, ns, (const char *)res->zs_lines[i].zl_path,
+		    res->zs_lines[i].zl_pathlen);
 	}
 }
 
@@ -5088,18 +5113,80 @@ rcover_fini(struct rcover *rv)
 }
 
 static int
-rcover_has(const struct rcover *rv, const struct resume *s, const char *path,
-    size_t len)
+rcover_has(const struct rcover *rv, const struct zr_names *ns,
+    const struct zr_resolution *res, const char *path, size_t len)
 {
 	zr_name_t nm;
 
 	if (rv->rv_bits != NULL) {
-		nm = zr_names_lookup(s->names, path, len);
+		nm = zr_names_lookup(ns, path, len);
 		if (nm != ZR_NAME_NONE && nm < rv->rv_n)
 			return ((rv->rv_bits[nm >> 3] &
 			    (1u << (nm & 7))) != 0);
 	}
-	return (covered(&s->res, path, len));
+	return (covered(res, path, len));
+}
+
+/*
+ * The document half of the conflicts gate, which reads the two
+ * documents and no tree at all: every conflict line the manifest
+ * marks that the resolution no longer has, put back with the take
+ * mode's answer -- onto under --take-onto, from under --take-from,
+ * and "-" where the run was given neither, which puts the name back
+ * among the unanswered. The manifest is what says a name is
+ * conflicted, and a hand edit cannot take a conflict away by
+ * deleting the line that speaks for it (v4-manifest.md section 8,
+ * documents-design.md section 11.5).
+ *
+ * It is a function of its own, and exported, because the gate is
+ * reached two ways and the walk is made on only one of them: this
+ * half has to run on both (M1 of the code review of 2026-09-11).
+ * ns is the name table the walks share, for the bitmap above, and
+ * NULL where there is none.
+ *
+ * *backp is how many lines were put back, 0 and no change where the
+ * document already speaks for every mark. Nothing is written to
+ * disk here: the caller writes the document, once, with whatever
+ * else it has to add. Returns 0, or -1 with one line in err.
+ */
+int
+zr_conflicts_back(const struct zr_parsed *m, struct zr_resolution *res,
+    const struct zr_names *ns, enum zr_choice take, uint32_t *backp,
+    char *err, size_t errlen)
+{
+	const struct zr_action *a;
+	struct rcover rv;
+	uint32_t i, back = 0;
+
+	if (err != NULL && errlen > 0)
+		err[0] = '\0';
+	if (backp != NULL)
+		*backp = 0;
+	if (m == NULL || res == NULL || backp == NULL) {
+		(void) snprintf(err, errlen, "there is no document to put a "
+		    "conflict line back into");
+		return (-1);
+	}
+	rcover_init(&rv, ns, res);
+	for (i = 0; i < m->zp_nactions; i++) {
+		a = &m->zp_actions[i];
+		if (a->za_kind != ZR_ACT_CONFLICT ||
+		    rcover_has(&rv, ns, res, (const char *)a->za_path,
+		    a->za_pathlen) != 0)
+			continue;
+		if (zr_resolution_add_conflict(res, a->za_path, a->za_pathlen,
+		    a->za_isdir, a->za_conflict, take) != 0) {
+			(void) snprintf(err, errlen, "cannot put back the "
+			    "conflict line %s", (const char *)a->za_path);
+			rcover_fini(&rv);
+			return (-1);
+		}
+		rcover_set(&rv, ns, (const char *)a->za_path, a->za_pathlen);
+		back++;
+	}
+	rcover_fini(&rv);
+	*backp = back;
+	return (0);
 }
 
 /*
@@ -5134,6 +5221,12 @@ name_isdir(const struct resume *s, zr_name_t nm)
  * already covers is not added a second time, and a conflicted name is
  * in no entry of that list to begin with.
  *
+ * rep is that name list and is NULL where this gate was reached
+ * without a walk of its own, which is the hand-off from applying1:
+ * there is no drift to add then, and what is left is the document
+ * half above, which reads no tree and runs on every arrival (M1 of
+ * the code review of 2026-09-11).
+ *
  * Only a --continue writes here: the --verify verb reports at this
  * gate and writes nothing anywhere, and nothing is written at
  * applying2 or at done. The document goes back to its path whole and
@@ -5143,50 +5236,32 @@ name_isdir(const struct resume *s, zr_name_t nm)
  * only --restart could replace -- with the answers it exists to
  * discard (documents-design.md, section 11.2).
  *
- * A conflict line the manifest marks that the document no longer has
- * is put back here too, with the take mode's answer -- onto under
- * --take-onto, from under --take-from, and "-" where the run was
- * given neither, which puts the name back among the unanswered. The
- * manifest is what says a name is conflicted, and a hand edit cannot
- * take a conflict away by deleting the line that speaks for it
- * (documents-design.md, section 11.5).
+ * A document that is not there is left alone, exactly as the done
+ * gate's writer leaves it: this gate writes into a resolution and
+ * never makes one, and the verb that has to read it says so.
+ *
+ * The two are written as two functions. add_diffs is the name list
+ * and nothing else, which is the half that reads the walks; add_drift
+ * after it is the gate's whole write -- the document half first, then
+ * that list where there is one, then the one write both of them go
+ * through. *np counts the lines add_diffs took.
  *
  * Returns 0, or -1 with err set.
  */
 static int
-add_drift(struct resume *s, const struct zr_verify_report *rep)
+add_diffs(struct resume *s, const struct zr_verify_report *rep, uint32_t *np)
 {
-	const struct zr_action *a;
 	struct rcover rv;
 	const char *nm;
 	size_t len;
-	uint32_t i, n = 0, back = 0;
+	uint32_t i;
 
-	rcover_init(&rv, s);
-	for (i = 0; i < s->man.zp_nactions; i++) {
-		a = &s->man.zp_actions[i];
-		if (a->za_kind != ZR_ACT_CONFLICT ||
-		    rcover_has(&rv, s, (const char *)a->za_path,
-		    a->za_pathlen) != 0)
-			continue;
-		if (zr_resolution_add_conflict(&s->res, a->za_path,
-		    a->za_pathlen, a->za_isdir, a->za_conflict,
-		    take_choice(s->rb.take)) != 0) {
-			(void) snprintf(s->err, sizeof (s->err), "%s: cannot "
-			    "put back the conflict line %s", s->respath,
-			    (const char *)a->za_path);
-			rcover_fini(&rv);
-			return (-1);
-		}
-		rcover_set(&rv, s->names, (const char *)a->za_path,
-		    a->za_pathlen);
-		back++;
-	}
+	rcover_init(&rv, s->names, &s->res);
 	for (i = 0; i < rep->zv_ndiffs; i++) {
 		len = 0;
 		nm = zr_names_str(s->names, rep->zv_diffs[i].zn_name, &len);
 		if (nm == NULL || len == 0 ||
-		    rcover_has(&rv, s, nm, len) != 0)
+		    rcover_has(&rv, s->names, &s->res, nm, len) != 0)
 			continue;
 		if (zr_resolution_add_drift(&s->res,
 		    (const unsigned char *)nm, len,
@@ -5198,9 +5273,28 @@ add_drift(struct resume *s, const struct zr_verify_report *rep)
 			return (-1);
 		}
 		rcover_set(&rv, s->names, nm, len);
-		n++;
+		(*np)++;
 	}
 	rcover_fini(&rv);
+	return (0);
+}
+
+static int
+add_drift(struct resume *s, const struct zr_verify_report *rep)
+{
+	char e[512];
+	uint32_t n = 0, back = 0;
+
+	if (s->hasres <= 0)
+		return (0);
+	if (zr_conflicts_back(&s->man, &s->res, s->names,
+	    take_choice(s->rb.take), &back, e, sizeof (e)) != 0) {
+		(void) snprintf(s->err, sizeof (s->err), "%s: %s", s->respath,
+		    e);
+		return (-1);
+	}
+	if (rep != NULL && add_diffs(s, rep, &n) != 0)
+		return (-1);
 	if (n == 0 && back == 0)
 		return (0);
 	if (zr_doc_write(s->respath, emit_resolution, &s->res, s->err,
@@ -5256,12 +5350,12 @@ done_lines(struct resume *s, const struct zr_verify_report *rep, uint32_t *np)
 		s->res.zs_lines[i].zl_choice = ZR_CH_NONE;
 		n++;
 	}
-	rcover_init(&rv, s);
+	rcover_init(&rv, s->names, &s->res);
 	for (i = 0; i < rep->zv_ndiffs; i++) {
 		len = 0;
 		nm = zr_names_str(s->names, rep->zv_diffs[i].zn_name, &len);
 		if (nm == NULL || len == 0 ||
-		    rcover_has(&rv, s, nm, len) != 0)
+		    rcover_has(&rv, s->names, &s->res, nm, len) != 0)
 			continue;
 		if (zr_resolution_add_drift(&s->res,
 		    (const unsigned char *)nm, len,
@@ -5278,7 +5372,7 @@ done_lines(struct resume *s, const struct zr_verify_report *rep, uint32_t *np)
 	for (i = 0; i < s->man.zp_nactions; i++) {
 		a = &s->man.zp_actions[i];
 		if (a->za_kind != ZR_ACT_CONFLICT ||
-		    rcover_has(&rv, s, (const char *)a->za_path,
+		    rcover_has(&rv, s->names, &s->res, (const char *)a->za_path,
 		    a->za_pathlen) != 0)
 			continue;
 		if (zr_resolution_add_conflict(&s->res, a->za_path,
@@ -5367,19 +5461,32 @@ final_check(struct resume *s, const struct zr_parsed *m, const char *what,
  * The conflicts gate's own verify: the manifest and the resolution
  * held against the result and reported, and then the drift written
  * into the resolution. Nothing here touches the tree.
+ *
+ * It has two halves and they are not skipped together. The walk half
+ * -- the classification and the report -- reads the three trees, and
+ * checked says the applying1 self-check made exactly that
+ * comparison over exactly those walks a moment ago, so it is skipped
+ * rather than made twice. The document half reads the manifest and
+ * the resolution and no tree at all, and runs on every arrival here
+ * whatever checked says: a conflict line the manifest marks that a
+ * hand took out of the document is put back at the next gate, and
+ * the hand-off from applying1 is a gate (M1 of the code review of
+ * 2026-09-11).
  */
 static int
-conflicts_check(struct resume *s)
+conflicts_check(struct resume *s, int checked)
 {
 	struct zr_verify_report rep;
-	int rc;
+	int rc = 0;
 
 	memset(&rep, 0, sizeof (rep));
-	rc = classify(s, &s->man, &rep);
-	if (rc == 0) {
-		print_report(s, &s->man, &rep, "the manifest");
-		rc = add_drift(s, &rep);
+	if (checked == 0) {
+		rc = classify(s, &s->man, &rep);
+		if (rc == 0)
+			print_report(s, &s->man, &rep, "the manifest");
 	}
+	if (rc == 0)
+		rc = add_drift(s, checked == 0 ? &rep : NULL);
 	zr_verify_report_fini(&rep);
 	return (rc);
 }
@@ -5496,16 +5603,28 @@ done_gate(struct resume *s)
 		    "exit status says so, and the gate is passed all the "
 		    "same\n", s->result);
 	zr_pause(ZR_GATE_DONE);
+	close_trees(s);
+	if (settle_result(s) != 0)
+		return (EXIT_INTERNAL);
 	/*
 	 * The hand-over: the clone was writable for the whole of the
 	 * rebase and goes read-only here, once, as the deliverable the
 	 * void is handed (ro_on). The dataset form's readonly is the
 	 * header's and the hand-back writes it.
+	 *
+	 * After the settle and never before it. The settle is the step
+	 * that can refuse -- the unmount of a private mount somebody is
+	 * standing in -- and a refusal leaves the rebase open with its
+	 * record, its holds, its mount and its phase all standing. A
+	 * flip made before that would leave the open rebase on a
+	 * read-only clone, which is the one state the clone-writable
+	 * ruling forbids (documents-design.md, section 11.3), with
+	 * nothing to put it back and the next --continue meeting EROFS
+	 * the moment anything needs writing (L3 of the code review of
+	 * 2026-09-11). The clone is unmounted by now, so the flip costs
+	 * no remount either.
 	 */
 	(void) ro_on(s);
-	close_trees(s);
-	if (settle_result(s) != 0)
-		return (EXIT_INTERNAL);
 	release_record(s);
 	clear_record(s->zfs, s->result, s->verbose);
 	/*
@@ -5861,9 +5980,11 @@ resume_interactive(struct resume *s)
  *
  * checked says that self-check has just run in this same invocation,
  * which is what arriving here from stage1 means: the tree was held
- * against the manifest and mended a moment ago, so the check here
- * would be the same check over the same walks and finds the same
- * nothing. It is skipped rather than made twice.
+ * against the manifest and mended a moment ago, so the walk half of
+ * the check here would be the same comparison over the same walks
+ * and finds the same nothing. It is that half alone that is skipped;
+ * the document half runs either way, and conflicts_check is where
+ * the two are told apart.
  */
 static int
 stage_conflicts(struct resume *s, int checked)
@@ -5877,7 +5998,7 @@ stage_conflicts(struct resume *s, int checked)
 	}
 	if (s->hasres == 0)
 		return (no_resolution(s));
-	if (checked == 0 && conflicts_check(s) != 0)
+	if (conflicts_check(s, checked) != 0)
 		return (vfail(s, EXIT_INTERNAL, "verify"));
 	/*
 	 * And the child, where -i asked for one: after the verify and
@@ -5939,6 +6060,19 @@ stage1(struct resume *s)
 	    "are applied and %s waits at conflicts\n",
 	    s->man.zp_conflicts_declared,
 	    s->man.zp_conflicts_declared == 1 ? "" : "s", s->result);
+	/*
+	 * The gate's document half, before the count below is printed
+	 * and before any branch reads the document: a conflict line
+	 * the manifest marks that a hand took out is put back here,
+	 * because this hand-off is an arrival at the conflicts gate
+	 * like any other (M1 of the code review of 2026-09-11). The
+	 * walk half is skipped -- the self-check above made it -- and
+	 * where this arrival goes on into the gate function below,
+	 * that function asks the same document half again and finds
+	 * nothing left to put back.
+	 */
+	if (conflicts_check(s, 1) != 0)
+		return (vfail(s, EXIT_INTERNAL, "verify"));
 	conflicts_note(s);
 	/*
 	 * A complete document and no --no-merge is the signal, whoever
@@ -5986,11 +6120,28 @@ continue_from(struct resume *s)
 	 * past the merge: there is no gate left for the flag to hold,
 	 * and carrying on regardless would be doing the one thing it
 	 * was given to prevent.
+	 *
+	 * -i is the same case and is refused the same way (L4 of the
+	 * code review of 2026-09-11). The child it asks for opens at
+	 * the conflicts gate and nowhere else, so from applying2 there
+	 * is nothing left to open it at; a command that says how the
+	 * conflicts are to be answered and is never going to ask has
+	 * been written under a wrong idea of what it does, which is the
+	 * reasoning --dry-run meets the flag with (src/args.c). The two
+	 * are told apart because -M -i is one command and a person who
+	 * wrote both should be told about both, the flag that stops
+	 * first being the one named.
 	 */
 	if (s->nomerge != 0 && strcmp(phase, ZR_PHASE_APPLYING2) == 0) {
 		(void) snprintf(s->err, sizeof (s->err), "%s is at \"%s\", "
 		    "past the merge; --no-merge has no gate left to stop at",
 		    s->result, phase);
+		return (vfail(s, EXIT_PRECOND, NULL));
+	}
+	if (s->interactive != 0 && strcmp(phase, ZR_PHASE_APPLYING2) == 0) {
+		(void) snprintf(s->err, sizeof (s->err), "%s is at \"%s\", "
+		    "past the merge; --interactive has no gate left to open "
+		    "a child at", s->result, phase);
 		return (vfail(s, EXIT_PRECOND, NULL));
 	}
 	if (strcmp(phase, ZR_PHASE_DECIDED) == 0 ||

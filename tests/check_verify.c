@@ -41,8 +41,9 @@
  * The family is ZY of tests/MATRIX.md, and ZC25 of the oracle's is
  * here too, since the pair entry point this classifier asks
  * everything through is new with it. Covered: ZY1 through ZY36, ZY40
- * through ZY45, ZY60 through ZY69, ZY80 through ZY93, and ZY109 and
- * ZY110. ZY37, ZY38,
+ * through ZY45, ZY60 through ZY69, ZY80 through ZY93, ZY109, ZY110
+ * and ZY120, the last being the sorted index of the manifest's marks
+ * held against the scan it replaces. ZY37, ZY38,
  * ZY39 and ZY94 are the box's -- a real ACL and both extended
  * attribute namespaces in a comparison, a kill at a gate, the dataset
  * form, and a drift line written into a real resolution.
@@ -2628,6 +2629,153 @@ check_settled_drift(void)
 	vshape_fini(&v);
 }
 
+/*
+ * ZY120: the sorted index of the manifest's marks answers exactly
+ * what the scan it replaces answered. The scan is written out again
+ * here, over the same parse, and the two are held against each other
+ * for every name the document holds and for names it does not: a
+ * name that is a prefix of a mark, a mark that is a prefix of
+ * another mark, a name past the end of the order and a name before
+ * its start. A document with no mark at all answers no to all of
+ * them, and so does an index nobody built.
+ */
+#define	ZY_MARKS	2000
+#define	ZY_PLAIN	500
+
+/* The question, asked of the manifest itself, as verify.c asked it. */
+static int
+zy_scan_marked(const struct zr_parsed *m, const unsigned char *path,
+    size_t len)
+{
+	const struct zr_action *a;
+	uint32_t i;
+
+	for (i = 0; i < m->zp_nactions; i++) {
+		a = &m->zp_actions[i];
+		if (a->za_kind == ZR_ACT_CONFLICT && a->za_pathlen == len &&
+		    memcmp(a->za_path, path, len) == 0)
+			return (1);
+	}
+	return (0);
+}
+
+/* One name by hand, asked of the index and of the scan alike. */
+static void
+zy_same_answer(const struct zr_marks *ix, const struct zr_parsed *m,
+    const char *path)
+{
+	const unsigned char *b = (const unsigned char *)path;
+	size_t len = strlen(path);
+
+	CHECK(zr_verify_marked(ix, b, len) == zy_scan_marked(m, b, len));
+}
+
+/*
+ * The document this case reads: many marks in one group, some plain
+ * actions after them, and a prefix pair on each side of the line, so
+ * that the search's length tie-break is asked as well as its bytes.
+ * The tree section is written in the order the emitter would write
+ * it, which is what the parse would have been handed.
+ */
+static void
+zy_marks_doc(struct zr_parsed *p, int withmarks)
+{
+	char err[256];
+	FILE *f;
+	uint32_t i;
+
+	f = tmpfile();
+	CHECK(f != NULL);
+	CHECK(fprintf(f, "#rebase-manifest 5\n#result -\n#form posix\n"
+	    "#base b 0\n#from f 0\n#onto o 0\n#made -\n#tag -\n"
+	    "#take -\n#written -\n#mode strict\n#actions %u\n"
+	    "#conflicts %d\n/\n", (unsigned)ZY_PLAIN + 1,
+	    withmarks != 0 ? 1 : 0) > 0);
+	for (i = 0; withmarks != 0 && i < ZY_MARKS; i++) {
+		CHECK(fprintf(f, "    m%05u conflict 1\n", i) > 0);
+		if (i == 0)
+			CHECK(fprintf(f, "    m00000x conflict 1\n") > 0);
+	}
+	for (i = 0; i < ZY_PLAIN; i++) {
+		CHECK(fprintf(f, "    u%05u rm\n", i) > 0);
+		if (i == 0)
+			CHECK(fprintf(f, "    u00000y rm\n") > 0);
+	}
+	CHECK(fputs("    ..\n", f) != EOF);
+	if (withmarks != 0)
+		CHECK(fputs("\nconflict 1 changed-both\n"
+		    "  why  every marked name changed on both sides\n"
+		    "  base ()\n  from ()\n  onto ()\n", f) != EOF);
+	rewind(f);
+	err[0] = '\0';
+	if (zr_manifest_parse(f, p, err, sizeof (err)) != 0)
+		printf("  parse: %s\n", err);
+	CHECK(err[0] == '\0');
+	CHECK(fclose(f) == 0);
+}
+
+static void
+check_marks_index(void)
+{
+	const struct zr_action *a;
+	struct zr_marks ix;
+	struct zr_parsed p;
+	char name[64];
+	uint32_t i;
+
+	zy_marks_doc(&p, 1);
+	zr_verify_marks_init(&ix, &p);
+	CHECK(ix.zv_m == &p);
+	CHECK(ix.zv_at != NULL);
+	CHECK(ix.zv_n == ZY_MARKS + 1);
+	/* every name the document holds, marked and not */
+	for (i = 0; i < p.zp_nactions; i++) {
+		a = &p.zp_actions[i];
+		CHECK(zr_verify_marked(&ix, a->za_path, a->za_pathlen) ==
+		    zy_scan_marked(&p, a->za_path, a->za_pathlen));
+		if (a->za_kind == ZR_ACT_CONFLICT)
+			CHECK(zr_verify_marked(&ix, a->za_path,
+			    a->za_pathlen) == 1);
+	}
+	/* and names it does not: prefixes, extensions, either end */
+	zy_same_answer(&ix, &p, "/m00000x");
+	zy_same_answer(&ix, &p, "/m00000xx");
+	zy_same_answer(&ix, &p, "/m0000");
+	zy_same_answer(&ix, &p, "/m");
+	zy_same_answer(&ix, &p, "/u00000");
+	zy_same_answer(&ix, &p, "/u00000y");
+	zy_same_answer(&ix, &p, "/aaaaaa");
+	zy_same_answer(&ix, &p, "/zzzzzz");
+	zy_same_answer(&ix, &p, "/");
+	for (i = 0; i < ZY_MARKS; i++) {
+		(void) snprintf(name, sizeof (name), "/m%05u", i);
+		zy_same_answer(&ix, &p, name);
+		(void) snprintf(name, sizeof (name), "/m%05uz", i);
+		zy_same_answer(&ix, &p, name);
+	}
+	/* an empty name and no index at all are both no */
+	CHECK(zr_verify_marked(&ix, (const unsigned char *)"/m00000", 0) == 0);
+	CHECK(zr_verify_marked(NULL, (const unsigned char *)"/m00000", 7) == 0);
+	zr_verify_marks_fini(&ix);
+	CHECK(ix.zv_at == NULL);
+	CHECK(ix.zv_n == 0);
+	zr_verify_marks_fini(&ix);
+	zr_parsed_fini(&p);
+
+	/* a document with no mark: built, empty, and no to everything */
+	zy_marks_doc(&p, 0);
+	zr_verify_marks_init(&ix, &p);
+	CHECK(ix.zv_at != NULL);
+	CHECK(ix.zv_n == 0);
+	for (i = 0; i < p.zp_nactions; i++) {
+		a = &p.zp_actions[i];
+		CHECK(zr_verify_marked(&ix, a->za_path, a->za_pathlen) == 0);
+	}
+	zy_same_answer(&ix, &p, "/m00000");
+	zr_verify_marks_fini(&ix);
+	zr_parsed_fini(&p);
+}
+
 int
 main(void)
 {
@@ -2671,6 +2819,7 @@ main(void)
 	check_choice_blocked();
 	check_settled_clean();
 	check_settled_drift();
+	check_marks_index();
 
 	printf("check_verify: %d checks passed\n", checks);
 	return (0);

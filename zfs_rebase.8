@@ -661,7 +661,14 @@ that arrives with a hand-answered file opens it, and
 .Fl M Fl i
 opens it and then holds the gate.
 A rebase whose decision declared no conflict reaches no gate and opens
-nothing.
+nothing, and a
+.Fl -continue
+from
+.Sy applying2
+is past the merge: the gate the child opens at is behind it, so the flag
+is refused there rather than ignored, exactly as
+.Fl -no-merge
+is.
 The gate's own work comes first \(em the phase written, and on a
 .Fl -continue
 the check whose drift lines go into the document \(em so the child sees
@@ -1261,9 +1268,12 @@ carry the choices out again and go on
 .El
 .Pp
 .Fl -no-merge
-is refused at
+and
+.Fl -interactive
+are both refused at
 .Sy applying2 :
-it is past the merge.
+it is past the merge, and neither the gate one holds nor the gate the
+other opens a child at is still ahead.
 A rebase that reached done has no record, so no verb resumes it, and
 .Fl -verify
 is the only one that has anything to say about it.

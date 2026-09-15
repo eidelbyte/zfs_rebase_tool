@@ -554,7 +554,9 @@ the drift it found becomes lines with the choice keep for the person
 to answer, and at the done gate, where what the last check found is
 written with the choice `-` as the record of it. --no-merge stops it
 at that gate however the resolution reads, and is refused from a
-record already past the merge.
+record already past the merge; -i is refused there for the same
+reason, the gate its child opens at being behind a record at
+applying2.
 
     zfs_rebase --restart IDENT
 

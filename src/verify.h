@@ -228,6 +228,41 @@ const char *zr_outcome_str(enum zr_outcome oc);
 const char *zr_diff_str(enum zr_diff df);
 
 /*
+ * One conflict mark of a manifest, as the index below holds it: the
+ * path bytes, which the parse owns and which must outlive the index,
+ * and their length.
+ */
+struct zr_mark {
+	const unsigned char	*zv_path;
+	size_t			zv_len;
+};
+
+/*
+ * The manifest's conflict marks, sorted by path once per document so
+ * that the question below is a binary search. It used to be a scan
+ * of every action per question, asked once per answered line by the
+ * apply and once per line plus once per same-group sibling by the
+ * classifier, which is quadratic over a group: 50000 marks cost 2.3
+ * seconds for one call each, and a group of 500 names in such a
+ * manifest is minutes at a gate a person is waiting at (L7 of the
+ * code review of 2026-09-11, the same shape as R20 before it).
+ *
+ * Out of memory is no failure: the index is left unbuilt, zv_at
+ * stays NULL, and every question goes to the scan, which is what the
+ * code did before. The manifest is held by pointer and is not copied,
+ * so an index outliving its parse is a use after free.
+ */
+struct zr_marks {
+	const struct zr_parsed	*zv_m;
+	struct zr_mark		*zv_at;		/* NULL: ask the scan */
+	uint32_t		zv_n;
+};
+
+/* Build one over m, and give it back. Both are safe on a zeroed ix. */
+void zr_verify_marks_init(struct zr_marks *ix, const struct zr_parsed *m);
+void zr_verify_marks_fini(struct zr_marks *ix);
+
+/*
  * Does the manifest mark this exact name conflict? A resolution line
  * for a name it does not mark is the person's own instruction, added
  * by hand, and is carried out like a drift line with that choice:
@@ -235,7 +270,7 @@ const char *zr_diff_str(enum zr_diff df);
  * classifier and the apply both ask it, so that one document means
  * one thing in both.
  */
-int zr_verify_marked(const struct zr_parsed *m, const unsigned char *path,
+int zr_verify_marked(const struct zr_marks *ix, const unsigned char *path,
     size_t len);
 
 /*

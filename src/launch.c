@@ -111,6 +111,29 @@ zl_signame(int sig)
 	return (s != NULL ? s : "unknown");
 }
 
+/*
+ * How far the loop below counts where the system will not say. A
+ * descriptor of ours is never up there -- the tool opens a handful,
+ * three walk roots and /dev/zfs among them -- and a loop with no
+ * bound at all is what an unlimited RLIMIT_NOFILE would ask for.
+ */
+#define	ZL_FD_CEILING	65536L
+
+void
+zr_launch_closefds(void)
+{
+#if defined(__FreeBSD__)
+	closefrom(3);
+#else
+	long i, max = sysconf(_SC_OPEN_MAX);
+
+	if (max < 3 || max > ZL_FD_CEILING)
+		max = ZL_FD_CEILING;
+	for (i = 3; i < max; i++)
+		(void) close((int)i);
+#endif
+}
+
 int
 zr_launch_argv(const struct zr_launch *lp, char *argv[], int n)
 {
@@ -165,6 +188,11 @@ zl_run_child(const struct zr_launch *lp, const char *script, char *argv[],
 	(void) sigaction(SIGTERM, &dfl, NULL);
 	(void) sigprocmask(SIG_SETMASK, mask, NULL);
 	if (lp->command != NULL) {
+		/*
+		 * The named command is exec'd, and the exec is what
+		 * closes the descriptors: every one the tool opens
+		 * carries O_CLOEXEC (src/walk.c, src/zfsops.c).
+		 */
 		(void) execl(ZL_SHELL, "sh", "-c", script, lp->command,
 		    lp->resolution, (char *)NULL);
 		/*
@@ -175,6 +203,17 @@ zl_run_child(const struct zr_launch *lp, const char *script, char *argv[],
 		 */
 		_exit(127);
 	}
+	/*
+	 * The built-in is called and not exec'd, so no close-on-exec
+	 * ever fires for it and every descriptor of the tool's is the
+	 * child's too: the three walk roots at the private mount and
+	 * inside .zfs/snapshot, and /dev/zfs. An orphaned picker then
+	 * holds the mount the done gate has to unmount (L6 of the code
+	 * review of 2026-09-11). They are closed here instead, which
+	 * is what the exec would have done, and the picker opens
+	 * everything it needs by path from its argv.
+	 */
+	zr_launch_closefds();
 	rc = zr_picker_main(ZR_LAUNCH_ARGC, argv);
 	/*
 	 * Out through _exit and not exit: the parent's atexit hooks

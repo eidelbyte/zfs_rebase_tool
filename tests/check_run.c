@@ -21,12 +21,22 @@
  * a pool either: the launcher knows nothing of ZFS, and the gate
  * that calls it is the box's.
  *
- * Matrix cells (tests/MATRIX.md): ZX242, ZX243 (where -o points,
- * asked before the pool is touched), ZX244 (the clone's name out of
- * --result, a bare name beside onto), and ZI13 to ZI23 of family
- * ZI. ZX23, the refusal a real run makes at a real securelevel,
- * stays the box's: raising the level wants a reboot. ZI24 onward are
- * the gate after the child, on real datasets, in box/run-resolution.sh.
+ * The third is the conflicts gate's document half, which reads the
+ * manifest and the resolution and no tree at all: the conflict lines
+ * a hand edit took out of the document, put back. It is a pure
+ * function of the two documents, so it is asked here over parses of
+ * two strings, with no name table and no walk -- which is exactly
+ * what the gate has when it is reached from applying1.
+ *
+ * Matrix cells (tests/MATRIX.md): ZX242, ZX243 and ZX254 (where -o
+ * points, asked before the pool is touched), ZX244 (the clone's name
+ * out of --result, a bare name beside onto), ZX250 (the gate's
+ * document half), and ZI13 to ZI23 and ZI40 of family ZI. ZX23, the
+ * refusal a real run makes at a real securelevel, stays the box's:
+ * raising the level wants a reboot. ZI24 onward are the gate after
+ * the child, on real datasets, in box/run-resolution.sh, and ZX251 to
+ * ZX253 are the pool halves of the same findings ZX250 and ZI40
+ * close here.
  */
 
 #include <sys/stat.h>
@@ -706,6 +716,31 @@ check_outdir(void)
 	CHECK(zr_outdir_ok(path, err, sizeof (err)) != 0);
 	says(err, "not a directory");
 
+	/*
+	 * ZX254: and what stands at the path itself. A directory there
+	 * is the commonest shape of the mistake -- -o given the place
+	 * to write into rather than the file to write -- and its
+	 * containing directory is there and writable, so the guard used
+	 * to pass it and the rename failed at the birth manifest, after
+	 * the run directory and the snapshot. A symbolic link to a
+	 * directory is not that: the rename replaces the link.
+	 */
+	(void) snprintf(path, sizeof (path), "%s/adir", sc.root);
+	CHECK(mkdir(path, 0755) == 0);
+	err[0] = '\0';
+	CHECK(zr_outdir_ok(path, err, sizeof (err)) != 0);
+	says(err, "adir");
+	says(err, "that is a directory");
+	(void) snprintf(path, sizeof (path), "%s/alink", sc.root);
+	(void) unlink(path);
+	if (symlink("adir", path) == 0) {
+		err[0] = '\0';
+		CHECK(zr_outdir_ok(path, err, sizeof (err)) == 0);
+		CHECK(unlink(path) == 0);
+	}
+	(void) snprintf(path, sizeof (path), "%s/adir", sc.root);
+	CHECK(rmdir(path) == 0);
+
 	if (geteuid() != 0) {
 		(void) snprintf(path, sizeof (path), "%s/shut", sc.root);
 		CHECK(mkdir(path, 0500) == 0);
@@ -749,6 +784,254 @@ check_result_name(void)
 	CHECK(zr_result_name("tank/home/main", big, out, sizeof (out)) != 0);
 }
 
+/*
+ * ---------------------------------------------------------------
+ * The conflicts gate's document half: family ZX, cell ZX250.
+ * ---------------------------------------------------------------
+ */
+
+/* The least header a manifest parse will take, and a resolution's. */
+#define	ZG_MAN								\
+	"#rebase-manifest 5\n#result -\n#form posix\n#base b 0\n"	\
+	"#from f 0\n#onto o 0\n#made -\n#tag -\n#take -\n#written -\n"	\
+	"#mode strict\n#actions 1\n#conflicts 3\n"
+
+/* Three marked names and one plain action, and a record per group. */
+#define	ZG_TREE								\
+	"/\n    a conflict 1\n    b conflict 2\n    c conflict 3\n"	\
+	"    d rm\n    ..\n"
+#define	ZG_REC(n)							\
+	"conflict " n " changed-both\n  why  x\n  base ()\n"		\
+	"  from ()\n  onto ()\n"
+#define	ZG_RECS	"\n" ZG_REC("1") ZG_REC("2") ZG_REC("3")
+
+#define	ZG_RES(names, unans)						\
+	"#rebase-resolution 5\n#base b 0\n#from f 0\n#onto o 0\n"	\
+	"#mode strict\n#names " names "\n#unanswered " unans "\n"
+
+/* One document out of a string, through a temporary file. */
+static void
+gate_manifest(struct zr_parsed *m)
+{
+	char err[256];
+	FILE *f;
+
+	f = tmpfile();
+	CHECK(f != NULL);
+	CHECK(fputs(ZG_MAN ZG_TREE ZG_RECS, f) != EOF);
+	rewind(f);
+	err[0] = '\0';
+	if (zr_manifest_parse(f, m, err, sizeof (err)) != 0)
+		printf("  the manifest: %s\n", err);
+	CHECK(err[0] == '\0');
+	CHECK(fclose(f) == 0);
+}
+
+static void
+gate_resolution(struct zr_resolution *r, const char *text)
+{
+	char err[256];
+	FILE *f;
+
+	f = tmpfile();
+	CHECK(f != NULL);
+	CHECK(fputs(text, f) != EOF);
+	rewind(f);
+	err[0] = '\0';
+	if (zr_resolution_parse(f, r, err, sizeof (err)) != 0)
+		printf("  the resolution: %s\n", err);
+	CHECK(err[0] == '\0');
+	CHECK(fclose(f) == 0);
+}
+
+/* Which line of the document speaks for this name, or the count. */
+static uint32_t
+gate_line(const struct zr_resolution *r, const char *path)
+{
+	size_t len = strlen(path);
+	uint32_t i;
+
+	for (i = 0; i < r->zs_nlines; i++) {
+		if (r->zs_lines[i].zl_pathlen == len &&
+		    memcmp(r->zs_lines[i].zl_path, path, len) == 0)
+			return (i);
+	}
+	return (r->zs_nlines);
+}
+
+/*
+ * ZX250: the document half of the conflicts gate. A conflict line
+ * the manifest marks that the resolution no longer has is put back
+ * with the take mode's answer, and nothing else about the document
+ * is touched: a line the hand left alone keeps the answer it was
+ * given, the group and the directory flag come off the manifest's
+ * own mark, and a document that speaks for every mark is left
+ * exactly as it was. No name table is passed, which is what the
+ * hand-off from applying1 has, so every covered-already question
+ * goes to the scan.
+ */
+static void
+check_gate_marks_back(void)
+{
+	struct zr_resolution r;
+	struct zr_parsed m;
+	char err[512];
+	uint32_t back, i;
+
+	gate_manifest(&m);
+	CHECK(m.zp_conflicts_declared == 3);
+
+	/* a hand took /b out and answered the rest */
+	gate_resolution(&r, ZG_RES("2", "0")
+	    "/\n    a conflict 1 onto\n    c conflict 3 from\n    ..\n");
+	CHECK(r.zs_nlines == 2);
+	err[0] = 'x';
+	back = 99;
+	CHECK(zr_conflicts_back(&m, &r, NULL, ZR_CH_NONE, &back, err,
+	    sizeof (err)) == 0);
+	CHECK(err[0] == '\0');
+	CHECK(back == 1);
+	CHECK(r.zs_nlines == 3);
+	i = gate_line(&r, "/b");
+	CHECK(i < r.zs_nlines);
+	CHECK(r.zs_lines[i].zl_kind == ZR_RL_CONFLICT);
+	CHECK(r.zs_lines[i].zl_group == 2);
+	CHECK(r.zs_lines[i].zl_choice == ZR_CH_NONE);
+	CHECK(r.zs_lines[i].zl_isdir == 0);
+	/* and the two the hand answered are as the hand left them */
+	CHECK(r.zs_lines[gate_line(&r, "/a")].zl_choice == ZR_CH_ONTO);
+	CHECK(r.zs_lines[gate_line(&r, "/c")].zl_choice == ZR_CH_FROM);
+	/* the name is back among the unanswered, and the gate stops */
+	CHECK(zr_resolution_unanswered(&r) == 1);
+	/* asked again there is nothing left to put back */
+	back = 99;
+	CHECK(zr_conflicts_back(&m, &r, NULL, ZR_CH_NONE, &back, err,
+	    sizeof (err)) == 0);
+	CHECK(back == 0);
+	CHECK(r.zs_nlines == 3);
+	zr_resolution_fini(&r);
+
+	/* the take mode's answer, where the record kept one */
+	gate_resolution(&r, ZG_RES("2", "0")
+	    "/\n    a conflict 1 onto\n    c conflict 3 onto\n    ..\n");
+	CHECK(zr_conflicts_back(&m, &r, NULL, ZR_CH_ONTO, &back, err,
+	    sizeof (err)) == 0);
+	CHECK(back == 1);
+	CHECK(r.zs_lines[gate_line(&r, "/b")].zl_choice == ZR_CH_ONTO);
+	CHECK(zr_resolution_unanswered(&r) == 0);
+	zr_resolution_fini(&r);
+
+	gate_resolution(&r, ZG_RES("2", "0")
+	    "/\n    a conflict 1 from\n    c conflict 3 from\n    ..\n");
+	CHECK(zr_conflicts_back(&m, &r, NULL, ZR_CH_FROM, &back, err,
+	    sizeof (err)) == 0);
+	CHECK(r.zs_lines[gate_line(&r, "/b")].zl_choice == ZR_CH_FROM);
+	zr_resolution_fini(&r);
+
+	/* a document with nothing at all in it: every mark comes back */
+	gate_resolution(&r, ZG_RES("0", "0") "/\n    ..\n");
+	CHECK(r.zs_nlines == 0);
+	CHECK(zr_conflicts_back(&m, &r, NULL, ZR_CH_NONE, &back, err,
+	    sizeof (err)) == 0);
+	CHECK(back == 3);
+	CHECK(r.zs_nlines == 3);
+	CHECK(zr_resolution_unanswered(&r) == 3);
+	CHECK(gate_line(&r, "/a") < r.zs_nlines);
+	CHECK(gate_line(&r, "/b") < r.zs_nlines);
+	CHECK(gate_line(&r, "/c") < r.zs_nlines);
+	/* and the name no mark spoke for is still nobody's line */
+	CHECK(gate_line(&r, "/d") == r.zs_nlines);
+	zr_resolution_fini(&r);
+
+	/* a whole document, the skeleton as the run wrote it: no change */
+	gate_resolution(&r, ZG_RES("3", "3")
+	    "/\n    a conflict 1 -\n    b conflict 2 -\n"
+	    "    c conflict 3 -\n    ..\n");
+	CHECK(zr_conflicts_back(&m, &r, NULL, ZR_CH_NONE, &back, err,
+	    sizeof (err)) == 0);
+	CHECK(back == 0);
+	CHECK(r.zs_nlines == 3);
+	zr_resolution_fini(&r);
+
+	/* nothing to put a line back into is a refusal and not a crash */
+	err[0] = '\0';
+	CHECK(zr_conflicts_back(NULL, NULL, NULL, ZR_CH_NONE, &back, err,
+	    sizeof (err)) != 0);
+	CHECK(err[0] != '\0');
+	zr_parsed_fini(&m);
+}
+
+/*
+ * ZI40: the forked built-in child closes every descriptor above the
+ * three standard ones before the entry is called, which is what the
+ * exec of a named command does for itself. The child cannot report
+ * on its own descriptors -- it is the picker and says nothing about
+ * them -- so the call it makes is asked here directly, in a fork of
+ * this test's own, with a marker file the child writes before the
+ * call and cannot write after it. The control comes first: a child
+ * that makes no such call writes the marker either way, so the case
+ * below is one that could fail.
+ */
+static void
+check_child_closefds(void)
+{
+	struct scratch sc;
+	struct stat st;
+	char path[ZL_LINE];
+	pid_t pid, got;
+	int fd, status;
+
+	scratch_open(&sc);
+	(void) snprintf(path, sizeof (path), "%s/marker", sc.root);
+	fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+	CHECK(fd > STDERR_FILENO);
+
+	/* the control: no call, and the marker is written */
+	(void) fflush(NULL);
+	pid = fork();
+	CHECK(pid >= 0);
+	if (pid == 0)
+		_exit(write(fd, "control\n", 8) == 8 ? 0 : 1);
+	do {
+		got = waitpid(pid, &status, 0);
+	} while (got < 0 && errno == EINTR);
+	CHECK(got == pid);
+	CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+	CHECK(stat(path, &st) == 0 && st.st_size == 8);
+
+	/* and the call: the same descriptor, and the write refused */
+	CHECK(ftruncate(fd, 0) == 0);
+	CHECK(lseek(fd, 0, SEEK_SET) == 0);
+	(void) fflush(NULL);
+	pid = fork();
+	CHECK(pid >= 0);
+	if (pid == 0) {
+		if (write(fd, "before\n", 7) != 7)
+			_exit(2);
+		zr_launch_closefds();
+		errno = 0;
+		if (write(fd, "after\n", 6) != -1 || errno != EBADF)
+			_exit(3);
+		/* and the three the child is meant to keep */
+		if (fcntl(STDIN_FILENO, F_GETFD) < 0 ||
+		    fcntl(STDOUT_FILENO, F_GETFD) < 0 ||
+		    fcntl(STDERR_FILENO, F_GETFD) < 0)
+			_exit(4);
+		_exit(0);
+	}
+	do {
+		got = waitpid(pid, &status, 0);
+	} while (got < 0 && errno == EINTR);
+	CHECK(got == pid);
+	CHECK(WIFEXITED(status));
+	CHECK(WEXITSTATUS(status) == 0);
+	/* the marker holds what the child wrote before the call, and no more */
+	CHECK(stat(path, &st) == 0 && st.st_size == 7);
+	CHECK(close(fd) == 0);
+	CHECK(unlink(path) == 0);
+	scratch_close(&sc);
+}
+
 int
 main(void)
 {
@@ -763,6 +1046,8 @@ main(void)
 	check_parent_terminate();
 	check_terminal_restored();
 	check_builtin_child();
+	check_child_closefds();
+	check_gate_marks_back();
 	printf("check_run: %d checks passed\n", checks);
 	return (0);
 }
