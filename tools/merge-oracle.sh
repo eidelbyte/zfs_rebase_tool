@@ -94,7 +94,7 @@ mkdir -p "$scratch" || exit 0
 
 # Split the battery into one base, from and onto file per case, and
 # print the case names. The format is line oriented on purpose: this
-# awk and tests/check_picker.c read the same file.
+# awk and tests/check_merge.c read the same file.
 cases=$(awk -v dir="$scratch" '
 	/^#/ { next }
 	$1 == "case" { name = $2; print name; next }

@@ -60,7 +60,8 @@ nothing has run it yet (ZD37).
 
 tests/battery/merge/merge3.txt is the three-way text merge's battery,
 written by v4-merge3check.py in freebsd-development/zfs-rebase-theory
-and read by tests/check_picker.c (issue diff3-walk).  The theory it
+and read by tests/check_merge.c (issue diff3-walk), whose
+BATTERY_DEFAULT names it.  The theory it
 holds up is v4-merge3.md beside that checker.
 
 It sits in a subdirectory on purpose.  The green and yellow batteries

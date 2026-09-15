@@ -11,6 +11,9 @@ real mode of the driver.
     make freebsd                       # ZFS_SRC=/path/to/src if not /usr/src
     make check-freebsd                 # the Mac-side gates, now on FreeBSD
     make gate                          # needs perl
+    make PICKER=no freebsd             # the option-off package's artifact
+    make PICKER=no check-freebsd       # and its tests, the only run of them
+    make freebsd                       # back to the build the harnesses want
     sudo sh tests/box/run-fixture.sh tests/fixtures/probe.zrt
     sudo sh tests/box/run-suite.sh
     sudo sh tests/box/run-precond.sh   # the cells no fixture states
@@ -358,10 +361,17 @@ built around them:
   one of those gates and whatever the signal was: the clone is
   writable from the moment it is made until the done gate puts it
   read-only as the deliverable (ruled 2026-09-10), so a stop has no
-  flag to leave one way or the other. In the dataset form
-  readonly is what the header says it was, at the private mount and
-  at home alike, since the tool changes it only while the dataset is
-  off its mountpoint.
+  flag to leave one way or the other. In the dataset form readonly
+  reads off at every gate past the take, whatever it was at home:
+  the take makes a read-only onto writable once and leaves it so for
+  the private mount's whole life, because libzfs answers a readonly
+  change with a remount at the mountpoint property and that remount
+  cannot land while the dataset sits at the private mount. What it
+  was is kept in the header and put back at the hand-back, which is
+  done and --abort and no gate between them. One case of the run
+  builds onto read-only before the tool sees it and wants it
+  read-only again at the end, since every fixture builds onto
+  writable and a put-back and a hard-set off look alike there.
 - SIGINT and SIGTERM at done are no stop at all: nothing looks at
   the flag past that gate, so the run finishes, releases the holds,
   takes the record off -- in that order, since the tag is the only
@@ -743,8 +753,12 @@ The cases, in the order they run, per fixture and form:
   which opens on a skeleton that needs nothing (ruling 2), and -i
   -M, which opens and then holds the gate; a rebase whose decision
   declares no conflict, which reaches no such gate and opens
-  nothing; -i with no command, which is the built-in picker, of
-  which this build has a stub that says so and exits 2; the tool
+  nothing; -i with no command, which is the built-in picker, and
+  either build refuses it with one line and an exit of 2 -- the
+  stub's note where PICKER=no, and the picker's own "needs a
+  terminal" where the picker is in, since the harness gives the
+  child a file for its standard output -- with the case naming which
+  build it found; the tool
   killed with SIGKILL while the child runs, where the child is
   orphaned and finishes and the gate stands with what it saved; and
   --restart and then -c IDENT -i, which opens on the skeleton the
@@ -754,9 +768,11 @@ A case that wants more of a fixture than it has says so and is
 passed over: the hand-edited choices want a second conflicted name,
 so does the --interactive case that answers one line and leaves the
 rest; the drift lines and the --interactive case that opens on one
-want a name the manifest says nothing about; and the ACL strip wants
-a directory of the same kind. A fixture whose every name is
-conflicted has neither.
+want a name the manifest says nothing about; the case that has the
+child write a duplicate line wants a conflicted leaf, since the
+editor's duplicate mode copies a leaf line and never a directory's;
+and the ACL strip wants a directory of the same kind. A fixture
+whose every name is conflicted has neither.
 
 The conflict-free rebase is the one case whose onto is not the
 fixture's: it clones base@base into a dataset of its own, whose tree
@@ -1017,9 +1033,16 @@ asked for, naming make rmconfig.
   what is owed is the number and not a verdict.
 - port-test, which run-port.sh carries out.
 - port-picker-option's two passes of run-port.sh, and with them the
-  option helper spellings -- PICKER_USES, PICKER_MAKE_ARGS_OFF,
-  PICKER_PLIST_FILES -- which only a real ports framework confirms.
-  The mac has neither a ports tree nor a package to build.
+  option helper spellings -- PICKER_MAKE_ARGS_OFF, PICKER_PLIST_FILES
+  -- which only a real ports framework confirms. The mac has neither
+  a ports tree nor a package to build. One of those passes wants a
+  box with devel/ncurses installed, which is where the dropped
+  USES=ncurses:base used to refuse outright.
+- make freebsd with the two libdiff compat allocators on the link,
+  which every FreeBSD build now compiles: a box at 15.1 or later has
+  recallocarray(3) in libc and is where our own definition has to
+  win without a duplicate-symbol complaint, and a box before it is
+  where the link used to fail outright.
 - the eleven tests/fixtures/freebsd/ rows of replay-expect.txt,
   which are tools/replay-expect.py's model's word until run-replay.sh
   has run over them on a box.
@@ -1030,6 +1053,8 @@ asked for, naming make rmconfig.
 
     sh tests/box/prereqs.sh
     make clean && make freebsd && make check-freebsd && make gate
+    make PICKER=no freebsd && make PICKER=no check-freebsd
+    make freebsd
     sudo sh tests/box/run-fixture.sh tests/fixtures/probe.zrt
     sudo sh tests/box/run-suite.sh          # every fixture, both forms
     sudo sh tests/box/run-replay.sh         # the pruning, in the positive
@@ -1037,6 +1062,20 @@ asked for, naming make rmconfig.
     sudo sh tests/box/run-strays.sh         # edits the tool did not make
     sudo sh tests/box/run-precond.sh        # the cells no fixture states
     sudo sh tests/box/run-resolution.sh     # the choices, and -i
+
+The PICKER=no pair is run once, after the default build's own checks
+and before any harness: PICKER=no plus -DZR_FREEBSD plus libzfs is
+exactly the artifact the port's option-off package contains, and no
+gate on either machine builds it otherwise (the review of
+2026-09-11, B5). make gate's own PICKER=no step is a link and not a
+test run -- it proves no curses call and no picker symbol is reached
+from outside the picker, which is all a link can say -- so this is
+where the tests are run against a stub-linked tool. The knob is not
+part of the flavor stamp, so the pair costs two links and one
+compile and empties nothing; the make freebsd after it puts the
+tree's zfs_rebase back to the build every harness below expects,
+since the harnesses run ./zfs_rebase from the checkout and
+run-resolution.sh case 12(j) reports which build it found.
 
 run-fixture.sh on probe.zrt first, because it is the shortest way to
 find out that the box, the build and the pool are working at all;

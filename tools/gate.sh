@@ -1,13 +1,27 @@
 #!/bin/sh
-# Pre-commit gate: ASCII everywhere, cstyle over C sources.
+# Pre-commit gate, and exactly three checks: ASCII over every shipped
+# file, cstyle over the C sources that are ours, and the PICKER=no
+# link. It does NOT run tools/xcheck-freebsd.sh, which wants a FreeBSD
+# source tree in FREEBSD_SRC and is run by hand; nor make check, which
+# is a target of its own. What this says when it says "clean" is those
+# three things and nothing more.
 # cstyle.pl is OpenZFS's, copied verbatim (CDDL, header intact).
 # Portable: no grep -P, since BSD grep on macOS and FreeBSD lacks it.
 set -u
 cd "$(dirname "$0")/.." || exit 1
 rc=0
 nonascii=$(printf '[^\t -~]')
-if LC_ALL=C grep -rn "$nonascii" Makefile README.md zfs_rebase.8 ports src \
-    tests tools/xcheck-stub tools/*.sh tools/*.py tools/*.c; then
+# LICENSE is on the list because the port hands it to the framework as
+# LICENSE_FILE_BSD3CLAUSE: it is shipped text of ours and the ASCII
+# rule is unconditional (the review of 2026-09-11, B10, which found it
+# outside the sweep). tools/cstyle.pl is the one shipped file
+# deliberately left out, and it is left out by name here rather than
+# by the accident of an extension list: it is carried OpenZFS code and
+# it holds six lines with 0x01 bytes of its own, which it uses as a
+# comment placeholder, so it cannot pass this check and must not be
+# edited to. .gitignore is not shipped and is not swept.
+if LC_ALL=C grep -rn "$nonascii" Makefile README.md LICENSE zfs_rebase.8 \
+    ports src tests tools/xcheck-stub tools/*.sh tools/*.py tools/*.c; then
 	echo "gate: non-ASCII bytes above"; rc=1
 fi
 # tools/xcheck-stub is stand-in headers for tools/xcheck-freebsd.sh and
@@ -32,15 +46,21 @@ if [ -n "$srcs" ]; then
 	fi
 fi
 # The picker knob, so that PICKER=no cannot rot between one release
-# and the next (tracker issue port-picker-option): the tool compiled
-# and linked whole with src/plugins/picker/stub.c in the picker's
-# place and no curses library on the line. A curses call, a picker
-# symbol or a libdiff symbol reached from anywhere outside the picker
-# fails that link, with nothing on it to satisfy them, which is the
-# whole of the check. make nopicker builds into build/nopicker under
-# a name of its own, so it neither empties the tree's build/ nor
-# relinks ./zfs_rebase -- the box builds the freebsd flavor and runs
-# this gate after it -- and it is incremental after the first run.
+# and the next (tracker issue port-picker-option): the tool linked
+# with src/plugins/picker/stub.c in the picker's place and no curses
+# library on the line. A curses call, a picker symbol or a libdiff
+# symbol reached from anywhere outside the picker fails that link,
+# with nothing on it to satisfy them, which is the whole of the check.
+# make nopicker links out of the tree's own build/ -- one compile, the
+# stub's, and one link -- and writes build/zfs_rebase-nopicker, so it
+# neither empties build/ nor touches ./zfs_rebase; the box builds the
+# freebsd flavor and runs this gate after it, and there the artifact
+# this gates is the freebsd PICKER=no tool, which is what the port's
+# option-off package contains.
+#
+# This is a link and not a test run: no target runs the PICKER=no
+# tests, and the box order (tests/box/README.md) is where that build
+# is exercised, with make PICKER=no check-freebsd.
 if out=$(${MAKE:-make} nopicker 2>&1); then
 	echo "gate: PICKER=no builds, with no curses library on its link"
 else

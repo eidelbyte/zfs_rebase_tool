@@ -949,6 +949,7 @@ again.
 | ZX242 | the flag guard reads from's side as well: an object of from's carrying schg, sappnd or sunlnk that the decision would write into the result is refused above securelevel 0 too, since za_attrs would stamp the flag on and a --continue or the self-check's put-back would then meet EPERM with the tree part written | covered: check_run.c, which asks the question with the level as an argument over a synthetic decision and two synthetic walks; the sysctl that reads the real level is the box's, ZX23 |
 | ZX243 | -o into a directory that is not there, or not a directory, or not writable: refused as a precondition before the pool is touched, the message naming the path and the directory; a path with no slash is the working directory | covered: check_run.c |
 | ZX244 | the clone's name out of --result: a name with no slash goes beside onto's dataset (its parent, or the pool where onto is the pool's own dataset), a name with a slash is taken as given, and a name that will not fit is refused; the header carries the composed name | covered: check_run.c |
+| ZX245 | the composed name is the clone's, and not only the header's: the clone is created under it, mounted at the run's private mount under it, found under it by --continue and --abort, and destroyed under it at done and at --abort (5fc39a3) | planned: box, run-resolution.sh in the clone form with a bare word for --result, so the name is composed beside onto rather than given whole as the harness gives it today; the header's half is ZX244's and is closed |
 | ZX250 | the conflicts gate's document half, which reads the two documents and no tree: a conflict line the manifest marks that the resolution lacks is put back with the take mode's answer -- "-" in standard mode, onto under --take-onto, from under --take-from -- a line the document still has is left exactly as the hand left it, a name the document covers by a drift line of its own is not doubled, and a document that speaks for every mark is not rewritten (M1 of the code review of 2026-09-11) | covered: check_run.c, over zr_conflicts_back, the function the gate's two arrivals share |
 | ZX251 | and the same over a real rebase: one left at applying1, a conflict line deleted by hand with the two counts corrected, then --continue and --continue -i; the line is back in the file with "-", the run stops at the gate with the unanswered count, and nothing reaches applying2 without it | planned: box, box/run-resolution.sh, a case of its own beside case 12; the hand-off from applying1 is the arrival that used to skip this and is the one the pool half has to see |
 | ZX252 | the done gate's order in the clone form: the final check, the walks closed, the clone unmounted, and readonly written on only after that; a done whose unmount refuses leaves the rebase open on a clone that is still writable, and the next --continue can write in it | planned: box, box/run-kills.sh settle case (a), whose busy private mount already makes that refusal, with readonly read after it (L3 of the code review of 2026-09-11) |
@@ -1493,7 +1494,11 @@ fresh run, --continue from applying1, --continue at conflicts,
 path, the value's own flags, the four tree paths of the built-in};
 signals while the tool waits {SIGINT to the group, SIGTERM to the
 tool, SIGKILL to the tool}; the terminal {left as found, left
-changed by the child}; and the built-in {no picker in the build}.
+changed by the child}; and the build knob {PICKER=yes, PICKER=no,
+and a switch from one to the other in one build directory}, whose
+own properties -- the curses library on the link line, the picker
+and libdiff objects, the standalone binary -- are a cell of their
+own and not only a dimension of the child's behaviour.
 ZI1 to ZI12 are read off struct zr_args on any machine. ZI13 to
 ZI23 run the launcher on the mac with shell scripts as the child:
 a script records its arguments, exits as told, signals its parent,
@@ -1529,13 +1534,13 @@ are made.
 | ZI13 | the child receives the resolution's path as its last argument, byte for byte | covered: check_run.c |
 | ZI14 | the value's own flags reach the child before the path, in order | covered: check_run.c |
 | ZI15 | the child exits 0: the launcher reports 0 | covered: check_run.c |
-| ZI16 | the child exits N: the launcher reports N, and the file is as the child left it | covered: check_run.c |
+| ZI16 | the child exits N: the launcher reports N, and the launcher writes nothing to the document itself | covered: check_run.c for the status and for the document's bytes across the launch -- the child of that test is `exit 3`, which touches no file, so what it says is that the launcher left it alone; a child that writes and then exits non-zero is ZI25's, on the box |
 | ZI17 | the child dies of a signal: reported non-zero, with the signal named | covered: check_run.c |
 | ZI18 | the command cannot be run: reported non-zero, with the command named | covered: check_run.c |
 | ZI19 | SIGINT while the tool waits reaches the child and not the tool: a child that sends INT to its parent and exits 0 is reported 0, and the tool is still there | covered: check_run.c |
 | ZI20 | SIGTERM to the tool while it waits is forwarded to the child, and the launch reports non-zero, naming the signal, even when the child catches it and exits 0 | covered: check_run.c |
 | ZI21 | termios saved before the fork are restored after a child that changed them, on a pty | covered: check_run.c, posix_openpt(3) rather than openpty(3), which wants -lutil |
-| ZI22 | the built-in child on a document it cannot open: in a PICKER=no build the stub says there is no picker, in the default build the picker refuses before it touches a terminal; either way one line, exit 2, reported non-zero | covered: check_run.c, in both builds (make check and make PICKER=no check) |
+| ZI22 | the built-in child on a document it cannot open: in a PICKER=no build the stub says there is no picker, in the default build the picker refuses before it touches a terminal; either way one line, exit 2, reported non-zero | covered: check_run.c, in the default build that make check builds. The PICKER=no half is covered by the box order's make PICKER=no check-freebsd (tests/box/README.md), which is the only gate anywhere that runs the tests against a stub-linked tool; make gate does not, and is not made to: its PICKER=no step is a link out of build/, and a check there would relink the tree's own zfs_rebase, which is B1's hazard |
 | ZI23 | the built-in child's argv is RESOLUTION BASE FROM ONTO RESULT, in that order | covered: check_run.c |
 | ZI24 | a fresh run with -i and a script that answers every line: done in one process, exit 0 | covered: box, box/run-resolution.sh case 12a |
 | ZI25 | the script exits 1: the gate stands, exit 1, the resolution as the script left it with its partial answers | covered: box, box/run-resolution.sh case 12b |
@@ -1546,11 +1551,12 @@ are made.
 | ZI30 | -O -i: the script opens on the complete skeleton | covered: box, box/run-resolution.sh case 12g |
 | ZI31 | -i -M: the script opens, then --no-merge holds the gate | covered: box, box/run-resolution.sh case 12h |
 | ZI32 | a rebase whose decision has no conflict, with -i: nothing opens, done | covered: box, box/run-resolution.sh case 12i |
-| ZI33 | -i alone on the box with no picker in the build: the note, exit 1, the gate stands | covered: box, box/run-resolution.sh case 12j |
+| ZI33 | -i alone on the box: the built-in child refuses with one line and exit 2 whichever way the knob was set -- the stub's note where PICKER=no, the picker's own "needs a terminal" where the picker is in, the harness having given the child a file for its standard output -- the run reports the exit, exits 1, and the gate stands with the skeleton untouched | covered: box, box/run-resolution.sh case 12j, which accepts exactly those two lines and names the build it found. The box order builds both knobs, so the case runs under each |
 | ZI34 | the tool killed with SIGKILL while the script runs: the gate stands with the file as last saved, and -c continues | covered: box, box/run-resolution.sh case 12k |
 | ZI35 | --restart IDENT then -c IDENT -i CMD: the skeleton again, and the script opens on it | covered: box, box/run-resolution.sh case 12l |
 | ZI36 | on the resume path the built-in child gets base's directory as the fresh run's does, found from the record like a side's; add/add only where the header has no base | planned: box, by hand: the ZP103 session through -c IDENT -i, the title reading E/E and not A/A |
 | ZI37 | the child opens on a result that is writable already, on both paths, and no flip is made for it or after it; the picker's merge write lands | planned: box, by hand: the ZP103 session, w on screen 2 writing where it read "Read-only file system" before |
+| ZI38 | the knob itself (ruling 14): a PICKER=no build links no curses library and carries neither a picker object nor a libdiff one, and builds no standalone binary; a PICKER=yes build carries all three; and turning the knob in one build directory relinks the tool, rather than leaving the other setting's binary in the tree for make check and make install to find | covered: make gate's PICKER=no step, which links the tool out of the tree's own objects with the stub in the picker's place and nothing on the line to satisfy a curses, picker or libdiff symbol reached from outside the picker; and the Makefile's $(BUILD)/.picker stamp for the relink, which make, make PICKER=no, make, make PICKER=no exercises -- the sequence of the review of 2026-09-11, B1, with the tool the picker build again after the third. The FreeBSD side of the same cell is the box order's make PICKER=no freebsd and make PICKER=no check-freebsd |
 | ZI40 | the forked built-in child closes every descriptor above the three standard ones before the entry is called, which is what the exec would have done for a named command: a marker file the test holds open above 2 cannot be written after the call, standard input, output and error still can be, and a child that does not make the call writes the marker (L6 of the code review of 2026-09-11) | covered: check_run.c, over zr_launch_closefds in a fork of the test's own, the exit status carrying the answer; the built-in child cannot report on itself, which is why the argv builder beside it is exported too |
 
 ## ZP -- the built-in picker (check_picker.c, the box by hand)
@@ -1602,20 +1608,38 @@ failures {a read-only directory, ENOSPC on the .tmp}; and the
 moment {a crash between the rename and the exit}.
 
 The terminal, ground rule 6: the way out {the normal return, an
-error return, exit() through the atexit hook, SIGINT, SIGTERM,
-SIGHUP, SIGSEGV, SIGBUS} crossed with what must hold after it {the
-termios as they were found, endwin called, the signal re-raised
-with its default disposition}; what the terminal is when the picker
-starts {a pty, none at all, TERM unset, TERM a name terminfo does
-not know, a window smaller than the layout}; and SIGWINCH while it
-is up.
+error return, exit() through the atexit hook, SIGINT, SIGQUIT,
+SIGTERM, SIGHUP, SIGSEGV, SIGBUS, SIGABRT, SIGILL, SIGFPE, SIGTSTP
+and the SIGCONT after it, a second signal arriving while the first
+restore is still running} crossed with what must hold after it {the
+termios as they were found, endwin called, the alternate screen left
+where the picker entered it by hand, the signal re-raised with its
+default disposition}; what the terminal is when the picker starts {a
+pty, none at all, TERM unset, TERM a name terminfo does not know, an
+xterm kind whose entry has no smcup, a window smaller than the
+layout}; SIGWINCH while it is up; and what the keyboard sends {a key,
+a bare Esc, an escape sequence terminfo does not describe}.
+
+The drawing, which the mockup and the author's own words on the box
+settle: the alternate screen {curses owned the switch, the picker
+owned it, neither}; the cursor {one cell of the band's style in a
+column of its own, on the list's row and on a hunk's rows}; screen
+2's cell layout {the gutter character, the cursor's cell, the line
+number right-aligned in four columns, the text}; what the gutter
+reads {blank for stable, + for one side's own, f or o for a picked
+conflict}; what the result pane numbers {the merged file, not a
+side}; and the band {color 8 under each column's own color where the
+terminal has more than the basic eight, the terminal's two colors
+swapped on a terminal with exactly eight, A_BOLD where there are
+none}.
 
 Screen 2 and the merge, over the chunk record diff3-walk produces:
 the chunk kind {stable, from-only, onto-only, both-same, conflict}
 crossed with the answer it takes {its own side, either side, the
-person's pick, none yet}; the key {1, 2, b, n, p, the conflicts-only
-toggle, w, Esc} crossed with where the cursor stands {the first
-conflict, the last, a stable stretch, nothing unpicked left}; the
+person's pick, none yet}; the key {f, o, -, b, n, p, c the
+conflicts-only toggle, w, q, Esc} crossed with where the cursor
+stands {the first conflict, the last, a stable stretch, nothing
+unpicked left}; the
 triple's shape {a base and both sides, add/add with no base,
 delete/edit, an empty side, no final newline in each of the three
 positions}; and the write {every conflict picked, one still
@@ -1651,6 +1675,20 @@ Those are done by hand on the box and recorded in the worklog of
 picker-list or of picker-merge, which is the rule of plan section
 3.5 -- every TUI session on the box goes into the worklog.
 
+ZP115 to ZP129 were plotted 2026-09-11, after the fact, by the code
+review of that day (B8): nine commits of the sprint changed what the
+picker does or draws and added no row, and by the rule at the top of
+this file a cell with no row is a hole. They are the alternate
+screen, the cursor's cell and screen 2's layout, the gutter and the
+result pane's numbering, the band, the keys the sprint renamed, the
+three fatal signals the handler does not take, the stop signal, a
+second signal during the teardown, an escape sequence terminfo does
+not describe, and the directory rows of ruling 12. The last three are
+deferred to the tracker issue picker-dirs, which is where the ruling
+is parked; the rest are planned against the test or the box session
+that closes each, except the two for the keys, which landed with
+tests of their own and only wanted a row.
+
 | cell | scenario | disposition |
 |------|----------|-------------|
 | ZP1 | one row per resolution line, in the file's order, and nothing else is a row | covered: check_picker.c |
@@ -1674,7 +1712,7 @@ picker-list or of picker-merge, which is the rule of plan section
 | ZP19 | a resolution of drift lines only: rows, no groups, nothing unanswered | covered: check_picker.c |
 | ZP20 | a conflict line the manifest marks that the document lacks: no row for it and nothing added, since the re-add is the gate's (documents-design.md 11.5) | covered: check_picker.c |
 | ZP21 | two lines for one name: the parse refuses, its reason is printed, exit 2, and nothing is drawn | covered: check_picker.c |
-| ZP22 | a name that is ".", ".." or holds a "/": the same refusal | covered: check_picker.c |
+| ZP22 | a name that is ".", ".." or holds a "/": the same refusal | planned: the bare "." has no case anywhere and is one more line in the same test; check_picker.c already tries the escaped ".." and the embedded slash, so two of the three are closed |
 | ZP23 | a header naming another rebase: refused before anything is drawn, exit 2 | covered: check_picker.c |
 | ZP24 | a snapshot name whose guid differs from the manifest's: refused with both numbers, exit 2 | covered: check_picker.c |
 | ZP25 | a header count that does not match the lines: the parse's refusal, exit 2 | covered: check_picker.c |
@@ -1703,15 +1741,15 @@ picker-list or of picker-merge, which is the rule of plan section
 | ZP48 | w with something unanswered: refused, the count and the first unanswered name said, nothing written, the picker still up | covered: check_picker.c |
 | ZP49 | w again after the last unanswered name is answered: written, exit 0 | covered: check_picker.c |
 | ZP50 | a key the picker does not know: ignored, and nothing changes | covered: check_picker.c |
-| ZP51 | every key on an empty document: only w and q do anything | covered: check_picker.c |
-| ZP52 | the write goes through zr_doc_write: a .tmp sibling and a rename, so a reader finds one whole document or the other and never half | covered: check_picker.c |
+| ZP51 | every key on an empty document: the four that act act -- w and s write it, q and Esc leave it -- and every other key is quiet | covered: check_picker.c for the quiet ones (up, down, top, bottom, f, o, k, -, g, Enter), each of which leaves the model as it was; w's write and exit 0 is ZP18's, and s and Esc on an empty document are ZP122's |
+| ZP52 | the write goes through zr_doc_write: a .tmp sibling and a rename, so a reader finds one whole document or the other and never half | planned: box, by hand, in the worklog of picker-list, beside ZP61 -- a second process reading the destination while the write is held is the only way to see the atomicity itself, and it is not reachable from inside the writing process. What is closed already: check_picker.c asserts the destination whole and no .tmp left beside it, which is the rename's aftermath and which a plain fwrite would also pass; that the path taken is zr_doc_write's is by inspection, model.c calling it and carrying no writer of its own |
 | ZP53 | the document written after a key sequence differs from the one opened at exactly the lines those keys touched, and nowhere else | covered: check_picker.c |
 | ZP54 | #names and #unanswered in the written header are the library writer's own count of the lines, never a number the picker carried | covered: check_picker.c |
 | ZP55 | the order out is the order in, for a sequence that answers the rows back to front | covered: check_picker.c |
 | ZP56 | every line it opened with is in the file it writes: never one fewer, whatever was pressed (v4-manifest.md 8: a hand cannot take a conflict away) | covered: check_picker.c |
-| ZP57 | byte equality: what the picker writes for a set of choices is what zr_resolution_write writes for the same lines | covered: check_picker.c |
+| ZP57 | the picker's write is the library writer's: what it puts on disk parses and re-emits to itself byte for byte, so the picker adds no formatting of its own | covered: check_picker.c, as the fixed point it is -- the expected bytes are zr_resolution_parse of the file the picker just wrote, re-emitted by zr_resolution_write. That the choices recorded are the right ones is not this row's: ZP53 builds its expected document by hand out of res_main and compares byte for byte, and that is the row a picker recording the wrong choice fails |
 | ZP58 | an unchanged document written by w is byte-identical to the one opened | covered: check_picker.c |
-| ZP59 | a write that fails (a read-only directory, ENOSPC on the .tmp): the message after endwin, the destination as it was, no .tmp left, a non-zero exit | covered: check_picker.c |
+| ZP59 | a write that fails (a read-only directory, ENOSPC on the .tmp): the message after endwin, the destination as it was, no .tmp left, a non-zero exit | planned for the ENOSPC half, which has no test: a file system small enough to fill -- a disk image of a few megabytes on the mac, a pool of the same size on the box -- so that the failure lands on the write to the .tmp rather than on its open, which is the branch the read-only case cannot reach. The read-only directory half is covered: check_picker.c |
 | ZP60 | s twice and then w: one document with the last choices, and no line doubled | covered: check_picker.c |
 | ZP61 | a crash between the rename and the exit: the written document stands, no .tmp beside it, and the next --continue reads it | planned: box, by hand, in the worklog of picker-list |
 | ZP62 | the termios saved before initscr are back on the normal return (w, exit 0) | covered: check_picker.c on a pty, with the standalone binary as the child |
@@ -1735,15 +1773,15 @@ picker-list or of picker-merge, which is the rule of plan section
 | ZP80 | an onto-only chunk: the answer is onto, with no key pressed | covered: check_merge.c |
 | ZP81 | a both-same chunk: not a conflict, and one copy of it in the result | covered: check_merge.c |
 | ZP82 | a conflict chunk: unanswered until 1 or 2, the two halves between markers on the screen until then | covered: check_merge.c, the record's half -- unanswered until zr_m3_pick, and the last pick stands; check_picker.c on a pty for the markers, which are drawn and reach no file |
-| ZP83 | 1 takes from and 2 takes onto for the chunk under the cursor, and for no other chunk | covered: check_picker.c |
-| ZP84 | 1 then 2 on one chunk: the last pick stands | covered: check_picker.c |
+| ZP83 | f takes from and o takes onto for the chunk under the cursor, and for no other chunk (the keys were 1 and 2 until acc89c5) | covered: check_picker.c, which drives the model's codes; that f and o are the keys reaching those codes is screen.c's pk_map_merge, and ZP121 is the row for the keys themselves |
+| ZP84 | f then o on one chunk: the last pick stands | covered: check_picker.c |
 | ZP85 | b shows the chunk's base range, which every chunk keeps, conflict chunks included (ruling 5; eager is the ceiling) | covered: check_picker.c (the toggle, with the picks unchanged) and on a pty (base's own line drawn in the result pane's place) |
 | ZP86 | n and p move between conflict chunks and stop at the ends | covered: check_picker.c |
 | ZP87 | n and p with one conflict chunk, and with none at all | covered: check_picker.c |
 | ZP88 | the conflicts-only toggle hides every stretch that needs no choice (stable, one side's own, both the same), one row per run, and shows them again, with the picks unchanged (ruled 2026-09-10: conflicts only means conflicts only) | covered: check_picker.c (the toggle and the picks) and on a pty (each stable chunk one dim line, in all three panes) |
 | ZP89 | the inside-conflict diff marks lines within a conflict chunk and never splits it: the chunk sequence is the same with the hint computed and without it | covered: check_merge.c, zr_m3_hint over every conflict chunk of every battery case, the sequence held against a copy taken before |
 | ZP90 | w with every conflict chunk picked: the merged bytes go into the result's object at that name, in place | covered: check_picker.c (the bytes compared, and the inode and the mode unchanged across the write) and on a pty end to end |
-| ZP91 | w with one conflict chunk unpicked: refused, naming the first, and nothing written (ruling 7) | covered: check_merge.c, zr_m3_result refuses and names the first unpicked chunk; check_picker.c, the screen queues that line, moves to that hunk, stays on screen 2 and leaves the object as it was |
+| ZP91 | w with one conflict chunk unpicked: refused, naming the first, and nothing written (ruling 7) | covered: check_merge.c, zr_m3_result refuses and names the first unpicked chunk; check_picker.c, the screen queues that line, stays on screen 2 and leaves the object's bytes as they were. The cursor moving to the named hunk is not asserted there and is not claimed here: planned, the same test reading the cursor's chunk index after the refusal |
 | ZP92 | no marker ever reaches the bytes written, by any path through the screen | covered: check_picker.c, over a merge with one hunk taken from from and one from onto |
 | ZP93 | a write from screen 2 sets the row's choice to keep, and the list shows it | covered: check_picker.c (the row reads keep, the unanswered count falls, and the resolution s writes carries it) |
 | ZP94 | Esc goes back to the list with the row's choice as it was: only w changes it | covered: check_picker.c (the picks go with the merge and the result's object is untouched) |
@@ -1767,6 +1805,21 @@ picker-list or of picker-merge, which is the rule of plan section
 | ZP112 | "" for a tree with no path is not a path of "" and is never opened | covered: check_picker.c |
 | ZP113 | the standalone binary run with no tool around it, on a --posix fixture's resolution and manifest: the same screens and the same statuses | planned: box, by hand, in the worklog of picker-list |
 | ZP114 | the tool's child and the standalone binary are the same objects: one key sequence through both gives one file | covered: check_picker.c on a pty, the binary and zr_picker_main in a forked child of the test |
+| ZP115 | the alternate screen is the picker's own where the terminal database gives curses no smcup and TERM is an xterm kind (ruling 17, b5f52c0): the picker writes the enter sequence itself before the first draw and the leave sequence on every way out -- w, s then q, q, Esc, a refusal made after curses is up, and each fatal signal -- so its last frame is not left in the scrollback | planned: box, by hand, in the worklog of picker-list. The box is the one place the hand path is taken at all: FreeBSD's termcap chain for xterm has no te/ti pair, while the mac's terminfo gives xterm an smcup and curses makes the switch itself, so on the mac the path is reached only with TERM naming an entry that has none |
+| ZP116 | the alternate screen is balanced whoever owns it: exactly one enter sequence and one leave sequence in the bytes the child wrote where the picker owned the switch, and none of either where curses owned it | planned: check_picker.c on a pty, counting \033[?1049h and \033[?1049l in the recorded stream under a TERM with an smcup and under one without; it is the mechanical half of ZP115 and the half a pty can see |
+| ZP117 | the cursor is one cell of the band's style in a column of its own, on the list's row and on every row of the hunk under it on screen 2, and the row's own colors are left alone (8a71090, 932c414) | planned: box, by hand, in the worklog of picker-list; the cell's column and the left pad are read off the drawn screen, which is what the author asked for |
+| ZP118 | screen 2's cell layout: the gutter character, a space, the cursor's cell, a space, the line number right-aligned in four columns, two spaces, the text; and the gutter reads blank for a stable stretch, + for a stretch that is one side's own, and f or o for a conflict, saying which key answered it (935705e, e2b678f) | planned: check_picker.c on a pty for the gutter characters over a merge with one hunk taken each way, and box, by hand, for the layout itself |
+| ZP119 | the result pane numbers the merged file and not a side: the numbers run 1..n over the lines the result would hold, so a line taken from onto carries the number it will have and not onto's (e2b678f); the column is four wide, so a file above 9999 lines truncates | planned: check_picker.c on a pty over a merge whose two sides are of different lengths, which is what tells a result number from a side's |
+| ZP120 | the band under the cursor's row: color 8 -- bright black -- under each column's own color where the terminal has more than the basic eight, the terminal's own two colors swapped on a terminal with exactly eight, with the row's colors given up for that row, and A_BOLD where there are no colors at all (ruling 15, 5ab9910) | planned: box, by hand, in the worklog of picker-list, on the author's own scheme, which is where the first cut was refused; the three branches are reached with TERM naming an eight-color entry, a 256-color one, and one with no colors |
+| ZP121 | f, o and - on screen 2: f and o take the hunk under the cursor, - gives the answer back and the hunk is unpicked again, and a merge with an unpicked hunk still refuses w (ruling 13, acc89c5) | covered: check_picker.c for - giving the answer back, and ZP83, ZP84 and ZP91 for the rest; the keys themselves are screen.c's pk_map_merge, driven through a real terminal by the pty cells above |
+| ZP122 | q and Esc each leave the screen they are on and no other: on screen 2 both go back to the list with the picks kept, on the list both leave the picker, exit 1 where something was saved and 2 where nothing was (3ab1e42) | covered: check_picker.c for the four directions; ZP45, ZP46 and ZP94 are the three that predate the rename and are the same behaviour seen from the list and from screen 2 |
+| ZP123 | SIGABRT, SIGILL and SIGFPE leave the terminal as the six handled signals do: the termios back, the alternate screen left where the picker entered it, and the signal re-raised with its default disposition | planned: check_picker.c on a pty, the way ZP65 to ZP67 do it for the other six. -DNDEBUG in the shipped flags takes away the likeliest source of one, an assert on the Enter path, but __stack_chk_fail and a libc heap abort raise SIGABRT too, so the cell is the handler's and not the assert's |
+| ZP124 | SIGTSTP: the picker leaves the alternate screen and puts the termios back before it stops, so the shell draws on the main screen, and takes both again on SIGCONT with the screen redrawn | planned: check_picker.c on a pty, stopping the child and continuing it and reading the termios between; ncurses' own stop handler cannot write our leave sequence, which is why the cell exists |
+| ZP125 | a second signal arriving while the first restore is still running: the terminal is still put back, because the one call that cannot block runs first and unguarded | planned: check_picker.c on a pty whose reader is stalled, two signals in a row, the termios read afterwards from the master side -- the shape the review's own probe used |
+| ZP126 | an escape sequence the terminal sends that terminfo does not describe: the bytes after the escape are not read as a bare Esc, so nothing of what was answered is discarded by a key nobody pressed | planned: check_picker.c on a pty, writing a sequence no entry names and asserting the picker is still up with its answers |
+| ZP127 | a directory row's derived choice, in its four states (ruling 12): "-" where no child is resolved, the side where every resolved child takes that side, "=" where some children are resolved and some are not, and "K" where every child is resolved but no single side covers them | deferred: tracker issue picker-dirs, which is where ruling 12 is parked; the self-conflicted directory's column is the one open point of it and is the reason this is not planned against a test yet |
+| ZP128 | a dir-wide choice applies down: f, o or k on a directory row sets every conflict line under it, and the counts move by the number of rows it touched | deferred: tracker issue picker-dirs |
+| ZP129 | the warning before a dir-wide choice that contradicts what is already resolved under it: the person is told which children disagree and the choice is not made until they say so again | deferred: tracker issue picker-dirs |
 
 ## Positive-proof cells
 

@@ -54,8 +54,26 @@ MAKE_ARGS=	ZFS_SRC=${SRC_BASE}
 # On: the tool carries the picker, links ncursesw from base -- the
 # freebsd target passes CURSES_LIBS=-lncursesw, which is what base's
 # own programs link -- and the standalone zfs_rebase-picker is
-# installed beside it. USES=ncurses:base says so to the framework and
-# adds no dependency, since the library is in base.
+# installed beside it.
+#
+# There is deliberately no USES line for it. The port had
+# PICKER_USES=ncurses:base, and the framework's ncurses.mk with that
+# argument sets NCURSESBASE, NCURSESINC, NCURSESLIB and NCURSESLIBS --
+# none of which this build consumes, since the upstream Makefile
+# hard-codes the link flag and adds no -I, base's headers and library
+# being on the default search paths. What the line did bring was the
+# framework's own sanity target: on any machine where
+# ${LOCALBASE}/lib/libncurses.so exists, that is, wherever
+# devel/ncurses happens to be installed, it prints "you can't build
+# against it, while a newer version is installed by a port" and runs
+# ${FALSE}. So the option's default state refused to build there, and
+# told the user to deinstall a port they installed for something else
+# (the review of 2026-09-11, B6). Consuming ${NCURSESLIBS} would not
+# have lifted it: the sanity target fires on the file's existence
+# whatever reads the variables. Dropping the line is the fix; a bare
+# USES=ncurses would be the other one, and it would make the package
+# depend on devel/ncurses on such a machine for a library it does not
+# want.
 #
 # Off: PICKER=no goes through MAKE_ARGS to the build and to the
 # install, and the tool is built with the upstream stub in the
@@ -66,14 +84,13 @@ MAKE_ARGS=	ZFS_SRC=${SRC_BASE}
 # like any other non-zero exit from the child.
 #
 # **To confirm on the box** with tests/box/run-port.sh, which builds
-# the port both ways: some framework versions want the port to say
-# nothing at all about a base library, and portlint or the build will
-# say which.
+# the port both ways, and on one that has devel/ncurses installed:
+# portlint may want a USES line for a base library, and the answer to
+# it is this comment.
 OPTIONS_DEFINE=	PICKER
 OPTIONS_DEFAULT=	PICKER
 PICKER_DESC=	Built-in ncurses conflict picker for -i
 
-PICKER_USES=	ncurses:base
 PICKER_MAKE_ARGS_OFF=	PICKER=no
 PICKER_PLIST_FILES=	sbin/zfs_rebase-picker
 

@@ -212,7 +212,8 @@ cleanup() {
 	prog_end
 	[ -n "$pid" ] && kill -KILL "$pid" 2>/dev/null
 	if [ "${KEEP:-0}" = 1 ]; then
-		echo "KEEP=1: pool $POOL, $IMG and $tmp left in place"
+		echo "KEEP=1: pool $POOL, $IMG and $tmp left in place,"
+		echo "        and /var/db/zfs_rebase/$POOL with them"
 		return
 	fi
 	"$bin" --abort "$POOL/result" >/dev/null 2>&1
@@ -220,6 +221,20 @@ cleanup() {
 	zpool destroy -f "$POOL" 2>/dev/null
 	[ -n "$MD" ] && mdconfig -d -u "$MD" 2>/dev/null
 	rm -f "$IMG"
+	# The two aborts above take the run directories of the two
+	# dataset names this harness rebases, and no more. Cases put
+	# state under the pool's subtree beyond those two names -- the
+	# leftover directory case_rundir makes, and the run directory
+	# of the rebase case_i_noconflict starts on a dataset of its
+	# own -- and each of those survives any early fail in its case.
+	# end_case asserts the whole subtree is gone after every case
+	# and POOL is a fixed literal, so one leftover made the NEXT
+	# invocation fail at case 1 and blame --abort (the review of
+	# 2026-09-11, B15). Taking the subtree here is what keeps a
+	# failed run from poisoning the runs after it; the pool it
+	# belongs to has just been destroyed, so nothing of the tool's
+	# is left to read it.
+	rm -rf "/var/db/zfs_rebase/$POOL"
 	chflags -R nouchg,nouappnd,noschg,nosappnd "$tmp" 2>/dev/null
 	rm -rf "$tmp"
 	rmdir "$MNT" 2>/dev/null
@@ -309,10 +324,32 @@ localprops() {
 	    awk '$1 ~ /^zfs_rebase:/ && $2 == "local" { print $1 }'
 }
 allsnaps() { zfs list -H -o name -t snapshot -r "$POOL"; }
+# Every hold in the pool, counted -- and "?" where zfs could not be
+# asked, which no assertion here accepts. The old shape took the
+# status of the grep at the end of the pipeline for zfs's own, so a
+# zfs holds that errored counted as zero holds and an allsnaps that
+# failed made the loop empty: every "want 0" assertion passed
+# vacuously, and there are five of them (the review of 2026-09-11,
+# B16(b)). Only the zero direction was blind, the "want 3" ones still
+# biting, which is exactly the half that says a rebase let its inputs
+# go. The value is read through $( ), so the way to fail is a value
+# and not an exit: the reason goes to stderr, where the substitution
+# does not swallow it. run-fixture.sh's own holds check is the shape
+# copied here.
 holdcount() {
+	if ! snaps=$(allsnaps); then
+		echo "holdcount: zfs list -t snapshot -r $POOL failed" >&2
+		printf '?'
+		return 1
+	fi
 	n=0
-	for s in $(allsnaps); do
-		c=$(zfs holds -H "$s" | grep -c .)
+	for s in $snaps; do
+		if ! held=$(zfs holds -H "$s"); then
+			echo "holdcount: zfs holds $s failed" >&2
+			printf '?'
+			return 1
+		fi
+		c=$(printf '%s' "$held" | grep -c . || true)
 		n=$((n + c))
 	done
 	printf '%s' "$n"
@@ -787,10 +824,19 @@ case_headless() {
 	[ "$(hdr take "$man")" = "$side" ] || \
 	    fail "#take is $(hdr take "$man"), want $side"
 	# The resolution is beside the manifest by rule and by no
-	# property: beside a -o FILE that is FILE.resolution, which is
-	# the path the run named in its own message above.
-	[ "$res" = "$man.resolution" ] || \
-	    fail "the resolution is not beside the manifest"
+	# property: beside a -o FILE that is FILE.resolution. The path
+	# is read back out of the run's own message rather than out of
+	# $res, which this harness set itself: the old line compared
+	# $res with $man.resolution, and $res is assigned $man.resolution
+	# a few hundred lines below, so it never reached the tool (the
+	# review of 2026-09-11, B16(a)).
+	said=$(sed -n \
+	    's/^zfs_rebase: the resolution \(.*\) is answered in full; going on$/\1/p' \
+	    "$log" | head -1)
+	[ -n "$said" ] || \
+	    { cat "$log"; fail "the run named no resolution in its own message"; }
+	[ "$said" = "$man.resolution" ] || \
+	    fail "the run named $said, want $man.resolution beside the manifest"
 	# And the pair is the user's: done unlinked neither, because
 	# neither was in the run directory it took away.
 	[ -f "$man" ] || fail "done removed the -o manifest $man"
@@ -1644,8 +1690,21 @@ case_i_leftover() {
 	st=$?
 	[ $st -eq 1 ] || { cat "$log"; fail "the run with -i exited $st, want 1"; }
 	ed_ran 1
-	grep -q "^zfs_rebase: 1 name unanswered in the resolution $res\$" "$log" || \
+	# The count, and that it is printed after the child and never
+	# before it, which is what this case is for. Both streams land
+	# in $log and the launcher flushes before the fork, so the
+	# child's own line is where the fork was: the case used to grep
+	# for the count's presence alone while its comment and the
+	# README claimed the order (the review of 2026-09-11, B16(d)).
+	# Case 12(f) makes the same comparison the other way round.
+	gl=$(grep -n "^zfs_rebase: 1 name unanswered in the resolution $res\$" \
+	    "$log" | head -1 | cut -d: -f1)
+	[ -n "$gl" ] || \
 	    { cat "$log"; fail "the run did not name the one unanswered name"; }
+	el=$(grep -n '^zr-editor: opened ' "$log" | head -1 | cut -d: -f1)
+	[ -n "$el" ] || { cat "$log"; fail "the log has no editor line"; }
+	[ "$el" -lt "$gl" ] || \
+	    { cat "$log"; fail "the count was printed before the child opened"; }
 	[ "$(res_left "$res")" = 1 ] || \
 	    { head -8 "$res"; fail "$(res_left "$res") unanswered, want 1"; }
 	[ "$(phasenow "$rds")" = conflicts ] || \
@@ -1842,21 +1901,39 @@ case_i_noconflict() {
 	cases=$((cases + 1))
 }
 
-# (j) -i with no command, which is the built-in picker, of which
-# this build has a stub: it says so and exits 2, and to the tool that
-# is a non-zero exit like any other. The bare word after -i here is
-# --off-of or --from, a flag, so nothing is taken as a command.
-# ZI33.
+# (j) -i with no command, which is the built-in picker. Either build
+# refuses here with one line and an exit of 2, and to the tool that is
+# a non-zero exit like any other; which line it is says which build
+# this is. The bare word after -i here is --off-of or --from, a flag,
+# so nothing is taken as a command.
+#
+# A PICKER=no build reaches src/plugins/picker/stub.c, whose whole
+# body is that line and a return of 2. A default build reaches the
+# real picker, and fresh() redirects both streams to $log, so the
+# child's standard output is a file: zr_pk_screen refuses on !isatty
+# before it opens a terminal or reads a termios, and zr_picker_main
+# signs the refusal with the child's own name. The case used to grep
+# for the stub's line alone, and the box order builds PICKER=yes, so
+# it failed on every trip run as the README schedules it (the review
+# of 2026-09-11, B14 with L2). The box order now builds both knobs,
+# so this case must read true under either, and it accepts exactly
+# those two lines and no third. ZI33.
 case_i_nopicker() {
-	case_id="$fixture $form -i with no command and no picker in the build"
+	case_id="$fixture $form -i with no command"
 	ed_mode keep
 	fresh -i
 	st=$?
 	[ $st -eq 1 ] || { cat "$log"; fail "-i alone exited $st, want 1"; }
-	grep -q '^zfs_rebase: this build has no picker; name an editor with -i CMD$' "$log" || \
-	    { cat "$log"; fail "the stub did not say there is no picker"; }
+	if grep -q '^zfs_rebase: this build has no picker; name an editor with -i CMD$' "$log"; then
+		which="the stub's note"
+	elif grep -q '^zfs_rebase-picker: the picker needs a terminal; name an editor with -i CMD instead$' "$log"; then
+		which="the picker's refusal"
+	else
+		cat "$log"
+		fail "-i alone printed neither the stub's line nor the picker's refusal"
+	fi
 	grep -q '^zfs_rebase: the editor exited 2$' "$log" || \
-	    { cat "$log"; fail "the run did not report the stub's exit"; }
+	    { cat "$log"; fail "the run did not report the child's exit"; }
 	grep -q "the resolution $res stands at the conflicts gate; continue with: zfs_rebase -c $rds -i" "$log" || \
 	    { cat "$log"; fail "the run did not say the gate stands"; }
 	ed_ran 0
@@ -1864,7 +1941,7 @@ case_i_nopicker() {
 	    fail "the run is at '$(phasenow "$rds")', want conflicts"
 	[ "$(res_left "$res")" = "$nconf" ] || \
 	    { head -8 "$res"; fail "something answered the skeleton"; }
-	echo "ok   $case_id: the stub's note, exit 1, and the whole skeleton stands"
+	echo "ok   $case_id: $which, exit 1, and the whole skeleton stands"
 	end_case
 }
 
@@ -2046,7 +2123,20 @@ res_pass() {
 		echo "     conflicted name, and the case wants two"
 	fi
 	case_i_leftover
-	case_i_refused
+	# The editor's dup mode duplicates a LEAF conflict line only
+	# ($2 == "conflict" && $1 !~ /\/$/), so a fixture whose every
+	# conflict is a directory gives a document the parser accepts
+	# and the case fails on its exit code, before reaching the
+	# check it is for -- an unguarded shape dependency beside three
+	# guarded ones (the review of 2026-09-11, B16(e)). case_putback
+	# guards the same dependency, and first.
+	if [ -n "$hasleaf" ]; then
+		case_i_refused
+	else
+		echo "skip $fixture $form -i writes a document the parser"
+		echo "     refuses: every conflict of this fixture is a"
+		echo "     directory, and the editor duplicates a leaf line"
+	fi
 	if [ -n "$haskept" ]; then
 		case_i_drift
 	else
@@ -2089,6 +2179,10 @@ one_fixture() {
 	haskept=$(kept_name "$fdir/expect" "$fdir/onto")
 	hasdir=$(kept_dir "$fdir/expect" "$fdir/onto")
 	hastop=$(kept_top "$fdir/expect" "$fdir/onto")
+	# And a conflicted LEAF, which the hand-edit cases and the
+	# editor's dup mode both need: a conflict line that scopes
+	# nothing.
+	hasleaf=$(leaf_conflict "$fdir/expect")
 	make_pool
 	res_pass clone
 	res_pass dataset

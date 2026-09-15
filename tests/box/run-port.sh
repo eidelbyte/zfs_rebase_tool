@@ -27,9 +27,10 @@
 # port, makesum, stage, what the option left in the stage,
 # check-plist, stage-qa, package, install, a smoke test of the
 # installed binary and page, deinstall, and portlint -A where
-# ports-mgmt/portlint is installed. At the end the port directory is cleaned and the
-# distinfo it wrote is printed, since that is what goes back into
-# ports/sysutils/zfs_rebase/distinfo after the tag.
+# ports-mgmt/portlint is installed. At the end the port directory is
+# cleaned and the distinfo it wrote is printed -- which is what goes
+# back into ports/sysutils/zfs_rebase/distinfo after the tag, and only
+# then: see the note at the bottom of this file.
 #
 # PORTSDIR (default /usr/ports) must hold a ports tree -- git clone
 # --depth 1 https://git.FreeBSD.org/ports.git /usr/ports makes one --
@@ -37,6 +38,9 @@
 # sys/contrib/openzfs in it, which the port compiles against. The
 # port directory under PORTSDIR is ours and is replaced by this
 # script's copy every run. KEEP=1 skips the final make clean.
+#
+# The distinfo printed at the end is the carry-back only when the run
+# was given no COMMIT; with one it is the commit tarball's and says so.
 set -u
 cd "$(dirname "$0")/../.." || exit 2
 commit=""
@@ -176,7 +180,22 @@ else
 	echo "note portlint is not installed (pkg install portlint); skipped"
 fi
 
-say "distinfo, to carry back into ports/sysutils/zfs_rebase/distinfo"
+# The distinfo make makesum wrote, and whether it is the one to carry
+# back. Without a COMMIT it describes the tarball DISTVERSION names --
+# the release tag -- and that is the file the committed port wants.
+# With a COMMIT, GH_TAGNAME went on to every make above, so it
+# describes eidelbyte-zfs_rebase_tool-<commit>_GH0.tar.gz instead:
+# pasting that into the port would give a checksum for a distfile the
+# release tag does not name, and make checksum would then fail for
+# every user (the review of 2026-09-11, B12, which found this banner
+# printed unconditionally).
+if [ -n "$commit" ]; then
+	say "distinfo, for the commit pass only -- do NOT carry this back"
+	echo "it describes the $commit tarball (GH_TAGNAME), not the tag"
+	echo "DISTVERSION names; rerun with no COMMIT once the tag exists"
+else
+	say "distinfo, to carry back into ports/sysutils/zfs_rebase/distinfo"
+fi
 cat "$dest/distinfo"
 cp "$dest/distinfo" "$tmp/distinfo"
 if [ "${KEEP:-0}" != 1 ]; then

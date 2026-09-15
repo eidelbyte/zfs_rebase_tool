@@ -21,13 +21,22 @@ for h in stdint.h stdatomic.h stdbool.h; do
 	[ -f "$F/sys/sys/$h" ] && ln -s "$F/sys/sys/$h" "$T/$h"
 done
 printf '#define __FreeBSD_version 1400097\n' > "$T/osreldate.h"
-# FreeBSD carries ncurses as contrib/ncurses/include/curses.h.in, a
-# template the base build generates the header from, so the tree has
-# no <curses.h> for the picker's screen to include. tools/xcheck-stub
-# holds a minimal one -- what screen.c uses, in ncurses' own shapes --
-# and stands in for the generated header the way the osreldate.h
-# above stands in for the generated one. The box's make freebsd
-# compiles against the real header and links -lncursesw.
+# FreeBSD carries ncurses as contrib/ncurses/include/curses.h.in and
+# term.h as include/MKterm.h.awk.in, templates the base build
+# generates the two headers from, so the tree has neither <curses.h>
+# nor <term.h> for the picker to include. tools/xcheck-stub holds a
+# minimal pair -- what screen.c uses, in ncurses' own shapes, and the
+# one function altscreen.c asks of term.h -- and they stand in for the
+# generated headers the way the osreldate.h above stands in for the
+# generated one. The box's make freebsd compiles against the real ones
+# and links -lncursesw.
+#
+# The term.h stub also carries the two capability macros that make the
+# include order matter, lines and columns, in the generated header's
+# own shape: this check is the only gate that reads that order, and
+# with tigetstr alone in the stub it passed on the mistake its own
+# comment warns against (the review of 2026-09-11, B4). Its header
+# says what to do when a third name ever collides.
 cp tools/xcheck-stub/curses.h "$T/curses.h"
 cp tools/xcheck-stub/term.h "$T/term.h"
 R=$(cc -print-resource-dir)/include

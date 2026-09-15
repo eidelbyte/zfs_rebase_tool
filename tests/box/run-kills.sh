@@ -57,13 +57,18 @@
 #      tree waiting for its conflicts to be answered is not put back
 #      into service (documents-design.md, section 5) -- except at the
 #      held gate, which is before the take, where it is still at
-#      home with canmount on. Its readonly property is what the
-#      record says it was, at the private mount and at home alike,
-#      since the tool changes it only while the dataset is off its
-#      mountpoint (libzfs remounts at the mountpoint property on a
-#      readonly change, which cannot land while the dataset sits at
-#      the private mount) -- the private mount is root's alone and
-#      writable for its life.
+#      home with canmount on. Its readonly reads off at every gate
+#      past the take, whatever it was at home: the take makes a
+#      read-only onto writable once and leaves it so for the private
+#      mount's whole life (private_rw in run.c), because libzfs
+#      remounts at the mountpoint property on a readonly change and
+#      that remount cannot land while the dataset sits at the private
+#      mount. What the dataset was is kept in the header instead, and
+#      put back at the hand-back -- at done and at --abort, and
+#      nowhere else. One case of this harness builds onto read-only
+#      before the run so that the put-back has something to prove;
+#      every other one starts from the fixture's writable onto, where
+#      a put-back and a hard-set off look the same.
 #
 #   finished -- SIGINT and SIGTERM at done. Nothing looks at the flag
 #      after that gate, so the run finishes: the holds released, the
@@ -407,7 +412,11 @@ kill_case() {
 	form=$1
 	gate=$2
 	sig=$3
+	# The fourth is the readonly onto builds with, and it is "on"
+	# in exactly one case of the run: see the wro comment below.
+	roinit=${4:-off}
 	case_id="$form $gate $sig"
+	[ "$roinit" = off ] || case_id="$case_id, onto read-only"
 	cases=$((cases + 1))
 
 	if [ "$form" = clone ]; then
@@ -506,18 +515,44 @@ kill_case() {
 	# writable from the moment it is made until the done gate puts
 	# it read-only as the deliverable, so it reads off at every
 	# gate and whatever the signal was, and on only where the run
-	# finished (ruled 2026-09-10). The dataset wears what the
-	# record says it had -- what the fixture built it with -- at
-	# the private mount and at home alike: the tool touches its
-	# readonly only while it is off its mountpoint.
+	# finished (ruled 2026-09-10).
+	#
+	# The dataset is off at every gate too, and for a different
+	# reason: the take makes a read-only onto writable once
+	# (private_rw in run.c), for the private mount's whole life,
+	# with the header keeping what the property was. What the
+	# header kept is put back at the hand-back, which is done and
+	# --abort and no gate between them. So "off at a gate" says
+	# nothing about the put-back, and every fixture builds onto
+	# writable, which left the finished assertion unable to tell
+	# "the tool put back what the record said" from "the tool
+	# hard-set off" (the review of 2026-09-11, B16(c)). One case of
+	# the run builds onto read-only first -- roinit above -- and
+	# that one wants it read-only again at the end.
 	wro=off
 	if [ "$form" = clone ] && [ $out = finished ]; then
+		wro=on
+	fi
+	if [ "$form" = dataset ] && [ $out = finished ] && \
+	    [ "$roinit" = on ]; then
 		wro=on
 	fi
 	# And the clone form has no home to be handed back to: what
 	# done leaves it at is the void.
 	if [ "$form" = clone ] && [ $wmnt = home ]; then
 		wmnt=void
+	fi
+
+	# The one case whose onto is read-only before the tool ever sees
+	# it, so that the header has a non-default value to carry and
+	# the hand-back has something to prove. It is set here, before
+	# the first run of the case, because the run that reads the
+	# property into the header is the one that takes the dataset --
+	# the fresh run, even where the gate is reached by a --continue
+	# after it.
+	if [ "$roinit" = on ]; then
+		zfs set readonly=on "$POOL/onto" || \
+		    fail "cannot make onto read-only before the run"
 	fi
 
 	# A gate past conflicts is reached by a --continue over an
@@ -1347,6 +1382,18 @@ one_fixture() {
 				kill_case "$form" "$gate" "$sig"
 			done
 		done
+		# And once more at done, over an onto the fixture left
+		# read-only, which is the only case in this harness
+		# where the header has a readonly to put back that is
+		# not the default (B16(c) of the review of
+		# 2026-09-11). The property is a dataset's and not a
+		# snapshot's, so reset_pool's rollback does not take it
+		# off again; this does, before the cases that follow.
+		if [ "$form" = dataset ]; then
+			kill_case dataset done TERM on
+			zfs set readonly=off "$POOL/onto" || \
+			    fail "cannot put onto back to readonly=off"
+		fi
 		settle_cases
 	done
 	drop_pool
