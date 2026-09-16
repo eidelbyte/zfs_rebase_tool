@@ -2677,6 +2677,166 @@ test_many_groups(void)
 }
 
 /*
+ * ZP127, ZP128, ZP129, ZP142, ZP143: scoping and self-conflicted
+ * directories (ruling 48).
+ *
+ * A scoping directory is a directory line with no action of its own
+ * in the manifest.  In this test: /etc/ is a hand-added directory
+ * conflict line whose name the manifest does not mark, so zk_kind is
+ * ZR_PK_L_HAND and zk_isdir is 1.  /d/ is a self-conflicted
+ * directory that IS in the manifest as conflict group 4.
+ *
+ * The test builds a world with both, and checks:
+ * - the scoping row shows "/" (zr_pk_isscope true)
+ * - f, o, k, - and Enter on the scoping row are refused
+ * - g on the scoping row is refused (no group)
+ * - the unanswered count excludes the scoping row
+ * - the self-conflicted directory answers normally
+ */
+static void
+test_dirs(void)
+{
+	const struct zr_pk_counts *c;
+	const struct zr_pk_row *row;
+	struct zr_picker pk;
+	const char *msg;
+	struct world w;
+
+	/*
+	 * A manifest with two conflicts: /d (group 1, self-conflicted
+	 * directory) and /d/f.txt (group 1).  /etc has no mark.
+	 */
+	static const char man[] =
+	    M_HDR("0", "1")
+	    "/\n"
+	    "    d/ conflict 1\n"
+	    "        f.txt conflict 1\n"
+	    "        ..\n"
+	    "    ..\n"
+	    "\n"
+	    REC("1", "changed-both", "/d changed on both sides");
+
+	/*
+	 * A resolution with three lines: /d (conflict, self-conflicted
+	 * directory), /d/f.txt (conflict), and /etc (hand-added
+	 * directory with no manifest mark -- the scoping case).
+	 */
+	static const char res[] =
+	    R_HDR("3", "3")
+	    "/\n"
+	    "    d/ conflict 1 -\n"
+	    "        f.txt conflict 1 -\n"
+	    "        ..\n"
+	    "    etc/ conflict 99 -\n"
+	    "        ..\n"
+	    "    ..\n";
+
+	world_init(&w);
+	world_docs(&w, man, res);
+	w_dir(&w, ZR_PK_T_BASE, "/d");
+	w_dir(&w, ZR_PK_T_FROM, "/d");
+	w_dir(&w, ZR_PK_T_ONTO, "/d");
+	w_dir(&w, ZR_PK_T_RESULT, "/d");
+	w_text(&w, ZR_PK_T_BASE, "/d/f.txt", "base\n");
+	w_text(&w, ZR_PK_T_FROM, "/d/f.txt", "from\n");
+	w_text(&w, ZR_PK_T_ONTO, "/d/f.txt", "onto\n");
+	w_text(&w, ZR_PK_T_RESULT, "/d/f.txt", "onto\n");
+	w_dir(&w, ZR_PK_T_RESULT, "/etc");
+
+	open_ok("dirs", &w, &pk);
+	drain(&pk);
+
+	/* Three rows: /d, /d/f.txt, /etc */
+	CHECK(zr_pk_nrows(&pk) == 3);
+	CHECK(named(zr_pk_row(&pk, 0), "/d"));
+	CHECK(named(zr_pk_row(&pk, 1), "/d/f.txt"));
+	CHECK(named(zr_pk_row(&pk, 2), "/etc"));
+
+	/* ZP142: /d is a self-conflicted directory, not a scope */
+	row = zr_pk_row(&pk, 0);
+	CHECK(row->zk_isdir == 1);
+	CHECK(row->zk_kind == ZR_PK_L_CONFLICT);
+	CHECK(zr_pk_isscope(row) == 0);
+	CHECK(zr_pk_choice(row) == ZR_CH_NONE);
+
+	/* ZP127: /etc is a scoping directory */
+	row = zr_pk_row(&pk, 2);
+	CHECK(row->zk_isdir == 1);
+	CHECK(row->zk_kind == ZR_PK_L_HAND);
+	CHECK(zr_pk_isscope(row) != 0);
+	CHECK(zr_pk_choice(row) == ZR_CH_NONE);
+
+	/*
+	 * ZP129: the unanswered count excludes /etc.  The document
+	 * has three lines reading "-", but only two are answerable.
+	 */
+	c = zr_pk_counts(&pk);
+	CHECK(c->zc_unanswered == 2);
+
+	/* ZP142: f on /d works -- it is self-conflicted */
+	(void) zr_pk_key(&pk, ZR_PK_UP);	/* cursor to 0 */
+	(void) zr_pk_key(&pk, ZR_PK_TOP);
+	CHECK(zr_pk_cursor(&pk) == 0);
+	CHECK(zr_pk_key(&pk, ZR_PK_FROM) == ZR_PK_REDRAW);
+	CHECK(zr_pk_choice(zr_pk_row(&pk, 0)) == ZR_CH_FROM);
+	CHECK(zr_pk_counts(&pk)->zc_unanswered == 1);
+
+	/* put it back */
+	CHECK(zr_pk_key(&pk, ZR_PK_CLEAR) == ZR_PK_REDRAW);
+	CHECK(zr_pk_choice(zr_pk_row(&pk, 0)) == ZR_CH_NONE);
+	CHECK(zr_pk_counts(&pk)->zc_unanswered == 2);
+	drain(&pk);
+
+	/* ZP128: move to /etc and try every choice key */
+	(void) zr_pk_key(&pk, ZR_PK_BOTTOM);
+	CHECK(zr_pk_cursor(&pk) == 2);
+
+	CHECK(zr_pk_key(&pk, ZR_PK_FROM) == ZR_PK_REDRAW);
+	msg = zr_pk_last(&pk);
+	CHECK(msg != NULL && strstr(msg, "scoping directory") != NULL);
+	CHECK(zr_pk_choice(zr_pk_row(&pk, 2)) == ZR_CH_NONE);
+
+	CHECK(zr_pk_key(&pk, ZR_PK_ONTO) == ZR_PK_REDRAW);
+	msg = zr_pk_last(&pk);
+	CHECK(msg != NULL && strstr(msg, "scoping directory") != NULL);
+	CHECK(zr_pk_choice(zr_pk_row(&pk, 2)) == ZR_CH_NONE);
+
+	CHECK(zr_pk_key(&pk, ZR_PK_KEEP) == ZR_PK_REDRAW);
+	msg = zr_pk_last(&pk);
+	CHECK(msg != NULL && strstr(msg, "scoping directory") != NULL);
+	CHECK(zr_pk_choice(zr_pk_row(&pk, 2)) == ZR_CH_NONE);
+
+	CHECK(zr_pk_key(&pk, ZR_PK_CLEAR) == ZR_PK_REDRAW);
+	msg = zr_pk_last(&pk);
+	CHECK(msg != NULL && strstr(msg, "scoping directory") != NULL);
+	CHECK(zr_pk_choice(zr_pk_row(&pk, 2)) == ZR_CH_NONE);
+
+	/* Enter on a scoping directory */
+	CHECK(zr_pk_key(&pk, ZR_PK_ENTER) == ZR_PK_REDRAW);
+	msg = zr_pk_last(&pk);
+	CHECK(msg != NULL && strstr(msg, "scoping directory") != NULL);
+
+	/* ZP143: g on a scoping directory */
+	CHECK(zr_pk_key(&pk, ZR_PK_GROUP) == ZR_PK_REDRAW);
+	msg = zr_pk_last(&pk);
+	CHECK(msg != NULL && strstr(msg, "no group") != NULL);
+
+	/*
+	 * ZP129 continued: answer the two real conflicts and confirm
+	 * the unanswered count reaches 0 with /etc still reading "-".
+	 */
+	(void) zr_pk_key(&pk, ZR_PK_TOP);
+	(void) zr_pk_key(&pk, ZR_PK_FROM);	/* /d */
+	(void) zr_pk_key(&pk, ZR_PK_DOWN);
+	(void) zr_pk_key(&pk, ZR_PK_FROM);	/* /d/f.txt */
+	CHECK(zr_pk_counts(&pk)->zc_unanswered == 0);
+	CHECK(zr_pk_choice(zr_pk_row(&pk, 2)) == ZR_CH_NONE);
+
+	zr_pk_fini(&pk);
+	world_fini(&w);
+}
+
+/*
  * ---------------------------------------------------------------
  * The terminal, over a pty. Cells ZP62 to ZP72, ZP75, ZP110, ZP111
  * and ZP114, and the screen's halves of ZP6, ZP40 and ZP69.
@@ -4208,6 +4368,81 @@ test_pty_same_child(void)
 }
 
 /*
+ * ZP144: a scoping directory row on a pty.  The CHOICE column shows
+ * "/" and f on it draws a message naming the row.
+ */
+static void
+test_pty_dirs(void)
+{
+	static const char man[] =
+	    M_HDR("0", "1")
+	    "/\n"
+	    "    d/ conflict 1\n"
+	    "        f.txt conflict 1\n"
+	    "        ..\n"
+	    "    ..\n"
+	    "\n"
+	    REC("1", "changed-both", "/d changed on both sides");
+
+	static const char res[] =
+	    R_HDR("3", "3")
+	    "/\n"
+	    "    d/ conflict 1 -\n"
+	    "        f.txt conflict 1 -\n"
+	    "        ..\n"
+	    "    etc/ conflict 99 -\n"
+	    "        ..\n"
+	    "    ..\n";
+
+	/*
+	 * Keys: down twice to /etc, f (refused), then up up, f on /d
+	 * (accepted), down, f on /d/f.txt, w.
+	 */
+	static const char *const keys[] = {
+	    K_DOWN, K_DOWN, "f", K_UP, K_UP, "f", K_DOWN, "f", "w", NULL
+	};
+
+	struct child c;
+	struct world w;
+	struct pty y;
+
+	if (pty_open(&y) != 0) {
+		printf("test_pty_dirs: pty_open failed, skipping\n");
+		return;
+	}
+	world_init(&w);
+	world_docs(&w, man, res);
+	w_dir(&w, ZR_PK_T_BASE, "/d");
+	w_dir(&w, ZR_PK_T_FROM, "/d");
+	w_dir(&w, ZR_PK_T_ONTO, "/d");
+	w_dir(&w, ZR_PK_T_RESULT, "/d");
+	w_text(&w, ZR_PK_T_BASE, "/d/f.txt", "base\n");
+	w_text(&w, ZR_PK_T_FROM, "/d/f.txt", "from\n");
+	w_text(&w, ZR_PK_T_ONTO, "/d/f.txt", "onto\n");
+	w_text(&w, ZR_PK_T_RESULT, "/d/f.txt", "onto\n");
+	w_dir(&w, ZR_PK_T_RESULT, "/etc");
+
+	memset(&c, 0, sizeof (c));
+	c.c_keys = keys;
+	c.c_term = "xterm";
+
+	pty_drive(&y, &w, &c, &pty_out);
+	pty_close(&y);
+
+	/* w exits 0 when nothing is unanswered */
+	CHECK(WIFEXITED(pty_out.r_status) &&
+	    WEXITSTATUS(pty_out.r_status) == 0);
+
+	/* The "/" glyph must appear for /etc's CHOICE column */
+	CHECK(find(pty_out.r_buf, pty_out.r_len, "/etc") != NULL);
+
+	/* The "scoping directory" message must have been drawn */
+	CHECK(find(pty_out.r_buf, pty_out.r_len, "scoping directory") != NULL);
+
+	world_fini(&w);
+}
+
+/*
  * ZP70: no terminal at all. The picker is refused before curses is
  * opened, says so in one line and exits 2, which is what the tool
  * reads as a gate that still stands. No pty is wanted here: the
@@ -4300,6 +4535,7 @@ main(void)
 	test_unsaved_count();
 	test_tree_unreadable();
 	test_many_groups();
+	test_dirs();
 	test_pty_exits();
 	test_pty_refusals();
 	test_pty_floor();
@@ -4314,6 +4550,7 @@ main(void)
 	test_pty_pool();
 	test_pty_unsaved();
 	test_pty_same_child();
+	test_pty_dirs();
 	test_no_terminal();
 	printf("check_picker: %d checks passed\n", checks);
 	return (0);

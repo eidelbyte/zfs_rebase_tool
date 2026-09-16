@@ -806,8 +806,17 @@ pk_draw_row(const struct zr_picker *pk, const struct pk_geom *g, int y,
 	pk_put(y, PK_X_GRP, co, 0, field);
 	pk_name_field(row, g->g_namew, field, sizeof (field));
 	pk_put(y, g->g_namex, PK_CO_PLAIN, 0, field);
-	one[0] = pk_choice_glyph(zr_pk_choice(row));
-	pk_put(y, g->g_choicex, pk_choice_co(zr_pk_choice(row)), 0, one);
+	/*
+	 * A scoping directory has no answer: "/" says directory and
+	 * cannot be read as unanswered (ruling 48).
+	 */
+	if (zr_pk_isscope(row)) {
+		pk_put(y, g->g_choicex, PK_CO_DIM, 0, "/");
+	} else {
+		one[0] = pk_choice_glyph(zr_pk_choice(row));
+		pk_put(y, g->g_choicex, pk_choice_co(zr_pk_choice(row)),
+		    0, one);
+	}
 }
 
 /*

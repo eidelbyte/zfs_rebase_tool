@@ -553,6 +553,26 @@ pk_group_cmp(const void *a, const void *b)
  * the picker is up, so the rest are taken once; none of them is ever
  * written into the document.
  */
+/*
+ * The unanswered count the picker shows, which is not the document's
+ * own: a scoping directory is never counted (ruling 48), because it
+ * has no action and the person is not asked to answer it.
+ */
+static uint32_t
+pk_unanswered(const struct zr_picker *pk)
+{
+	uint32_t i, n = 0;
+
+	for (i = 0; i < pk->pk_nrows; i++) {
+		const struct zr_pk_row *row = &pk->pk_rows[i];
+
+		if (row->zk_line->zl_choice == ZR_CH_NONE &&
+		    !zr_pk_isscope(row))
+			n++;
+	}
+	return (n);
+}
+
 static void
 pk_count(struct zr_picker *pk)
 {
@@ -562,7 +582,7 @@ pk_count(struct zr_picker *pk)
 
 	memset(c, 0, sizeof (*c));
 	c->zc_names = pk->pk_nrows;
-	c->zc_unanswered = zr_resolution_unanswered(&pk->pk_res);
+	c->zc_unanswered = pk_unanswered(pk);
 	groups = pk->pk_nrows != 0 ? malloc((size_t)pk->pk_nrows *
 	    sizeof (*groups)) : NULL;
 	for (i = 0; i < pk->pk_nrows; i++) {
@@ -879,7 +899,7 @@ static void
 pk_set(struct zr_picker *pk, struct zr_pk_row *row, enum zr_choice ch)
 {
 	row->zk_line->zl_choice = ch;
-	pk->pk_counts.zc_unanswered = zr_resolution_unanswered(&pk->pk_res);
+	pk->pk_counts.zc_unanswered = pk_unanswered(pk);
 }
 
 /* The cursor's row, and nothing to do where the choice is the one it has. */
@@ -887,8 +907,23 @@ static enum zr_pk_act
 pk_choose(struct zr_picker *pk, enum zr_choice ch)
 {
 	struct zr_pk_row *row = pk_here(pk);
+	char name[PK_NAMEBUF];
 
-	if (row == NULL || row->zk_line->zl_choice == ch)
+	if (row == NULL)
+		return (ZR_PK_NOTHING);
+	/*
+	 * A scoping directory has no action of its own; a key on it
+	 * does nothing but say so (ruling 48).  This is before the
+	 * "already this choice" shortcut, because a scoping row that
+	 * reads "-" must still say why and not silently do nothing.
+	 */
+	if (zr_pk_isscope(row)) {
+		pk_rowname(row, name, sizeof (name));
+		pk_say(pk, "%s is a scoping directory: it has no action of "
+		    "its own", name);
+		return (ZR_PK_REDRAW);
+	}
+	if (row->zk_line->zl_choice == ch)
 		return (ZR_PK_NOTHING);
 	pk_set(pk, row, ch);
 	return (ZR_PK_REDRAW);
@@ -1009,6 +1044,12 @@ pk_enter(struct zr_picker *pk)
 
 	if (row == NULL)
 		return (ZR_PK_NOTHING);
+	if (zr_pk_isscope(row)) {
+		pk_rowname(row, name, sizeof (name));
+		pk_say(pk, "%s is a scoping directory: it has no action of "
+		    "its own", name);
+		return (ZR_PK_REDRAW);
+	}
 	no = zr_pk_why_not(pk, pk->pk_cursor, why, sizeof (why));
 	if (no == NULL)
 		return (ZR_PK_OPEN);
@@ -1045,6 +1086,8 @@ pk_writekey(struct zr_picker *pk)
 		name[0] = '\0';
 		for (i = 0; i < pk->pk_nrows; i++) {
 			if (pk->pk_rows[i].zk_line->zl_choice != ZR_CH_NONE)
+				continue;
+			if (zr_pk_isscope(&pk->pk_rows[i]))
 				continue;
 			pk_rowname(&pk->pk_rows[i], name, sizeof (name));
 			break;
@@ -1740,6 +1783,21 @@ enum zr_choice
 zr_pk_choice(const struct zr_pk_row *row)
 {
 	return (row != NULL ? row->zk_line->zl_choice : ZR_CH_NONE);
+}
+
+/*
+ * A scoping directory: a directory line that is not itself a conflict
+ * in the manifest.  It is there because the tree grammar scopes
+ * children under it, not because it has an action of its own.  A key
+ * on it does nothing, and it is never counted as unanswered (ruling
+ * 48).  A directory that IS a conflict in the manifest -- one the
+ * manifest marks -- answers like any name.
+ */
+int
+zr_pk_isscope(const struct zr_pk_row *row)
+{
+	return (row != NULL && row->zk_isdir != 0 &&
+	    row->zk_kind != ZR_PK_L_CONFLICT);
 }
 
 uint32_t

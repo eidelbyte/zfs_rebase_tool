@@ -439,6 +439,16 @@ uint32_t zr_pk_dirty(const struct zr_picker *pk);
 /* One row's choice, which lives on the document's line and nowhere else. */
 enum zr_choice zr_pk_choice(const struct zr_pk_row *row);
 
+/*
+ * Is the row a scoping directory -- a directory line with no action of
+ * its own in the manifest?  Such a row exists only to scope children
+ * in the tree grammar (v4-manifest.md section 3) and has no answer: a
+ * key pressed on it does nothing, and the unanswered count never
+ * includes it (ruling 48, superseding ruling 12).  A directory that IS
+ * itself a conflict in the manifest answers like any name.
+ */
+int zr_pk_isscope(const struct zr_pk_row *row);
+
 /* How many rows this group holds, for the detail line under the list. */
 uint32_t zr_pk_group_names(const struct zr_picker *pk, uint32_t group);
 
