@@ -560,6 +560,13 @@ beside it.
 The record names the manifest, and the resolution is beside it by rule.
 The files are yours: the tool records them and does not remove them, where
 its own two go with the run.
+.Ar file
+must not exist.
+Anything already at that path \(em a file, a directory, a symbolic link
+\(em is refused before the pool is touched, since
+.Fl o
+names a file for the run to create and the tool will not decide for you
+what becomes of one that is there.
 It is a start option, and a dry run's.
 On a verb it is a usage error, as
 .Fl q
@@ -596,6 +603,9 @@ gate, wait for it, and read the document back.
 Without it the gate is headless, which is what a system tool does by
 default: it goes on when the resolution is complete and stops when it is
 not.
+That gate is the only place the flag does anything: a verb that reaches
+no gate, or that starts from a record already past it, takes the flag
+and goes on as it would have without it.
 .Pp
 .Ar command
 is the command line that edits the file, and the tool never splits it: the
@@ -665,10 +675,12 @@ nothing, and a
 .Fl -continue
 from
 .Sy applying2
-is past the merge: the gate the child opens at is behind it, so the flag
-is refused there rather than ignored, exactly as
-.Fl -no-merge
-is.
+is past the gate the child opens at: the flag is taken and does nothing,
+and the run goes on applying exactly as a
+.Fl -continue
+without it would.
+Nothing is said about it either way, and no verb is ever refused for
+carrying it.
 The gate's own work comes first \(em the phase written, and on a
 .Fl -continue
 the check whose drift lines go into the document \(em so the child sees
@@ -1268,12 +1280,13 @@ carry the choices out again and go on
 .El
 .Pp
 .Fl -no-merge
-and
-.Fl -interactive
-are both refused at
+is refused at
 .Sy applying2 :
-it is past the merge, and neither the gate one holds nor the gate the
-other opens a child at is still ahead.
+it is past the merge and there is no gate left for it to stop at.
+.Fl -interactive
+is not, and is idle there instead: the gate it opens a child at is
+behind such a record, so the run keeps applying and the flag has no
+effect.
 A rebase that reached done has no record, so no verb resumes it, and
 .Fl -verify
 is the only one that has anything to say about it.

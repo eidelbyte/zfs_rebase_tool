@@ -61,7 +61,7 @@ it; a start writes a manifest and reads none, so it takes no IDENT.
 | `--result` | `-r` | the clone's name in one form and the pre-apply snapshot's in the other; a clone name with no slash goes beside onto's dataset (`rebased` beside `tank/home/main@work` is `tank/home/rebased`). A start's flag only: a verb names its rebase with IDENT, and --result beside one is a usage error |
 | `--permissive-merge` | `-p` | a hard link on one side that crosses the other side's opinion of the same file is followed rather than raised as a conflict: two pools a pivot links are joined, and a name one side made a link of a file the other side edited adopts that file's outcome. Strict, the default, raises both as conflicts (unexpressed-sharing, disagree). The mode is recorded in the manifest's `#mode` |
 | `--verbose` | `-v` | counts and steps on stderr |
-| `--manifest` | `-o` | where the manifest is written; the resolution goes beside it, and the record names the manifest. A start option, and a dry run's: the record names the path from then on, and done acts on it, so no later verb can choose |
+| `--manifest` | `-o` | where the manifest is written; the resolution goes beside it, and the record names the manifest. The path must not exist: anything already there -- a file, a directory, a symbolic link -- is refused before the pool is touched, since -o names a file for the run to create. A start option, and a dry run's: the record names the path from then on, and done acts on it, so no later verb can choose |
 | `--verify` | `-V` | a verb: report one rebase and write nothing anywhere; never a repair. It goes with no flag that starts or moves a rebase, since the checks are standard |
 | `--quiet` | `-q` | a start option: latched in the record for the whole run, and it silences the final check's report and nothing else -- not the check, not its verdict, not the exit status |
 | `--take-onto` | `-O` | write the skeleton with every conflict answered onto |
@@ -554,9 +554,10 @@ the drift it found becomes lines with the choice keep for the person
 to answer, and at the done gate, where what the last check found is
 written with the choice `-` as the record of it. --no-merge stops it
 at that gate however the resolution reads, and is refused from a
-record already past the merge; -i is refused there for the same
-reason, the gate its child opens at being behind a record at
-applying2.
+record already past the merge. -i is not: it takes effect at the
+conflicts gate and nowhere else, so a --continue -i from applying2
+takes the flag, keeps applying and reaches done exactly as a
+--continue without it would.
 
     zfs_rebase --restart IDENT
 

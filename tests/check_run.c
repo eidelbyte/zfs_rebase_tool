@@ -680,6 +680,18 @@ check_builtin_child(void)
 	scratch_close(&sc);
 }
 
+/* One path that must be refused for standing in the way already. */
+static void
+outdir_taken(const char *path)
+{
+	char err[512];
+
+	err[0] = '\0';
+	CHECK(zr_outdir_ok(path, err, sizeof (err)) != 0);
+	says(err, path);
+	says(err, "that path exists");
+}
+
 /*
  * ZX243: where -o points is asked before the pool is touched. The
  * directory must be there, be a directory and be writable, the
@@ -698,7 +710,14 @@ check_outdir(void)
 	scratch_open(&sc);
 	(void) snprintf(path, sizeof (path), "%s/manifest", sc.root);
 	CHECK(zr_outdir_ok(path, err, sizeof (err)) == 0);
-	CHECK(zr_outdir_ok("manifest", err, sizeof (err)) == 0);
+	/*
+	 * A path with no slash is the working directory, which is
+	 * there. The name is one nothing puts in a tree of ours,
+	 * because anything standing at it would now be a refusal and
+	 * this case is about the directory and not the name.
+	 */
+	CHECK(zr_outdir_ok("zr-outdir-no-such-file", err,
+	    sizeof (err)) == 0);
 
 	(void) snprintf(path, sizeof (path), "%s/no-such/manifest", sc.root);
 	err[0] = '\0';
@@ -717,27 +736,44 @@ check_outdir(void)
 	says(err, "not a directory");
 
 	/*
-	 * ZX254: and what stands at the path itself. A directory there
-	 * is the commonest shape of the mistake -- -o given the place
-	 * to write into rather than the file to write -- and its
-	 * containing directory is there and writable, so the guard used
-	 * to pass it and the rename failed at the birth manifest, after
-	 * the run directory and the snapshot. A symbolic link to a
-	 * directory is not that: the rename replaces the link.
+	 * ZX254: and what stands at the path itself, which is a
+	 * refusal whatever it is (ruled 2026-09-15, "-o to existing
+	 * should fail"). A directory is the commonest shape of the
+	 * mistake -- -o given the place to write into rather than the
+	 * file to write -- and a regular file is the other one, this
+	 * rebase's own manifest from an earlier attempt or somebody
+	 * else's. The containing directory is there and writable in
+	 * every case here, so the guard is the only thing that can
+	 * refuse them, and it refuses before the run directory and the
+	 * pre-apply snapshot rather than at the rename with exit 3.
 	 */
 	(void) snprintf(path, sizeof (path), "%s/adir", sc.root);
 	CHECK(mkdir(path, 0755) == 0);
-	err[0] = '\0';
-	CHECK(zr_outdir_ok(path, err, sizeof (err)) != 0);
-	says(err, "adir");
-	says(err, "that is a directory");
+	outdir_taken(path);
+	(void) snprintf(path, sizeof (path), "%s/afile", sc.root);
+	outdir_taken(path);
+	/*
+	 * And a symbolic link, live or dangling. The question is asked
+	 * with lstat, so a link is a name that exists whether or not
+	 * anything is at the other end: rename(2) would replace the
+	 * link itself, and the thing the person pointed at would
+	 * quietly stop being pointed at.
+	 */
 	(void) snprintf(path, sizeof (path), "%s/alink", sc.root);
 	(void) unlink(path);
 	if (symlink("adir", path) == 0) {
-		err[0] = '\0';
-		CHECK(zr_outdir_ok(path, err, sizeof (err)) == 0);
+		outdir_taken(path);
 		CHECK(unlink(path) == 0);
 	}
+	(void) snprintf(path, sizeof (path), "%s/adangler", sc.root);
+	(void) unlink(path);
+	if (symlink("nothing-is-here", path) == 0) {
+		outdir_taken(path);
+		CHECK(unlink(path) == 0);
+	}
+	/* and a path with nothing at it still passes */
+	(void) snprintf(path, sizeof (path), "%s/adir/manifest", sc.root);
+	CHECK(zr_outdir_ok(path, err, sizeof (err)) == 0);
 	(void) snprintf(path, sizeof (path), "%s/adir", sc.root);
 	CHECK(rmdir(path) == 0);
 

@@ -1196,16 +1196,23 @@ case_ident() {
 	echo "ok   $case_id: two answers to \"result\" refused with both"
 	echo "     printed, and $rds still names one rebase"
 
-	# 9. a second run over the same -o path
+	# 9. a manifest that describes another rebase standing where
+	#    this one's record points. -o will not write over a path
+	#    that already exists (ruled 2026-09-15), so the second run
+	#    is given a path of its own and the harness makes the swap:
+	#    the state under test is the swap and not how it was made.
 	cp "$man" "$tmp/man1" || fail "cannot keep the first manifest"
-	"$bin" $flag -o "$man" --off-of "$POOL/from@work" \
+	rm -f "$tmp/man2" "$tmp/man2.resolution"
+	"$bin" $flag -o "$tmp/man2" --off-of "$POOL/from@work" \
 	    --onto "$POOL/onto@work" --result "$POOL/result2" \
 	    > "$tmp/run2" 2>&1
 	st=$?
 	[ $st -eq $wrun ] || \
 	    { cat "$tmp/run2"; fail "the second run exited $st, want $wrun"; }
-	[ "$(hdr result "$man")" = "$POOL/result2" ] || \
-	    fail "the second run did not write over $man"
+	[ "$(hdr result "$tmp/man2")" = "$POOL/result2" ] || \
+	    fail "the second run did not write $tmp/man2"
+	cp "$tmp/man2" "$man" || \
+	    fail "cannot put the second manifest where the record points"
 	for verb in --verify --continue --restart; do
 		"$bin" $verb "$rds" > "$tmp/swap" 2>&1
 		st=$?
@@ -1235,7 +1242,7 @@ case_ident() {
 	[ $st -eq 0 ] || \
 	    { cat "$tmp/abort2"; fail "--abort of the second rebase exited $st"; }
 	cp "$tmp/man1" "$man" || fail "cannot put the first manifest back"
-	rm -f "$tmp/man1"
+	rm -f "$tmp/man1" "$tmp/man2" "$tmp/man2.resolution"
 	end_case
 }
 

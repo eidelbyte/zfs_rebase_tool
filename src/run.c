@@ -2092,16 +2092,27 @@ resolve_manifest(struct run *r)
  * before anything is taken, so that the answer is a precondition and
  * exit 2. A path with no slash is in the working directory.
  *
- * And what stands at the path itself, which is the commonest shape
- * of the mistake: -o given the directory to write into rather than
- * the file to write. The containing directory of that is there and
- * writable, so the guard used to pass it and the rename failed at
- * the birth manifest with exit 3, after the run directory and the
- * pre-apply snapshot -- the very cost the guard exists to spare
- * (L5 of the code review of 2026-09-11). It is asked with lstat and
- * not stat: rename(2) replaces a symbolic link at the destination
- * rather than following it, so a link to a directory is a name this
- * write lands on and only a directory itself is not.
+ * And what stands at the path itself: anything at all there is a
+ * refusal (ruled 2026-09-15, "-o to existing should fail", widening
+ * L5 of the code review of 2026-09-11, which refused only a
+ * directory). -o names a file for this run to create, so a path that
+ * is taken is a question the tool does not answer for the person: a
+ * regular file would be overwritten -- somebody else's manifest, or
+ * this rebase's own from an earlier attempt -- a directory would
+ * fail at the rename with exit 3, after the run directory and the
+ * pre-apply snapshot, and a symbolic link would be replaced by the
+ * rename rather than followed, so the thing the person pointed at
+ * would quietly stop being pointed at.
+ *
+ * Asked with lstat and not stat, which is what makes the answer the
+ * plain one: a dangling symbolic link is a name that exists, the
+ * rename would take it, and stat would say there is nothing there.
+ *
+ * The one caller is the fresh run (zr_run), before the pool is
+ * touched. No verb passes through here: a rebase in flight writes to
+ * the path its record already names and is never asked this question
+ * a second time, so a manifest this run creates is not refused to the
+ * --continue that reads it.
  */
 int
 zr_outdir_ok(const char *path, char *err, size_t errlen)
@@ -2141,10 +2152,9 @@ zr_outdir_ok(const char *path, char *err, size_t errlen)
 		    path, dir, strerror(errno));
 		return (-1);
 	}
-	if (lstat(path, &st) == 0 && S_ISDIR(st.st_mode)) {
-		(void) snprintf(err, errlen, "-o %s: that is a directory, and "
-		    "-o names the file to write, not the directory to write "
-		    "it in", path);
+	if (lstat(path, &st) == 0) {
+		(void) snprintf(err, errlen, "-o %s: that path exists, and -o "
+		    "names a file for this run to create", path);
 		return (-1);
 	}
 	return (0);
@@ -6201,27 +6211,23 @@ continue_from(struct resume *s)
 	 * and carrying on regardless would be doing the one thing it
 	 * was given to prevent.
 	 *
-	 * -i is the same case and is refused the same way (L4 of the
-	 * code review of 2026-09-11). The child it asks for opens at
-	 * the conflicts gate and nowhere else, so from applying2 there
-	 * is nothing left to open it at; a command that says how the
-	 * conflicts are to be answered and is never going to ask has
-	 * been written under a wrong idea of what it does, which is the
-	 * reasoning --dry-run meets the flag with (src/args.c). The two
-	 * are told apart because -M -i is one command and a person who
-	 * wrote both should be told about both, the flag that stops
-	 * first being the one named.
+	 * -i is not that case and is not refused (ruled 2026-09-15:
+	 * "-i is allowed but idempotent. You're in applying2, just keep
+	 * applying, -i only pops open the editor of choice in conflicts
+	 * phase"). What the flag asks for is a child at the conflicts
+	 * gate; past that gate there is no child to open and nothing to
+	 * hold, so the run goes on exactly as a --continue without it
+	 * would and the flag has no effect. Nothing is printed about
+	 * it: a flag that does nothing where there is nothing to do is
+	 * not a mistake, and the stages below never read it -- stage1
+	 * and stage_conflicts are the only readers, and both are before
+	 * or at the gate. --no-merge is the opposite because it changes
+	 * where a run stops, which is a thing it could still do wrongly.
 	 */
 	if (s->nomerge != 0 && strcmp(phase, ZR_PHASE_APPLYING2) == 0) {
 		(void) snprintf(s->err, sizeof (s->err), "%s is at \"%s\", "
 		    "past the merge; --no-merge has no gate left to stop at",
 		    s->result, phase);
-		return (vfail(s, EXIT_PRECOND, NULL));
-	}
-	if (s->interactive != 0 && strcmp(phase, ZR_PHASE_APPLYING2) == 0) {
-		(void) snprintf(s->err, sizeof (s->err), "%s is at \"%s\", "
-		    "past the merge; --interactive has no gate left to open "
-		    "a child at", s->result, phase);
 		return (vfail(s, EXIT_PRECOND, NULL));
 	}
 	if (strcmp(phase, ZR_PHASE_DECIDED) == 0 ||

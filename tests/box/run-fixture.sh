@@ -361,6 +361,9 @@ holdcount() {
 # the fixture's own base and from, and the clone at its mountpoint.
 # Stage 1 is idempotent, so this must have nothing left to do.
 again() {
+	# -o will not write over a path that exists (ruled
+	# 2026-09-15), and this one is asked for more than once.
+	rm -f "$1"
 	"$bin" --posix $flag -o "$1" "$MNT/base" "$tmp/from" "$cmnt"
 	hst=$?
 	[ $hst -eq 0 ] || [ $hst -eq 1 ] || fail "the --posix re-run exited $hst"

@@ -724,6 +724,9 @@ end_case() {
 # to do, and the conflicts it declares are what the choices left of
 # them.
 again() {			# OUT RESULTMNT WANTCONFLICTS
+	# -o will not write over a path that exists (ruled
+	# 2026-09-15), and this one is asked for more than once.
+	rm -f "$1"
 	"$bin" --posix $flag -o "$1" "$fdir/base" "$fdir/from" "$2" \
 	    > /dev/null 2>&1
 	st=$?
