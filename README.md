@@ -384,11 +384,16 @@ its own unless it is asked to.
 resolution -- the command -i names, or the built-in picker where it
 names none, and a build made without the picker (`make PICKER=no`, or
 a package with its PICKER option off) says so there and exits 2 --
-ignores SIGINT and SIGQUIT while it waits the way
-system(3) does, forwards a SIGTERM of its own to it, puts the
-terminal's termios back if the child left them changed, and reads
-the document again when the child exits 0, with every refusal
---continue makes of one. Anything else and the gate stands with the
+ends the session on a SIGINT, a SIGQUIT or a SIGTERM to the tool by
+killing the child with SIGTERM and leaving the gate standing, so a
+Ctrl-C ends the editing even where the editor has made Ctrl-C a key
+of its own; puts the terminal's termios back if the child left them
+changed, taking the terminal from standard input or, where that is
+not one, from the controlling terminal; and reads the document again
+when the child exits 0, with every refusal --continue makes of one.
+Nothing bounds the child's life: a command that hangs holds the
+rebase until it exits or somebody kills it, which is yours to
+handle. Anything else and the gate stands with the
 file as the child left it, exit 1, and nothing reopens the child by
 itself: `zfs_rebase -c IDENT -i` carries on. The child opens
 whenever the gate is reached, complete document or not, so -O -i

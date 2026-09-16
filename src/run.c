@@ -3309,6 +3309,29 @@ zr_run(const struct zr_run_opts *o)
 				kept_hint(&r);
 				goto done;
 			}
+			/*
+			 * And the stop flag, at this boundary as at
+			 * every other. A signal that came in while the
+			 * child had the terminal -- a SIGHUP, or one of
+			 * the three the launcher itself handles and did
+			 * not see because it arrived a moment after the
+			 * wait -- is noticed here, where the gate is,
+			 * instead of first being noticed inside
+			 * applying2 (question 8c of
+			 * open-questions-2026-09-15.md). The gate is
+			 * where the rebase then stands: the document is
+			 * as the child left it and the next --continue
+			 * takes it on.
+			 */
+			if (stopped(&r) != 0) {
+				(void) fprintf(stderr, "zfs_rebase: %s: %s "
+				    "while the editor ran; %s waits at "
+				    "conflicts\n", r.rds, r.err, r.rds);
+				manifest_note(&r);
+				kept_hint(&r);
+				rc = EXIT_CONFLICTS;
+				goto done;
+			}
 		}
 		if (r.unanswered != 0) {
 			(void) fprintf(stderr, "zfs_rebase: %u name%s "

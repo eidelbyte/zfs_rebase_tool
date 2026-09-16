@@ -701,20 +701,35 @@ on with
 zfs_rebase -c ident -i
 .Ed
 .Pp
-While it waits the tool ignores
-.Dv SIGINT
-and
+While it waits, a
+.Dv SIGINT ,
+a
 .Dv SIGQUIT
-the way
-.Xr system 3
-does, so a Ctrl-C reaches the editor and not the tool, and it forwards a
+or a
 .Dv SIGTERM
-of its own to the child.
-Where its standard input is a terminal it saves the termios before the
-fork and puts them back after the wait if the child left them changed, so
-that an editor that crashed cannot leave the terminal raw.
-A kill of the tool while the child runs leaves the gate the same way, with
-the child orphaned and finishing on its own.
+to the tool ends the session: the tool kills the child with
+.Dv SIGTERM ,
+waits for it, and leaves the gate standing whatever the child exited
+with, so a Ctrl-C ends the editing even where the editor has made
+Ctrl-C a key of its own.
+The rebase is untouched by it \(em the gate is where it already was, the
+document is as the child last saved it, and the line above says how to
+come back \(em and the tool then exits with the gate's own status.
+A
+.Dv SIGKILL
+to the tool cannot be caught, and leaves the gate the same way with the
+child orphaned and finishing on its own.
+.Pp
+Before the fork the tool saves the terminal's termios and puts them back
+after the wait if the child left them changed, so that an editor that
+crashed cannot leave the terminal raw.
+The terminal is the one on standard input, or the controlling terminal
+where standard input is not one.
+.Pp
+Nothing bounds the child's life.
+A command that hangs holds the rebase, and with it the dataset the rebase
+has taken over, until it exits or somebody kills it; the tool sets no
+timeout and will not choose one for you.
 .Pp
 The flag is not latched: it belongs to the invocation, so a
 .Fl -continue

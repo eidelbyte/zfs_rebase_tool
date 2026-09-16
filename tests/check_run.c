@@ -39,6 +39,7 @@
  * close here.
  */
 
+#include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -491,10 +492,15 @@ disposition(int sig, struct sigaction *out)
 }
 
 /*
- * ZI19: SIGINT while the tool waits belongs to the child. The
- * launcher ignores it the way system(3) does, so a script that sends
- * one to the tool and then exits 0 is reported 0 and this process is
- * still here to say so. The three dispositions the launcher put on
+ * ZI19 and ZI41: SIGINT while the tool waits is decisive (ruled
+ * 2026-09-15). The script ignores SIGINT, sends one to the tool and
+ * then sleeps; the launcher kills the child with SIGTERM, reaps it
+ * and reports the launch failed, so the sleep never runs out and a
+ * child that would have exited 0 does not carry the run past the
+ * gate. The clock is the assertion that the child was killed: without
+ * it the wait would have run the sleep out. SIGQUIT is the same, and
+ * the second half asks it the same way. The three dispositions the
+ * launcher put on
  * are the ones it found again afterwards, which is what keeps the
  * run's own handlers from being lost at the gate.
  */
@@ -506,19 +512,46 @@ check_parent_interrupt(void)
 	struct scratch sc;
 	char err[512];
 
+	struct timespec t0, t1;
+
 	scratch_open(&sc);
-	write_script(&sc, "kill -INT $ZR_LAUNCH_TOOL\nexit 0\n");
+	/*
+	 * The child ignores the signal the terminal delivers to its
+	 * group, which is the editor this ruling is about: one that
+	 * maps Ctrl-C to a key of its own and would go on editing. The
+	 * sleep is in the background with a wait on it, since a shell
+	 * runs a trap only once its foreground command is over, and
+	 * what must cut the sleep short is the parent's kill.
+	 */
+	write_script(&sc, "trap '' INT\nkill -INT $ZR_LAUNCH_TOOL\n"
+	    "sleep 5 &\nwait\nexit 0\n");
 	launch_on(&lp, &sc, sc.script);
 	disposition(SIGINT, &bint);
 	disposition(SIGQUIT, &bquit);
 	disposition(SIGTERM, &bterm);
-	CHECK(zr_launch(&lp, err, sizeof (err)) == 0);
+	CHECK(clock_gettime(CLOCK_MONOTONIC, &t0) == 0);
+	CHECK(zr_launch(&lp, err, sizeof (err)) != 0);
+	CHECK(clock_gettime(CLOCK_MONOTONIC, &t1) == 0);
+	CHECK(t1.tv_sec - t0.tv_sec < 5);
+	says(err, "SIGINT");
 	disposition(SIGINT, &aint);
 	disposition(SIGQUIT, &aquit);
 	disposition(SIGTERM, &aterm);
 	CHECK(aint.sa_handler == bint.sa_handler);
 	CHECK(aquit.sa_handler == bquit.sa_handler);
 	CHECK(aterm.sa_handler == bterm.sa_handler);
+	/* and no child of ours is left behind to reap */
+	CHECK(waitpid(-1, NULL, WNOHANG) == -1 && errno == ECHILD);
+
+	/* ZI41: SIGQUIT, the terminal's other way of saying stop */
+	write_script(&sc, "trap '' QUIT\nkill -QUIT $ZR_LAUNCH_TOOL\n"
+	    "sleep 5 &\nwait\nexit 0\n");
+	CHECK(clock_gettime(CLOCK_MONOTONIC, &t0) == 0);
+	CHECK(zr_launch(&lp, err, sizeof (err)) != 0);
+	CHECK(clock_gettime(CLOCK_MONOTONIC, &t1) == 0);
+	CHECK(t1.tv_sec - t0.tv_sec < 5);
+	says(err, "SIGQUIT");
+	CHECK(waitpid(-1, NULL, WNOHANG) == -1 && errno == ECHILD);
 	scratch_close(&sc);
 }
 
@@ -582,6 +615,7 @@ check_parent_terminate(void)
 static void
 check_terminal_restored(void)
 {
+	struct sigaction bttou, attou;
 	struct termios orig, raw, before, after;
 	struct zr_launch lp;
 	struct scratch sc;
@@ -618,13 +652,143 @@ check_terminal_restored(void)
 	CHECK(tcgetattr(STDIN_FILENO, &before) == 0);
 	CHECK((before.c_lflag & (tcflag_t)ICANON) != 0);
 	launch_on(&lp, &sc, sc.script);
+	/*
+	 * ZI43: the belt ignores SIGTTOU across its tcsetattr, so that
+	 * a tool in the background does not stop itself putting the
+	 * terminal back, and puts the tool's own disposition back
+	 * afterwards. This half asserts the second of those. It cannot
+	 * fail against a launcher that never touches SIGTTOU, which is
+	 * what it is for: it guards the guard, and the stop it prevents
+	 * wants a background process group to provoke.
+	 */
+	disposition(SIGTTOU, &bttou);
 	CHECK(zr_launch(&lp, err, sizeof (err)) == 0);
+	disposition(SIGTTOU, &attou);
+	CHECK(attou.sa_handler == bttou.sa_handler);
+	CHECK(attou.sa_flags == bttou.sa_flags);
 	CHECK(tcgetattr(STDIN_FILENO, &after) == 0);
 	CHECK(memcmp(&before, &after, sizeof (before)) == 0);
 
 	CHECK(dup2(keep, STDIN_FILENO) == STDIN_FILENO);
 	CHECK(close(keep) == 0);
 	CHECK(close(slave) == 0);
+	CHECK(close(master) == 0);
+	scratch_close(&sc);
+}
+
+/*
+ * ZI42: the termios belt where standard input is no terminal. A run
+ * whose stdin is redirected still has a controlling terminal, and the
+ * child a person named opens it by name; the belt falls back to
+ * /dev/tty so that such a run hands the terminal back as it found it.
+ *
+ * It wants a process whose controlling terminal the test owns, which
+ * this process's is not, so the case is made in a fork of its own:
+ * setsid for a session with no terminal, the pty's slave opened
+ * without O_NOCTTY (and TIOCSCTTY where the system wants it asked)
+ * for a controlling terminal, and /dev/null on standard input. The
+ * child says what it found in its exit status, since a CHECK in
+ * there would print and exit for the wrong process. The control is
+ * the same one ZI21 makes: the script is run bare first, and a
+ * terminal it did not change would make the comparison meaningless.
+ *
+ * Exit codes: 0 the belt put it back, 1 it did not, 2 the script
+ * changed nothing so the case proves nothing, and 10 upward the
+ * scaffolding could not be built, which is a skip and not a failure.
+ */
+#define	ZI42_NOSID	10
+#define	ZI42_NOSLAVE	11
+#define	ZI42_NOCTTY	12
+#define	ZI42_NOATTR	13
+#define	ZI42_NONULL	14
+#define	ZI42_STDINTTY	15
+#define	ZI42_LAUNCH	16
+
+static int
+devtty_child(const char *name, const struct zr_launch *lp, const char *script)
+{
+	struct termios before, bare, after;
+	char err[512];
+	int tty, fd, nul;
+
+	if (setsid() < 0)
+		_exit(ZI42_NOSID);
+	fd = open(name, O_RDWR);
+	if (fd < 0)
+		_exit(ZI42_NOSLAVE);
+#ifdef TIOCSCTTY
+	(void) ioctl(fd, TIOCSCTTY, 0);
+#endif
+	tty = open("/dev/tty", O_RDWR);
+	if (tty < 0)
+		_exit(ZI42_NOCTTY);
+	if (tcgetattr(tty, &before) != 0)
+		_exit(ZI42_NOATTR);
+	nul = open("/dev/null", O_RDWR);
+	if (nul < 0)
+		_exit(ZI42_NONULL);
+	if (dup2(nul, STDIN_FILENO) != STDIN_FILENO)
+		_exit(ZI42_NONULL);
+	(void) close(nul);
+	if (isatty(STDIN_FILENO))
+		_exit(ZI42_STDINTTY);
+	/* the control: the script on its own really changes it */
+	run_bare(script);
+	if (tcgetattr(tty, &bare) != 0)
+		_exit(ZI42_NOATTR);
+	if (memcmp(&before, &bare, sizeof (before)) == 0)
+		_exit(2);
+	if (tcsetattr(tty, TCSANOW, &before) != 0)
+		_exit(ZI42_NOATTR);
+	if (tcgetattr(tty, &before) != 0)
+		_exit(ZI42_NOATTR);
+	/* and through the launcher, which has no terminal on stdin */
+	if (zr_launch(lp, err, sizeof (err)) != 0)
+		_exit(ZI42_LAUNCH);
+	if (tcgetattr(tty, &after) != 0)
+		_exit(ZI42_NOATTR);
+	_exit(memcmp(&before, &after, sizeof (before)) == 0 ? 0 : 1);
+}
+
+static void
+check_terminal_devtty(void)
+{
+	struct zr_launch lp;
+	struct scratch sc;
+	const char *name;
+	pid_t pid, got;
+	int master, status = 0, code;
+
+	master = posix_openpt(O_RDWR | O_NOCTTY);
+	if (master < 0) {
+		printf("skip ZI42: no pty here (%s)\n", strerror(errno));
+		return;
+	}
+	CHECK(grantpt(master) == 0);
+	CHECK(unlockpt(master) == 0);
+	name = ptsname(master);
+	CHECK(name != NULL);
+	scratch_open(&sc);
+	write_script(&sc, "stty raw < /dev/tty\nexit 0\n");
+	launch_on(&lp, &sc, sc.script);
+	(void) fflush(NULL);
+	pid = fork();
+	CHECK(pid >= 0);
+	if (pid == 0)
+		devtty_child(name, &lp, sc.script);
+	do {
+		got = waitpid(pid, &status, 0);
+	} while (got < 0 && errno == EINTR);
+	CHECK(got == pid);
+	CHECK(WIFEXITED(status));
+	code = WEXITSTATUS(status);
+	if (code >= ZI42_NOSID) {
+		printf("skip ZI42: no controlling terminal to be had "
+		    "(step %d)\n", code);
+	} else {
+		CHECK(code != 2);
+		CHECK(code == 0);
+	}
 	CHECK(close(master) == 0);
 	scratch_close(&sc);
 }
@@ -1081,6 +1245,7 @@ main(void)
 	check_parent_interrupt();
 	check_parent_terminate();
 	check_terminal_restored();
+	check_terminal_devtty();
 	check_builtin_child();
 	check_child_closefds();
 	check_gate_marks_back();

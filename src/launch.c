@@ -9,21 +9,40 @@
  * child was -- an editor somebody named with -i CMD, or the built-in
  * picker -- makes no difference to anything below the fork.
  *
- * The signal handling is system(3)'s, with one addition. SIGINT and
- * SIGQUIT are ignored while the child runs, so that a Ctrl-C at the
- * terminal reaches the editor, which is in the same process group,
- * and not the tool waiting behind it. A SIGTERM to the tool is
- * forwarded to the child instead of taking the tool down and
- * orphaning it: the handler does the one thing a handler may do
- * here, kill(2), which is async-signal-safe, and SIGTERM is blocked
- * around the fork so that the pid it reads is either set or the
- * signal is still pending.
+ * The signal handling is not system(3)'s. SIGINT, SIGQUIT and SIGTERM
+ * all stop the launch while the child runs: the tool kills the child,
+ * reaps it, and reports the launch failed whatever the child's status
+ * was, which leaves the gate standing and the caller printing how to
+ * come back to it.
+ *
+ * SIGINT is there by the ruling of 2026-09-15 ("Ctrl+C should
+ * probably kill the editor in any phase (and interrupt the forked
+ * child basically), and the parent rebase process can proceed to a
+ * gate and then die gracefully"). It used to be ignored the way
+ * system(3) ignores it, on the reasoning that a Ctrl-C belongs to the
+ * editor; the hole in that is an editor which maps Ctrl-C to a key of
+ * its own, where the person's Ctrl-C did nothing and the run carried
+ * on to applying2 as though the session had been finished on purpose.
+ * SIGQUIT is the terminal's other way of saying stop and is the same
+ * case, so it is handled the same way.
+ *
+ * What the tool sends the child is SIGTERM in every case, and never
+ * the signal it received: the terminal has already delivered SIGINT
+ * or SIGQUIT to the whole foreground group, the child among it, so a
+ * child still running after one is a child that is ignoring it, and
+ * sending it a second would be no more decisive than the first.
+ *
+ * The handler does the one thing a handler may do here, kill(2),
+ * which is async-signal-safe, and the three are blocked around the
+ * fork so that the pid it reads is either set or the signal is still
+ * pending.
  */
 
 #include <sys/types.h>
 #include <sys/wait.h>
 
 #include <errno.h>
+#include <fcntl.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -50,22 +69,39 @@
 static volatile sig_atomic_t zl_child;
 
 /*
- * Whether a SIGTERM was forwarded during this launch. A SIGTERM to
- * the tool means stop, and forwarding it is only how the child
- * hears about it: whatever the child then does -- dies of it, or
- * catches it and exits 0 -- the launch reports non-zero, so that the
- * gate stands (the plan, section 2.3).
+ * The signal that stopped this launch, or 0. Any of the three means
+ * stop, and killing the child is only how the child hears about it:
+ * whatever it then does -- dies of the SIGTERM, or catches it and
+ * exits 0 -- the launch reports non-zero, so that the gate stands
+ * (the plan, section 2.3).
  */
-static volatile sig_atomic_t zl_termed;
+static volatile sig_atomic_t zl_stopsig;
 
 static void
-zl_forward(int sig)
+zl_stop(int sig)
 {
 	pid_t pid = (pid_t)zl_child;
 
-	zl_termed = 1;
+	zl_stopsig = sig;
 	if (pid > 0)
-		(void) kill(pid, sig);
+		(void) kill(pid, SIGTERM);
+}
+
+/* The one spelled name each of the three goes into a message as. */
+static const char *
+zl_stopname(int sig)
+{
+	switch (sig) {
+	case SIGINT:
+		return ("SIGINT");
+	case SIGQUIT:
+		return ("SIGQUIT");
+	case SIGTERM:
+		return ("SIGTERM");
+	default:
+		break;
+	}
+	return ("a signal");
 }
 
 /* One line saying what became of the child. */
@@ -166,6 +202,60 @@ zl_unhandle(const struct sigaction *oint, const struct sigaction *oquit,
 }
 
 /*
+ * The terminal the belt saves and puts back. Standard input where
+ * that is a terminal, which is what a curses program and a full
+ * screen editor open (ground rule 6); otherwise the controlling
+ * terminal by name, since a run with its input redirected still has
+ * one and the child a person named opens it that way too (question
+ * 8a of open-questions-2026-09-15.md). Returns the descriptor, and
+ * -1 where there is no terminal to be had; *own says whether the
+ * descriptor is this function's to close.
+ */
+#define	ZL_TTY	"/dev/tty"
+
+static int
+zl_termfd(int *own)
+{
+	int fd;
+
+	*own = 0;
+	if (isatty(STDIN_FILENO))
+		return (STDIN_FILENO);
+	fd = open(ZL_TTY, O_RDWR | O_NOCTTY | O_CLOEXEC);
+	if (fd < 0)
+		return (-1);
+	*own = 1;
+	return (fd);
+}
+
+/*
+ * tcsetattr with SIGTTOU out of the way and put back. A tcsetattr
+ * from a process that is not the terminal's foreground group raises
+ * SIGTTOU, whose default is to stop the process: a child that took
+ * the foreground and then died would leave the tool stopping itself
+ * on the one call whose whole purpose is to leave the terminal usable
+ * (question 8b). SIG_IGN makes the call go through instead. The
+ * disposition around it is the tool's and is restored, so that
+ * nothing outside this belt sees the change.
+ */
+static void
+zl_setattr(int fd, const struct termios *t)
+{
+	struct sigaction ign, old;
+	int saved = 0;
+
+	memset(&ign, 0, sizeof (ign));
+	(void) sigemptyset(&ign.sa_mask);
+	ign.sa_flags = 0;
+	ign.sa_handler = SIG_IGN;
+	if (sigaction(SIGTTOU, &ign, &old) == 0)
+		saved = 1;
+	(void) tcsetattr(fd, TCSADRAIN, t);
+	if (saved)
+		(void) sigaction(SIGTTOU, &old, NULL);
+}
+
+/*
  * The child, from the moment fork returned 0. It restores the
  * default dispositions of the three signals the parent touched and
  * the mask it blocked SIGTERM in before it does anything else: an
@@ -230,13 +320,13 @@ zl_run_child(const struct zr_launch *lp, const char *script, char *argv[],
 int
 zr_launch(const struct zr_launch *lp, char *err, size_t errlen)
 {
-	struct sigaction ign, fwd, oint, oquit, oterm;
+	struct sigaction stp, oint, oquit, oterm;
 	struct termios saved, now;
 	sigset_t block, oldmask;
 	char script[ZL_SCRIPT_MAX];
 	char *argv[ZR_LAUNCH_ARGC + 1];
 	pid_t pid, got;
-	int status = 0, code, hastio = 0;
+	int status = 0, code, hastio = 0, tfd, ownfd = 0;
 
 	if (err != NULL && errlen > 0)
 		err[0] = '\0';
@@ -268,31 +358,24 @@ zr_launch(const struct zr_launch *lp, char *err, size_t errlen)
 	 */
 	(void) fflush(stdout);
 	(void) fflush(stderr);
-	/*
-	 * The terminal, saved before anything can change it. isatty
-	 * of standard input is the question, because that is what a
-	 * curses program and a full-screen editor open (ground rule
-	 * 6); where it is no terminal there is nothing to save and
-	 * nothing to put back.
-	 */
-	if (isatty(STDIN_FILENO) && tcgetattr(STDIN_FILENO, &saved) == 0)
+	/* The terminal, saved before anything can change it. */
+	tfd = zl_termfd(&ownfd);
+	if (tfd >= 0 && tcgetattr(tfd, &saved) == 0)
 		hastio = 1;
-	memset(&ign, 0, sizeof (ign));
-	(void) sigemptyset(&ign.sa_mask);
-	ign.sa_flags = 0;
-	ign.sa_handler = SIG_IGN;
-	memset(&fwd, 0, sizeof (fwd));
-	(void) sigemptyset(&fwd.sa_mask);
-	fwd.sa_flags = 0;
-	fwd.sa_handler = zl_forward;
+	memset(&stp, 0, sizeof (stp));
+	(void) sigemptyset(&stp.sa_mask);
+	stp.sa_flags = 0;
+	stp.sa_handler = zl_stop;
 	(void) sigemptyset(&block);
+	(void) sigaddset(&block, SIGINT);
+	(void) sigaddset(&block, SIGQUIT);
 	(void) sigaddset(&block, SIGTERM);
 	(void) sigprocmask(SIG_BLOCK, &block, &oldmask);
 	zl_child = 0;
-	zl_termed = 0;
-	(void) sigaction(SIGINT, &ign, &oint);
-	(void) sigaction(SIGQUIT, &ign, &oquit);
-	(void) sigaction(SIGTERM, &fwd, &oterm);
+	zl_stopsig = 0;
+	(void) sigaction(SIGINT, &stp, &oint);
+	(void) sigaction(SIGQUIT, &stp, &oquit);
+	(void) sigaction(SIGTERM, &stp, &oterm);
 	pid = fork();
 	if (pid == 0)
 		zl_run_child(lp, script, argv, &oldmask);
@@ -300,13 +383,15 @@ zr_launch(const struct zr_launch *lp, char *err, size_t errlen)
 		code = errno;
 		zl_unhandle(&oint, &oquit, &oterm);
 		(void) sigprocmask(SIG_SETMASK, &oldmask, NULL);
+		if (ownfd)
+			(void) close(tfd);
 		zl_say(err, errlen, "cannot fork: %s", strerror(code));
 		return (-1);
 	}
 	/*
-	 * The pid first and the unblock after it: a SIGTERM that
-	 * arrived in between is pending, is delivered here, and finds
-	 * the child it is to be forwarded to.
+	 * The pid first and the unblock after it: one of the three
+	 * that arrived in between is pending, is delivered here, and
+	 * finds the child it is to be aimed at.
 	 */
 	zl_child = (sig_atomic_t)pid;
 	(void) sigprocmask(SIG_SETMASK, &oldmask, NULL);
@@ -325,22 +410,24 @@ zr_launch(const struct zr_launch *lp, char *err, size_t errlen)
 	 * that costs one tcsetattr of the very bytes already there,
 	 * where the other mistake would leave a terminal raw.
 	 */
-	if (hastio && tcgetattr(STDIN_FILENO, &now) == 0 &&
+	if (hastio && tcgetattr(tfd, &now) == 0 &&
 	    memcmp(&now, &saved, sizeof (saved)) != 0)
-		(void) tcsetattr(STDIN_FILENO, TCSADRAIN, &saved);
+		zl_setattr(tfd, &saved);
+	if (ownfd)
+		(void) close(tfd);
 	if (got < 0) {
 		zl_say(err, errlen, "the editor could not be waited for: %s",
 		    strerror(code));
 		return (-1);
 	}
 	/*
-	 * A forwarded SIGTERM decides the answer before the status
-	 * does: the tool was told to stop, and a child that caught the
-	 * signal and left with 0 does not turn that into a go-on.
+	 * A signal decides the answer before the status does: the tool
+	 * was told to stop, and a child that caught the SIGTERM this
+	 * sent it and left with 0 does not turn that into a go-on.
 	 */
-	if (zl_termed != 0) {
-		zl_say(err, errlen, "stopped by SIGTERM while the editor "
-		    "ran");
+	if (zl_stopsig != 0) {
+		zl_say(err, errlen, "stopped by %s while the editor ran",
+		    zl_stopname((int)zl_stopsig));
 		return (-1);
 	}
 	if (WIFEXITED(status)) {
