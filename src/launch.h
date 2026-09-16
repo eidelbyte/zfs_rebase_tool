@@ -3,6 +3,8 @@
 #ifndef	ZR_LAUNCH_H
 #define	ZR_LAUNCH_H
 
+#include <sys/types.h>
+
 #include <stddef.h>
 
 /*
@@ -40,6 +42,20 @@ struct zr_launch {
 	const char	*from;		/* the built-in; "" where a tree has */
 	const char	*onto;		/* no path */
 	const char	*result;
+	/*
+	 * Called in the parent the moment the child exists, with its
+	 * pid and with arg, and not called at all where the fork
+	 * failed. It is how the caller writes down that a session of
+	 * this rebase is open, which is a thing only the parent can do
+	 * and only from here: the pid is known between the fork and
+	 * the wait and nowhere else (tracker issue concurrent-continue).
+	 * NULL where the caller wants nothing. It must not fail the
+	 * launch -- a person's editor is up by then -- so it returns
+	 * nothing and whatever went wrong is the caller's to keep in
+	 * arg and to say afterwards.
+	 */
+	void		(*opened)(pid_t pid, void *arg);
+	void		*arg;
 };
 
 /* How many arguments the built-in child is given, argv[0] counted. */

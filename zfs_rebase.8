@@ -731,6 +731,32 @@ A command that hangs holds the rebase, and with it the dataset the rebase
 has taken over, until it exits or somebody kills it; the tool sets no
 timeout and will not choose one for you.
 .Pp
+One such session runs on one rebase at a time.
+A verb that opens a child writes the two process ids into
+.Pa <rundir>/session
+and takes the file away when the child is reaped; a
+.Fl -continue ,
+.Fl -restart
+or
+.Fl -abort
+arriving on the same rebase while either of those processes is still
+alive is refused, before it takes the result over and before it reads a
+tree, with one line naming the process, what
+.Fl i
+named, when the session was opened and where that file is.
+A plain
+.Fl -continue
+is refused by it too, and for the worse reason: it would carry the rebase
+into
+.Sy applying2 ,
+which writes over the tree the other person's editor still has open.
+.Fl -verify
+is never refused, since it reads, writes nothing and takes nothing over.
+A file whose processes are both gone \(em what a
+.Dv SIGKILL
+of the tool leaves \(em is stale, and the next verb says nothing about it
+and goes on.
+.Pp
 The flag is not latched: it belongs to the invocation, so a
 .Fl -continue
 that should open a child says it each time, and a start given it that

@@ -164,8 +164,11 @@
 #include <time.h>
 #include <unistd.h>
 #include <sys/stat.h>
-#if defined(__FreeBSD__)
+#if defined(__FreeBSD__) || defined(__APPLE__)
 #include <sys/sysctl.h>
+#endif
+#if defined(__FreeBSD__)
+#include <sys/user.h>
 #endif
 
 #include "apply.h"
@@ -1022,6 +1025,248 @@ snapshot_input(struct run *r, const char *dataset, char *buf, size_t buflen)
 }
 
 /*
+ * ---------------------------------------------------------------
+ * One -i session of one rebase, written beside the record.
+ * ---------------------------------------------------------------
+ *
+ * Two --continue -i in two terminals used to meet nothing at all:
+ * the run directory is the lock a start takes, and a verb takes no
+ * lock of its own. Two editors on one resolution is the smaller half
+ * of it -- the second to save wins and the first person's answers are
+ * gone -- and the larger half is a verb going on into applying2 while
+ * somebody's editor still has the tree, which is the stale-walk
+ * hazard of L1 with a second process added to it.
+ *
+ * The check is a file, <rundir>/session, written when a child is
+ * forked and unlinked when it is reaped, holding the two pids and the
+ * two start times. A verb arriving on the same rebase reads it and
+ * refuses while either process is alive. It has to be true after a
+ * kill, since SIGKILL is what leaves these files behind: what makes
+ * it true is that liveness is asked of the system and not of the
+ * file, so a file whose processes are gone is stale and is replaced
+ * without a word.
+ *
+ * Both pids are kept because either can outlive the other. The
+ * parent alone would miss the orphaned picker a SIGKILL of the tool
+ * leaves holding the mount (L6 of the code review); the child alone
+ * would miss the window between the fork and the exec.
+ */
+#define	ZR_SESSION_FILE		"session"
+#define	ZR_SESSION_VERSION	"#rebase-session 5"
+
+/*
+ * When a process started, in microseconds since the epoch, which is
+ * what tells a pid that was reused from the pid that was recorded.
+ * 0 with *out set, or -1 where this system will not say -- and then
+ * the pid alone has to do, which is the one place this check can
+ * read a stranger as the process it is looking for.
+ */
+static int
+zs_proc_start(pid_t pid, uint64_t *out)
+{
+#if defined(__FreeBSD__) || defined(__APPLE__)
+	int mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_PID, 0 };
+	struct kinfo_proc kp;
+	size_t len = sizeof (kp);
+	struct timeval tv;
+
+	mib[3] = (int)pid;
+	memset(&kp, 0, sizeof (kp));
+	if (sysctl(mib, 4, &kp, &len, NULL, 0) != 0 || len == 0)
+		return (-1);
+#if defined(__FreeBSD__)
+	tv = kp.ki_start;
+#else
+	tv = kp.kp_proc.p_starttime;
+#endif
+	*out = (uint64_t)tv.tv_sec * 1000000u + (uint64_t)tv.tv_usec;
+	return (0);
+#else
+	(void) pid;
+	(void) out;
+	return (-1);
+#endif
+}
+
+/* Is this the process that was recorded, and is it still there? */
+static int
+zs_alive(pid_t pid, uint64_t want)
+{
+	uint64_t now = 0;
+
+	if (pid <= 0)
+		return (0);
+	if (kill(pid, 0) != 0 && errno != EPERM)
+		return (0);
+	if (want == 0 || zs_proc_start(pid, &now) != 0)
+		return (1);
+	return (now == want ? 1 : 0);
+}
+
+int
+zr_session_path(const char *rundir, char *buf, size_t len)
+{
+	int n;
+
+	if (rundir == NULL || buf == NULL || len == 0)
+		return (-1);
+	n = snprintf(buf, len, "%s/%s", rundir, ZR_SESSION_FILE);
+	if (n < 0 || (size_t)n >= len) {
+		buf[0] = '\0';
+		return (-1);
+	}
+	return (0);
+}
+
+int
+zr_session_live(const struct zr_session *sn, pid_t *whop)
+{
+	if (whop != NULL)
+		*whop = 0;
+	if (sn == NULL)
+		return (0);
+	/* the child first: it is the one with the tree in its hands */
+	if (zs_alive(sn->zn_child, sn->zn_cstart) != 0) {
+		if (whop != NULL)
+			*whop = sn->zn_child;
+		return (1);
+	}
+	if (zs_alive(sn->zn_parent, sn->zn_pstart) != 0) {
+		if (whop != NULL)
+			*whop = sn->zn_parent;
+		return (1);
+	}
+	return (0);
+}
+
+void
+zr_session_fill(struct zr_session *sn, pid_t child, const char *verb,
+    const char *editor)
+{
+	if (sn == NULL)
+		return;
+	memset(sn, 0, sizeof (*sn));
+	sn->zn_parent = getpid();
+	sn->zn_child = child;
+	if (zs_proc_start(sn->zn_parent, &sn->zn_pstart) != 0)
+		sn->zn_pstart = 0;
+	if (child <= 0 || zs_proc_start(child, &sn->zn_cstart) != 0)
+		sn->zn_cstart = 0;
+	(void) snprintf(sn->zn_verb, sizeof (sn->zn_verb), "%s",
+	    verb != NULL ? verb : "-");
+	(void) snprintf(sn->zn_editor, sizeof (sn->zn_editor), "%s",
+	    editor != NULL && editor[0] != '\0' ? editor : ZR_NO_BASE);
+	zr_manifest_stamp(sn->zn_opened, sizeof (sn->zn_opened));
+}
+
+/* The bytes of one session document, for zr_doc_write. */
+static int
+emit_session(FILE *out, void *arg)
+{
+	const struct zr_session *sn = arg;
+
+	if (fprintf(out, "%s\n#verb %s\n#parent %lld %llu\n"
+	    "#child %lld %llu\n#editor %s\n#opened %s\n",
+	    ZR_SESSION_VERSION, sn->zn_verb, (long long)sn->zn_parent,
+	    (unsigned long long)sn->zn_pstart, (long long)sn->zn_child,
+	    (unsigned long long)sn->zn_cstart, sn->zn_editor,
+	    sn->zn_opened) < 0)
+		return (-1);
+	return (0);
+}
+
+int
+zr_session_write(const char *path, const struct zr_session *sn, char *err,
+    size_t errlen)
+{
+	union {
+		const struct zr_session	*cp;
+		struct zr_session	*p;
+	} u;
+
+	if (path == NULL || sn == NULL)
+		return (-1);
+	u.cp = sn;
+	return (zr_doc_write(path, emit_session, u.p, err, errlen));
+}
+
+/* One "#name value" line of it, or nothing. */
+static const char *
+zs_field(const char *line, const char *name)
+{
+	size_t n = strlen(name);
+
+	if (strncmp(line, name, n) != 0 || line[n] != ' ')
+		return (NULL);
+	return (line + n + 1);
+}
+
+int
+zr_session_read(const char *path, struct zr_session *sn, char *err,
+    size_t errlen)
+{
+	char line[512];
+	const char *v;
+	long long pid;
+	unsigned long long start;
+	FILE *fp;
+	int first = 1;
+
+	if (err != NULL && errlen > 0)
+		err[0] = '\0';
+	if (path == NULL || sn == NULL)
+		return (-1);
+	memset(sn, 0, sizeof (*sn));
+	fp = fopen(path, "r");
+	if (fp == NULL) {
+		if (errno == ENOENT)
+			return (0);
+		(void) snprintf(err, errlen, "%s: %s", path, strerror(errno));
+		return (-1);
+	}
+	while (fgets(line, sizeof (line), fp) != NULL) {
+		line[strcspn(line, "\n")] = '\0';
+		if (first != 0) {
+			first = 0;
+			if (strcmp(line, ZR_SESSION_VERSION) != 0) {
+				(void) snprintf(err, errlen, "%s: this is no "
+				    "session of ours", path);
+				(void) fclose(fp);
+				return (-1);
+			}
+			continue;
+		}
+		if ((v = zs_field(line, "#verb")) != NULL)
+			(void) snprintf(sn->zn_verb, sizeof (sn->zn_verb),
+			    "%s", v);
+		else if ((v = zs_field(line, "#editor")) != NULL)
+			(void) snprintf(sn->zn_editor, sizeof (sn->zn_editor),
+			    "%s", v);
+		else if ((v = zs_field(line, "#opened")) != NULL)
+			(void) snprintf(sn->zn_opened, sizeof (sn->zn_opened),
+			    "%s", v);
+		else if ((v = zs_field(line, "#parent")) != NULL) {
+			if (sscanf(v, "%lld %llu", &pid, &start) != 2)
+				continue;
+			sn->zn_parent = (pid_t)pid;
+			sn->zn_pstart = (uint64_t)start;
+		} else if ((v = zs_field(line, "#child")) != NULL) {
+			if (sscanf(v, "%lld %llu", &pid, &start) != 2)
+				continue;
+			sn->zn_child = (pid_t)pid;
+			sn->zn_cstart = (uint64_t)start;
+		}
+	}
+	(void) fclose(fp);
+	if (first != 0) {
+		(void) snprintf(err, errlen, "%s: this is no session of ours",
+		    path);
+		return (-1);
+	}
+	return (1);
+}
+
+/*
  * The name of the snapshot the tool takes of the result at the
  * hand-off into applying2: <result>@zfs_rebase-<tag>-gate. It is a
  * function of the result and the tag and of nothing else, which is
@@ -1397,7 +1642,7 @@ static int
 rmdir_run(const char *result)
 {
 	size_t top = strlen(workdir());
-	char dir[ZR_NAME_MAX], mnt[ZR_NAME_MAX];
+	char dir[ZR_NAME_MAX], mnt[ZR_NAME_MAX], sess[ZR_NAME_MAX];
 	char *slash;
 
 	if (rundir_of(dir, sizeof (dir), result, NULL, 0) != 0)
@@ -1406,6 +1651,15 @@ rmdir_run(const char *result)
 	    sizeof (mnt))
 		return (ENAMETOOLONG);
 	(void) rmdir(mnt);
+	/*
+	 * And the session file, where a kill left one: it is this
+	 * tool's own, it names processes that are gone by the time a
+	 * rebase is being taken away, and a directory still holding it
+	 * would not rmdir. Every path that removes a run directory
+	 * comes through here, so this is the one place it is needed.
+	 */
+	if (zr_session_path(dir, sess, sizeof (sess)) == 0)
+		(void) unlink(sess);
 	if (rmdir(dir) != 0 && errno != ENOENT)
 		return (errno);
 	for (;;) {
@@ -2902,13 +3156,78 @@ reread_skeleton(struct run *r)
  * the status to give up with, the reason already printed. Either way
  * the rebase is at the conflicts gate and a --continue takes it on.
  */
+/*
+ * What the launcher's opened callback carries: where the file goes,
+ * what the verb is called, what -i named, and whether the write
+ * failed, which the caller says after the child is gone rather than
+ * in the middle of a person's editing session.
+ */
+struct session_arg {
+	const char	*sa_path;
+	const char	*sa_verb;
+	const char	*sa_editor;
+	char		sa_err[512];
+};
+
+/*
+ * The child exists: the session is written down. It is written here
+ * and nowhere else because the pid is knowable here and nowhere
+ * else, and it is written whole and atomically through the primitive
+ * every other document of this tool goes through, so a reader
+ * arriving in the middle of it sees the old file or the new one and
+ * never half of either.
+ */
+static void
+session_opened(pid_t pid, void *arg)
+{
+	struct session_arg *sa = arg;
+	struct zr_session sn;
+
+	zr_session_fill(&sn, pid, sa->sa_verb, sa->sa_editor);
+	if (zr_session_write(sa->sa_path, &sn, sa->sa_err,
+	    sizeof (sa->sa_err)) != 0)
+		return;
+	sa->sa_err[0] = '\0';
+}
+
+/* And gone: the file goes with it, whatever the child exited with. */
+static void
+session_closed(const struct session_arg *sa)
+{
+	if (unlink(sa->sa_path) != 0 && errno != ENOENT)
+		(void) fprintf(stderr, "zfs_rebase: %s: %s\n", sa->sa_path,
+		    strerror(errno));
+	if (sa->sa_err[0] != '\0')
+		(void) fprintf(stderr, "zfs_rebase: the session could not be "
+		    "written down, so another zfs_rebase would not have been "
+		    "refused while the editor ran: %s\n", sa->sa_err);
+}
+
+/* One of them, ready for a launch. */
+static void
+session_arm(struct session_arg *sa, struct zr_launch *lp, char *path,
+    size_t pathlen, const char *rundir, const char *verb, const char *editor)
+{
+	memset(sa, 0, sizeof (*sa));
+	sa->sa_verb = verb;
+	sa->sa_editor = editor;
+	if (zr_session_path(rundir, path, pathlen) != 0)
+		path[0] = '\0';
+	sa->sa_path = path;
+	if (path[0] != '\0') {
+		lp->opened = session_opened;
+		lp->arg = sa;
+	}
+}
+
 static int
 run_interactive(struct run *r)
 {
+	struct session_arg sa;
 	struct zr_launch lp;
 	char basedir[ZR_NAME_MAX * 2], fromdir[ZR_NAME_MAX * 2];
 	char ontodir[ZR_NAME_MAX * 2];
-	char e[512];
+	char spath[ZR_NAME_MAX], rdir[ZR_NAME_MAX], e[512];
 	int rc;
 
 	basedir[0] = '\0';
@@ -2924,6 +3243,16 @@ run_interactive(struct run *r)
 	lp.onto = ontodir;
 	lp.result = r->workmnt;
 	/*
+	 * And the session written down for the child's life, as the
+	 * resume path's child has: a start that reaches this gate in
+	 * its own process is the same one hand on the tree, and a
+	 * --continue arriving while it edits is the same two.
+	 */
+	if (rundir_of(rdir, sizeof (rdir), r->rds, NULL, 0) != 0)
+		rdir[0] = '\0';
+	session_arm(&sa, &lp, spath, sizeof (spath), rdir, "start",
+	    r->o.editor);
+	/*
 	 * The child writes into the result itself -- the picker's
 	 * merge does, and an editor the person points at a file does
 	 * -- and there is nothing to flip for it: the result has been
@@ -2931,6 +3260,7 @@ run_interactive(struct run *r)
 	 * clone's birth in the other (clone_rw).
 	 */
 	rc = zr_launch(&lp, e, sizeof (e));
+	session_closed(&sa);
 	if (rc != 0) {
 		(void) fprintf(stderr, "zfs_rebase: %s\n", e);
 		(void) fprintf(stderr, "zfs_rebase: the resolution %s stands "
@@ -6251,9 +6581,10 @@ input_dir(struct resume *s, int which, char *out, size_t outlen)
 static int
 resume_interactive(struct resume *s)
 {
+	struct session_arg sa;
 	struct zr_launch lp;
 	char basedir[ZR_NAME_MAX * 2];
-	char e[512];
+	char spath[ZR_NAME_MAX], e[512];
 	int rc;
 
 	input_dir(s, ZI_BASE, basedir, sizeof (basedir));
@@ -6264,6 +6595,8 @@ resume_interactive(struct resume *s)
 	lp.from = s->sidedir[ZS_FROM];
 	lp.onto = s->sidedir[ZS_ONTO];
 	lp.result = s->workmnt;
+	session_arm(&sa, &lp, spath, sizeof (spath), s->rundir, "continue",
+	    s->editor);
 	/*
 	 * The directories above are strings walk_side and input_dir
 	 * left behind and outlive the walks; the walks themselves go
@@ -6273,6 +6606,7 @@ resume_interactive(struct resume *s)
 	 */
 	close_trees(s);
 	rc = zr_launch(&lp, e, sizeof (e));
+	session_closed(&sa);
 	if (rc != 0) {
 		(void) fprintf(stderr, "zfs_rebase: %s\n", e);
 		(void) fprintf(stderr, "zfs_rebase: the resolution %s stands "
@@ -6589,6 +6923,47 @@ resume_start(struct resume *s)
  * open takes it from there. Returns EXIT_CLEAN, or the status to
  * give up with.
  */
+/*
+ * Is another -i session of this rebase open? One line naming the
+ * process that has it, and a refusal, where it is; nothing at all
+ * where the file is not there or the processes it names are gone,
+ * and a stale file is left for the next child to write over rather
+ * than unlinked here: this is a question and not a tidying, and two
+ * verbs asking it at once must not take turns removing each other's
+ * answer.
+ *
+ * Every verb that moves a rebase asks it, and --verify does not: the
+ * report reads and writes nothing and takes nothing over, so it is
+ * the one thing that is safe to run while somebody is editing. A
+ * plain --continue is refused as an -i one is, and for the worse
+ * reason: it goes on into applying2, which writes over the tree the
+ * other person's editor still has open.
+ *
+ * Returns 0 where the rebase is this command's to move, or -1 with
+ * the reason printed.
+ */
+static int
+session_free(const char *result, const char *rundir)
+{
+	struct zr_session sn;
+	char path[ZR_NAME_MAX], err[512];
+	pid_t who = 0;
+
+	if (zr_session_path(rundir, path, sizeof (path)) != 0)
+		return (0);
+	if (zr_session_read(path, &sn, err, sizeof (err)) <= 0)
+		return (0);
+	if (zr_session_live(&sn, &who) == 0)
+		return (0);
+	(void) fprintf(stderr, "zfs_rebase: %s: a zfs_rebase --%s -i of this "
+	    "rebase is open as pid %lld, editing %s with %s since %s; wait "
+	    "for it or end it, and %s is the record of it\n", result,
+	    sn.zn_verb, (long long)who, result,
+	    strcmp(sn.zn_editor, ZR_NO_BASE) == 0 ? "the built-in picker" :
+	    sn.zn_editor, sn.zn_opened, path);
+	return (-1);
+}
+
 static int
 resume_found(struct resume *s, const struct zr_verb_opts *o, int byguid)
 {
@@ -6637,6 +7012,15 @@ resume_found(struct resume *s, const struct zr_verb_opts *o, int byguid)
 	 */
 	if (s->report == 0 && s->rb.phase[0] == '\0')
 		return (undecided(s));
+	/*
+	 * And another hand on the same rebase, asked before this verb
+	 * takes the result over and before it reads a tree: two
+	 * editors on one resolution, or this verb's applying2 under
+	 * somebody else's live editor, are two hands on one tree
+	 * (tracker issue concurrent-continue).
+	 */
+	if (s->report == 0 && session_free(s->result, s->rundir) != 0)
+		return (EXIT_PRECOND);
 	/*
 	 * The resolution, read once and kept: every gate from
 	 * conflicts on classifies against it, and every verb that has
@@ -7936,6 +8320,17 @@ zr_abort(const struct zr_verb_opts *o)
 		(void) fprintf(stderr, "zfs_rebase: %s carries the "
 		    "manifest %s and the manifest given is %s: they "
 		    "are two rebases\n", result, manifest, given);
+		rc = EXIT_PRECOND;
+		goto done;
+	}
+	/*
+	 * And another hand on this rebase, asked here as every other
+	 * motional verb asks it: an --abort under a live editor would
+	 * destroy the clone, or roll the dataset back, while somebody
+	 * is writing into it. The person whose editor it is is named,
+	 * so ending it and running this again is one step.
+	 */
+	if (hasdir && session_free(result, dir) != 0) {
 		rc = EXIT_PRECOND;
 		goto done;
 	}

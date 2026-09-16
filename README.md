@@ -393,7 +393,14 @@ not one, from the controlling terminal; and reads the document again
 when the child exits 0, with every refusal --continue makes of one.
 Nothing bounds the child's life: a command that hangs holds the
 rebase until it exits or somebody kills it, which is yours to
-handle. Anything else and the gate stands with the
+handle. One such session runs on one rebase at a time: the verb
+that opens a child writes the two process ids into
+`<rundir>/session` and removes the file when the child is reaped,
+and a --continue, --restart or --abort arriving while either process
+is alive is refused with one line naming it (--verify is not, since
+it reads and writes nothing). A file whose processes are both gone,
+which is what a SIGKILL of the tool leaves, is stale and the next
+verb goes on without a word. Anything else and the gate stands with the
 file as the child left it, exit 1, and nothing reopens the child by
 itself: `zfs_rebase -c IDENT -i` carries on. The child opens
 whenever the gate is reached, complete document or not, so -O -i

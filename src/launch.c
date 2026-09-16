@@ -395,6 +395,14 @@ zr_launch(const struct zr_launch *lp, char *err, size_t errlen)
 	 */
 	zl_child = (sig_atomic_t)pid;
 	(void) sigprocmask(SIG_SETMASK, &oldmask, NULL);
+	/*
+	 * And the caller told that the child exists, which is the one
+	 * moment its pid is knowable from outside this function. It is
+	 * after the unblock, so that a stop arriving now is delivered
+	 * and forwarded rather than held while a file is written.
+	 */
+	if (lp->opened != NULL)
+		lp->opened(pid, lp->arg);
 	do {
 		got = waitpid(pid, &status, 0);
 	} while (got < 0 && errno == EINTR);
