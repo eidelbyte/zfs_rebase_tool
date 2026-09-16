@@ -634,6 +634,12 @@ make_pool() {
 	truncate -s 512m "$IMG" || exit 2
 	MD=$(mdconfig -a -t vnode -f "$IMG") || exit 2
 	mkdir -p "$MNT"
+	# A run directory an earlier run of this script left for the
+	# pool name -- a KEEP=1 run, or a kill before its cleanup --
+	# would make the first fresh run refuse, since the pool is new
+	# and the directory is not (the box, 2026-09-16). The name is
+	# the harness's own, so nothing of anyone else's is under it.
+	rm -rf "/var/db/zfs_rebase/$POOL"
 	zpool create -m "$MNT" -O casesensitivity=sensitive \
 	    -O normalization=none "$POOL" "/dev/$MD" || exit 2
 	zfs create "$POOL/base" || exit 2
