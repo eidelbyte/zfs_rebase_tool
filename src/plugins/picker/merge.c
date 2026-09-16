@@ -362,12 +362,20 @@ fail:
  * compare of from against onto, stable where they agree and conflict
  * where they do not, every base range empty, and the same pick rule.
  *
- * The walk would in fact give the same answer over an empty base --
- * both scripts insert their whole file at the one empty base range and
- * step 4 makes one chunk of it -- so this is a matter of what the
- * screen says rather than of what the merge decides (v4-merge3.md
- * section 5). An empty base OBJECT still goes through the walk; it is a
- * base that is absent altogether that comes here.
+ * It is not the answer the walk would give over an empty base object:
+ * the walk makes one conflict of the two whole files, and this is
+ * finer, since it keeps the stretches the two sides share. Nor is it
+ * the mirror of itself under a swap -- the diff is of from against
+ * onto in that order, and which side a shared line is attributed to
+ * follows from that. Both are by design and were ruled so by the
+ * author on 2026-09-15, on the review's finding G3: "the two-way
+ * shortcut is fine, since the user specifies from and onto, we'll
+ * just always do diff(from, onto)". The properties the form does
+ * claim are in v4-merge3.md section 5 and are checked by
+ * check_add_add in tests/check_merge.c.
+ *
+ * An empty base OBJECT still goes through the walk; it is a base that
+ * is absent altogether that comes here.
  */
 static int
 m3_twoway(struct zr_m3 *m, char *err, size_t errlen)

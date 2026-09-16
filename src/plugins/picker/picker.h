@@ -3,6 +3,8 @@
 #ifndef	ZR_PICKER_H
 #define	ZR_PICKER_H
 
+#include <sys/types.h>
+
 #include <stddef.h>
 #include <stdint.h>
 
@@ -180,6 +182,17 @@ enum zr_pk_fo {
  * whose group number the theory says is not read. What such a line
  * spelled is still on zk_line->zl_group and goes back out untouched.
  *
+ * zk_dev, zk_ino and zk_nlink are the result tree's object at this
+ * name: which file it is, and how many names it has there. A pool is
+ * one file and every name it has (v4-manifest.md section 2), and the
+ * merge is written into the file, so every row carrying this same
+ * device and inode sees the merged bytes whether or not anybody
+ * answered it -- which is why screen 2's w answers them all (the
+ * author, 2026-09-15, on the review's question 14). They are read
+ * when the row is built and confirmed again at the write, since the
+ * trees are the person's in between. All three are zero where the
+ * result holds no object at this name.
+ *
  * zk_saved is the choice the document on disk holds for this row: the
  * one it was read with, and afterwards the one the last write put
  * there. A row whose line no longer says that is an answer nobody has
@@ -196,6 +209,9 @@ struct zr_pk_row {
 	enum zr_pk_line		zk_kind;
 	struct zr_rline		*zk_line;	/* the document's own line */
 	enum zr_choice		zk_saved;	/* the choice last written */
+	dev_t			zk_dev;		/* the result's object: */
+	ino_t			zk_ino;		/* which file it is, */
+	uint32_t		zk_nlink;	/* and how many names it has */
 	const unsigned char	*zk_name;	/* zk_line's path */
 	size_t			zk_namelen;
 	uint32_t		zk_group;	/* 0 where there is none */

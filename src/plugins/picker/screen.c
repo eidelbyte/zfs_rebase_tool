@@ -994,7 +994,21 @@ pk_draw_detail(const struct zr_picker *pk, int y)
 	else
 		(void) snprintf(buf, sizeof (buf), "group %u is %u names",
 		    (unsigned)row->zk_group, (unsigned)names);
-	(void) pk_putx(y + 2, x, PK_CO_DIM, 0, buf);
+	x = pk_putx(y + 2, x, PK_CO_DIM, 0, buf);
+	/*
+	 * And how many names the result's own object has, where it has
+	 * more than one. A pool is one file and every name it has, and
+	 * a merge written here reaches all of them, so the person is
+	 * told before they press w and not after (the author,
+	 * 2026-09-15, on the review's question 14). One name is the
+	 * ordinary case and says nothing.
+	 */
+	if (row->zk_nlink > 1) {
+		(void) snprintf(buf, sizeof (buf),
+		    "  the result holds it under %u names",
+		    (unsigned)row->zk_nlink);
+		(void) pk_putx(y + 2, x, PK_CO_CYAN, 0, buf);
+	}
 }
 
 /*

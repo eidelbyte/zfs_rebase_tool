@@ -265,6 +265,20 @@ m3_merge(const struct zr_m3_file *from, const struct zr_m3_file *onto,
 		 */
 		if (d1->base_lo < d2->base_lo) {
 			back = d2->base_lo - d1->base_lo;
+			/*
+			 * No well-formed script reaches this refusal:
+			 * the lines the entry is widened back over are
+			 * base lines it agreed with, so its own side
+			 * holds that many lines before side_lo and the
+			 * subtraction cannot go below zero. It stays
+			 * because the scripts come from a library we
+			 * carry and do not edit, and because an
+			 * unsigned underflow here would be a range
+			 * pointing off the front of a file rather than
+			 * a refusal (ruled 2026-09-15, on the review's
+			 * question 21: "seems legit"). It costs one
+			 * comparison per widening.
+			 */
 			if (d2->side_lo < back) {
 				m3_fail(err, errlen, "the onto script "
 				    "widens past the start of its file");
@@ -274,6 +288,7 @@ m3_merge(const struct zr_m3_file *from, const struct zr_m3_file *onto,
 			d2->base_lo = d1->base_lo;
 		} else if (d2->base_lo < d1->base_lo) {
 			back = d1->base_lo - d2->base_lo;
+			/* the same guard for the other script; see above */
 			if (d1->side_lo < back) {
 				m3_fail(err, errlen, "the from script "
 				    "widens past the start of its file");

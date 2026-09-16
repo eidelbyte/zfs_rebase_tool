@@ -780,6 +780,79 @@ check_final_newline(void)
 }
 
 /*
+ * The properties the add/add form claims, and the ones it does not.
+ *
+ * Ruled by the author on 2026-09-15, on the review's finding G3: "the
+ * two-way shortcut is fine, since the user specifies from and onto,
+ * we'll just always do diff(from, onto)". So the sequence is the
+ * two-way diff of from against onto in that order, it is finer than
+ * the walk over an empty base object would give, and it is not the
+ * mirror of itself under a swap -- from and onto are the person's
+ * names for two sides of a rebase and not two interchangeable files
+ * (v4-merge3.md section 5).
+ *
+ * What it does claim, and what this asserts:
+ *
+ *   1. every conflict picked from gives from's lines exactly;
+ *   2. every conflict picked onto gives onto's lines exactly;
+ *   3. the lines the two sides share are stable chunks, and a stable
+ *      chunk's from and onto ranges hold the same lines, so a shared
+ *      line appears once and not twice;
+ *   4. every chunk's base range is empty, since there is no base.
+ *
+ * check_swap is NOT applied here, deliberately: property 4 of
+ * v4-merge3.md section 7 is stated over merge(base, from, onto) and
+ * the ruling above puts the add/add form outside it. Calling it here
+ * would be asserting the one thing the ruling says is not true.
+ */
+static void
+check_add_add_props(const char *tag, const char *from, size_t flen,
+    const char *onto, size_t olen)
+{
+	unsigned char *out;
+	struct zr_m3 m;
+	char err[256];
+	size_t len;
+	uint32_t i;
+
+	CHECK(zr_m3_open(&m, NULL, 0, (const unsigned char *)from, flen,
+	    (const unsigned char *)onto, olen, err, sizeof (err)) == 0);
+	CHECK(m.has_base == 0);
+	for (i = 0; i < m.nchunks; i++) {
+		const struct zr_m3_chunk *c = &m.chunks[i];
+
+		/* 4: no base, so no base range */
+		CHECK(c->base_lo == 0 && c->base_hi == 0);
+		/* the two-way compare has these two kinds and no other */
+		CHECK(c->kind == ZR_M3_STABLE || c->kind == ZR_M3_CONFLICT);
+		/* 3: a shared stretch is one stretch, the same on both sides */
+		if (c->kind != ZR_M3_STABLE)
+			continue;
+		CHECK(c->from_hi - c->from_lo == c->onto_hi - c->onto_lo);
+		CHECK(same_lines(&m.from, c->from_lo, c->from_hi, &m.onto,
+		    c->onto_lo, c->onto_hi));
+	}
+	check_partition(&m, tag);
+	check_kinds(&m, tag);
+	/* 1 and 2: each side, taken whole, is that side */
+	out = resolve(&m, ZR_M3_PICK_FROM, &len);
+	if (len != flen || memcmp(out, from, len) != 0) {
+		printf("%s: picking from does not give from\n", tag);
+		exit(1);
+	}
+	checks++;
+	free(out);
+	out = resolve(&m, ZR_M3_PICK_ONTO, &len);
+	if (len != olen || memcmp(out, onto, len) != 0) {
+		printf("%s: picking onto does not give onto\n", tag);
+		exit(1);
+	}
+	checks++;
+	free(out);
+	zr_m3_fini(&m);
+}
+
+/*
  * ZP95: add/add has no base to anchor against, so it is a two-way
  * compare of from against onto with a pick, under the same write rule,
  * and every chunk's base range is empty. An empty base OBJECT is a
@@ -832,6 +905,44 @@ check_add_add(void)
 	CHECK(len == 0);
 	free(out);
 	zr_m3_fini(&m);
+
+	/* and the four properties the form claims, over a handful of pairs */
+	check_add_add_props("add/add differ", "a\nb\nz\n", 6, "a\nc\nz\n",
+	    6);
+	check_add_add_props("add/add agree", "a\nb\n", 4, "a\nb\n", 4);
+	check_add_add_props("add/add nothing shared", "x\ny\n", 4,
+	    "p\nq\nr\n", 6);
+	check_add_add_props("add/add one side empty", "a\nb\n", 4, "", 0);
+	check_add_add_props("add/add both empty", "", 0, "", 0);
+	check_add_add_props("add/add shared run", "s\nt\nu\nF\n", 8,
+	    "s\nt\nu\nO\n", 8);
+	check_add_add_props("add/add no final newline", "a\nb", 3, "a\nc", 3);
+	/*
+	 * And the one thing the ruling says is true of the shortcut and
+	 * was denied by the note it replaced: the sequence is not the
+	 * mirror of itself under a swap. The review's own example, whose
+	 * shared line is b one way round and a the other.
+	 */
+	{
+		struct zr_m3 one, two;
+		char e1[256], e2[256];
+
+		CHECK(zr_m3_open(&one, NULL, 0, (const unsigned char *)"a\nb\n",
+		    4, (const unsigned char *)"b\na\n", 4, e1,
+		    sizeof (e1)) == 0);
+		CHECK(zr_m3_open(&two, NULL, 0, (const unsigned char *)"b\na\n",
+		    4, (const unsigned char *)"a\nb\n", 4, e2,
+		    sizeof (e2)) == 0);
+		CHECK(one.nchunks == 3 && two.nchunks == 3);
+		CHECK(one.chunks[1].kind == ZR_M3_STABLE);
+		CHECK(two.chunks[1].kind == ZR_M3_STABLE);
+		/* the shared line is b one way round and a the other */
+		CHECK(same_lines(&one.from, one.chunks[1].from_lo,
+		    one.chunks[1].from_hi, &two.from, two.chunks[1].from_lo,
+		    two.chunks[1].from_hi) == 0);
+		zr_m3_fini(&one);
+		zr_m3_fini(&two);
+	}
 }
 
 /*

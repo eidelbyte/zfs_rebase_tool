@@ -340,16 +340,23 @@ pk_sniff(const char *path)
 	    ZR_PK_O_TEXT);
 }
 
-/* What one tree holds at one name, and how big it is. */
+/*
+ * What one tree holds at one name, how big it is, and -- where the
+ * caller asks for it with a non-NULL idp -- the lstat itself, which is
+ * how the result tree's rows learn which file they are and how many
+ * names it has (v4-manifest.md section 2).
+ */
 static enum zr_pk_obj
 pk_object(const char *tree, const unsigned char *name, size_t namelen,
-    uint64_t *sizep)
+    uint64_t *sizep, struct stat *idp)
 {
 	enum zr_pk_obj kind;
 	struct stat st;
 	char *path;
 
 	*sizep = 0;
+	if (idp != NULL)
+		memset(idp, 0, sizeof (*idp));
 	path = pk_join(tree, name, namelen);
 	if (path == NULL)
 		return (ZR_PK_O_ABSENT);
@@ -357,6 +364,8 @@ pk_object(const char *tree, const unsigned char *name, size_t namelen,
 		free(path);
 		return (ZR_PK_O_ABSENT);
 	}
+	if (idp != NULL)
+		*idp = st;
 	if (st.st_size > 0)
 		*sizep = (uint64_t)st.st_size;
 	if (S_ISDIR(st.st_mode))
@@ -681,9 +690,19 @@ pk_build(struct zr_picker *pk, char *err, size_t errlen)
 			row->zk_group = line->zl_group;
 			row->zk_rec = pk_record(&pk->pk_man, line->zl_group);
 		}
-		for (t = 0; t < ZR_PK_NTREE; t++)
+		for (t = 0; t < ZR_PK_NTREE; t++) {
+			struct stat st;
+
 			row->zk_obj[t] = pk_object(pk->pk_tree[t],
-			    row->zk_name, row->zk_namelen, &row->zk_size[t]);
+			    row->zk_name, row->zk_namelen, &row->zk_size[t],
+			    t == ZR_PK_T_RESULT ? &st : NULL);
+			if (t != ZR_PK_T_RESULT ||
+			    row->zk_obj[t] == ZR_PK_O_ABSENT)
+				continue;
+			row->zk_dev = st.st_dev;
+			row->zk_ino = st.st_ino;
+			row->zk_nlink = (uint32_t)st.st_nlink;
+		}
 		row->zk_ty = pk_ty(row->zk_obj);
 		row->zk_fo[0] = pk_fo(row->zk_obj[ZR_PK_T_BASE],
 		    row->zk_obj[ZR_PK_T_FROM]);
@@ -1151,7 +1170,7 @@ pk_slurp(const char *path, unsigned char **bytesp, size_t *lenp, char *err,
  */
 static int
 pk_write_object(const char *path, const unsigned char *bytes, size_t len,
-    int *damaged, char *err, size_t errlen)
+    int *damaged, struct stat *idp, char *err, size_t errlen)
 {
 	struct stat st;
 	size_t at = 0;
@@ -1159,6 +1178,7 @@ pk_write_object(const char *path, const unsigned char *bytes, size_t len,
 	int fd;
 
 	*damaged = 0;
+	memset(idp, 0, sizeof (*idp));
 	fd = open(path, O_WRONLY | O_TRUNC | O_NOFOLLOW | O_NONBLOCK);
 	if (fd < 0) {
 		if (errno == ENOENT)
@@ -1182,6 +1202,13 @@ pk_write_object(const char *path, const unsigned char *bytes, size_t len,
 		(void) close(fd);
 		return (-1);
 	}
+	/*
+	 * Which file this turned out to be, from the descriptor that is
+	 * about to be written and not from what the row remembered: it
+	 * is what the caller matches the other rows against, and the
+	 * trees are the person's between the open and now.
+	 */
+	*idp = st;
 	*damaged = 1;
 	while (at < len) {
 		n = write(fd, bytes + at, len - at);
@@ -1204,6 +1231,68 @@ pk_write_object(const char *path, const unsigned char *bytes, size_t len,
 		return (-1);
 	}
 	return (0);
+}
+
+/*
+ * Every other name of the file just written: set it to keep too.
+ *
+ * A pool is one file and every name it has (v4-manifest.md section
+ * 2), and the merge went into the file, so each of its other names in
+ * the result tree is now the merged bytes whether or not anybody
+ * answered that row. Leaving those rows unanswered would put the
+ * person in front of names whose object had already changed under
+ * them; leaving them to be answered some other way would let the
+ * resolution say two things about one file. Ruled by the author on
+ * 2026-09-15, on the review's question 14: "fixing one named member
+ * of a linkpool should update all other members of that linkpool in
+ * the manifest".
+ *
+ * What pools two rows here is the FILE and not the group: the
+ * manifest groups by what conflicted, and a hand may have linked two
+ * names the tool never grouped together. The candidates are the rows
+ * whose recorded device and inode are the written object's, which is
+ * what the open paid for; each candidate is then lstat'd again,
+ * because the trees are the person's between the open and now and a
+ * stale record would answer a name that is no longer that file. The
+ * few names of one pool are what is re-read, not every row.
+ *
+ * The caller writes the document once for all of them, so the tree
+ * and the resolution still agree the way finding M9 asks. Returns how
+ * many OTHER rows were set.
+ */
+static uint32_t
+pk_pool_keep(struct zr_picker *pk, const struct zr_pk_row *written,
+    const struct stat *id)
+{
+	uint32_t i, n = 0;
+
+	for (i = 0; i < pk->pk_nrows; i++) {
+		struct zr_pk_row *row = &pk->pk_rows[i];
+		struct stat st;
+		char *path;
+
+		if (row == written)
+			continue;
+		if (row->zk_obj[ZR_PK_T_RESULT] == ZR_PK_O_ABSENT)
+			continue;
+		if (row->zk_dev != id->st_dev || row->zk_ino != id->st_ino)
+			continue;
+		path = pk_join(pk->pk_tree[ZR_PK_T_RESULT], row->zk_name,
+		    row->zk_namelen);
+		if (path == NULL)
+			continue;
+		if (lstat(path, &st) != 0 || !S_ISREG(st.st_mode) ||
+		    st.st_dev != id->st_dev || st.st_ino != id->st_ino) {
+			free(path);
+			continue;
+		}
+		free(path);
+		row->zk_nlink = (uint32_t)st.st_nlink;
+		if (row->zk_line->zl_choice != ZR_CH_KEEP)
+			pk_set(pk, row, ZR_CH_KEEP);
+		n++;
+	}
+	return (n);
 }
 
 /* The first conflicting hunk, or past the end where there is none. */
@@ -1425,7 +1514,8 @@ pk_merge_write(struct zr_picker *pk)
 	enum zr_pk_obj kind = row->zk_obj[ZR_PK_T_RESULT];
 	unsigned char *bytes = NULL;
 	size_t len = 0;
-	uint32_t first;
+	uint32_t first, names;
+	struct stat id;
 	char *path;
 	int rc, damaged = 0;
 
@@ -1461,7 +1551,8 @@ pk_merge_write(struct zr_picker *pk)
 		pk_say(pk, "%s: there is no result tree to write into", name);
 		return (ZR_PK_REDRAW);
 	}
-	rc = pk_write_object(path, bytes, len, &damaged, err, sizeof (err));
+	rc = pk_write_object(path, bytes, len, &damaged, &id, err,
+	    sizeof (err));
 	free(bytes);
 	free(path);
 	if (rc != 0) {
@@ -1475,14 +1566,20 @@ pk_merge_write(struct zr_picker *pk)
 		return (ZR_PK_REDRAW);
 	}
 	pk_set(pk, row, ZR_CH_KEEP);
+	names = 1 + pk_pool_keep(pk, row, &id);
 	if (zr_pk_write(pk, err, sizeof (err)) != 0) {
 		pk_say(pk, "%s: the merged bytes are written and the "
 		    "resolution could not be saved: %s", name, err);
 		zr_pk_merge_close(pk);
 		return (ZR_PK_REDRAW);
 	}
-	pk_say(pk, "%s: the merged bytes are written, the name reads keep "
-	    "and the resolution is saved", name);
+	if (names == 1)
+		pk_say(pk, "%s: the merged bytes are written, the name reads "
+		    "keep and the resolution is saved", name);
+	else
+		pk_say(pk, "%s: the merged bytes are written; the object has "
+		    "%u names here and all %u read keep, and the resolution "
+		    "is saved", name, names, names);
 	zr_pk_merge_close(pk);
 	return (ZR_PK_REDRAW);
 }

@@ -275,6 +275,17 @@ w_dir(const struct world *w, int t, const char *rel)
 	CHECK(mkdir(path, 0755) == 0);
 }
 
+/* A second name for the object already at one, in the same tree. */
+static void
+w_hardlink(const struct world *w, int t, const char *rel, const char *to)
+{
+	char path[PATHMAX], target[PATHMAX];
+
+	w_path(w, t, rel, path, sizeof (path));
+	w_path(w, t, to, target, sizeof (target));
+	CHECK(link(target, path) == 0);
+}
+
 static void
 w_link(const struct world *w, int t, const char *rel, const char *to)
 {
@@ -2259,6 +2270,171 @@ test_merge_writeshort(void)
 }
 
 /*
+ * ZP139 and ZP140: a merged object with more than one name in the
+ * result tree.
+ *
+ * A pool is one file and every name it has (v4-manifest.md section
+ * 2), and the merge is written into the file: every other name of it
+ * sees the merged bytes whether or not anybody answered that row. So
+ * w sets every row whose result object is that same file to keep and
+ * the one document write carries all of them. Ruled by the author on
+ * 2026-09-15, on the review's question 14: "fixing one named member
+ * of a linkpool should update all other members of that linkpool in
+ * the manifest".
+ *
+ * The world: /p and /q are one file in the result tree and /r is its
+ * own, all three in one group, all three text on the three sides. The
+ * three sides hold three separate files at each name -- what makes
+ * the pool a pool is the RESULT tree, which is where the write lands.
+ */
+static const char man_pool[] =
+	M_HDR("0", "1")
+	"/\n    p conflict 1\n    q conflict 1\n    r conflict 1\n    ..\n"
+	REC("1", "changed-both", "/p and its names changed on both sides");
+
+static const char res_pool[] =
+	R_HDR("3", "3")
+	"/\n    p conflict 1 -\n    q conflict 1 -\n    r conflict 1 -\n"
+	"    ..\n";
+
+#define	P_POOL		0		/* the rows, in the file's order */
+#define	Q_POOL		1
+#define	R_POOL		2
+
+static void
+build_pool(struct world *w)
+{
+	int t;
+
+	world_docs(w, man_pool, res_pool);
+	for (t = ZR_PK_T_BASE; t <= ZR_PK_T_ONTO; t++) {
+		const char *mid = t == ZR_PK_T_BASE ? "base" :
+		    (t == ZR_PK_T_FROM ? "from" : "onto");
+		char text[64];
+
+		(void) snprintf(text, sizeof (text), "one\n%s\nthree\n",
+		    mid);
+		w_text(w, t, "/p", text);
+		w_text(w, t, "/q", text);
+		w_text(w, t, "/r", text);
+	}
+	/* the result tree: /p and /q one file, /r another */
+	w_text(w, ZR_PK_T_RESULT, "/p", "one\nbase\nthree\n");
+	w_hardlink(w, ZR_PK_T_RESULT, "/q", "/p");
+	w_text(w, ZR_PK_T_RESULT, "/r", "one\nbase\nthree\n");
+}
+
+static void
+test_merge_pool(void)
+{
+	struct stat pst, qst, rst;
+	struct zr_picker pk;
+	const char *msg;
+	struct world w;
+	size_t len;
+	char *got;
+
+	world_init(&w);
+	build_pool(&w);
+	w_stat(&w, ZR_PK_T_RESULT, "/p", &pst);
+	w_stat(&w, ZR_PK_T_RESULT, "/q", &qst);
+	w_stat(&w, ZR_PK_T_RESULT, "/r", &rst);
+	/* the world is the world the case is about */
+	CHECK(pst.st_ino == qst.st_ino && pst.st_dev == qst.st_dev);
+	CHECK(pst.st_nlink == 2);
+	CHECK(rst.st_ino != pst.st_ino);
+	open_ok("pool", &w, &pk);
+	drain(&pk);
+	/* the row knows how many names its result object has (ZP140) */
+	CHECK(zr_pk_row(&pk, P_POOL)->zk_nlink == 2);
+	CHECK(zr_pk_row(&pk, Q_POOL)->zk_nlink == 2);
+	CHECK(zr_pk_row(&pk, R_POOL)->zk_nlink == 1);
+	(void) merge_on(&pk, P_POOL);
+	CHECK(zr_pk_key(&pk, ZR_PK_PICK_FROM) == ZR_PK_REDRAW);
+	CHECK(zr_pk_key(&pk, ZR_PK_WRITE) == ZR_PK_REDRAW);
+	/* ZP139: both names of the file are keep, the third name is not */
+	CHECK(zr_pk_choice(zr_pk_row(&pk, P_POOL)) == ZR_CH_KEEP);
+	CHECK(zr_pk_choice(zr_pk_row(&pk, Q_POOL)) == ZR_CH_KEEP);
+	CHECK(zr_pk_choice(zr_pk_row(&pk, R_POOL)) == ZR_CH_NONE);
+	/* and the one document write carried both */
+	CHECK(zr_pk_dirty(&pk) == 0);
+	got = slurp(w.w_res, &len);
+	CHECK(got != NULL);
+	CHECK(strstr(got, "    p conflict 1 keep\n") != NULL);
+	CHECK(strstr(got, "    q conflict 1 keep\n") != NULL);
+	CHECK(strstr(got, "    r conflict 1 -\n") != NULL);
+	CHECK(strstr(got, "#unanswered 1\n") != NULL);
+	free(got);
+	/* the message says how many names were set */
+	msg = zr_pk_msg(&pk);
+	CHECK(msg != NULL && strstr(msg, "/p") != NULL);
+	CHECK(strstr(msg, "2 names") != NULL);
+	/* the bytes are under both names, since they are one file */
+	got = w_slurp(&w, ZR_PK_T_RESULT, "/q", &len);
+	CHECK(got != NULL);
+	same("the second name", got, len, "one\nfrom\nthree\n",
+	    strlen("one\nfrom\nthree\n"));
+	free(got);
+	/* and the name that is its own file was not written at all */
+	got = w_slurp(&w, ZR_PK_T_RESULT, "/r", &len);
+	CHECK(got != NULL);
+	same("the third name", got, len, "one\nbase\nthree\n",
+	    strlen("one\nbase\nthree\n"));
+	free(got);
+	zr_pk_fini(&pk);
+	world_fini(&w);
+}
+
+/*
+ * ZP139's other half: a row of the same group whose result object is
+ * a different file is not touched, and a row of ANOTHER group whose
+ * result object is the same file is, since what pools them is the
+ * file and not the group. The second is the sharper case: the manifest
+ * groups by what conflicted, and a hand may have linked two names the
+ * tool never grouped together.
+ */
+static void
+test_merge_pool_group(void)
+{
+	struct zr_picker pk;
+	struct world w;
+	size_t len;
+	char *got;
+
+	world_init(&w);
+	build_merge(&w);
+	/* /add.txt is group 1 and /m2.txt group 3; link them in the result */
+	{
+		char path[PATHMAX];
+
+		w_path(&w, ZR_PK_T_RESULT, "/add.txt", path, sizeof (path));
+		CHECK(unlink(path) == 0);
+	}
+	w_hardlink(&w, ZR_PK_T_RESULT, "/add.txt", "/m2.txt");
+	open_ok("pool across groups", &w, &pk);
+	drain(&pk);
+	CHECK(zr_pk_row(&pk, G_ADD)->zk_nlink == 2);
+	(void) merge_on(&pk, G_M2);
+	CHECK(zr_pk_key(&pk, ZR_PK_PICK_FROM) == ZR_PK_REDRAW);
+	CHECK(zr_pk_key(&pk, ZR_PK_NEXT) == ZR_PK_REDRAW);
+	CHECK(zr_pk_key(&pk, ZR_PK_PICK_FROM) == ZR_PK_REDRAW);
+	CHECK(zr_pk_key(&pk, ZR_PK_WRITE) == ZR_PK_REDRAW);
+	CHECK(zr_pk_choice(zr_pk_row(&pk, G_M2)) == ZR_CH_KEEP);
+	CHECK(zr_pk_choice(zr_pk_row(&pk, G_ADD)) == ZR_CH_KEEP);
+	/* the other two rows are other files and did not move */
+	CHECK(zr_pk_choice(zr_pk_row(&pk, G_DEL)) == ZR_CH_NONE);
+	CHECK(zr_pk_choice(zr_pk_row(&pk, G_ONE)) == ZR_CH_NONE);
+	got = slurp(w.w_res, &len);
+	CHECK(got != NULL);
+	CHECK(strstr(got, "    add.txt conflict 1 keep\n") != NULL);
+	CHECK(strstr(got, "    m2.txt conflict 3 keep\n") != NULL);
+	CHECK(strstr(got, "    del.txt conflict 2 -\n") != NULL);
+	free(got);
+	zr_pk_fini(&pk);
+	world_fini(&w);
+}
+
+/*
  * ZP137, the half where the document cannot be written. Screen 2's w
  * writes the merged bytes and then the document, so that the tree and
  * the resolution never disagree on disk (the author, 2026-09-15, on
@@ -3918,6 +4094,66 @@ test_pty_unsaved(void)
 }
 
 /*
+ * ZP139 and ZP140 on a pty: the whole of the pool write through the
+ * standalone binary, and the link count in the detail line.
+ *
+ * One session: the list opens on /p, whose result object has two
+ * names, so the detail line says so; Enter, f, w writes the merge and
+ * both rows with it; q leaves with 1, since the document was saved.
+ * The document is read back from disk afterwards. A second session
+ * over a world with no links at all says nothing about names, which
+ * is what keeps the first assertion from passing on a fixed string.
+ */
+static void
+test_pty_pool(void)
+{
+	static const char *const keys[] = { "\r", "f", "w", "q", NULL };
+	static const char links[] = "under 2 names";
+	struct child c;
+	struct world w;
+	struct pty y;
+	size_t len;
+	char *got;
+
+	if (picker_bin() == NULL) {
+		printf("skip ZP139/ZP140: zfs_rebase-picker is not built\n");
+		return;
+	}
+	if (pty_open(&y) != 0) {
+		printf("skip ZP139/ZP140: no pty here (%s)\n",
+		    strerror(errno));
+		return;
+	}
+	world_init(&w);
+	build_pool(&w);
+	memset(&c, 0, sizeof (c));
+	c.c_term = "xterm";
+	c.c_keys = keys;
+	pty_drive(&y, &w, &c, &pty_out);
+	CHECK(WIFEXITED(pty_out.r_status));
+	CHECK(WEXITSTATUS(pty_out.r_status) == 1);
+	/* ZP140: the detail line of the row the list opened on */
+	CHECK(find(pty_out.r_buf, pty_out.r_len, links) != NULL);
+	/* ZP139: both names of the one file, on the disk */
+	got = slurp(w.w_res, &len);
+	CHECK(got != NULL);
+	CHECK(strstr(got, "    p conflict 1 keep\n") != NULL);
+	CHECK(strstr(got, "    q conflict 1 keep\n") != NULL);
+	CHECK(strstr(got, "    r conflict 1 -\n") != NULL);
+	free(got);
+	world_fini(&w);
+
+	/* a world of single names says nothing about names at all */
+	world_init(&w);
+	build_merge(&w);
+	c.c_keys = keys;
+	pty_drive(&y, &w, &c, &pty_out);
+	CHECK(find(pty_out.r_buf, pty_out.r_len, links) == NULL);
+	world_fini(&w);
+	pty_close(&y);
+}
+
+/*
  * ZP114: the tool's child and the standalone binary are the same
  * objects. One key sequence over one pair of documents, once through
  * the binary and once through zr_picker_main called in a child this
@@ -4059,6 +4295,8 @@ main(void)
 	test_merge_notregular();
 	test_merge_writeshort();
 	test_merge_savefail();
+	test_merge_pool();
+	test_merge_pool_group();
 	test_unsaved_count();
 	test_tree_unreadable();
 	test_many_groups();
@@ -4073,6 +4311,7 @@ main(void)
 	test_pty_draw();
 	test_pty_merge();
 	test_pty_merge_saves();
+	test_pty_pool();
 	test_pty_unsaved();
 	test_pty_same_child();
 	test_no_terminal();
