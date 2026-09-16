@@ -359,6 +359,17 @@ drop_pool() {
 # run directory is not among them -- done took it -- so the reset
 # asserts it is gone instead of removing it.
 reset_pool() {
+	# The one case that made onto read-only itself (roinit, in
+	# kill_case) has had the tool put that back at the hand-back and
+	# has asserted it by then (wro). The baseline this reset proves
+	# is the pool's own, so the case's setting goes here, whichever
+	# of the case's returns brought us -- the finished branch resets
+	# long before the case's last line (the box, 2026-09-16).
+	if [ "${roinit:-off}" = on ]; then
+		zfs inherit readonly "$POOL/onto" || \
+		    fail "cannot put onto's readonly back to the baseline"
+		roinit=off
+	fi
 	"$bin" --abort "$POOL/result" >/dev/null 2>&1
 	"$bin" --abort "$POOL/onto" >/dev/null 2>&1
 	if zfs list -H -o name "$POOL/result" >/dev/null 2>&1; then
@@ -927,15 +938,6 @@ kill_case() {
 	fi
 	again "$tmp/again" "$cmnt"
 	echo "ok   $case_id: at ${wstate:-no gate}, readonly $wro; --continue -> ${wend:-done} (exit $st), stage 1 idempotent"
-	# The read-only case made onto read-only itself, and the tool
-	# put that back at the hand-back as it should (wro above); the
-	# harness's baseline is the pool's own default, which the reset
-	# asserts, so the case's own setting goes before the reset asks
-	# (the box, 2026-09-16).
-	if [ "$roinit" = on ]; then
-		zfs inherit readonly "$POOL/onto" || \
-		    fail "cannot put onto's readonly back to the baseline"
-	fi
 	reset_pool
 }
 
