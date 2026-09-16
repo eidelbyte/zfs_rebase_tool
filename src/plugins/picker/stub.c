@@ -36,3 +36,10 @@ zr_picker_main(int argc, char **argv)
 	    "name an editor with -i CMD\n");
 	return (2);
 }
+
+void
+zr_picker_arm_refresh(int (*fn)(void *, char *, size_t), void *arg)
+{
+	(void) fn;
+	(void) arg;
+}

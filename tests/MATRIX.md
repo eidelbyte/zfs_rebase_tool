@@ -1855,6 +1855,13 @@ tests of their own and only wanted a row.
 | ZP142 | a self-conflicted directory row -- a directory that IS a conflict in the manifest (zk_isdir and ZR_PK_L_CONFLICT) -- answers like any name: f, o, k and - work on it, its CHOICE column shows its own answer, and the unanswered count includes it when it reads "-" | covered: check_picker.c, the existing /d row in the main fixture, which is ZR_PK_L_CONFLICT and takes f, o, k and - |
 | ZP143 | g (next of group) on a scoping directory row is refused, since the row has no group: it pools with nobody and the manifest is what says a group is | covered: check_picker.c, g on a scoping directory, which says it is in no group |
 | ZP144 | a scoping directory row on screen 1 on a pty: the CHOICE column shows "/" and not "-", and a key on it draws a message in the key bar naming the row | covered: check_picker.c on a pty, a session with a scoping directory, the "/" asserted in the drawn bytes and f refused with a message |
+| ZP145 | r with no unsaved answers: the documents are re-read from disk and the rows are rebuilt, the cursor stays on the same name, the key bar says how many rows and how many unanswered | covered: check_picker.c, a reload after a change to the result tree between open and reload |
+| ZP146 | r with unsaved answers: the key bar asks s/d/cancel; s saves then reloads, d discards and reloads, any other key cancels and the rows are left as they were | covered: check_picker.c, the question answered each of the three ways |
+| ZP147 | a name that vanished between open and reload: the cursor moves to the nearest row and the count reflects the new set | covered: check_picker.c, a name removed from the resolution between open and reload |
+| ZP148 | the refresh hook absent (the standalone binary): r re-reads the documents only and says so | covered: check_picker.c, the model with no hook armed, which takes the document-only path |
+| ZP149 | the refresh hook failing: the rows are left as they were and a line naming the failure is queued | covered: check_picker.c, a hook that returns -1 with a reason |
+| ZP150 | r on a pty: the key, the question, and the message after the reload | covered: check_picker.c on a pty, a session that presses r with nothing unsaved and sees the count change |
+| ZP151 | the tool-side refresh hook (run.c): the hook re-walks the trees and rewrites the resolution as the gate does, so the picker can see drift a hand made while it was suspended | planned: box, run-resolution.sh, a case beside the -i cases: suspend the picker, chmod a name at the private mount, resume, r, the drift row appears |
 
 ## Positive-proof cells
 

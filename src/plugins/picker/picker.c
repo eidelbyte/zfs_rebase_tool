@@ -25,6 +25,7 @@
  * path of ours.
  */
 
+#include <stddef.h>
 #include <stdio.h>
 
 #include "picker.h"
@@ -34,6 +35,21 @@
 
 /* One line, and never while curses is up. */
 #define	PK_ERRLEN	512
+
+/*
+ * The refresh hook, armed by zr_picker_arm_refresh before the entry
+ * and taken by it.  Static: the child is a fork, so this is its own
+ * copy, and one launch is in flight at a time.
+ */
+static int (*pk_armed_refresh)(void *, char *, size_t);
+static void *pk_armed_arg;
+
+void
+zr_picker_arm_refresh(int (*fn)(void *, char *, size_t), void *arg)
+{
+	pk_armed_refresh = fn;
+	pk_armed_arg = arg;
+}
 
 int
 zr_picker_main(int argc, char **argv)
@@ -48,6 +64,16 @@ zr_picker_main(int argc, char **argv)
 		(void) fprintf(stderr, "%s: %s\n", PK_PROG, err);
 		zr_pk_fini(&pk);
 		return (2);
+	}
+	/*
+	 * The refresh hook, armed by the launcher in the forked child
+	 * before this call.  The standalone binary does not arm one,
+	 * so its r key re-reads the documents only.
+	 */
+	if (pk_armed_refresh != NULL) {
+		zr_pk_set_refresh(&pk, pk_armed_refresh, pk_armed_arg);
+		pk_armed_refresh = NULL;
+		pk_armed_arg = NULL;
 	}
 	rc = zr_pk_screen(&pk, err, sizeof (err));
 	while ((msg = zr_pk_msg(&pk)) != NULL)

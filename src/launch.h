@@ -56,6 +56,21 @@ struct zr_launch {
 	 */
 	void		(*opened)(pid_t pid, void *arg);
 	void		*arg;
+	/*
+	 * The refresh hook, called by the built-in picker's r key in
+	 * the forked child.  It re-walks the trees and rewrites the
+	 * resolution as the gate does, so the picker can re-read it
+	 * and show any drift a hand made while it was suspended.
+	 * Returns 0, or -1 with one line in err.  NULL in the
+	 * standalone binary and in an -i CMD editor, whose r key
+	 * re-reads the documents only.
+	 *
+	 * It runs in the child's copy of the tool's memory, so
+	 * nothing it opens leaks to the parent: the parent reads the
+	 * file back when the child exits, as it does today.
+	 */
+	int		(*refresh)(void *rarg, char *err, size_t errlen);
+	void		*rarg;
 };
 
 /* How many arguments the built-in child is given, argv[0] counted. */

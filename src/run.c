@@ -3220,6 +3220,113 @@ session_arm(struct session_arg *sa, struct zr_launch *lp, char *path,
 	}
 }
 
+/*
+ * The refresh hook for the fresh run's built-in picker.
+ *
+ * The same sequence as the resume path's hook, over the fresh run's
+ * own structures.  It runs in the forked child's copy of struct run;
+ * see the comment above resume_refresh for why that is safe.
+ *
+ * The fresh run's trees were released (release_trees) before the
+ * child was forked.  The hook re-walks them with read_trees, reads the
+ * resolution back from the file the picker has been editing, runs
+ * the verify, adds drift and put-back lines, writes the resolution,
+ * and releases the trees again.
+ */
+static int
+run_refresh(void *arg, char *err, size_t errlen)
+{
+	struct run *r = arg;
+	struct zr_verify_report rep;
+	struct zr_resolution res;
+	struct zr_parsed man;
+	FILE *mf, *rf;
+	char e[512];
+	uint32_t back = 0;
+	int rc = 0;
+
+	memset(&rep, 0, sizeof (rep));
+	memset(&res, 0, sizeof (res));
+	memset(&man, 0, sizeof (man));
+
+	/* Re-walk all four trees. */
+	if (read_trees(r) != 0) {
+		(void) snprintf(err, errlen, "%s", r->err);
+		return (-1);
+	}
+
+	/* Read the manifest from disk. */
+	mf = fopen(r->manpath, "r");
+	if (mf == NULL) {
+		(void) snprintf(err, errlen, "%s: %s", r->manpath,
+		    strerror(errno));
+		release_trees(r);
+		return (-1);
+	}
+	if (zr_manifest_parse(mf, &man, e, sizeof (e)) != 0) {
+		(void) fclose(mf);
+		(void) snprintf(err, errlen, "%s: %s", r->manpath, e);
+		release_trees(r);
+		return (-1);
+	}
+	(void) fclose(mf);
+
+	/* Read the resolution from disk. */
+	rf = fopen(r->respath, "r");
+	if (rf == NULL) {
+		(void) snprintf(err, errlen, "%s: %s", r->respath,
+		    strerror(errno));
+		zr_parsed_fini(&man);
+		release_trees(r);
+		return (-1);
+	}
+	if (zr_resolution_parse(rf, &res, e, sizeof (e)) != 0) {
+		(void) fclose(rf);
+		(void) snprintf(err, errlen, "%s: %s", r->respath, e);
+		zr_parsed_fini(&man);
+		release_trees(r);
+		return (-1);
+	}
+	(void) fclose(rf);
+
+	/* Classify the result against the manifest. */
+	rc = zr_verify_with(&man, &res, r->oracle, &r->wo, &r->wf,
+	    &r->wr, 0, &rep, e, sizeof (e));
+	if (rc != 0) {
+		(void) snprintf(err, errlen, "%s", e);
+		goto out;
+	}
+
+	/* Put back conflict lines the manifest marks that are missing. */
+	if (zr_conflicts_back(&man, &res, r->names,
+	    take_choice(run_take(r)), &back, e, sizeof (e)) != 0) {
+		(void) snprintf(err, errlen, "%s", e);
+		rc = -1;
+		goto out;
+	}
+
+	/*
+	 * Write the resolution if anything changed (drift or
+	 * put-back).  The write is the atomic sibling-and-rename the
+	 * library uses, so the picker's next re-read finds one whole
+	 * document or the other.
+	 */
+	if (rep.zv_ndiffs > 0 || back > 0) {
+		if (zr_doc_write(r->respath, emit_resolution, &res,
+		    r->err, sizeof (r->err)) != 0) {
+			(void) snprintf(err, errlen, "%s", r->err);
+			rc = -1;
+		}
+	}
+
+out:
+	zr_verify_report_fini(&rep);
+	zr_resolution_fini(&res);
+	zr_parsed_fini(&man);
+	release_trees(r);
+	return (rc);
+}
+
 static int
 run_interactive(struct run *r)
 {
@@ -3242,6 +3349,16 @@ run_interactive(struct run *r)
 	lp.from = fromdir;
 	lp.onto = ontodir;
 	lp.result = r->workmnt;
+	/*
+	 * The refresh hook for the built-in picker's r key: re-walk
+	 * the trees and rewrite the resolution with any drift a hand
+	 * made while the picker was suspended.  An -i CMD editor has
+	 * no hook (its child execs, so the pointer would be lost).
+	 */
+	if (r->o.editor == NULL) {
+		lp.refresh = run_refresh;
+		lp.rarg = r;
+	}
 	/*
 	 * And the session written down for the child's life, as the
 	 * resume path's child has: a start that reaches this gate in
@@ -6578,6 +6695,59 @@ input_dir(struct resume *s, int which, char *out, size_t outlen)
 	snapdir(out, outlen, mnt, s->found[which]);
 }
 
+/*
+ * The refresh hook for the resume path's built-in picker (ruling 30 of
+ * 2026-09-15, tracker issue picker-refresh).
+ *
+ * It runs in the forked child's copy of struct resume, so nothing it
+ * opens leaks to the parent: the child holds a copy of the parent's
+ * memory, and what it opens and walks dies with it.  The only shared
+ * thing is the resolution file on disk, which the parent re-reads
+ * after the child exits as it already does.  The document this writes
+ * is the same the gate would write -- the same functions, the same
+ * drift-and-put-back sequence -- so the parent's own gate pass on
+ * return finds nothing more to add.
+ */
+static int
+resume_refresh(void *arg, char *err, size_t errlen)
+{
+	struct resume *s = arg;
+	struct zr_verify_report rep;
+	int rc;
+
+	memset(&rep, 0, sizeof (rep));
+
+	/* Walk the trees again: they were closed before the child. */
+	if (walk_trees(s) != 0) {
+		(void) snprintf(err, errlen, "%s", s->err);
+		return (-1);
+	}
+
+	/*
+	 * The gate's classification and document half, exactly as an
+	 * arrival at the gate makes them: classify the result against
+	 * the manifest, put back any conflict lines the manifest marks
+	 * that the resolution lacks, add any drift lines the classify
+	 * found, and write the resolution.  These are the same
+	 * functions conflicts_check calls.
+	 */
+	rc = classify(s, &s->man, &rep);
+	if (rc != 0) {
+		zr_verify_report_fini(&rep);
+		close_trees(s);
+		(void) snprintf(err, errlen, "%s", s->err);
+		return (-1);
+	}
+	rc = add_drift(s, &rep);
+	zr_verify_report_fini(&rep);
+	close_trees(s);
+	if (rc != 0) {
+		(void) snprintf(err, errlen, "%s", s->err);
+		return (-1);
+	}
+	return (0);
+}
+
 static int
 resume_interactive(struct resume *s)
 {
@@ -6595,6 +6765,15 @@ resume_interactive(struct resume *s)
 	lp.from = s->sidedir[ZS_FROM];
 	lp.onto = s->sidedir[ZS_ONTO];
 	lp.result = s->workmnt;
+	/*
+	 * The refresh hook for the built-in picker's r key: re-walk
+	 * the trees and rewrite the resolution with any drift.  An
+	 * -i CMD editor has no hook (its child execs).
+	 */
+	if (s->editor == NULL) {
+		lp.refresh = resume_refresh;
+		lp.rarg = s;
+	}
 	session_arm(&sa, &lp, spath, sizeof (spath), s->rundir, "continue",
 	    s->editor);
 	/*

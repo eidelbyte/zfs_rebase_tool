@@ -34,6 +34,15 @@
 int zr_picker_main(int argc, char **argv);
 
 /*
+ * Arm a refresh hook the next zr_picker_main will carry.  Called in
+ * the forked child before the entry, so that the standalone binary
+ * -- which does not call it -- has none and its r key re-reads the
+ * documents only.  The hook and arg are kept in a static until the
+ * entry takes them, then cleared.
+ */
+void zr_picker_arm_refresh(int (*fn)(void *, char *, size_t), void *arg);
+
+/*
  * altscreen.c: does the terminal database give the terminal curses
  * is on an alternate screen (smcup)? Asked after newterm.
  */
@@ -76,6 +85,7 @@ enum zr_pk_key {
 	ZR_PK_SAVE,	/* s: write and stay */
 	ZR_PK_WRITE,	/* w: write and go, when nothing is unanswered */
 	ZR_PK_QUIT,	/* q */
+	ZR_PK_REFRESH,	/* r: re-read the documents (and the hook, if any) */
 	/*
 	 * Screen 2's own, which mean nothing on the list and which the
 	 * list's keys mean nothing beside: while a merge is open every
@@ -315,6 +325,14 @@ struct zr_picker {
 	uint32_t		pk_nmsg;
 	uint32_t		pk_msghead;
 	struct zr_pk_merge	pk_merge;
+	/*
+	 * The refresh hook: called by the r key to re-walk the trees
+	 * and rewrite the resolution.  NULL in the standalone binary,
+	 * whose r re-reads the two documents only.
+	 */
+	int			(*pk_refresh)(void *arg, char *err,
+				    size_t errlen);
+	void			*pk_refresharg;
 };
 
 /*
@@ -340,6 +358,24 @@ struct zr_picker {
  */
 int zr_pk_open(struct zr_picker *out, int argc, char **argv, char *err,
     size_t errlen);
+
+/*
+ * Arm the refresh hook, which the r key calls before re-reading the
+ * documents.  The built-in child (src/launch.c) sets this from the
+ * struct zr_launch's refresh field; the standalone binary does not.
+ */
+void zr_pk_set_refresh(struct zr_picker *pk,
+    int (*fn)(void *, char *, size_t), void *arg);
+
+/*
+ * Re-read the manifest and the resolution from disk and rebuild the
+ * rows: a pure reload of the two documents, keeping the cursor on
+ * the same name where it still exists and on the nearest row where
+ * it does not.  Returns the number of rows now, for a message.
+ * If the hook is armed, it is called first and a failure is one
+ * queued line with the rows left as they were.
+ */
+int zr_pk_reload(struct zr_picker *pk, int call_hook);
 
 /*
  * One key. Nothing else changes a choice or the cursor.

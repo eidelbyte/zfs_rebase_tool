@@ -85,7 +85,7 @@
 
 /* The key bar of the mockup, drawn when there is nothing to say. */
 #define	PK_KEYS		"up/dn move  f/o/k choose  - clear  enter open " \
-			"(text)  g group  s save  w write+continue  q/esc quit"
+			"(text)  g group  r refresh  s save  w write  q quit"
 
 /* The title in the top rule. */
 #define	PK_TITLE	" zfs_rebase: conflicts "
@@ -1960,6 +1960,8 @@ pk_map(int c)
 	case '\r':
 	case '\n':
 		return (ZR_PK_ENTER);
+	case 'r':
+		return (ZR_PK_REFRESH);
 	case 's':
 		return (ZR_PK_SAVE);
 	case 'w':
@@ -2215,6 +2217,65 @@ pk_loop(struct zr_picker *pk)
 		k = pk_map(c);
 		if (k < 0)
 			continue;
+		/*
+		 * r with unsaved answers: the key bar asks once.
+		 * s saves then reloads, d discards and reloads,
+		 * any other key cancels.  With nothing unsaved
+		 * the key falls through to the model.
+		 */
+		if (k == ZR_PK_REFRESH && zr_pk_dirty(pk) > 0) {
+			char err2[ZR_PK_MSGLEN];
+			int bary;
+
+			bary = g.g_listy + g.g_listh;
+			if (g.g_detail != 0)
+				bary += PK_H_DETAIL;
+			(void) snprintf(err2, sizeof (err2),
+			    "%u unsaved: s save+reload  d discard+reload"
+			    "  other cancel",
+			    zr_pk_dirty(pk));
+			pk_draw_bar(bary, err2);
+			(void) refresh();
+			c = getch();
+			if (c == 's') {
+				if (zr_pk_write(pk, err2,
+				    sizeof (err2)) != 0) {
+					zr_pk_note(pk, err2);
+					note = zr_pk_last(pk);
+					continue;
+				}
+				(void) zr_pk_reload(pk, 1);
+				now = zr_pk_last(pk);
+				if (now == NULL) {
+					(void) snprintf(err2, sizeof (err2),
+					    "%u names, %u unanswered "
+					    "after save+reload",
+					    zr_pk_counts(pk)->zc_names,
+					    zr_pk_counts(pk)->
+					    zc_unanswered);
+					zr_pk_note(pk, err2);
+					now = zr_pk_last(pk);
+				}
+				note = now;
+			} else if (c == 'd') {
+				(void) zr_pk_reload(pk, 1);
+				now = zr_pk_last(pk);
+				if (now == NULL) {
+					(void) snprintf(err2, sizeof (err2),
+					    "%u names, %u unanswered "
+					    "after discard+reload",
+					    zr_pk_counts(pk)->zc_names,
+					    zr_pk_counts(pk)->
+					    zc_unanswered);
+					zr_pk_note(pk, err2);
+					now = zr_pk_last(pk);
+				}
+				note = now;
+			} else {
+				note = NULL;
+			}
+			continue;
+		}
 		before = zr_pk_last(pk);
 		now = NULL;
 		switch (zr_pk_key(pk, (enum zr_pk_key)k)) {

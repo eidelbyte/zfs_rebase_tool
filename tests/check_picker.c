@@ -2838,6 +2838,225 @@ test_dirs(void)
 
 /*
  * ---------------------------------------------------------------
+ * Refresh: ZP145 to ZP149 (picker-refresh).
+ * ---------------------------------------------------------------
+ */
+
+/* A hook for testing: records that it was called. */
+struct fake_hook {
+	int	called;
+	int	fail;
+};
+
+static int
+fake_refresh(void *arg, char *err, size_t errlen)
+{
+	struct fake_hook *h = arg;
+
+	h->called = 1;
+	if (h->fail) {
+		(void) snprintf(err, errlen, "fake hook failed on purpose");
+		return (-1);
+	}
+	return (0);
+}
+
+/*
+ * ZP145: r with no unsaved answers.  The documents are re-read and
+ * the rows rebuilt; the cursor stays on the same name; the counts
+ * reflect the new state.
+ *
+ * The test changes the resolution on disk between open and reload:
+ * an answer set to "from" in the file, so the picker sees one fewer
+ * unanswered name after the reload.
+ */
+static void
+test_reload(void)
+{
+	struct zr_picker pk;
+	struct world w;
+
+	static const char res2[] =
+	    R_HDR("11", "5")
+	    "/\n"
+	    "    a.txt conflict 1 from\n"
+	    "    add.txt conflict 2 keep\n"
+	    "    bin.dat conflict 3 onto\n"
+	    "    d/ conflict 4 from\n"
+	    "        f.txt conflict 4 from\n"
+	    "        ..\n"
+	    "    del.txt conflict 5 -\n"
+	    "    hand.txt conflict 42 -\n"
+	    "    k.txt drift keep\n"
+	    "    lnk conflict 7 -\n"
+	    "    pipe conflict 8 -\n"
+	    "    sock conflict 9 -\n"
+	    "    ..\n";
+
+	world_init(&w);
+	build_main(&w);
+	open_ok("reload", &w, &pk);
+	drain(&pk);
+
+	CHECK(zr_pk_nrows(&pk) == R_N);
+	CHECK(zr_pk_counts(&pk)->zc_unanswered == 6);
+	CHECK(zr_pk_choice(zr_pk_row(&pk, R_A)) == ZR_CH_NONE);
+
+	/* Move cursor to /a.txt (row 0), which should survive the reload */
+	(void) zr_pk_key(&pk, ZR_PK_TOP);
+	CHECK(zr_pk_cursor(&pk) == 0);
+	CHECK(named(zr_pk_row(&pk, zr_pk_cursor(&pk)), "/a.txt"));
+
+	/* Rewrite the resolution on disk: /a.txt now says "from" */
+	put(w.w_res, res2, strlen(res2));
+
+	/* Reload */
+	CHECK(zr_pk_reload(&pk, 0) == 0);
+
+	/* ZP145: the rows reflect the new state */
+	CHECK(zr_pk_nrows(&pk) == R_N);
+	CHECK(zr_pk_counts(&pk)->zc_unanswered == 5);
+	CHECK(zr_pk_choice(zr_pk_row(&pk, R_A)) == ZR_CH_FROM);
+
+	/* The cursor stayed on /a.txt */
+	CHECK(zr_pk_cursor(&pk) == 0);
+	CHECK(named(zr_pk_row(&pk, zr_pk_cursor(&pk)), "/a.txt"));
+
+	zr_pk_fini(&pk);
+	world_fini(&w);
+}
+
+/*
+ * ZP147: a name vanished between open and reload.  The resolution
+ * on disk has fewer lines; the cursor moves to the nearest row.
+ */
+static void
+test_reload_vanished(void)
+{
+	struct zr_picker pk;
+	struct world w;
+
+	static const char res_short[] =
+	    R_HDR("2", "1")
+	    "/\n"
+	    "    a.txt conflict 1 -\n"
+	    "    bin.dat conflict 2 onto\n"
+	    "    ..\n";
+
+	/*
+	 * A matching manifest with just two conflicts.
+	 */
+	static const char man_short[] =
+	    M_HDR("0", "2")
+	    "/\n"
+	    "    a.txt conflict 1\n"
+	    "    bin.dat conflict 2\n"
+	    "    ..\n"
+	    "\n"
+	    REC("1", "changed-both", "/a.txt changed")
+	    REC("2", "changed-both", "/bin.dat changed");
+
+	world_init(&w);
+	build_main(&w);
+	open_ok("vanished", &w, &pk);
+	drain(&pk);
+
+	CHECK(zr_pk_nrows(&pk) == R_N);
+
+	/* Move cursor to /sock (row 10, the last row) */
+	(void) zr_pk_key(&pk, ZR_PK_BOTTOM);
+	CHECK(zr_pk_cursor(&pk) == R_N - 1);
+
+	/* Rewrite both docs on disk to the short version */
+	world_docs(&w, man_short, res_short);
+
+	CHECK(zr_pk_reload(&pk, 0) == 0);
+
+	/* Now only 2 rows */
+	CHECK(zr_pk_nrows(&pk) == 2);
+	/* The cursor was at 10, now the last row is 1 */
+	CHECK(zr_pk_cursor(&pk) == 1);
+
+	zr_pk_fini(&pk);
+	world_fini(&w);
+}
+
+/*
+ * ZP148: no hook armed.  r re-reads the documents only.
+ * ZP149: the hook fails.  The rows are left as they were.
+ */
+static void
+test_reload_hook(void)
+{
+	struct fake_hook h;
+	struct zr_picker pk;
+	struct world w;
+
+	world_init(&w);
+	build_main(&w);
+	open_ok("hook", &w, &pk);
+	drain(&pk);
+
+	/* ZP148: no hook, reload succeeds */
+	CHECK(pk.pk_refresh == NULL);
+	CHECK(zr_pk_reload(&pk, 1) == 0);
+	CHECK(zr_pk_nrows(&pk) == R_N);
+
+	/* Arm a hook that succeeds */
+	memset(&h, 0, sizeof (h));
+	zr_pk_set_refresh(&pk, fake_refresh, &h);
+	CHECK(zr_pk_reload(&pk, 1) == 0);
+	CHECK(h.called == 1);
+
+	/* ZP149: arm a hook that fails */
+	h.called = 0;
+	h.fail = 1;
+	CHECK(zr_pk_reload(&pk, 1) == -1);
+	CHECK(h.called == 1);
+	/* The rows are left as they were */
+	CHECK(zr_pk_nrows(&pk) == R_N);
+	CHECK(zr_pk_counts(&pk)->zc_unanswered == 6);
+
+	/* The failure message is queued */
+	CHECK(zr_pk_last(&pk) != NULL);
+	CHECK(strstr(zr_pk_last(&pk), "fake hook failed") != NULL);
+
+	zr_pk_fini(&pk);
+	world_fini(&w);
+}
+
+/*
+ * ZP146: r with unsaved answers, through the model's key dispatch.
+ * The key dispatch handles the no-dirty case; the dirty question is
+ * the screen's.  This test checks that the model's ZR_PK_REFRESH
+ * key with nothing unsaved does the reload.
+ */
+static void
+test_refresh_key(void)
+{
+	struct zr_picker pk;
+	const char *msg;
+	struct world w;
+
+	world_init(&w);
+	build_main(&w);
+	open_ok("rkey", &w, &pk);
+	drain(&pk);
+
+	/* Press r (ZR_PK_REFRESH) with nothing dirty */
+	CHECK(zr_pk_dirty(&pk) == 0);
+	CHECK(zr_pk_key(&pk, ZR_PK_REFRESH) == ZR_PK_REDRAW);
+	msg = zr_pk_last(&pk);
+	CHECK(msg != NULL);
+	CHECK(strstr(msg, "names") != NULL);
+	CHECK(strstr(msg, "unanswered") != NULL);
+
+	zr_pk_fini(&pk);
+	world_fini(&w);
+}
+
+/*
+ * ---------------------------------------------------------------
  * The terminal, over a pty. Cells ZP62 to ZP72, ZP75, ZP110, ZP111
  * and ZP114, and the screen's halves of ZP6, ZP40 and ZP69.
  *
@@ -4368,6 +4587,65 @@ test_pty_same_child(void)
 }
 
 /*
+ * ZP150: r on a pty with nothing unsaved.  The reload message appears
+ * in the key bar.
+ */
+static void
+test_pty_refresh(void)
+{
+	/*
+	 * Keys: r (refresh, nothing dirty), then answer all 6
+	 * unanswered names, w.  The main fixture has 6 unanswered:
+	 * /a.txt /del.txt /hand.txt /lnk /pipe /sock at rows
+	 * 0, 5, 6, 8, 9, 10.
+	 */
+	static const char *const keys[] = {
+	    "r",
+	    "f",			/* /a.txt */
+	    K_DOWN, K_DOWN, K_DOWN, K_DOWN, K_DOWN,
+	    "f",			/* /del.txt */
+	    K_DOWN,
+	    "f",			/* /hand.txt */
+	    K_DOWN, K_DOWN,
+	    "f",			/* /lnk */
+	    K_DOWN,
+	    "f",			/* /pipe */
+	    K_DOWN,
+	    "f",			/* /sock */
+	    "w",
+	    NULL
+	};
+
+	struct child c;
+	struct world w;
+	struct pty y;
+
+	if (pty_open(&y) != 0) {
+		printf("test_pty_refresh: pty_open failed, skipping\n");
+		return;
+	}
+
+	world_init(&w);
+	build_main(&w);
+
+	memset(&c, 0, sizeof (c));
+	c.c_keys = keys;
+	c.c_term = "xterm";
+
+	pty_drive(&y, &w, &c, &pty_out);
+	pty_close(&y);
+
+	/* w exits 0 */
+	CHECK(WIFEXITED(pty_out.r_status) &&
+	    WEXITSTATUS(pty_out.r_status) == 0);
+
+	/* The "after reload" message was drawn */
+	CHECK(find(pty_out.r_buf, pty_out.r_len, "after reload") != NULL);
+
+	world_fini(&w);
+}
+
+/*
  * ZP144: a scoping directory row on a pty.  The CHOICE column shows
  * "/" and f on it draws a message naming the row.
  */
@@ -4536,6 +4814,10 @@ main(void)
 	test_tree_unreadable();
 	test_many_groups();
 	test_dirs();
+	test_reload();
+	test_reload_vanished();
+	test_reload_hook();
+	test_refresh_key();
 	test_pty_exits();
 	test_pty_refusals();
 	test_pty_floor();
@@ -4550,6 +4832,7 @@ main(void)
 	test_pty_pool();
 	test_pty_unsaved();
 	test_pty_same_child();
+	test_pty_refresh();
 	test_pty_dirs();
 	test_no_terminal();
 	printf("check_picker: %d checks passed\n", checks);

@@ -854,6 +854,152 @@ zr_pk_fini(struct zr_picker *pk)
 	memset(pk, 0, sizeof (*pk));
 }
 
+void
+zr_pk_set_refresh(struct zr_picker *pk,
+    int (*fn)(void *, char *, size_t), void *arg)
+{
+	if (pk == NULL)
+		return;
+	pk->pk_refresh = fn;
+	pk->pk_refresharg = arg;
+}
+
+/*
+ * Re-read the two documents from disk and rebuild the rows.  The
+ * cursor stays on the same name where it still exists, or moves to
+ * the nearest row.  The merge, if any, is closed first: the trees
+ * may have changed and the buffers it borrows are freed with the old
+ * rows.
+ *
+ * If call_hook is true and a hook is armed, the hook is called first
+ * so the tool rewrites the resolution over the current trees.  A
+ * hook failure is one queued line and the rows are left as they were.
+ *
+ * Returns 0 on success, or -1 with one queued line on failure.
+ */
+int
+zr_pk_reload(struct zr_picker *pk, int call_hook)
+{
+	struct zr_resolution oldres;
+	struct zr_parsed oldman;
+	struct zr_pk_row *oldrows;
+	uint32_t oldnrows, oldcursor;
+	unsigned char *curname = NULL;
+	size_t curnamelen = 0;
+	char err[ZR_PK_MSGLEN];
+	uint32_t i;
+
+	if (pk == NULL)
+		return (-1);
+
+	/* Close the merge if one is open. */
+	zr_pk_merge_close(pk);
+
+	/* Remember the cursor's name so we can find it in the new rows. */
+	if (pk->pk_nrows != 0 && pk->pk_cursor < pk->pk_nrows) {
+		const struct zr_pk_row *cur = &pk->pk_rows[pk->pk_cursor];
+
+		curname = malloc(cur->zk_namelen + 1);
+		if (curname != NULL) {
+			memcpy(curname, cur->zk_name, cur->zk_namelen);
+			curname[cur->zk_namelen] = '\0';
+			curnamelen = cur->zk_namelen;
+		}
+	}
+
+	/* Call the hook if asked and armed. */
+	if (call_hook && pk->pk_refresh != NULL) {
+		if (pk->pk_refresh(pk->pk_refresharg, err,
+		    sizeof (err)) != 0) {
+			pk_say(pk, "refresh failed: %s", err);
+			free(curname);
+			return (-1);
+		}
+	}
+
+	/*
+	 * Save the old state and clear the fields that pk_build
+	 * overwrites, so that a failed re-read can be rolled back.
+	 */
+	oldres = pk->pk_res;
+	oldman = pk->pk_man;
+	oldrows = pk->pk_rows;
+	oldnrows = pk->pk_nrows;
+	oldcursor = pk->pk_cursor;
+	memset(&pk->pk_res, 0, sizeof (pk->pk_res));
+	memset(&pk->pk_man, 0, sizeof (pk->pk_man));
+	pk->pk_rows = NULL;
+	pk->pk_nrows = 0;
+	pk->pk_cursor = 0;
+
+	/* Re-read the two documents. */
+	if (pk_read(pk->pk_respath, pk_parse_res, &pk->pk_res, err,
+	    sizeof (err)) != 0 ||
+	    pk_read(pk->pk_manpath, pk_parse_man, &pk->pk_man, err,
+	    sizeof (err)) != 0 ||
+	    pk_same_rebase(pk, err, sizeof (err)) != 0 ||
+	    pk_build(pk, err, sizeof (err)) != 0) {
+		/*
+		 * The re-read failed: roll back to the old state and
+		 * say why.
+		 */
+		zr_resolution_fini(&pk->pk_res);
+		zr_parsed_fini(&pk->pk_man);
+		free(pk->pk_rows);
+		pk->pk_res = oldres;
+		pk->pk_man = oldman;
+		pk->pk_rows = oldrows;
+		pk->pk_nrows = oldnrows;
+		pk->pk_cursor = oldcursor;
+		pk_say(pk, "reload failed: %s", err);
+		free(curname);
+		return (-1);
+	}
+
+	/* The old state is replaced; free it. */
+	zr_resolution_fini(&oldres);
+	zr_parsed_fini(&oldman);
+	free(oldrows);
+
+	pk_trees_ok(pk);
+	pk_count(pk);
+
+	/*
+	 * Find the old cursor's name in the new rows.  Where it has
+	 * gone, the nearest row is the one at the same index or the
+	 * last one.
+	 */
+	if (curname != NULL) {
+		int found = 0;
+
+		for (i = 0; i < pk->pk_nrows; i++) {
+			if (pk->pk_rows[i].zk_namelen == curnamelen &&
+			    memcmp(pk->pk_rows[i].zk_name, curname,
+			    curnamelen) == 0) {
+				pk->pk_cursor = i;
+				found = 1;
+				break;
+			}
+		}
+		if (!found) {
+			if (oldcursor < pk->pk_nrows)
+				pk->pk_cursor = oldcursor;
+			else if (pk->pk_nrows > 0)
+				pk->pk_cursor = pk->pk_nrows - 1;
+		}
+	}
+	free(curname);
+
+	/*
+	 * After a reload the document on disk is the authority, so
+	 * every row's saved marker is its current choice.
+	 */
+	for (i = 0; i < pk->pk_nrows; i++)
+		pk->pk_rows[i].zk_saved = pk->pk_rows[i].zk_line->zl_choice;
+
+	return (0);
+}
+
 int
 zr_pk_status(const struct zr_picker *pk)
 {
@@ -1728,6 +1874,18 @@ zr_pk_key(struct zr_picker *pk, enum zr_pk_key key)
 	case ZR_PK_BACK:
 		/* and on the list, either leaves the picker */
 		return (pk_quit(pk));
+	case ZR_PK_REFRESH:
+		/*
+		 * The screen handles the dirty question and calls
+		 * zr_pk_reload directly, so this case is for a refresh
+		 * with nothing unsaved: just reload.
+		 */
+		if (zr_pk_reload(pk, 1) == 0) {
+			pk_say(pk, "%u names, %u unanswered after reload",
+			    pk->pk_counts.zc_names,
+			    pk->pk_counts.zc_unanswered);
+		}
+		return (ZR_PK_REDRAW);
 	default:
 		return (ZR_PK_NOTHING);
 	}

@@ -306,6 +306,15 @@ zl_run_child(const struct zr_launch *lp, const char *script, char *argv[],
 	 * any more (L1); this is the second lock on the same door.
 	 */
 	zr_launch_closefds();
+	/*
+	 * The refresh hook, if the caller gave one: arm it before the
+	 * entry so the picker can call it on its r key.  It runs in
+	 * this child's copy of the tool's memory, so nothing it opens
+	 * leaks to the parent; the parent reads the file back when
+	 * this child exits, as it does today.
+	 */
+	if (lp->refresh != NULL)
+		zr_picker_arm_refresh(lp->refresh, lp->rarg);
 	rc = zr_picker_main(ZR_LAUNCH_ARGC, argv);
 	/*
 	 * Out through _exit and not exit: the parent's atexit hooks
