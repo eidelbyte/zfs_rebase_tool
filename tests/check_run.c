@@ -1285,107 +1285,50 @@ check_gate_snap_name(void)
 	    sizeof (out)) != 0);
 }
 
-/* One file with these bytes in it, made or replaced. */
-static int
-write_file(const char *path, const char *bytes)
-{
-	FILE *fp;
-
-	fp = fopen(path, "w");
-	if (fp == NULL)
-		return (0);
-	if (bytes[0] != '\0' && fputs(bytes, fp) == EOF) {
-		(void) fclose(fp);
-		return (0);
-	}
-	return (fclose(fp) == 0);
-}
-
-/* Is there no such sibling of this path? The atomic write's leavings. */
-static int
-unlink_says_enoent(const char *path, const char *suffix)
-{
-	char sib[1200];
-
-	(void) snprintf(sib, sizeof (sib), "%s%s", path, suffix);
-	return (unlink(sib) != 0 && errno == ENOENT);
-}
-
 /*
  * ---------------------------------------------------------------
- * The -i session file: family ZX, cells ZX270, ZX271, ZX273 to ZX275.
+ * One verb at a time on one rebase: family ZX, cells ZX270 to ZX275.
  * ---------------------------------------------------------------
  *
- * The file is what stops two --continue -i on one rebase, and what
- * has to be true after a SIGKILL: a file whose processes are gone is
- * stale and no lock at all. Everything here is reachable with no pool
- * -- a directory, a file and two pids -- which is the whole of the
- * mechanism; the two terminals themselves are the box's.
+ * The record carries zfs_rebase:active while a verb has the rebase.
+ * Setting it, clearing it and being refused by it all want a pool;
+ * what does not is the value's own form and the question it answers,
+ * which is the whole of the mechanism's judgement, and both are here.
  */
 static void
-check_session_file(void)
+check_active_value(void)
 {
-	struct zr_session sn, back;
-	struct scratch sc;
-	char path[1024], err[512];
+	char val[64], made[64];
+	unsigned long long start = 0;
+	long long pid = 0;
 	pid_t who, dead;
 	int status = 0;
 
-	scratch_open(&sc);
-	CHECK(zr_session_path(sc.root, path, sizeof (path)) == 0);
-	CHECK(strncmp(path, sc.root, strlen(sc.root)) == 0);
-	CHECK(strcmp(path + strlen(path) - 8, "/session") == 0);
-	/* a path that will not fit is refused and never cut */
-	CHECK(zr_session_path(sc.root, path, 4) != 0);
-	CHECK(zr_session_path(NULL, path, sizeof (path)) != 0);
-	CHECK(zr_session_path(sc.root, path, sizeof (path)) == 0);
-
-	/* ZX274: no file is no session, and no error either */
-	CHECK(zr_session_read(path, &back, err, sizeof (err)) == 0);
+	/* ZX270: this process's value, and what it is made of */
+	zr_active_value(val, sizeof (val));
+	CHECK(sscanf(val, "%lld %llu", &pid, &start) == 2);
+	CHECK((pid_t)pid == getpid());
+	/* a buffer with no room, and no buffer, are written to at all */
+	made[0] = 'x';
+	zr_active_value(made, 0);
+	CHECK(made[0] == 'x');
+	zr_active_value(NULL, sizeof (made));
 
 	/*
-	 * ZX270: this process as the parent and itself as the child,
-	 * written and read back field for field.
+	 * ZX271 and ZX275: the value this process wrote names this
+	 * process, which is never another verb -- that is what lets
+	 * the verb that set the property read its own record without
+	 * refusing itself.
 	 */
-	zr_session_fill(&sn, getpid(), "continue", "nvim --wait");
-	CHECK(sn.zn_parent == getpid());
-	CHECK(sn.zn_child == getpid());
-	CHECK(strcmp(sn.zn_verb, "continue") == 0);
-	CHECK(strcmp(sn.zn_editor, "nvim --wait") == 0);
-	CHECK(sn.zn_opened[0] != '\0');
-	CHECK(zr_session_write(path, &sn, err, sizeof (err)) == 0);
-	CHECK(zr_session_read(path, &back, err, sizeof (err)) == 1);
-	CHECK(back.zn_parent == sn.zn_parent);
-	CHECK(back.zn_child == sn.zn_child);
-	CHECK(back.zn_pstart == sn.zn_pstart);
-	CHECK(back.zn_cstart == sn.zn_cstart);
-	CHECK(strcmp(back.zn_verb, sn.zn_verb) == 0);
-	CHECK(strcmp(back.zn_editor, sn.zn_editor) == 0);
-	CHECK(strcmp(back.zn_opened, sn.zn_opened) == 0);
-	/* and the write left no sibling behind */
-	CHECK(unlink_says_enoent(path, ".tmp"));
-
-	/* ZX271: this process is alive, and is the one named */
-	who = 0;
-	CHECK(zr_session_live(&back, &who) == 1);
-	CHECK(who == getpid());
-	/* the child is asked first: it is the one with the tree */
-	back.zn_parent = getpid();
-	back.zn_child = getpid();
-	CHECK(zr_session_live(&back, &who) == 1);
-	CHECK(who == back.zn_child);
-
-	/* the built-in picker's spelling of no editor */
-	zr_session_fill(&sn, getpid(), "start", NULL);
-	CHECK(strcmp(sn.zn_editor, "-") == 0);
-	zr_session_fill(&sn, getpid(), "start", "");
-	CHECK(strcmp(sn.zn_editor, "-") == 0);
+	who = 1;
+	CHECK(zr_active_live(val, &who) == 0);
+	CHECK(who == 0);
 
 	/*
 	 * ZX273: a process that is gone. The test forks a child and
 	 * reaps it, so the pid names something that certainly ran and
-	 * certainly does not now, which is the state a SIGKILL of the
-	 * tool leaves behind.
+	 * certainly does not now, which is the state a SIGKILL of a
+	 * verb leaves behind: stale, and written over without a word.
 	 */
 	dead = fork();
 	CHECK(dead >= 0);
@@ -1393,50 +1336,50 @@ check_session_file(void)
 		_exit(0);
 	while (waitpid(dead, &status, 0) < 0)
 		CHECK(errno == EINTR);
-	memset(&sn, 0, sizeof (sn));
-	sn.zn_parent = dead;
-	sn.zn_child = dead;
-	who = 1;
-	CHECK(zr_session_live(&sn, &who) == 0);
-	CHECK(who == 0);
-	/* and a session naming nobody at all */
-	memset(&sn, 0, sizeof (sn));
-	CHECK(zr_session_live(&sn, NULL) == 0);
-	CHECK(zr_session_live(NULL, &who) == 0);
+	(void) snprintf(val, sizeof (val), "%lld 0", (long long)dead);
+	CHECK(zr_active_live(val, &who) == 0);
+	(void) snprintf(val, sizeof (val), "%lld 12345", (long long)dead);
+	CHECK(zr_active_live(val, &who) == 0);
 
 	/*
-	 * ZX275: a pid that is alive with a start time that is not the
-	 * one recorded is another process wearing the number, and is
-	 * not the session. A start time of 0 is this system declining
-	 * to say, and then the pid alone decides.
+	 * ZX271: a process that is there. The test's own parent is one
+	 * it did not write the value for, so it stands for the other
+	 * verb; where the test has no parent to speak of, its own pid
+	 * with the self-test taken out of the way says the same thing.
 	 */
-	zr_session_fill(&sn, getpid(), "continue", "-");
-	if (sn.zn_cstart != 0) {
-		sn.zn_cstart++;
-		sn.zn_pstart++;
-		CHECK(zr_session_live(&sn, &who) == 0);
-		sn.zn_cstart--;
-		sn.zn_pstart--;
-		CHECK(zr_session_live(&sn, &who) == 1);
+	(void) snprintf(val, sizeof (val), "%lld 0", (long long)getppid());
+	if (getppid() > 1) {
+		CHECK(zr_active_live(val, &who) == 1);
+		CHECK(who == getppid());
+	}
+
+	/*
+	 * ZX275: a start time that is not the one recorded is another
+	 * process wearing the number, and is not the verb. 0 is this
+	 * system declining to say, and then the pid alone decides.
+	 */
+	zr_active_value(made, sizeof (made));
+	CHECK(sscanf(made, "%lld %llu", &pid, &start) == 2);
+	if (start != 0) {
+		(void) snprintf(val, sizeof (val), "%lld %llu",
+		    (long long)getppid(), start + 1);
+		if (getppid() > 1)
+			CHECK(zr_active_live(val, &who) == 0);
 	} else {
 		printf("skip ZX275: this system does not report a "
 		    "process start time\n");
 	}
-	sn.zn_cstart = 0;
-	sn.zn_pstart = 0;
-	CHECK(zr_session_live(&sn, &who) == 1);
 
-	/* a file that is not ours is said so rather than half read */
-	CHECK(write_file(path, "#rebase-session 4\n#parent 1 0\n"));
-	err[0] = '\0';
-	CHECK(zr_session_read(path, &back, err, sizeof (err)) == -1);
-	says(err, "no session of ours");
-	CHECK(write_file(path, ""));
-	err[0] = '\0';
-	CHECK(zr_session_read(path, &back, err, sizeof (err)) == -1);
-	says(err, "no session of ours");
-	CHECK(unlink(path) == 0);
-	scratch_close(&sc);
+	/* a value no verb of ours wrote holds nothing and refuses nobody */
+	CHECK(zr_active_live("", &who) == 0);
+	CHECK(zr_active_live("-", &who) == 0);
+	CHECK(zr_active_live("0 0", &who) == 0);
+	CHECK(zr_active_live("-1 0", &who) == 0);
+	CHECK(zr_active_live("not a pid", &who) == 0);
+	CHECK(zr_active_live(NULL, &who) == 0);
+	/* and the answer is the same with nowhere to put the pid */
+	(void) snprintf(val, sizeof (val), "%lld 0", (long long)dead);
+	CHECK(zr_active_live(val, NULL) == 0);
 }
 
 int
@@ -1446,7 +1389,7 @@ main(void)
 	check_outdir();
 	check_result_name();
 	check_gate_snap_name();
-	check_session_file();
+	check_active_value();
 	check_child_arguments();
 	check_child_status();
 	check_child_signal();

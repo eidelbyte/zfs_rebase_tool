@@ -393,14 +393,23 @@ not one, from the controlling terminal; and reads the document again
 when the child exits 0, with every refusal --continue makes of one.
 Nothing bounds the child's life: a command that hangs holds the
 rebase until it exits or somebody kills it, which is yours to
-handle. One such session runs on one rebase at a time: the verb
-that opens a child writes the two process ids into
-`<rundir>/session` and removes the file when the child is reaped,
-and a --continue, --restart or --abort arriving while either process
-is alive is refused with one line naming it (--verify is not, since
-it reads and writes nothing). A file whose processes are both gone,
-which is what a SIGKILL of the tool leaves, is stale and the next
-verb goes on without a word. Anything else and the gate stands with the
+handle. The child needs nothing of its own to hold
+the rebase: the verb that forked it holds it for the child's whole
+life, because the verb is waiting.
+
+One verb has a rebase at a time, whatever the verb is. Each writes
+its own pid and that process's start time into `zfs_rebase:active`
+as soon as it has read the record and before it takes the result
+over, clears it when it ends however it ended, and takes it off with
+the rest of the record at done and at --abort. A verb that finds it
+set on a process that is still alive is refused with one line naming
+that process: two verbs on one rebase are two hands on one tree,
+whether the second would apply into it, roll it back or destroy it.
+A value whose process is gone -- what a SIGKILL leaves -- is stale,
+and the next verb writes its own over it without a word; the start
+time is what keeps a reused pid from being read as the verb that set
+it. --verify sets nothing and is refused by nothing, since it reads,
+writes nothing and takes nothing over. Anything else and the gate stands with the
 file as the child left it, exit 1, and nothing reopens the child by
 itself: `zfs_rebase -c IDENT -i` carries on. The child opens
 whenever the gate is reached, complete document or not, so -O -i

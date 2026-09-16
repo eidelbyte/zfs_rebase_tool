@@ -243,7 +243,7 @@
  */
 static const char *zr_record_props[] = {
 	ZR_PROP_MANIFEST, ZR_PROP_TAG, ZR_PROP_PHASE, ZR_PROP_QUIET,
-	ZR_PROP_GATESNAP
+	ZR_PROP_GATESNAP, ZR_PROP_ACTIVE
 };
 
 #define	ZR_NRECORD	(sizeof (zr_record_props) / sizeof (zr_record_props[0]))
@@ -366,6 +366,7 @@ struct run {
 	 */
 	int			prune;
 	int			recorded;	/* the record is written */
+	int			active;		/* and the active property */
 	int			madefrom;	/* the tool took from's snap */
 	int			madeonto;	/* and onto's: a dry run */
 	int			presnap;	/* the pre-apply snapshot is */
@@ -1026,33 +1027,40 @@ snapshot_input(struct run *r, const char *dataset, char *buf, size_t buflen)
 
 /*
  * ---------------------------------------------------------------
- * One -i session of one rebase, written beside the record.
+ * One verb at a time on one rebase: zfs_rebase:active.
  * ---------------------------------------------------------------
  *
- * Two --continue -i in two terminals used to meet nothing at all:
- * the run directory is the lock a start takes, and a verb takes no
- * lock of its own. Two editors on one resolution is the smaller half
- * of it -- the second to save wins and the first person's answers are
- * gone -- and the larger half is a verb going on into applying2 while
- * somebody's editor still has the tree, which is the stale-walk
- * hazard of L1 with a second process added to it.
+ * Nothing used to hold a rebase while a verb ran. The run directory
+ * is the lock a start takes and no more: take_over adopts a private
+ * mount that is already there, which is what a kill leaves and what
+ * the gate between two verbs leaves, so two --continue at once, or a
+ * --continue and an --abort, each took the result over and neither
+ * met the other. The first shape of this check was a file beside the
+ * record naming the -i child, which guarded the editing session and
+ * nothing else; the author replaced it on 2026-09-16: "i think i'd
+ * rather just use another userprop for eg zfs_rebase:active=[pid] and
+ * set it on tool startup and unset it on tool teardown and do this
+ * for every run invariantly rather than mess with if and else and
+ * files".
  *
- * The check is a file, <rundir>/session, written when a child is
- * forked and unlinked when it is reaped, holding the two pids and the
- * two start times. A verb arriving on the same rebase reads it and
- * refuses while either process is alive. It has to be true after a
- * kill, since SIGKILL is what leaves these files behind: what makes
- * it true is that liveness is asked of the system and not of the
- * file, so a file whose processes are gone is stale and is replaced
- * without a word.
+ * So the record carries it. The value is the verb's own pid and the
+ * moment that process started, "<pid> <start>", because a pid on its
+ * own is reused and a rebase can wait at a gate for days: the start
+ * time is what tells the process that set this from a stranger
+ * wearing its number. It is set as soon as the record is read and
+ * before the result is taken over, cleared when the verb ends
+ * whichever way it ended, and taken off with the rest of the record
+ * at done and at --abort.
  *
- * Both pids are kept because either can outlive the other. The
- * parent alone would miss the orphaned picker a SIGKILL of the tool
- * leaves holding the mount (L6 of the code review); the child alone
- * would miss the window between the fork and the exec.
+ * A verb that finds it set and alive is refused; one that finds it
+ * set and dead says nothing and writes its own over it, which is what
+ * a SIGKILL leaves and why liveness is asked of the system rather
+ * than of the property. --verify and the reports set nothing and are
+ * refused by nothing: they read, write nothing and take nothing over.
+ *
+ * The --posix form has no dataset and so no record and no property;
+ * it compares three directories and there is nothing to hold.
  */
-#define	ZR_SESSION_FILE		"session"
-#define	ZR_SESSION_VERSION	"#rebase-session 5"
 
 /*
  * When a process started, in microseconds since the epoch, which is
@@ -1103,169 +1111,6 @@ zs_alive(pid_t pid, uint64_t want)
 	return (now == want ? 1 : 0);
 }
 
-int
-zr_session_path(const char *rundir, char *buf, size_t len)
-{
-	int n;
-
-	if (rundir == NULL || buf == NULL || len == 0)
-		return (-1);
-	n = snprintf(buf, len, "%s/%s", rundir, ZR_SESSION_FILE);
-	if (n < 0 || (size_t)n >= len) {
-		buf[0] = '\0';
-		return (-1);
-	}
-	return (0);
-}
-
-int
-zr_session_live(const struct zr_session *sn, pid_t *whop)
-{
-	if (whop != NULL)
-		*whop = 0;
-	if (sn == NULL)
-		return (0);
-	/* the child first: it is the one with the tree in its hands */
-	if (zs_alive(sn->zn_child, sn->zn_cstart) != 0) {
-		if (whop != NULL)
-			*whop = sn->zn_child;
-		return (1);
-	}
-	if (zs_alive(sn->zn_parent, sn->zn_pstart) != 0) {
-		if (whop != NULL)
-			*whop = sn->zn_parent;
-		return (1);
-	}
-	return (0);
-}
-
-void
-zr_session_fill(struct zr_session *sn, pid_t child, const char *verb,
-    const char *editor)
-{
-	if (sn == NULL)
-		return;
-	memset(sn, 0, sizeof (*sn));
-	sn->zn_parent = getpid();
-	sn->zn_child = child;
-	if (zs_proc_start(sn->zn_parent, &sn->zn_pstart) != 0)
-		sn->zn_pstart = 0;
-	if (child <= 0 || zs_proc_start(child, &sn->zn_cstart) != 0)
-		sn->zn_cstart = 0;
-	(void) snprintf(sn->zn_verb, sizeof (sn->zn_verb), "%s",
-	    verb != NULL ? verb : "-");
-	(void) snprintf(sn->zn_editor, sizeof (sn->zn_editor), "%s",
-	    editor != NULL && editor[0] != '\0' ? editor : ZR_NO_BASE);
-	zr_manifest_stamp(sn->zn_opened, sizeof (sn->zn_opened));
-}
-
-/* The bytes of one session document, for zr_doc_write. */
-static int
-emit_session(FILE *out, void *arg)
-{
-	const struct zr_session *sn = arg;
-
-	if (fprintf(out, "%s\n#verb %s\n#parent %lld %llu\n"
-	    "#child %lld %llu\n#editor %s\n#opened %s\n",
-	    ZR_SESSION_VERSION, sn->zn_verb, (long long)sn->zn_parent,
-	    (unsigned long long)sn->zn_pstart, (long long)sn->zn_child,
-	    (unsigned long long)sn->zn_cstart, sn->zn_editor,
-	    sn->zn_opened) < 0)
-		return (-1);
-	return (0);
-}
-
-int
-zr_session_write(const char *path, const struct zr_session *sn, char *err,
-    size_t errlen)
-{
-	union {
-		const struct zr_session	*cp;
-		struct zr_session	*p;
-	} u;
-
-	if (path == NULL || sn == NULL)
-		return (-1);
-	u.cp = sn;
-	return (zr_doc_write(path, emit_session, u.p, err, errlen));
-}
-
-/* One "#name value" line of it, or nothing. */
-static const char *
-zs_field(const char *line, const char *name)
-{
-	size_t n = strlen(name);
-
-	if (strncmp(line, name, n) != 0 || line[n] != ' ')
-		return (NULL);
-	return (line + n + 1);
-}
-
-int
-zr_session_read(const char *path, struct zr_session *sn, char *err,
-    size_t errlen)
-{
-	char line[512];
-	const char *v;
-	long long pid;
-	unsigned long long start;
-	FILE *fp;
-	int first = 1;
-
-	if (err != NULL && errlen > 0)
-		err[0] = '\0';
-	if (path == NULL || sn == NULL)
-		return (-1);
-	memset(sn, 0, sizeof (*sn));
-	fp = fopen(path, "r");
-	if (fp == NULL) {
-		if (errno == ENOENT)
-			return (0);
-		(void) snprintf(err, errlen, "%s: %s", path, strerror(errno));
-		return (-1);
-	}
-	while (fgets(line, sizeof (line), fp) != NULL) {
-		line[strcspn(line, "\n")] = '\0';
-		if (first != 0) {
-			first = 0;
-			if (strcmp(line, ZR_SESSION_VERSION) != 0) {
-				(void) snprintf(err, errlen, "%s: this is no "
-				    "session of ours", path);
-				(void) fclose(fp);
-				return (-1);
-			}
-			continue;
-		}
-		if ((v = zs_field(line, "#verb")) != NULL)
-			(void) snprintf(sn->zn_verb, sizeof (sn->zn_verb),
-			    "%s", v);
-		else if ((v = zs_field(line, "#editor")) != NULL)
-			(void) snprintf(sn->zn_editor, sizeof (sn->zn_editor),
-			    "%s", v);
-		else if ((v = zs_field(line, "#opened")) != NULL)
-			(void) snprintf(sn->zn_opened, sizeof (sn->zn_opened),
-			    "%s", v);
-		else if ((v = zs_field(line, "#parent")) != NULL) {
-			if (sscanf(v, "%lld %llu", &pid, &start) != 2)
-				continue;
-			sn->zn_parent = (pid_t)pid;
-			sn->zn_pstart = (uint64_t)start;
-		} else if ((v = zs_field(line, "#child")) != NULL) {
-			if (sscanf(v, "%lld %llu", &pid, &start) != 2)
-				continue;
-			sn->zn_child = (pid_t)pid;
-			sn->zn_cstart = (uint64_t)start;
-		}
-	}
-	(void) fclose(fp);
-	if (first != 0) {
-		(void) snprintf(err, errlen, "%s: this is no session of ours",
-		    path);
-		return (-1);
-	}
-	return (1);
-}
-
 /*
  * The name of the snapshot the tool takes of the result at the
  * hand-off into applying2: <result>@zfs_rebase-<tag>-gate. It is a
@@ -1277,6 +1122,132 @@ zr_session_read(const char *path, struct zr_session *sn, char *err,
  * Returns 0 with buf filled, or -1 where it will not fit, which is
  * refused rather than cut: a cut name is another dataset's.
  */
+/*
+ * The value zfs_rebase:active carries: this process and the moment it
+ * started, so that a pid reused while a rebase waited at a gate is
+ * not read as the verb that set it.
+ */
+void
+zr_active_value(char *buf, size_t len)
+{
+	uint64_t start = 0;
+	pid_t me = getpid();
+
+	if (buf == NULL || len == 0)
+		return;
+	if (zs_proc_start(me, &start) != 0)
+		start = 0;
+	(void) snprintf(buf, len, "%lld %llu", (long long)me,
+	    (unsigned long long)start);
+}
+
+/*
+ * And the same value read back and asked of the system. A value this
+ * tool did not write -- a hand's, or a truncated one -- reads as no
+ * verb rather than as a refusal nobody can lift: what this property
+ * protects is a tree, and a value that names no process protects
+ * nothing. This process is never another verb, which is what lets the
+ * one that set the property read its own record without refusing
+ * itself.
+ */
+int
+zr_active_live(const char *value, pid_t *whop)
+{
+	unsigned long long start = 0;
+	long long pid = 0;
+
+	if (whop != NULL)
+		*whop = 0;
+	if (value == NULL || value[0] == '\0')
+		return (0);
+	if (sscanf(value, "%lld %llu", &pid, &start) < 1 || pid <= 0)
+		return (0);
+	if ((pid_t)pid == getpid())
+		return (0);
+	if (zs_alive((pid_t)pid, (uint64_t)start) == 0)
+		return (0);
+	if (whop != NULL)
+		*whop = (pid_t)pid;
+	return (1);
+}
+
+/*
+ * Is another verb on this rebase? The property's value is read back
+ * into a pid and a start time and the process is asked of the system.
+ * Alive is a refusal with one line naming it; dead is stale, said
+ * nothing about, and written over by the caller.
+ *
+ * A value this tool did not write -- a hand's, or a truncated one --
+ * is read as no verb rather than as a refusal nobody can lift: what
+ * this property protects is a tree, and a value that names no process
+ * protects nothing. Returns 0 where the rebase is this command's to
+ * take, or -1 with the reason printed.
+ */
+static int
+active_free(struct zr_zfs *z, const char *result)
+{
+	char val[64], err[512];
+	pid_t who = 0;
+
+	if (zr_zfs_get_user(z, result, ZR_PROP_ACTIVE, val, sizeof (val), err,
+	    sizeof (err)) <= 0)
+		return (0);
+	if (zr_active_live(val, &who) == 0)
+		return (0);
+	(void) fprintf(stderr, "zfs_rebase: %s: another zfs_rebase has this "
+	    "rebase, running as pid %lld; wait for it or end it, and %s=%s "
+	    "on %s is what says so\n", result, (long long)who,
+	    ZR_PROP_ACTIVE, val, result);
+	return (-1);
+}
+
+/*
+ * This verb written into the record as the one that has the rebase.
+ * It goes on before the result is taken over and before a tree is
+ * read, so that the window this closes is the whole of the verb's
+ * life. A property that will not be written is said and not fatal:
+ * the verb then runs unguarded, which is what every verb did before
+ * this existed, and the line says so.
+ */
+static void
+active_on(struct zr_zfs *z, const char *result)
+{
+	char val[64], err[512];
+
+	zr_active_value(val, sizeof (val));
+	if (zr_zfs_set_user(z, result, ZR_PROP_ACTIVE, val, err,
+	    sizeof (err)) != 0)
+		(void) fprintf(stderr, "zfs_rebase: %s=%s on %s: %s; this "
+		    "verb runs without holding the rebase\n", ZR_PROP_ACTIVE,
+		    val, result, err);
+}
+
+/*
+ * And off again at the end of the verb, whichever way it ended: a
+ * refusal that leaves the rebase standing takes it off exactly as a
+ * clean pass does, because what it says is "a process has this
+ * rebase" and this process is about to stop having it.
+ *
+ * Nothing is done where the rebase is over or gone -- done and
+ * --abort take the whole record off, and --abort's clone form
+ * destroys the dataset the property was on -- and a failure is said
+ * only under -v: by this point the verb has finished and a property
+ * that would not clear is a line for somebody looking, not an error
+ * to return.
+ */
+static void
+active_off(struct zr_zfs *z, const char *result, int verbose)
+{
+	char err[512];
+
+	if (z == NULL || result == NULL || result[0] == '\0')
+		return;
+	if (zr_zfs_clear_user(z, result, ZR_PROP_ACTIVE, err,
+	    sizeof (err)) != 0 && verbose)
+		(void) fprintf(stderr, "zfs_rebase: %s on %s: %s\n",
+		    ZR_PROP_ACTIVE, result, err);
+}
+
 int
 zr_gate_snap_name(const char *result, const char *tag, char *buf, size_t len)
 {
@@ -1642,7 +1613,7 @@ static int
 rmdir_run(const char *result)
 {
 	size_t top = strlen(workdir());
-	char dir[ZR_NAME_MAX], mnt[ZR_NAME_MAX], sess[ZR_NAME_MAX];
+	char dir[ZR_NAME_MAX], mnt[ZR_NAME_MAX];
 	char *slash;
 
 	if (rundir_of(dir, sizeof (dir), result, NULL, 0) != 0)
@@ -1651,15 +1622,6 @@ rmdir_run(const char *result)
 	    sizeof (mnt))
 		return (ENAMETOOLONG);
 	(void) rmdir(mnt);
-	/*
-	 * And the session file, where a kill left one: it is this
-	 * tool's own, it names processes that are gone by the time a
-	 * rebase is being taken away, and a directory still holding it
-	 * would not rmdir. Every path that removes a run directory
-	 * comes through here, so this is the one place it is needed.
-	 */
-	if (zr_session_path(dir, sess, sizeof (sess)) == 0)
-		(void) unlink(sess);
 	if (rmdir(dir) != 0 && errno != ENOENT)
 		return (errno);
 	for (;;) {
@@ -3096,8 +3058,16 @@ teardown(struct run *r, int keep)
 	 */
 	/*
 	 * A kept run keeps its holds: they are the rebase, and its
-	 * record names the tag that gives them back.
+	 * record names the tag that gives them back. What it does not
+	 * keep is this process's hold on the rebase itself: the run is
+	 * over either way, and the next verb must not find the rebase
+	 * held by a process that has finished. A run that reached done
+	 * has no record left to take it off, and one that took itself
+	 * away whole has none either.
 	 */
+	if (r->active != 0 && keep != 0 && r->recorded != 0)
+		active_off(r->zfs, r->rds, r->o.verbose);
+	r->active = 0;
 	if (r->zfs != NULL)
 		zr_zfs_close(r->zfs);
 }
@@ -3156,70 +3126,6 @@ reread_skeleton(struct run *r)
  * the status to give up with, the reason already printed. Either way
  * the rebase is at the conflicts gate and a --continue takes it on.
  */
-/*
- * What the launcher's opened callback carries: where the file goes,
- * what the verb is called, what -i named, and whether the write
- * failed, which the caller says after the child is gone rather than
- * in the middle of a person's editing session.
- */
-struct session_arg {
-	const char	*sa_path;
-	const char	*sa_verb;
-	const char	*sa_editor;
-	char		sa_err[512];
-};
-
-/*
- * The child exists: the session is written down. It is written here
- * and nowhere else because the pid is knowable here and nowhere
- * else, and it is written whole and atomically through the primitive
- * every other document of this tool goes through, so a reader
- * arriving in the middle of it sees the old file or the new one and
- * never half of either.
- */
-static void
-session_opened(pid_t pid, void *arg)
-{
-	struct session_arg *sa = arg;
-	struct zr_session sn;
-
-	zr_session_fill(&sn, pid, sa->sa_verb, sa->sa_editor);
-	if (zr_session_write(sa->sa_path, &sn, sa->sa_err,
-	    sizeof (sa->sa_err)) != 0)
-		return;
-	sa->sa_err[0] = '\0';
-}
-
-/* And gone: the file goes with it, whatever the child exited with. */
-static void
-session_closed(const struct session_arg *sa)
-{
-	if (unlink(sa->sa_path) != 0 && errno != ENOENT)
-		(void) fprintf(stderr, "zfs_rebase: %s: %s\n", sa->sa_path,
-		    strerror(errno));
-	if (sa->sa_err[0] != '\0')
-		(void) fprintf(stderr, "zfs_rebase: the session could not be "
-		    "written down, so another zfs_rebase would not have been "
-		    "refused while the editor ran: %s\n", sa->sa_err);
-}
-
-/* One of them, ready for a launch. */
-static void
-session_arm(struct session_arg *sa, struct zr_launch *lp, char *path,
-    size_t pathlen, const char *rundir, const char *verb, const char *editor)
-{
-	memset(sa, 0, sizeof (*sa));
-	sa->sa_verb = verb;
-	sa->sa_editor = editor;
-	if (zr_session_path(rundir, path, pathlen) != 0)
-		path[0] = '\0';
-	sa->sa_path = path;
-	if (path[0] != '\0') {
-		lp->opened = session_opened;
-		lp->arg = sa;
-	}
-}
-
 /*
  * The refresh hook for the fresh run's built-in picker.
  *
@@ -3330,11 +3236,10 @@ out:
 static int
 run_interactive(struct run *r)
 {
-	struct session_arg sa;
 	struct zr_launch lp;
 	char basedir[ZR_NAME_MAX * 2], fromdir[ZR_NAME_MAX * 2];
 	char ontodir[ZR_NAME_MAX * 2];
-	char spath[ZR_NAME_MAX], rdir[ZR_NAME_MAX], e[512];
+	char e[512];
 	int rc;
 
 	basedir[0] = '\0';
@@ -3360,16 +3265,6 @@ run_interactive(struct run *r)
 		lp.rarg = r;
 	}
 	/*
-	 * And the session written down for the child's life, as the
-	 * resume path's child has: a start that reaches this gate in
-	 * its own process is the same one hand on the tree, and a
-	 * --continue arriving while it edits is the same two.
-	 */
-	if (rundir_of(rdir, sizeof (rdir), r->rds, NULL, 0) != 0)
-		rdir[0] = '\0';
-	session_arm(&sa, &lp, spath, sizeof (spath), rdir, "start",
-	    r->o.editor);
-	/*
 	 * The child writes into the result itself -- the picker's
 	 * merge does, and an editor the person points at a file does
 	 * -- and there is nothing to flip for it: the result has been
@@ -3377,7 +3272,6 @@ run_interactive(struct run *r)
 	 * clone's birth in the other (clone_rw).
 	 */
 	rc = zr_launch(&lp, e, sizeof (e));
-	session_closed(&sa);
 	if (rc != 0) {
 		(void) fprintf(stderr, "zfs_rebase: %s\n", e);
 		(void) fprintf(stderr, "zfs_rebase: the resolution %s stands "
@@ -3595,6 +3489,19 @@ zr_run(const struct zr_run_opts *o)
 				goto done;
 			}
 		}
+		/*
+		 * And this run written into the record as the one that
+		 * has the rebase, before a hold is taken and before a
+		 * byte of applying1 is written. Every verb does the
+		 * same as soon as it has read the record; the start
+		 * does it as soon as it has written one, which is the
+		 * same moment in its own life (tracker issue
+		 * concurrent-continue, re-ruled 2026-09-16). The
+		 * --posix form never reaches here: it has no dataset,
+		 * so no record and nothing to hold.
+		 */
+		active_on(r.zfs, r.rds);
+		r.active = 1;
 		if (hold_inputs(&r) != 0) {
 			rc = fail(&r, EXIT_PRECOND, "hold");
 			goto done;
@@ -3978,6 +3885,7 @@ struct record {
 	char			take[8];	/* "onto", "from" or "-" */
 	char			presnap[ZR_SNAP_MAX];	/* dataset form */
 	char			gatesnap[ZR_SNAP_MAX];	/* past the gate */
+	char			active[64];	/* the verb that has it */
 	char			readonly[8];		/* and this */
 	char			canmount[16];		/* and this */
 };
@@ -3995,6 +3903,7 @@ struct resume {
 	int			dataset;	/* the dataset form */
 	int			privmnt;	/* it is at workmnt just now */
 	int			settled;	/* it reached the done gate */
+	int			active;		/* it wrote zfs_rebase:active */
 	int			post;		/* --verify of a settled one */
 	int			mademnt;	/* and this check mounted it */
 	struct record		rb;
@@ -4656,6 +4565,14 @@ read_record(struct resume *s)
 	 */
 	if (rec_str(s, ZR_PROP_GATESNAP, rb->gatesnap,
 	    sizeof (rb->gatesnap)) < 0)
+		return (-1);
+	/*
+	 * And who has the rebase just now, which is this verb a moment
+	 * after it is read and whoever set it a moment before. It is
+	 * read here so that the record this verb holds is the whole
+	 * record; the question the value answers is active_free's.
+	 */
+	if (rec_str(s, ZR_PROP_ACTIVE, rb->active, sizeof (rb->active)) < 0)
 		return (-1);
 	got = rec_str(s, ZR_PROP_QUIET, q, sizeof (q));
 	if (got < 0)
@@ -6751,10 +6668,9 @@ resume_refresh(void *arg, char *err, size_t errlen)
 static int
 resume_interactive(struct resume *s)
 {
-	struct session_arg sa;
 	struct zr_launch lp;
 	char basedir[ZR_NAME_MAX * 2];
-	char spath[ZR_NAME_MAX], e[512];
+	char e[512];
 	int rc;
 
 	input_dir(s, ZI_BASE, basedir, sizeof (basedir));
@@ -6774,8 +6690,6 @@ resume_interactive(struct resume *s)
 		lp.refresh = resume_refresh;
 		lp.rarg = s;
 	}
-	session_arm(&sa, &lp, spath, sizeof (spath), s->rundir, "continue",
-	    s->editor);
 	/*
 	 * The directories above are strings walk_side and input_dir
 	 * left behind and outlive the walks; the walks themselves go
@@ -6785,7 +6699,6 @@ resume_interactive(struct resume *s)
 	 */
 	close_trees(s);
 	rc = zr_launch(&lp, e, sizeof (e));
-	session_closed(&sa);
 	if (rc != 0) {
 		(void) fprintf(stderr, "zfs_rebase: %s\n", e);
 		(void) fprintf(stderr, "zfs_rebase: the resolution %s stands "
@@ -7102,47 +7015,6 @@ resume_start(struct resume *s)
  * open takes it from there. Returns EXIT_CLEAN, or the status to
  * give up with.
  */
-/*
- * Is another -i session of this rebase open? One line naming the
- * process that has it, and a refusal, where it is; nothing at all
- * where the file is not there or the processes it names are gone,
- * and a stale file is left for the next child to write over rather
- * than unlinked here: this is a question and not a tidying, and two
- * verbs asking it at once must not take turns removing each other's
- * answer.
- *
- * Every verb that moves a rebase asks it, and --verify does not: the
- * report reads and writes nothing and takes nothing over, so it is
- * the one thing that is safe to run while somebody is editing. A
- * plain --continue is refused as an -i one is, and for the worse
- * reason: it goes on into applying2, which writes over the tree the
- * other person's editor still has open.
- *
- * Returns 0 where the rebase is this command's to move, or -1 with
- * the reason printed.
- */
-static int
-session_free(const char *result, const char *rundir)
-{
-	struct zr_session sn;
-	char path[ZR_NAME_MAX], err[512];
-	pid_t who = 0;
-
-	if (zr_session_path(rundir, path, sizeof (path)) != 0)
-		return (0);
-	if (zr_session_read(path, &sn, err, sizeof (err)) <= 0)
-		return (0);
-	if (zr_session_live(&sn, &who) == 0)
-		return (0);
-	(void) fprintf(stderr, "zfs_rebase: %s: a zfs_rebase --%s -i of this "
-	    "rebase is open as pid %lld, editing %s with %s since %s; wait "
-	    "for it or end it, and %s is the record of it\n", result,
-	    sn.zn_verb, (long long)who, result,
-	    strcmp(sn.zn_editor, ZR_NO_BASE) == 0 ? "the built-in picker" :
-	    sn.zn_editor, sn.zn_opened, path);
-	return (-1);
-}
-
 static int
 resume_found(struct resume *s, const struct zr_verb_opts *o, int byguid)
 {
@@ -7192,14 +7064,20 @@ resume_found(struct resume *s, const struct zr_verb_opts *o, int byguid)
 	if (s->report == 0 && s->rb.phase[0] == '\0')
 		return (undecided(s));
 	/*
-	 * And another hand on the same rebase, asked before this verb
-	 * takes the result over and before it reads a tree: two
-	 * editors on one resolution, or this verb's applying2 under
-	 * somebody else's live editor, are two hands on one tree
-	 * (tracker issue concurrent-continue).
+	 * And another verb on the same rebase, asked before this one
+	 * takes the result over and before it reads a tree, and this
+	 * verb written in its place: two verbs on one rebase are two
+	 * hands on one tree, whether the second is a --continue going
+	 * on into applying2 under somebody's live editor or an --abort
+	 * destroying the clone under it (tracker issue
+	 * concurrent-continue, re-ruled 2026-09-16).
 	 */
-	if (s->report == 0 && session_free(s->result, s->rundir) != 0)
-		return (EXIT_PRECOND);
+	if (s->report == 0) {
+		if (active_free(s->zfs, s->result) != 0)
+			return (EXIT_PRECOND);
+		active_on(s->zfs, s->result);
+		s->active = 1;
+	}
 	/*
 	 * The resolution, read once and kept: every gate from
 	 * conflicts on classifies against it, and every verb that has
@@ -7367,6 +7245,20 @@ resume_close(struct resume *s)
 	char e[512];
 	int rc;
 
+	/*
+	 * The rebase let go of first, before anything else of this
+	 * process's is given back: whichever way the verb ended --
+	 * clean, refused, interrupted, or stopped at a gate -- it is
+	 * no longer the verb that has this rebase, and the next one
+	 * must not have to wait for a process that is finished. A
+	 * rebase that reached done or that --abort took away has had
+	 * its whole record cleared already and there is nothing here
+	 * to clear (tracker issue concurrent-continue).
+	 */
+	if (s->active != 0 && s->settled == 0) {
+		active_off(s->zfs, s->result, s->verbose);
+		s->active = 0;
+	}
 	close_trees(s);
 	if (s->parsed != 0)
 		zr_parsed_fini(&s->man);
@@ -8393,6 +8285,7 @@ zr_abort(const struct zr_verb_opts *o)
 	struct stat sb;
 	FILE *fp;
 	int rc = EXIT_INTERNAL, hasdir, hasds, got, parsed = 0, i, rmerr;
+	int active = 0, cleared = 0;
 
 	if (geteuid() != 0) {
 		(void) fprintf(stderr, "zfs_rebase: must run as root\n");
@@ -8503,16 +8396,19 @@ zr_abort(const struct zr_verb_opts *o)
 		goto done;
 	}
 	/*
-	 * And another hand on this rebase, asked here as every other
-	 * motional verb asks it: an --abort under a live editor would
-	 * destroy the clone, or roll the dataset back, while somebody
-	 * is writing into it. The person whose editor it is is named,
-	 * so ending it and running this again is one step.
+	 * And another verb on this rebase, asked here as every other
+	 * motional verb asks it and written down the same way: an
+	 * --abort under a running --continue would destroy the clone,
+	 * or roll the dataset back, while that verb is applying into
+	 * it. The process is named, so ending it and running this
+	 * again is one step.
 	 */
-	if (hasdir && session_free(result, dir) != 0) {
+	if (active_free(z, result) != 0) {
 		rc = EXIT_PRECOND;
 		goto done;
 	}
+	active_on(z, result);
+	active = 1;
 	phase[0] = '\0';
 	if (zr_zfs_get_user(z, result, ZR_PROP_PHASE, phase, sizeof (phase),
 	    err, sizeof (err)) <= 0)
@@ -8632,6 +8528,8 @@ zr_abort(const struct zr_verb_opts *o)
 		}
 		rc = abort_lost(z, result, tag, dir, verbose) == 0 ?
 		    EXIT_CLEAN : EXIT_INTERNAL;
+		if (rc == EXIT_CLEAN)
+			cleared = 1;	/* abort_lost took the record off */
 		/*
 		 * And the run directory, if the mount is undone
 		 * and nothing is left in it: an unreadable
@@ -8820,7 +8718,17 @@ zr_abort(const struct zr_verb_opts *o)
 			    strerror(rmerr));
 	}
 	rc = EXIT_CLEAN;
+	cleared = 1;			/* the whole record went with it */
 done:
+	/*
+	 * And this verb's own hold on the rebase, where the rebase is
+	 * still there to hold: an abort that refused, and the one that
+	 * returns a rebase at applying2 to the conflicts gate, both
+	 * leave it standing for the next verb, which must not find it
+	 * held by a process that has finished.
+	 */
+	if (active != 0 && cleared == 0)
+		active_off(z, result, verbose);
 	zr_ident_fini(&id);
 	zr_parsed_fini(&p);
 	zr_zfs_close(z);

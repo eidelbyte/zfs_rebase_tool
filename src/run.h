@@ -105,61 +105,26 @@ int zr_outdir_ok(const char *, char *, size_t);
 int zr_result_name(const char *, const char *, char *, size_t);
 
 /*
- * One open -i session of one rebase, as the file beside the record
- * says it. A verb that opens a child writes this into
- * <rundir>/session and unlinks it when the child is reaped; a verb
- * arriving on the same rebase reads it and refuses while either
- * process is still alive, because two editors on one resolution, or
- * an applying2 under a live editor, are two hands on one tree
- * (tracker issue concurrent-continue, ruled 2026-09-15: "Yes to
- * both").
+ * One verb at a time on one rebase. The record carries
+ * zfs_rebase:active while a verb has the rebase: the verb's own pid
+ * and the moment that process started, as "<pid> <start>", so that a
+ * pid reused while the rebase waited at a gate is not read as the
+ * verb that set it. It is set as soon as the record is read and
+ * before the result is taken over, cleared when the verb ends
+ * whichever way it ended, and taken off with the rest of the record
+ * at done and at --abort (tracker issue concurrent-continue,
+ * re-ruled 2026-09-16).
  *
- * The two start times are what tell a pid that was reused from the
- * pid that was recorded, in microseconds since the epoch as the
- * system reports the process's own start; 0 is "this system would
- * not say", where the pid alone has to do.
+ * zr_active_value writes this process's, and zr_active_live reads one
+ * back and asks the system whether that process is still there: 1
+ * with *whop set to it, 0 where it is gone, where the value names no
+ * process this tool would have written, and where the value is this
+ * process's own -- which is what lets the verb that set the property
+ * read its own record without refusing itself. A value whose process
+ * is gone is what a kill leaves, and is written over without a word.
  */
-struct zr_session {
-	pid_t		zn_parent;	/* the verb that opened the child */
-	pid_t		zn_child;	/* the child itself */
-	uint64_t	zn_pstart;	/* and when each of them started */
-	uint64_t	zn_cstart;
-	char		zn_verb[16];	/* "continue" or "start" */
-	char		zn_editor[256];	/* -i's value, or "-" for the picker */
-	char		zn_opened[32];	/* when, in the header's spelling */
-};
-
-/* <rundir>/session. 0 with buf filled, or -1 where it will not fit. */
-int zr_session_path(const char *rundir, char *buf, size_t len);
-
-/*
- * This process, the child it has just forked, and what it is doing,
- * filled in: the start times are read from the system where it will
- * say and left 0 where it will not. editor is -i's value and NULL is
- * the built-in picker.
- */
-void zr_session_fill(struct zr_session *sn, pid_t child, const char *verb,
-    const char *editor);
-
-/*
- * The file written whole and atomically, through the primitive every
- * other document of this tool is written with, and read back. write
- * returns 0 or -1 with err set; read returns 1 with *sn filled, 0
- * where there is no such file, and -1 with err set where there is one
- * and it is not ours to read.
- */
-int zr_session_write(const char *path, const struct zr_session *sn,
-    char *err, size_t errlen);
-int zr_session_read(const char *path, struct zr_session *sn, char *err,
-    size_t errlen);
-
-/*
- * Is either process of a session still alive? 1 with *whop set to the
- * one that is -- the child first, since it is the one holding the
- * tree -- and 0 where both are gone, which is what a kill leaves and
- * what makes the file stale rather than a lock nobody can lift.
- */
-int zr_session_live(const struct zr_session *sn, pid_t *whop);
+void zr_active_value(char *buf, size_t len);
+int zr_active_live(const char *value, pid_t *whop);
 
 /*
  * The name of the snapshot the tool takes of the result at the

@@ -76,6 +76,18 @@
  * 2026-09-15).
  */
 #define	ZR_PROP_GATESNAP	"zfs_rebase:gatesnap"
+/*
+ * And the sixth, which says a verb has this rebase just now: the
+ * process that took it and the moment that process started, as
+ * "<pid> <start>". It is set as soon as a verb has read the record
+ * and before the result is taken over, cleared when the verb ends
+ * whichever way it ended, and taken off with the rest at done and at
+ * --abort. A verb that finds it set and the process alive is
+ * refused; one that finds it set and the process gone writes its own
+ * over it, which is what a kill leaves behind (tracker issue
+ * concurrent-continue, re-ruled 2026-09-16).
+ */
+#define	ZR_PROP_ACTIVE		"zfs_rebase:active"
 
 /*
  * The record as the run hands it to the create. Every field is

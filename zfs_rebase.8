@@ -731,31 +731,13 @@ A command that hangs holds the rebase, and with it the dataset the rebase
 has taken over, until it exits or somebody kills it; the tool sets no
 timeout and will not choose one for you.
 .Pp
-One such session runs on one rebase at a time.
-A verb that opens a child writes the two process ids into
-.Pa <rundir>/session
-and takes the file away when the child is reaped; a
-.Fl -continue ,
-.Fl -restart
-or
-.Fl -abort
-arriving on the same rebase while either of those processes is still
-alive is refused, before it takes the result over and before it reads a
-tree, with one line naming the process, what
-.Fl i
-named, when the session was opened and where that file is.
-A plain
-.Fl -continue
-is refused by it too, and for the worse reason: it would carry the rebase
-into
-.Sy applying2 ,
-which writes over the tree the other person's editor still has open.
-.Fl -verify
-is never refused, since it reads, writes nothing and takes nothing over.
-A file whose processes are both gone \(em what a
-.Dv SIGKILL
-of the tool leaves \(em is stale, and the next verb says nothing about it
-and goes on.
+The child needs nothing of its own to hold the rebase: the verb that
+forked it holds it for the child's whole life, because the verb is
+waiting.
+See
+.Sy zfs_rebase:active
+under THE GATES for the rule, which is one verb at a time on one rebase
+whatever the verb is.
 .Pp
 The flag is not latched: it belongs to the invocation, so a
 .Fl -continue
@@ -1366,6 +1348,29 @@ The
 .Sy --posix
 form has none of this: it compares three directories, owns no dataset and
 takes no snapshot at all.
+.Pp
+One verb has a rebase at a time, whatever the verb is.
+Each of them writes its own process id and the moment that process
+started into
+.Sy zfs_rebase:active
+as soon as it has read the record and before it takes the result over,
+clears it when it ends whichever way it ended, and takes it off with the
+rest of the record at done and at
+.Fl -abort .
+A verb that finds it set on a process that is still alive is refused with
+one line naming that process, before it takes the result over and before
+it reads a tree: two verbs on one rebase are two hands on one tree,
+whether the second would apply into it, roll it back or destroy it.
+A value whose process is gone \(em what a
+.Dv SIGKILL
+leaves \(em is stale, and the next verb says nothing about it and writes
+its own over it; the process id is kept with a start time so that a
+number the system has since given to somebody else is not read as the
+verb that set it.
+.Fl -verify
+sets nothing and is refused by nothing: it reads, writes nothing and
+takes nothing over, so it is the one verb that is safe to run against a
+rebase somebody else is working in.
 .Pp
 .Fl -no-merge
 is refused at
