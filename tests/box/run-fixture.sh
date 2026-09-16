@@ -337,7 +337,9 @@ settled_clone() {
 	    { cat "$tmp/settled"; fail "--abort on a settled result exited $hst, want 2"; }
 	[ "$(zfs list -H -o name "$POOL/result" 2>/dev/null)" = "$POOL/result" ] || \
 	    fail "the refused --abort took $POOL/result away"
-	zfs destroy "$POOL/result" || fail "cannot destroy the settled result"
+	# -r: a done whose final check found drift keeps the gate
+	# snapshot on the result by design (ZX262); it goes with it.
+	zfs destroy -r "$POOL/result" || fail "cannot destroy the settled result"
 	# The harness's own placement, and not the tool's.
 	rmdir "$MNT/result" 2>/dev/null
 	[ ! -d "$RUNDIR" ] || fail "done left the run directory $RUNDIR"
@@ -1299,7 +1301,9 @@ case "$fixture" in
 	    { cat "$tmp/l2"; fail "--abort did not print the dataset form's command"; }
 	# And the result is ours to take away, which is what the
 	# message says.
-	zfs destroy "$POOL/result" || fail "cannot destroy the result of 5a"
+	# -r: a done whose final check found drift keeps the gate
+	# snapshot on the result by design (ZX262); it goes with it.
+	zfs destroy -r "$POOL/result" || fail "cannot destroy the result of 5a"
 	# The directory is the tool's even here: abort_lost undid the
 	# private mount, and an empty run directory goes by rmdir.
 	[ ! -d "$RUNDIR" ] || \

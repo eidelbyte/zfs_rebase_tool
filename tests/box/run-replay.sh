@@ -262,7 +262,9 @@ one() {
 		    fail "the settled clone's mountpoint is $mp, want none"
 		[ "$(zfs get -H -o value mounted "$POOL/result")" = no ] || \
 		    fail "the settled clone is still mounted"
-		zfs destroy "$POOL/result" || \
+		# -r: a done whose final check found drift keeps the gate
+		# snapshot on the result by design (ZX262); it goes with it.
+		zfs destroy -r "$POOL/result" || \
 		    fail "cannot destroy the settled result"
 		[ ! -d "$RUNDIR" ] || \
 		    fail "done left the run directory $RUNDIR"

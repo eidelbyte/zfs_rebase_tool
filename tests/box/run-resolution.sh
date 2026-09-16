@@ -689,7 +689,9 @@ end_case() {
 		[ $st -eq 2 ] || \
 		    { cat "$tmp/abort"; fail "--abort on a settled result exited $st, want 2"; }
 		if [ "$form" = clone ]; then
-			zfs destroy "$POOL/result" || \
+			# -r: a done whose final check found drift keeps the gate
+			# snapshot on the result by design (ZX262); it goes with it.
+			zfs destroy -r "$POOL/result" || \
 			    fail "cannot destroy the settled result"
 			rmdir "$MNT/result" 2>/dev/null
 		else
