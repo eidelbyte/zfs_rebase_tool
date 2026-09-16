@@ -11,9 +11,13 @@ WWW=		https://github.com/eidelbyte/zfs_rebase_tool
 # FreeBSD's contrib/libdiff that the picker's merge builds against is
 # ISC. That copy is src/plugins/picker/libdiff -- Neels Hofmeyr's diff
 # library from the Game of Trees project, carried whole and never
-# edited (see its UPSTREAM), together with the two OpenBSD compat
-# allocators under the same terms. It is compiled into the binary, so
-# it is a license of the package and not only of the source.
+# edited (see its UPSTREAM). It is compiled into the binary, so it is
+# a license of the package and not only of the source. Its two OpenBSD
+# compat allocators are not compiled here: the build takes
+# recallocarray(3) from libc, which means FreeBSD 15.1 or later, and
+# an older release fails at the link rather than through an OSVERSION
+# conditional (the author's ruling of 2026-09-15: no code to support
+# a libc without the function).
 #
 # Both lines stay whichever way the PICKER option below is set: the
 # distfile is one tarball and carries libdiff either way, and a

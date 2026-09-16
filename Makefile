@@ -175,31 +175,18 @@ LIBDIFF_INCS = -I$(LIBDIFF)/include -I$(LIBDIFF)/compat/include
 LIBDIFF_CFLAGS = $(CFLAGS) $(LIBDIFF_INCS) \
 	-Wno-sign-compare -Wno-unused-parameter -Wno-cast-qual
 
-# libdiff's two compat allocators, compiled in every build -- both
-# flavors, both knob settings that carry libdiff.
-#
-# They used to be cleared for FreeBSD, on the premise that FreeBSD's
-# libc has both functions and its own lib/libdiff builds neither. That
-# premise is only two months old and only true on the newest branches
-# (the review of 2026-09-11, B2, and the FreeBSD tree it was measured
-# in): reallocarray(3) is FBSD_1.4 and is everywhere, but
-# recallocarray(3) landed in libc on main on 2025-10-03 (42664610795b,
-# Symbol.map's FBSD_1.9 block, HISTORY "first appeared in ... FreeBSD
-# 15.1"), and the merge back reached stable/15 and releng/15.1 and no
-# further. releng/15.0, stable/14 and releng/14.3 have no such symbol
-# -- 15.0's own lib/libdiff still builds the shim -- and the carried
-# libdiff calls recallocarray from arraylist.h's ARRAYLIST grow, which
-# is on every path, our own merge.c among the callers. So the cleared
-# variable meant an undefined recallocarray at the link on every
-# supported release but 15.1 and later, invisible on a box that tracks
-# main.
-#
-# Compiling them everywhere is the whole fix and needs no OSVERSION
-# conditional in the port: a definition in our own objects satisfies
-# the reference at link time, and the shared library's export is never
-# reached for it where libc has one. Neither file carries an #ifndef
-# guard of its own -- both are plain definitions -- so this is the
-# only shape that works without editing a carried file.
+# libdiff's two compat allocators, compiled on the mac alone, whose
+# libc has neither reallocarray(3) nor recallocarray(3). The freebsd
+# and check-freebsd targets below clear the variable: there the two
+# come from libc, which has had recallocarray since 2025-10-02 on
+# main (42664610795b, FBSD_1.9, "first appeared in FreeBSD 15.1").
+# Releases before 15.1 have no such symbol and are not supported --
+# the author's ruling of 2026-09-15 on B2 of the review of 2026-09-11:
+# the requirement is a fine one now that libdiff is carried, and no
+# code is to be added to support a libc without the function. So
+# there is no OSVERSION conditional in the port and no compat object
+# on FreeBSD; an older libc fails at the link with an undefined
+# recallocarray, which is the requirement stated by the linker.
 LIBDIFF_COMPAT_OBJS = $(BUILD)/reallocarray.o $(BUILD)/recallocarray.o
 
 # recallocarray.c wipes the old allocation with explicit_bzero(3),
@@ -209,15 +196,10 @@ LIBDIFF_COMPAT_OBJS = $(BUILD)/reallocarray.o $(BUILD)/recallocarray.o
 # a compiler may elide bzero, where explicit_bzero may not be elided
 # -- which costs nothing here: libdiff holds file text and no secrets.
 #
-# It does no harm on FreeBSD, which has both functions and now
-# compiles this file too (see LIBDIFF_COMPAT_OBJS above). The macro is
-# object-like on purpose: a function-like one would rewrite nothing
-# but a call, and an object-like one rewrites the declaration in
-# FreeBSD's <strings.h> as well -- "void explicit_bzero(void *,
-# size_t)" becomes "void bzero(void *, size_t)", which is the very
-# signature the line above it already declares, so it is a compatible
-# redeclaration and not a conflict. What it costs there is the elision
-# guarantee, which this file does not need.
+# FreeBSD never compiles this file (see LIBDIFF_COMPAT_OBJS above),
+# so the macro is the mac's alone; it was measured harmless there
+# too, for the record, since it rewrites <strings.h>'s declaration
+# into the compatible one beside it.
 LIBDIFF_BZERO_CFLAGS = -Dexplicit_bzero=bzero
 
 LIBDIFF_OBJS = $(BUILD)/diff_main.o $(BUILD)/diff_myers.o \
@@ -344,7 +326,7 @@ freebsd:
 	$(MAKE) FLAVOR=freebsd CFLAGS="$(CFLAGS) -DZR_FREEBSD" \
 	    ZFSOPS_CFLAGS="$(ZFS_CFLAGS)" \
 	    CURSES_LIBS_yes="-lncursesw" PICKER="$(PICKER)" \
-	    PICKER_LDFLAGS="$(LDFLAGS)" \
+	    PICKER_LDFLAGS="$(LDFLAGS)" LIBDIFF_COMPAT_OBJS="" \
 	    LDFLAGS="$(LDFLAGS) $(ZFS_LIBS)" zfs_rebase $(PICKER_BIN)
 
 # The gates for the freebsd flavor. check links the test programs and
@@ -358,7 +340,7 @@ check-freebsd:
 	$(MAKE) FLAVOR=freebsd CFLAGS="$(CFLAGS) -DZR_FREEBSD" \
 	    ZFSOPS_CFLAGS="$(ZFS_CFLAGS)" \
 	    CURSES_LIBS_yes="-lncursesw" PICKER="$(PICKER)" \
-	    PICKER_LDFLAGS="$(LDFLAGS)" \
+	    PICKER_LDFLAGS="$(LDFLAGS)" LIBDIFF_COMPAT_OBJS="" \
 	    LDFLAGS="$(LDFLAGS) $(ZFS_LIBS)" check
 
 # Every rule below names its source's true include closure, and not

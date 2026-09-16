@@ -714,6 +714,11 @@ Two build modes:
 The core alone runs end to end in --posix mode over three ordinary
 directories, which is how it is tested where there is no ZFS.
 
+The FreeBSD build needs FreeBSD 15.1 or later: the carried libdiff
+calls recallocarray(3), which libc has had since 2025-10-02 on main
+and since 15.1 on a release. Older releases fail at the link with
+that symbol undefined, and nothing is added to support them.
+
 And one knob, which every one of those honours:
 
     make PICKER=no  the tool without the built-in picker
