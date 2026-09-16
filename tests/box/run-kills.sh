@@ -927,6 +927,15 @@ kill_case() {
 	fi
 	again "$tmp/again" "$cmnt"
 	echo "ok   $case_id: at ${wstate:-no gate}, readonly $wro; --continue -> ${wend:-done} (exit $st), stage 1 idempotent"
+	# The read-only case made onto read-only itself, and the tool
+	# put that back at the hand-back as it should (wro above); the
+	# harness's baseline is the pool's own default, which the reset
+	# asserts, so the case's own setting goes before the reset asks
+	# (the box, 2026-09-16).
+	if [ "$roinit" = on ]; then
+		zfs inherit readonly "$POOL/onto" || \
+		    fail "cannot put onto's readonly back to the baseline"
+	fi
 	reset_pool
 }
 
