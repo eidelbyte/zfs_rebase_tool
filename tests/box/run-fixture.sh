@@ -1458,6 +1458,14 @@ dataset_pass() {
 	dname=$2
 	cmnt=$MNT/onto
 
+	# This pass runs once per spelling of --result, and -o refuses a
+	# path that exists (ruled 2026-09-15, L5 of the review): what
+	# the first pass wrote under these names goes before the second
+	# writes them, the resolution the tool put beside the manifest
+	# included.
+	rm -f "$tmp/got-d" "$tmp/got-d.body" "$tmp/got-d.resolution" \
+	    "$tmp/d-after" "$tmp/d-after.body" "$tmp/d-after.resolution"
+
 	dsay "the run"
 	"$bin" $flag -v -o "$tmp/got-d" --from "$POOL/from" \
 	    --onto "$POOL/onto" --result "$dspec" > "$tmp/d.log" 2>&1
