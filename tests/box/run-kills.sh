@@ -373,7 +373,9 @@ reset_pool() {
 	"$bin" --abort "$POOL/result" >/dev/null 2>&1
 	"$bin" --abort "$POOL/onto" >/dev/null 2>&1
 	if zfs list -H -o name "$POOL/result" >/dev/null 2>&1; then
-		zfs destroy "$POOL/result" || \
+		# -r: a done whose final check found drift keeps the gate
+		# snapshot on the result by design (ZX262); it goes with it.
+		zfs destroy -r "$POOL/result" || \
 		    fail "the reset cannot destroy the settled $POOL/result"
 		rmdir "$MNT/result" 2>/dev/null
 	fi
