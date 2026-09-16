@@ -502,7 +502,16 @@ $(BUILD)/run.o: src/run.c src/run.h src/apply.h src/decide.h src/launch.h \
 # zfs_rebase-picker is built here because check_picker's pty tests run
 # it as their child: the standalone binary and the tool's own child
 # are the same objects, and ZP114 asserts it.
-check: $(PICKER_BIN) unit battery fixtures replay-expect-check
+# The oracle is the merge library's, so the knob picks it the way it
+# picks the test programs. These are here and not beside the rule
+# because a macro in a prerequisite list is expanded when the rule is
+# read, so one defined further down would expand to nothing.
+ORACLE_yes = oracle
+ORACLE_no =
+ORACLE_ARGS =
+
+check: $(PICKER_BIN) unit battery $(ORACLE_$(PICKER)) fixtures \
+	replay-expect-check
 
 unit: build $(LIB_OBJS)
 	@for t in $(TESTS); do \
@@ -516,6 +525,26 @@ unit: build $(LIB_OBJS)
 # compared with its expect block.
 fixtures: zfs_rebase
 	sh tests/run-fixtures.sh
+
+# The oracle (cell ZP141, finding G8 of the review of 2026-09-11): the
+# generated corpus, our merge against an outside one. It is the merge
+# library's, so the knob picks it the way it picks the tests: a
+# PICKER=no build links no merge.o and has nothing to run it against.
+#
+# The default run is the one make check takes -- seed 20260915, 60
+# cases of 3 to 400 lines, about a second, most of which is the fork
+# and exec of the outside merger once a case. The box takes the larger
+# one by hand, with the arguments the matrix row names:
+#
+#	make oracle ORACLE_ARGS="20260915 240 4"
+#
+# which is 240 cases and four more of 4000 to 32000 lines, the sizes
+# nothing in the tree merged before. The corpus writes its files under
+# $(BUILD)/oracle, which make clean takes with the rest of $(BUILD).
+oracle: build $(LIB_OBJS)
+	$(CC) $(CFLAGS) -o $(BUILD)/check_merge tests/check_merge.c \
+	    $(LIB_OBJS) $(LDFLAGS) $(CURSES_LIBS)
+	./$(BUILD)/check_merge --oracle $(ORACLE_ARGS)
 
 # The M1 gate: every committed battery, both modes.
 battery: build $(LIB_OBJS)
@@ -637,5 +666,5 @@ clean:
 	rm -rf $(BUILD) zfs_rebase zfs_rebase-picker
 
 .PHONY: all flavor builddir freebsd check check-freebsd unit battery \
-	fixtures gate nopicker nopicker-link probe-mount \
+	oracle fixtures gate nopicker nopicker-link probe-mount \
 	install install-picker replay-expect replay-expect-check clean

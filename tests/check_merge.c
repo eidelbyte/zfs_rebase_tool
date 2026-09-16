@@ -27,9 +27,16 @@
  * usage: check_merge [BATTERY]
  */
 
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+
+#include <errno.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "plugins/picker/merge.h"
 
@@ -1040,9 +1047,830 @@ check_hint_marks(void)
 	zr_m3_fini(&m);
 }
 
+/*
+ * ---------------------------------------------------------------
+ * The oracle: generated cases, our merge, and an outside one.
+ * ---------------------------------------------------------------
+ *
+ * Cell ZP141, and finding G8 of the code review of 2026-09-11: the
+ * battery pins 45 cases and nothing in the tree held the C against an
+ * outside implementation on anything else, nor merged anything over
+ * eight kilobytes. tools/merge-oracle.sh keeps its own job, which is
+ * the REFERENCE against git and diff3 over those 45; this is the TOOL
+ * against an outside merger over a corpus that is generated and
+ * therefore unbounded.
+ *
+ * THE CORPUS. One 32-bit generator of our own, seeded, so a case is
+ * the same case on every machine and is reproducible from its seed
+ * and number alone. A base of N lines, seven in eight of them a line
+ * that occurs once and the rest drawn from a pool of four, so that
+ * the alignment is forced in the common case and the ambiguous one is
+ * still met; a line an edit writes is never from that pool, so an
+ * edit's own text cannot be what two implementations align
+ * differently. One case in eight ends without a final newline, in all
+ * three files alike.
+ *
+ * Each case is given a SHAPE before it is generated -- clean, mixed,
+ * or conflicted -- and the edit sites are placed to produce it, so
+ * that the three boxes below each see about a third of the corpus
+ * instead of whatever a per-stretch dice roll happens to give. A case
+ * has one to four edit sites however long it is, with at least two
+ * untouched lines between them and at each end, so a file of thirty
+ * thousand lines is a realistic merge of a few edits and not a file
+ * rewritten line by line. An edit is a replacement, an insertion, a
+ * deletion or a block moved past the stretch after it. A fifth of the
+ * cases have no base at all.
+ *
+ * THE AUTHORITY, and why it is chosen at run time. FreeBSD's diff3
+ * lost lines in merge mode until 2026: with one side's edit changing
+ * the line count and the merge otherwise clean, diff3 -m dropped as
+ * many lines after the edited stretch as the count had moved. The
+ * smallest case is base "a\nb\n", from the same bytes as base, onto
+ * "a\nN\nb\n", where diff3 20220517 answers "a\nN\n" and loses the
+ * line b. The tree fixed it in usr.bin/diff3: 2cfca8e710f2 "fix merge
+ * mode" (2026-02-13), 5ddfd1db271c, which bumped the version string
+ * to the date GNU compatibility was reached ("FreeBSD diff3
+ * 20260213"), and fe5341287c6c "Produce correct exit status"
+ * (2026-03-02). So the version string is what says whether the bytes
+ * can be trusted, and this asks for it once:
+ *
+ *   - FreeBSD diff3 OR_DIFF3_FIXED or later: diff3 is the byte
+ *     authority.
+ *   - otherwise git merge-file -p --diff3, where git is installed.
+ *     --diff3 is what clamps git to its eager level, which is our
+ *     ceiling (v4-merge3.md section 4), as tools/merge-oracle.sh's
+ *     header explains.
+ *   - otherwise no byte authority: the classification alone is
+ *     asserted, and the run says so in its own words.
+ *
+ * Every run prints the authority it used and the version it saw, so a
+ * log from the box and a log from a mac read differently and both
+ * read true. DIFF3 and GIT in the environment override the paths.
+ *
+ * Whether the outside merger found a conflict is read from its OUTPUT
+ * -- a line of seven angle brackets -- and never from its exit
+ * status, because the status was itself wrong in diff3 until
+ * fe5341287c6c and the classification has to hold on the old one too.
+ *
+ * THE RELATION ASSERTED. Every case with a base falls in one of three
+ * boxes and nothing else:
+ *
+ *   A. Our merge has no conflict chunk and no both-same chunk, and
+ *      the outside merger produced no markers. Then the merged bytes
+ *      are compared, ours against the authority's.
+ *
+ *   B. Our merge has a both-same chunk and no conflict chunk, and the
+ *      outside merger bracketed something. That is the one known
+ *      translation and not a disagreement: diff3 -m implies -A, which
+ *      brackets a change both sides made identically, and FreeBSD's
+ *      -A, -E and -X all do it, which was measured rather than
+ *      assumed; git at its eager level does not, and neither do we
+ *      (v4-merge3.md sections 3.5 and 4). Where git is the authority
+ *      this box is empty, which the counts show.
+ *
+ *   C. Our merge has a conflict chunk and the outside merger
+ *      bracketed something. Both found a conflict; WHERE they found
+ *      it, how many they found and what lies between the markers are
+ *      not compared.
+ *
+ * A case outside the three fails the run, printing the seed, the case
+ * number, the three inputs' paths under the build directory and what
+ * each side said.
+ *
+ * THE ONE PLACE THE RELATION IS PROPERTIES AND NOT BYTES. In box A a
+ * byte difference is NOT by itself a failure. Two correct mergers may
+ * align a stretch differently where lines repeat -- the alignment
+ * class the review recorded for the battery -- and then merge cleanly
+ * to different bytes, both answers being right. So a differing box A
+ * is held to the properties of v4-merge3.md section 7 instead: every
+ * chunk's ranges partition their file and rebuild it, so no line is
+ * invented and none is lost, and every chunk's kind is honest about
+ * its ranges. Those are checked on every case anyway; the case is
+ * counted as "aligned differently" and printed, and only a property
+ * failure stops the run. The corpus is built to keep that number
+ * small -- lines that occur once, edits that never write a pooled
+ * line -- so a jump in it is itself worth reading.
+ *
+ * The add/add cases have no base at all, so there is no third file to
+ * hand the outside merger: an empty base FILE is a different input,
+ * which goes through the walk (v4-merge3.md section 5). They are held
+ * instead to the properties that form does claim, through the same
+ * check_add_add_props the pinned cases use (ZP95).
+ *
+ * The files are written under the build directory and never in /tmp,
+ * so that a failure leaves them where the person is already looking.
+ */
+
+/* The scratch directory, under the build directory the Makefile owns. */
+#define	OR_DIR_DEFAULT	"build/oracle"
+
+/* The first FreeBSD diff3 whose merge mode is right (2cfca8e710f2). */
+#define	OR_DIFF3_FIXED	20260213u
+
+/* The run's shape, all of it overridable on the command line. */
+#define	OR_SEED		20260915u
+#define	OR_CASES	60u
+#define	OR_BIG		0u
+
+/* One line of a case is short; a case is many of them. */
+#define	OR_LINEMAX	32
+
+/* The pool of lines that occur more than once, kept small on purpose. */
+#define	OR_POOL		4
+
+/* What a case is built to be. */
+#define	OR_CLEAN	0	/* the two sides touch different stretches */
+#define	OR_MIXED	1	/* and one stretch they both edit alike */
+#define	OR_CONFLICT	2	/* and one they edit differently */
+
+/* What an edit site is, on the two sides. */
+#define	OR_E_FROM	0
+#define	OR_E_ONTO	1
+#define	OR_E_SAME	2
+#define	OR_E_CONF	3
+
+/* At most this many edits in one case, however long the file is. */
+#define	OR_SITES	4
+
+/* Which outside merger says what the bytes are. */
+#define	OR_BY_NONE	0
+#define	OR_BY_DIFF3	1
+#define	OR_BY_GIT	2
+
+struct or_gen {
+	uint32_t	og_state;
+};
+
+/* xorshift32: ours, so that a case is the same case on every machine. */
+static uint32_t
+or_next(struct or_gen *g)
+{
+	uint32_t x = g->og_state;
+
+	x ^= x << 13;
+	x ^= x >> 17;
+	x ^= x << 5;
+	g->og_state = x != 0 ? x : 0x9e3779b9u;
+	return (g->og_state);
+}
+
+static uint32_t
+or_upto(struct or_gen *g, uint32_t n)
+{
+	return (n == 0 ? 0 : or_next(g) % n);
+}
+
+/* A growable buffer of text, which is what a generated file is. */
+struct or_text {
+	char	*ot_buf;
+	size_t	ot_len;
+	size_t	ot_cap;
+};
+
+static void
+or_addline(struct or_text *t, const char *line)
+{
+	size_t n = strlen(line);
+
+	if (t->ot_len + n + 2 > t->ot_cap) {
+		size_t want = (t->ot_cap != 0 ? t->ot_cap * 2 : 4096);
+
+		while (want < t->ot_len + n + 2)
+			want *= 2;
+		t->ot_buf = realloc(t->ot_buf, want);
+		CHECK(t->ot_buf != NULL);
+		t->ot_cap = want;
+	}
+	memcpy(t->ot_buf + t->ot_len, line, n);
+	t->ot_len += n;
+	t->ot_buf[t->ot_len++] = '\n';
+	t->ot_buf[t->ot_len] = '\0';
+}
+
+static void
+or_free(struct or_text *t)
+{
+	free(t->ot_buf);
+	memset(t, 0, sizeof (*t));
+}
+
+/*
+ * One line of the corpus. The tag says where it came from, so that a
+ * failure's three files can be read by eye: u a line that occurs
+ * once, p one of the pool, and f, o or s a line from's edit, onto's
+ * edit or the edit they both made.
+ */
+static void
+or_line(char *out, size_t outlen, char tag, uint32_t n)
+{
+	(void) snprintf(out, outlen, "%c%u", tag, (unsigned)n);
+}
+
+/* One edit site: the base lines it covers and what the two sides do. */
+struct or_site {
+	uint32_t	os_lo;
+	uint32_t	os_hi;
+	int		os_kind;
+};
+
+/*
+ * What one side writes in place of the base lines [lo, hi): a
+ * replacement, an insertion before them, a deletion of them, or the
+ * stretch with its two halves swapped, which is a block moved. tag is
+ * the side's letter and k the site's number, so the two sides never
+ * write the same line by accident where they are meant to differ.
+ */
+static void
+or_edit(struct or_gen *g, struct or_text *t, char (*base)[OR_LINEMAX],
+    uint32_t lo, uint32_t hi, char tag, uint32_t k)
+{
+	uint32_t kind = or_upto(g, 100), n, i;
+	char line[OR_LINEMAX];
+
+	if (kind < 20)
+		return;				/* a deletion */
+	if (kind < 45) {
+		n = 1 + or_upto(g, 3);		/* an insertion */
+		for (i = 0; i < n; i++) {
+			or_line(line, sizeof (line), tag, k * 100 + i);
+			or_addline(t, line);
+		}
+		for (i = lo; i < hi; i++)
+			or_addline(t, base[i]);
+		return;
+	}
+	if (kind < 80 || hi - lo < 2) {
+		n = 1 + or_upto(g, 3);		/* a replacement */
+		for (i = 0; i < n; i++) {
+			or_line(line, sizeof (line), tag, k * 100 + i);
+			or_addline(t, line);
+		}
+		return;
+	}
+	{					/* a block moved */
+		uint32_t mid = lo + (hi - lo) / 2;
+
+		for (i = mid; i < hi; i++)
+			or_addline(t, base[i]);
+		for (i = lo; i < mid; i++)
+			or_addline(t, base[i]);
+	}
+}
+
+/*
+ * One case: a base of nlines lines and the two sides derived from it
+ * by one to four edits, placed to give the case the shape it was
+ * asked for. Returns the number of sites, which the counts print.
+ */
+static uint32_t
+or_case(struct or_gen *g, uint32_t nlines, int shape, struct or_text *base,
+    struct or_text *frm, struct or_text *onto)
+{
+	char (*lines)[OR_LINEMAX];
+	struct or_site site[OR_SITES];
+	uint32_t i, j, n = 0, pos = 0, want;
+	int lasteol;
+
+	memset(base, 0, sizeof (*base));
+	memset(frm, 0, sizeof (*frm));
+	memset(onto, 0, sizeof (*onto));
+	lines = malloc((size_t)(nlines != 0 ? nlines : 1) * OR_LINEMAX);
+	CHECK(lines != NULL);
+	for (i = 0; i < nlines; i++) {
+		if (or_upto(g, 8) != 0)
+			or_line(lines[i], OR_LINEMAX, 'u', i);
+		else
+			or_line(lines[i], OR_LINEMAX, 'p', or_upto(g, OR_POOL));
+	}
+	for (i = 0; i < nlines; i++)
+		or_addline(base, lines[i]);
+	/*
+	 * The sites: at least two untouched lines before each and after
+	 * the last, so that two edits never touch. Changes with no
+	 * stable line between them are one conflict to every merger and
+	 * would crowd out the shapes this corpus is for.
+	 */
+	want = 1 + or_upto(g, OR_SITES);
+	while (n < want && pos + 3 <= nlines) {
+		uint32_t room = nlines - pos, skip, run;
+
+		skip = 2 + or_upto(g, room / (want - n + 1) + 1);
+		if (pos + skip + 3 > nlines)
+			break;
+		pos += skip;
+		run = 1 + or_upto(g, 3);
+		if (pos + run + 2 > nlines)
+			run = nlines - pos - 2;
+		site[n].os_lo = pos;
+		site[n].os_hi = pos + run;
+		site[n].os_kind = or_upto(g, 2) == 0 ? OR_E_FROM : OR_E_ONTO;
+		pos += run;
+		n++;
+	}
+	/*
+	 * The shape, imposed on the sites that were placed: a mixed case
+	 * has one both-same site and a conflicted one has a site the two
+	 * sides edit differently. A file too short for two sites keeps
+	 * the shape it can.
+	 */
+	if (n != 0 && shape == OR_MIXED)
+		site[or_upto(g, n)].os_kind = OR_E_SAME;
+	if (n != 0 && shape == OR_CONFLICT) {
+		site[or_upto(g, n)].os_kind = OR_E_CONF;
+		if (n > 1)
+			site[or_upto(g, n)].os_kind = OR_E_SAME;
+	}
+	j = 0;
+	for (i = 0; i < nlines; ) {
+		if (j < n && i == site[j].os_lo) {
+			uint32_t lo = site[j].os_lo, hi = site[j].os_hi;
+
+			switch (site[j].os_kind) {
+			case OR_E_FROM:
+				or_edit(g, frm, lines, lo, hi, 'f', j + 1);
+				for (i = lo; i < hi; i++)
+					or_addline(onto, lines[i]);
+				break;
+			case OR_E_ONTO:
+				for (i = lo; i < hi; i++)
+					or_addline(frm, lines[i]);
+				or_edit(g, onto, lines, lo, hi, 'o', j + 1);
+				break;
+			case OR_E_SAME: {
+				/*
+				 * The identical edit on both sides, which
+				 * is the SAME kind: the same generator
+				 * state is spent twice.
+				 */
+				struct or_gen save = *g;
+
+				or_edit(g, frm, lines, lo, hi, 's', j + 1);
+				*g = save;
+				or_edit(g, onto, lines, lo, hi, 's', j + 1);
+				break;
+			}
+			default:
+				or_edit(g, frm, lines, lo, hi, 'f', j + 1);
+				or_edit(g, onto, lines, lo, hi, 'o', j + 1);
+				break;
+			}
+			i = hi;
+			j++;
+			continue;
+		}
+		or_addline(frm, lines[i]);
+		or_addline(onto, lines[i]);
+		i++;
+	}
+	lasteol = or_upto(g, 8) != 0;
+	if (lasteol == 0) {
+		/*
+		 * The file ends without a final newline, which is a fact
+		 * about its last line and must be the same fact in all
+		 * three (v4-merge3.md section 5).
+		 */
+		struct or_text *all[3];
+		int w;
+
+		all[0] = base;
+		all[1] = frm;
+		all[2] = onto;
+		for (w = 0; w < 3; w++)
+			if (all[w]->ot_len > 0 &&
+			    all[w]->ot_buf[all[w]->ot_len - 1] == '\n')
+				all[w]->ot_buf[--all[w]->ot_len] = '\0';
+	}
+	free(lines);
+	return (n);
+}
+
+/* The three files of one case, where a failure can be read afterwards. */
+static void
+or_write(const char *dir, const char *tag, const struct or_text *t,
+    char *out, size_t outlen)
+{
+	FILE *f;
+
+	(void) snprintf(out, outlen, "%s/%s", dir, tag);
+	f = fopen(out, "w");
+	if (f == NULL) {
+		printf("oracle: %s: %s\n", out, strerror(errno));
+		exit(1);
+	}
+	CHECK(fwrite(t->ot_buf, 1, t->ot_len, f) == t->ot_len);
+	CHECK(fclose(f) == 0);
+}
+
+static char *
+or_slurp(const char *path, size_t *lenp)
+{
+	long n;
+	char *out;
+	FILE *f;
+
+	*lenp = 0;
+	f = fopen(path, "r");
+	if (f == NULL)
+		return (NULL);
+	CHECK(fseek(f, 0, SEEK_END) == 0);
+	n = ftell(f);
+	CHECK(n >= 0);
+	CHECK(fseek(f, 0, SEEK_SET) == 0);
+	out = malloc((size_t)n + 1);
+	CHECK(out != NULL);
+	CHECK(fread(out, 1, (size_t)n, f) == (size_t)n);
+	CHECK(fclose(f) == 0);
+	out[n] = '\0';
+	*lenp = (size_t)n;
+	return (out);
+}
+
+/*
+ * Did the outside merger bracket anything? Read from the output and
+ * never from the exit status, which was itself wrong in FreeBSD's
+ * diff3 until fe5341287c6c and must not be depended on here.
+ */
+static int
+or_bracketed(const char *buf, size_t len)
+{
+	size_t i;
+
+	for (i = 0; i + 7 <= len; i++) {
+		if (memcmp(buf + i, "<<<<<<<", 7) != 0)
+			continue;
+		if (i == 0 || buf[i - 1] == '\n')
+			return (1);
+	}
+	return (0);
+}
+
+/* The first line at which two answers part, 1-based, or 0 where they do not. */
+static uint32_t
+or_firstdiff(const char *a, size_t alen, const char *b, size_t blen)
+{
+	size_t i, line = 1;
+
+	for (i = 0; i < alen && i < blen; i++) {
+		if (a[i] != b[i])
+			return ((uint32_t)line);
+		if (a[i] == '\n')
+			line++;
+	}
+	return (alen == blen ? 0 : (uint32_t)line);
+}
+
+/* Which outside merger this run has, and what it may be asked. */
+struct or_auth {
+	const char	*oa_diff3;	/* the path, or NULL */
+	const char	*oa_git;	/* the path, or NULL */
+	uint32_t	oa_version;	/* FreeBSD diff3's date, or 0 */
+	int		oa_bytes;	/* OR_BY_* */
+};
+
+/* The eight digits of "FreeBSD diff3 20260213", or 0 for anything else. */
+static uint32_t
+or_version(const char *text)
+{
+	size_t i, j;
+
+	if (strstr(text, "FreeBSD") == NULL)
+		return (0);
+	for (i = 0; text[i] != '\0'; i++) {
+		if (text[i] < '0' || text[i] > '9')
+			continue;
+		for (j = i; text[j] >= '0' && text[j] <= '9'; j++)
+			continue;
+		if (j - i == 8)
+			return ((uint32_t)strtoul(text + i, NULL, 10));
+		i = j - 1;
+	}
+	return (0);
+}
+
+static void
+or_authority(struct or_auth *a, const char *dir)
+{
+	static const char *const gits[] = { "/usr/bin/git",
+		"/usr/local/bin/git" };
+	const char *env;
+	char cmd[1024], path[512], *text;
+	size_t len, i;
+
+	memset(a, 0, sizeof (*a));
+	env = getenv("DIFF3");
+	a->oa_diff3 = env != NULL ? env : "/usr/bin/diff3";
+	if (access(a->oa_diff3, X_OK) != 0)
+		a->oa_diff3 = NULL;
+	env = getenv("GIT");
+	if (env != NULL) {
+		a->oa_git = access(env, X_OK) == 0 ? env : NULL;
+	} else {
+		for (i = 0; i < sizeof (gits) / sizeof (gits[0]); i++)
+			if (access(gits[i], X_OK) == 0) {
+				a->oa_git = gits[i];
+				break;
+			}
+	}
+	if (a->oa_diff3 != NULL) {
+		(void) snprintf(path, sizeof (path), "%s/version", dir);
+		(void) snprintf(cmd, sizeof (cmd),
+		    "%s --version > %s 2>/dev/null", a->oa_diff3, path);
+		if (system(cmd) == 0) {
+			text = or_slurp(path, &len);
+			if (text != NULL) {
+				a->oa_version = or_version(text);
+				free(text);
+			}
+		}
+	}
+	if (a->oa_diff3 != NULL && a->oa_version >= OR_DIFF3_FIXED)
+		a->oa_bytes = OR_BY_DIFF3;
+	else if (a->oa_git != NULL)
+		a->oa_bytes = OR_BY_GIT;
+	else
+		a->oa_bytes = OR_BY_NONE;
+}
+
+/* What one case came to, for the counts the run prints. */
+#define	OR_BOX_A	0	/* both clean, and the bytes agree */
+#define	OR_BOX_B	1	/* ours both-same where diff3 brackets */
+#define	OR_BOX_C	2	/* both conflicted */
+#define	OR_BOX_ADD	3	/* no base: the properties instead */
+#define	OR_BOX_ALIGN	4	/* both clean, different bytes, both sound */
+#define	OR_BOX_N	5
+
+/*
+ * One generated case, through both implementations. Returns the box it
+ * fell in, and does not return at all where it fell outside them.
+ */
+static int
+or_one(uint32_t seed, uint32_t idx, uint32_t nlines, int shape, int addadd,
+    const char *dir, const struct or_auth *a)
+{
+	char bp[512], fp[512], op[512], outp[512], cmd[2048];
+	struct or_text base, frm, onto;
+	unsigned char *ours = NULL;
+	const char *who = "";
+	struct or_gen g;
+	uint32_t i, same = 0;
+	char err[256], *theirs = NULL;
+	size_t len = 0, tlen = 0;
+	struct zr_m3 m;
+	int marks = 0, status;
+
+	g.og_state = seed + idx * 2654435761u;
+	if (g.og_state == 0)
+		g.og_state = 1;
+	(void) or_case(&g, nlines, shape, &base, &frm, &onto);
+	if (addadd != 0) {
+		/*
+		 * No base at all: there is no third file to hand the
+		 * outside merger, and an empty base FILE is a different
+		 * input. The form's own properties stand in (ZP95,
+		 * v4-merge3.md section 7).
+		 */
+		check_add_add_props("oracle add/add", frm.ot_buf, frm.ot_len,
+		    onto.ot_buf, onto.ot_len);
+		or_free(&base);
+		or_free(&frm);
+		or_free(&onto);
+		return (OR_BOX_ADD);
+	}
+	or_write(dir, "base", &base, bp, sizeof (bp));
+	or_write(dir, "from", &frm, fp, sizeof (fp));
+	or_write(dir, "onto", &onto, op, sizeof (op));
+	(void) snprintf(outp, sizeof (outp), "%s/merged", dir);
+	if (a->oa_bytes == OR_BY_GIT) {
+		who = "git merge-file";
+		(void) snprintf(cmd, sizeof (cmd), "%s merge-file -p --diff3 "
+		    "%s %s %s > %s 2>/dev/null", a->oa_git, fp, bp, op, outp);
+	} else {
+		who = "diff3 -m";
+		(void) snprintf(cmd, sizeof (cmd), "%s -m %s %s %s > %s "
+		    "2>/dev/null", a->oa_diff3, fp, bp, op, outp);
+	}
+	status = system(cmd);
+	if (!WIFEXITED(status) || WEXITSTATUS(status) > 1) {
+		printf("oracle: seed %u case %u: %s would not run "
+		    "(status %d)\n", (unsigned)seed, (unsigned)idx, who,
+		    status);
+		exit(1);
+	}
+	theirs = or_slurp(outp, &tlen);
+	CHECK(theirs != NULL);
+	marks = or_bracketed(theirs, tlen);
+	CHECK(zr_m3_open(&m, (const unsigned char *)base.ot_buf, base.ot_len,
+	    (const unsigned char *)frm.ot_buf, frm.ot_len,
+	    (const unsigned char *)onto.ot_buf, onto.ot_len, err,
+	    sizeof (err)) == 0);
+	/*
+	 * The properties, on every case and before any comparison: they
+	 * are what a differing box A falls back on, so they are never
+	 * the thing that was skipped.
+	 */
+	check_partition(&m, "oracle");
+	check_kinds(&m, "oracle");
+	for (i = 0; i < m.nchunks; i++)
+		if (m.chunks[i].kind == ZR_M3_SAME)
+			same++;
+	if (m.nconflict == 0 && same == 0 && marks == 0) {
+		int box = OR_BOX_A;
+
+		if (a->oa_bytes == OR_BY_NONE) {
+			checks++;	/* the classification alone */
+		} else {
+			CHECK(zr_m3_result(&m, &ours, &len, err,
+			    sizeof (err)) == 0);
+			if (len != tlen || memcmp(ours, theirs, len) != 0) {
+				/*
+				 * Both merged cleanly and the bytes
+				 * differ: an alignment both may be right
+				 * about. The properties above are what
+				 * says ours is sound, and they have run.
+				 */
+				printf("oracle: seed %u case %u (%u lines): "
+				    "aligned differently from %s, at line "
+				    "%u; ours %zu bytes, theirs %zu\n",
+				    (unsigned)seed, (unsigned)idx,
+				    (unsigned)nlines, who,
+				    (unsigned)or_firstdiff((const char *)ours,
+				    len, theirs, tlen), len, tlen);
+				box = OR_BOX_ALIGN;
+			}
+			checks++;
+			free(ours);
+		}
+		free(theirs);
+		zr_m3_fini(&m);
+		or_free(&base);
+		or_free(&frm);
+		or_free(&onto);
+		return (box);
+	}
+	if (m.nconflict == 0 && same != 0 && marks != 0) {
+		checks++;		/* the one known translation */
+		free(theirs);
+		zr_m3_fini(&m);
+		or_free(&base);
+		or_free(&frm);
+		or_free(&onto);
+		return (OR_BOX_B);
+	}
+	if (m.nconflict != 0 && marks != 0) {
+		checks++;		/* both conflicted */
+		free(theirs);
+		zr_m3_fini(&m);
+		or_free(&base);
+		or_free(&frm);
+		or_free(&onto);
+		return (OR_BOX_C);
+	}
+	if (m.nconflict == 0 && same != 0 && marks == 0 &&
+	    a->oa_bytes == OR_BY_GIT) {
+		/*
+		 * git at its eager level merges an identical change on
+		 * both sides silently, as we do, so box B is empty
+		 * under git and this is box A with the bytes compared.
+		 */
+		CHECK(zr_m3_result(&m, &ours, &len, err, sizeof (err)) == 0);
+		if (len != tlen || memcmp(ours, theirs, len) != 0) {
+			printf("oracle: seed %u case %u (%u lines): aligned "
+			    "differently from %s over a both-same stretch, "
+			    "at line %u\n", (unsigned)seed, (unsigned)idx,
+			    (unsigned)nlines, who,
+			    (unsigned)or_firstdiff((const char *)ours, len,
+			    theirs, tlen));
+			free(ours);
+			free(theirs);
+			zr_m3_fini(&m);
+			or_free(&base);
+			or_free(&frm);
+			or_free(&onto);
+			return (OR_BOX_ALIGN);
+		}
+		checks++;
+		free(ours);
+		free(theirs);
+		zr_m3_fini(&m);
+		or_free(&base);
+		or_free(&frm);
+		or_free(&onto);
+		return (OR_BOX_A);
+	}
+	printf("oracle: seed %u case %u (%u lines): a disagreement that is "
+	    "not the known translation\n", (unsigned)seed, (unsigned)idx,
+	    (unsigned)nlines);
+	printf("  ours: %u chunks, %u conflicts, %u both-same\n",
+	    (unsigned)m.nchunks, (unsigned)m.nconflict, (unsigned)same);
+	printf("  %s: %s\n", who, marks != 0 ? "bracketed a conflict" :
+	    "merged cleanly");
+	printf("  base %s\n  from %s\n  onto %s\n  theirs %s\n", bp, fp, op,
+	    outp);
+	exit(1);
+	return (-1);
+}
+
+/*
+ * The corpus. The shapes cycle so that the three boxes each see about
+ * a third of it; the sizes climb so that the small cases, where a hand
+ * can read the three files, come first. The big sizes are the last
+ * argument's, since tens of thousands of lines is the box's run and
+ * not make check's.
+ */
+static int
+run_oracle(uint32_t seed, uint32_t cases, uint32_t big)
+{
+	static const uint32_t bigsizes[] = { 4000, 8000, 16000, 32000 };
+	const char *dir = getenv("ZR_ORACLE_DIR");
+	uint32_t i, box[OR_BOX_N], shape[3], nlines;
+	struct or_auth a;
+
+	if (dir == NULL)
+		dir = OR_DIR_DEFAULT;
+	if (mkdir(dir, 0755) != 0 && errno != EEXIST) {
+		printf("oracle: %s: %s\n", dir, strerror(errno));
+		return (1);
+	}
+	or_authority(&a, dir);
+	if (a.oa_diff3 == NULL && a.oa_git == NULL) {
+		printf("skip ZP141: no diff3 and no git to hold the merge "
+		    "against\n");
+		return (0);
+	}
+	printf("oracle: %s", a.oa_diff3 != NULL ? a.oa_diff3 : "no diff3");
+	if (a.oa_version != 0)
+		printf(" (FreeBSD diff3 %u)", (unsigned)a.oa_version);
+	else if (a.oa_diff3 != NULL)
+		printf(" (version unknown: not a FreeBSD diff3)");
+	printf(", git %s\n", a.oa_git != NULL ? a.oa_git : "absent");
+	switch (a.oa_bytes) {
+	case OR_BY_DIFF3:
+		printf("oracle: the bytes are diff3's, whose merge mode is "
+		    "right at %u and later\n", (unsigned)OR_DIFF3_FIXED);
+		break;
+	case OR_BY_GIT:
+		printf("oracle: the bytes are git merge-file's; this diff3 "
+		    "is older than %u, whose merge mode lost lines\n",
+		    (unsigned)OR_DIFF3_FIXED);
+		break;
+	default:
+		printf("oracle: no byte authority here: the classification "
+		    "alone is asserted\n");
+		break;
+	}
+	memset(box, 0, sizeof (box));
+	memset(shape, 0, sizeof (shape));
+	for (i = 0; i < cases; i++) {
+		int addadd = (i % 5) == 4;
+
+		nlines = 3 + (i * 7) % 398;
+		if (addadd == 0)
+			shape[i % 3]++;
+		box[or_one(seed, i, nlines, (int)(i % 3), addadd, dir, &a)]++;
+	}
+	for (i = 0; i < big && i < sizeof (bigsizes) / sizeof (bigsizes[0]);
+	    i++)
+		box[or_one(seed, 1000 + i, bigsizes[i], (int)(i % 3), 0, dir,
+		    &a)]++;
+	printf("oracle: seed %u, %u cases of 3 to 400 lines", (unsigned)seed,
+	    (unsigned)cases);
+	if (big != 0)
+		printf(" and %u of 4000 to 32000", (unsigned)big);
+	printf("\n");
+	printf("oracle: shapes asked for: %u clean, %u mixed, %u "
+	    "conflicted, and %u with no base\n", (unsigned)shape[OR_CLEAN],
+	    (unsigned)shape[OR_MIXED], (unsigned)shape[OR_CONFLICT],
+	    (unsigned)box[OR_BOX_ADD]);
+	printf("oracle: %u merged alike, %u both-same bracketed, %u "
+	    "conflicted on both sides, %u add/add by the properties, %u "
+	    "aligned differently\n", (unsigned)box[OR_BOX_A],
+	    (unsigned)box[OR_BOX_B], (unsigned)box[OR_BOX_C],
+	    (unsigned)box[OR_BOX_ADD], (unsigned)box[OR_BOX_ALIGN]);
+	return (0);
+}
+
 int
 main(int argc, char **argv)
 {
+	/*
+	 * --oracle [SEED [CASES [BIG]]] is the generated corpus held
+	 * against diff3 (ZP141); with no argument, or with a path, this
+	 * is the battery and the shapes beside it, as it has always
+	 * been. The two do not run together, so that make check can
+	 * take the corpus at its own size and the box at another.
+	 */
+	if (argc > 1 && strcmp(argv[1], "--oracle") == 0) {
+		uint32_t seed = argc > 2 ? (uint32_t)strtoul(argv[2], NULL,
+		    10) : OR_SEED;
+		uint32_t cases = argc > 3 ? (uint32_t)strtoul(argv[3], NULL,
+		    10) : OR_CASES;
+		uint32_t big = argc > 4 ? (uint32_t)strtoul(argv[4], NULL,
+		    10) : OR_BIG;
+		int rc = run_oracle(seed, cases, big);
+
+		printf("check_merge --oracle: %d checks passed\n", checks);
+		return (rc);
+	}
 	run_battery(argc > 1 ? argv[1] : BATTERY_DEFAULT);
 	check_text();
 	check_ceiling();

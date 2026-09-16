@@ -37,6 +37,16 @@
 #   terminates the line first, and so do we, since a marker that is
 #   not at the start of a line cannot be read back at all.
 #
+# What this is NOT: the tool held against an oracle. That is cell
+# ZP141 and it lives in tests/check_merge.c behind --oracle, run by
+# make oracle and by make check over a generated corpus; this script
+# stays what it has always been, the REFERENCE held against git and
+# diff3 over the 45 pinned cases. Note for whoever reads the diff3
+# column here: FreeBSD's diff3 lost lines in merge mode until
+# usr.bin/diff3's 2cfca8e710f2 (2026-02-13), so a diff3 older than
+# the version string "FreeBSD diff3 20260213" disagrees for that
+# reason as well as the two below.
+#
 # The tool itself may never do what this script does. The sprint's
 # ground rules forbid a temp file and forbid parsing another program's
 # output, and both oracles need both: files on disk to hand them and a
