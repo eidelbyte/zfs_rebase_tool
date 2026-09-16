@@ -1978,18 +1978,28 @@ test_merge_write(void)
 	/* ZP93: the row reads keep, and the merge is closed */
 	CHECK(zr_pk_merge(&pk) == NULL);
 	CHECK(zr_pk_choice(zr_pk_row(&pk, G_M2)) == ZR_CH_KEEP);
-	CHECK(zr_pk_dirty(&pk) == 1);
 	CHECK(zr_pk_counts(&pk)->zc_unanswered == 3);
 	/*
 	 * ZP136: the message says the bytes are written, that the name
-	 * reads keep, and that the resolution is not saved yet -- the
-	 * row's keep lives in memory until s or w (M9).
+	 * reads keep and that the resolution is saved, since the write
+	 * is both now (the author, 2026-09-15, on M9).
 	 */
 	msg = zr_pk_msg(&pk);
 	CHECK(msg != NULL && strstr(msg, "written") != NULL);
 	CHECK(strstr(msg, "keep") != NULL);
-	CHECK(strstr(msg, "not saved yet") != NULL);
-	/* ZP93: and the resolution s writes carries that keep */
+	CHECK(strstr(msg, "the resolution is saved") != NULL);
+	/*
+	 * ZP137: and it is saved, without the list's s being pressed:
+	 * nothing is unsaved, and the document already carries the
+	 * keep that the s below used to be what wrote.
+	 */
+	CHECK(zr_pk_dirty(&pk) == 0);
+	got = slurp(w.w_res, &len);
+	CHECK(got != NULL);
+	CHECK(strstr(got, "    m2.txt conflict 3 keep\n") != NULL);
+	CHECK(strstr(got, "#unanswered 3\n") != NULL);
+	free(got);
+	/* ZP93: and s writes the same document again, unchanged */
 	CHECK(zr_pk_key(&pk, ZR_PK_SAVE) == ZR_PK_REDRAW);
 	got = slurp(w.w_res, &len);
 	CHECK(got != NULL);
@@ -2244,6 +2254,112 @@ test_merge_writeshort(void)
 	CHECK(got != NULL);
 	CHECK(len <= 1024);
 	free(got);
+	zr_pk_fini(&pk);
+	world_fini(&w);
+}
+
+/*
+ * ZP137, the half where the document cannot be written. Screen 2's w
+ * writes the merged bytes and then the document, so that the tree and
+ * the resolution never disagree on disk (the author, 2026-09-15, on
+ * M9). The object write is the one that can damage something and it
+ * goes first; if the document write then fails, the row stays keep in
+ * memory, one line says the bytes are written and the resolution
+ * could not be saved and names the reason, and the next s or w from
+ * the list writes it after all.
+ *
+ * The document is written through zr_doc_write, which puts the bytes
+ * in a .tmp sibling and renames it, so a directory nobody may write
+ * is what makes it fail. Root ignores the mode, so the case says so
+ * and passes there.
+ */
+static void
+test_merge_savefail(void)
+{
+	struct zr_picker pk;
+	const char *msg;
+	struct world w;
+	size_t len;
+	char *got;
+
+	if (geteuid() == 0) {
+		printf("skip ZP137: running as root, a mode of 0500 is "
+		    "no refusal\n");
+		return;
+	}
+	world_init(&w);
+	build_merge(&w);
+	open_ok("merge savefail", &w, &pk);
+	drain(&pk);
+	(void) merge_on(&pk, G_M2);
+	CHECK(zr_pk_key(&pk, ZR_PK_PICK_FROM) == ZR_PK_REDRAW);
+	CHECK(zr_pk_key(&pk, ZR_PK_NEXT) == ZR_PK_REDRAW);
+	CHECK(zr_pk_key(&pk, ZR_PK_PICK_ONTO) == ZR_PK_REDRAW);
+	CHECK(chmod(w.w_root, 0500) == 0);
+	CHECK(zr_pk_key(&pk, ZR_PK_WRITE) == ZR_PK_REDRAW);
+	CHECK(chmod(w.w_root, 0755) == 0);
+	msg = zr_pk_msg(&pk);
+	CHECK(msg != NULL && strstr(msg, "/m2.txt") != NULL);
+	CHECK(strstr(msg, "written") != NULL);
+	CHECK(strstr(msg, "could not be saved") != NULL);
+	/* the object took the merge all the same */
+	got = w_slurp(&w, ZR_PK_T_RESULT, "/m2.txt", &len);
+	CHECK(got != NULL);
+	same("the merged bytes", got, len, G_M2_MIXED, strlen(G_M2_MIXED));
+	free(got);
+	/* the row reads keep in memory, and the document does not yet */
+	CHECK(zr_pk_choice(zr_pk_row(&pk, G_M2)) == ZR_CH_KEEP);
+	CHECK(zr_pk_dirty(&pk) == 1);
+	got = slurp(w.w_res, &len);
+	CHECK(got != NULL);
+	CHECK(strstr(got, "    m2.txt conflict 3 -\n") != NULL);
+	free(got);
+	/* and s from the list writes it after all */
+	CHECK(zr_pk_key(&pk, ZR_PK_SAVE) == ZR_PK_REDRAW);
+	CHECK(zr_pk_dirty(&pk) == 0);
+	got = slurp(w.w_res, &len);
+	CHECK(got != NULL);
+	CHECK(strstr(got, "    m2.txt conflict 3 keep\n") != NULL);
+	free(got);
+	zr_pk_fini(&pk);
+	world_fini(&w);
+}
+
+/*
+ * ZP138's own half, over the model: what q has to say is a count of
+ * the answers no write has saved, and zr_pk_dirty is where it comes
+ * from (the author, 2026-09-15, on M9). It counts names and not key
+ * presses: a choice pressed twice on one row is one unsaved answer,
+ * and a choice put back to what the document already held is none.
+ */
+static void
+test_unsaved_count(void)
+{
+	struct zr_picker pk;
+	struct world w;
+
+	world_init(&w);
+	build_main(&w);
+	open_ok("unsaved", &w, &pk);
+	drain(&pk);
+	CHECK(zr_pk_dirty(&pk) == 0);
+	cursor_to(&pk, R_A);
+	CHECK(zr_pk_key(&pk, ZR_PK_FROM) == ZR_PK_REDRAW);
+	CHECK(zr_pk_dirty(&pk) == 1);
+	CHECK(zr_pk_key(&pk, ZR_PK_ONTO) == ZR_PK_REDRAW);
+	CHECK(zr_pk_dirty(&pk) == 1);	/* one name, twice pressed */
+	cursor_to(&pk, R_DEL);
+	CHECK(zr_pk_key(&pk, ZR_PK_KEEP) == ZR_PK_REDRAW);
+	CHECK(zr_pk_dirty(&pk) == 2);
+	/* back to what the document held: nothing unsaved about it */
+	CHECK(zr_pk_key(&pk, ZR_PK_CLEAR) == ZR_PK_REDRAW);
+	CHECK(zr_pk_dirty(&pk) == 1);
+	CHECK(zr_pk_key(&pk, ZR_PK_SAVE) == ZR_PK_REDRAW);
+	CHECK(zr_pk_dirty(&pk) == 0);
+	/* and what was written is the new floor: changing back counts */
+	cursor_to(&pk, R_A);
+	CHECK(zr_pk_key(&pk, ZR_PK_CLEAR) == ZR_PK_REDRAW);
+	CHECK(zr_pk_dirty(&pk) == 1);
 	zr_pk_fini(&pk);
 	world_fini(&w);
 }
@@ -3671,6 +3787,137 @@ test_pty_escapes(void)
 }
 
 /*
+ * ZP137: screen 2's w writes the document as well as the object, so
+ * that a kill between the two can no longer leave the tree merged and
+ * the resolution saying nothing happened (the author, 2026-09-15, on
+ * M9). The session opens the merge, answers the hunk, writes with w
+ * and leaves with q at once, without ever pressing s or w on the
+ * list; what the document says afterwards is what the case reads.
+ *
+ * q leaves with 1 and not 2 now, which is what a saved document is
+ * worth: the answers are on the disk and the gate stands.
+ */
+static void
+test_pty_merge_saves(void)
+{
+	static const char *const keys[] = { "\r", "f", "w", "q", NULL };
+	struct termios before;
+	struct child c;
+	struct world w;
+	struct pty y;
+	size_t len;
+	char *got;
+
+	if (picker_bin() == NULL) {
+		printf("skip ZP137: zfs_rebase-picker is not built\n");
+		return;
+	}
+	if (pty_open(&y) != 0) {
+		printf("skip ZP137: no pty here (%s)\n", strerror(errno));
+		return;
+	}
+	world_init(&w);
+	world_docs(&w, man_merge_pty, res_merge_pty);
+	w_text(&w, ZR_PK_T_BASE, "/conf.txt", P_BASE);
+	w_text(&w, ZR_PK_T_FROM, "/conf.txt", P_FROM);
+	w_text(&w, ZR_PK_T_ONTO, "/conf.txt", P_ONTO);
+	w_text(&w, ZR_PK_T_RESULT, "/conf.txt", P_BASE);
+	tty_mark(&y, &before);
+	memset(&c, 0, sizeof (c));
+	c.c_term = "xterm";
+	c.c_keys = keys;
+	pty_drive(&y, &w, &c, &pty_out);
+	CHECK(WIFEXITED(pty_out.r_status));
+	CHECK(WEXITSTATUS(pty_out.r_status) == 1);
+	tty_same(&y, &before);
+	/* the document on disk, written by screen 2's w and nothing else */
+	got = slurp(w.w_res, &len);
+	CHECK(got != NULL);
+	CHECK(strstr(got, "    conf.txt conflict 1 keep\n") != NULL);
+	CHECK(strstr(got, "#unanswered 0\n") != NULL);
+	free(got);
+	/* and the object under it */
+	got = w_slurp(&w, ZR_PK_T_RESULT, "/conf.txt", &len);
+	CHECK(got != NULL);
+	same("the merged object", got, len, P_FROM, strlen(P_FROM));
+	free(got);
+	/* what was said, and said after the terminal was handed back */
+	CHECK(find(pty_out.r_buf, pty_out.r_len, "the resolution is saved") !=
+	    NULL);
+	world_fini(&w);
+	pty_close(&y);
+}
+
+/*
+ * ZP138: q with answers no write has saved says how many, in one line
+ * after the terminal is the person's again, and leaves with the
+ * status it has always had; q with nothing unsaved says nothing (the
+ * author, 2026-09-15, on M9: no prompt, one line).
+ *
+ * The line is held against the last escape byte the way ZP68 holds
+ * the open's own messages: curses is what writes escapes, so a line
+ * past the last of them is a line printed after endwin.
+ */
+static void
+test_pty_unsaved(void)
+{
+	static const char *const k_answer[] = { "f", "q", NULL };
+	static const char *const k_bare[] = { "q", NULL };
+	static const char said[] = "not saved";
+	const char *last, *at;
+	struct child c;
+	struct world w;
+	struct pty y;
+	size_t i, len;
+	char *got;
+
+	if (picker_bin() == NULL) {
+		printf("skip ZP138: zfs_rebase-picker is not built\n");
+		return;
+	}
+	if (pty_open(&y) != 0) {
+		printf("skip ZP138: no pty here (%s)\n", strerror(errno));
+		return;
+	}
+	memset(&c, 0, sizeof (c));
+	c.c_term = "xterm";
+
+	/* one answer given and none saved: the line, and exit 2 */
+	world_init(&w);
+	world_docs(&w, man_two, res_pty);
+	c.c_keys = k_answer;
+	pty_drive(&y, &w, &c, &pty_out);
+	CHECK(WIFEXITED(pty_out.r_status));
+	CHECK(WEXITSTATUS(pty_out.r_status) == 2);
+	at = find(pty_out.r_buf, pty_out.r_len, said);
+	CHECK(at != NULL);
+	CHECK(find(pty_out.r_buf, pty_out.r_len, "1 answer") != NULL);
+	last = NULL;
+	for (i = 0; i < pty_out.r_len; i++)
+		if (pty_out.r_buf[i] == '\033')
+			last = pty_out.r_buf + i;
+	CHECK(last != NULL);
+	CHECK(at > last);
+	/* and nothing was written, since q writes nothing */
+	got = slurp(w.w_res, &len);
+	CHECK(got != NULL);
+	same("q wrote nothing", got, len, res_pty, strlen(res_pty));
+	free(got);
+	world_fini(&w);
+
+	/* nothing answered: q says nothing at all */
+	world_init(&w);
+	world_docs(&w, man_two, res_pty);
+	c.c_keys = k_bare;
+	pty_drive(&y, &w, &c, &pty_out);
+	CHECK(WIFEXITED(pty_out.r_status));
+	CHECK(WEXITSTATUS(pty_out.r_status) == 2);
+	CHECK(find(pty_out.r_buf, pty_out.r_len, said) == NULL);
+	world_fini(&w);
+	pty_close(&y);
+}
+
+/*
  * ZP114: the tool's child and the standalone binary are the same
  * objects. One key sequence over one pair of documents, once through
  * the binary and once through zr_picker_main called in a child this
@@ -3811,6 +4058,8 @@ main(void)
 	test_merge_writefail();
 	test_merge_notregular();
 	test_merge_writeshort();
+	test_merge_savefail();
+	test_unsaved_count();
 	test_tree_unreadable();
 	test_many_groups();
 	test_pty_exits();
@@ -3823,6 +4072,8 @@ main(void)
 	test_pty_quiet();
 	test_pty_draw();
 	test_pty_merge();
+	test_pty_merge_saves();
+	test_pty_unsaved();
 	test_pty_same_child();
 	test_no_terminal();
 	printf("check_picker: %d checks passed\n", checks);

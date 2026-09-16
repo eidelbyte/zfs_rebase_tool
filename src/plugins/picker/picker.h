@@ -180,6 +180,12 @@ enum zr_pk_fo {
  * whose group number the theory says is not read. What such a line
  * spelled is still on zk_line->zl_group and goes back out untouched.
  *
+ * zk_saved is the choice the document on disk holds for this row: the
+ * one it was read with, and afterwards the one the last write put
+ * there. A row whose line no longer says that is an answer nobody has
+ * saved, which is what zr_pk_dirty counts and what q names on the way
+ * out (the author, 2026-09-15, on finding M9).
+ *
  * zk_rec is the manifest's conflict record for this row's group: the
  * why line (zr_why), the class bits (zr_flags, ZR_CF_* of decide.h)
  * and the three trees' pools (zr_base, zr_from, zr_onto). It is NULL
@@ -189,6 +195,7 @@ enum zr_pk_fo {
 struct zr_pk_row {
 	enum zr_pk_line		zk_kind;
 	struct zr_rline		*zk_line;	/* the document's own line */
+	enum zr_choice		zk_saved;	/* the choice last written */
 	const unsigned char	*zk_name;	/* zk_line's path */
 	size_t			zk_namelen;
 	uint32_t		zk_group;	/* 0 where there is none */
@@ -273,7 +280,8 @@ struct zr_pk_merge {
  *
  * pk_saved says a write happened, pk_done that the last one was the
  * one that finishes the rebase; the two are what zr_pk_status reads.
- * pk_dirty says a choice has changed since the last write.
+ * What is unsaved is not a flag here: it is the rows whose choice is
+ * not the one their zk_saved holds, which zr_pk_dirty counts.
  */
 struct zr_picker {
 	struct zr_resolution	pk_res;
@@ -282,7 +290,6 @@ struct zr_picker {
 	uint32_t		pk_nrows;
 	uint32_t		pk_cursor;
 	struct zr_pk_counts	pk_counts;
-	int			pk_dirty;
 	int			pk_saved;
 	int			pk_done;
 	char			*pk_respath;
@@ -403,7 +410,15 @@ uint32_t zr_pk_nrows(const struct zr_picker *pk);
 const struct zr_pk_row *zr_pk_row(const struct zr_picker *pk, uint32_t i);
 uint32_t zr_pk_cursor(const struct zr_picker *pk);
 const struct zr_pk_counts *zr_pk_counts(const struct zr_picker *pk);
-int zr_pk_dirty(const struct zr_picker *pk);
+
+/*
+ * How many names carry a choice the document on disk does not: the
+ * answers a write would save and a q would leave behind. Counted over
+ * the rows, so a name answered twice is one and a name put back to
+ * what was written is none. q names this number in the one line it
+ * prints on the way out (the author, 2026-09-15, on finding M9).
+ */
+uint32_t zr_pk_dirty(const struct zr_picker *pk);
 
 /* One row's choice, which lives on the document's line and nowhere else. */
 enum zr_choice zr_pk_choice(const struct zr_pk_row *row);

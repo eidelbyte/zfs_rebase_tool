@@ -663,6 +663,7 @@ pk_build(struct zr_picker *pk, char *err, size_t errlen)
 
 		memset(row, 0, sizeof (*row));
 		row->zk_line = line;
+		row->zk_saved = line->zl_choice;
 		row->zk_name = line->zl_path;
 		row->zk_namelen = line->zl_pathlen;
 		row->zk_isdir = line->zl_isdir;
@@ -776,6 +777,8 @@ pk_emit(FILE *out, void *arg)
 int
 zr_pk_write(struct zr_picker *pk, char *err, size_t errlen)
 {
+	uint32_t i;
+
 	if (pk == NULL || pk->pk_respath == NULL) {
 		pk_err(err, errlen, "there is no document to write");
 		return (-1);
@@ -784,7 +787,13 @@ zr_pk_write(struct zr_picker *pk, char *err, size_t errlen)
 	    errlen) != 0)
 		return (-1);
 	pk->pk_saved = 1;
-	pk->pk_dirty = 0;
+	/*
+	 * What is on the disk now is what each row was asked to say,
+	 * so that is the floor the unsaved count is taken from until
+	 * the next write (the author, 2026-09-15, on M9).
+	 */
+	for (i = 0; i < pk->pk_nrows; i++)
+		pk->pk_rows[i].zk_saved = pk->pk_rows[i].zk_line->zl_choice;
 	return (0);
 }
 
@@ -851,7 +860,6 @@ static void
 pk_set(struct zr_picker *pk, struct zr_pk_row *row, enum zr_choice ch)
 {
 	row->zk_line->zl_choice = ch;
-	pk->pk_dirty = 1;
 	pk->pk_counts.zc_unanswered = zr_resolution_unanswered(&pk->pk_res);
 }
 
@@ -1381,21 +1389,32 @@ pk_merge_move(struct zr_picker *pk, int back)
  *
  * keep, because that is what the result standing as it is means
  * (v4-manifest.md section 8) and what the tool's verify leaves alone.
- * The message says so and says what has not happened yet: the row
- * lives in memory until s or w writes the document, and a kill
- * between the two leaves the tree merged and the resolution silent
- * (the review of 2026-09-11, M9; whether q should ask is the author's
- * open question 7 and is not answered here).
  *
- * A write refused before the object is opened is a queued line and a
- * row that did not move. A write that fails after it -- the open
- * truncated, so the object is short -- is a queued line AND the row
- * back to unanswered, whatever it read before: a row that already
- * read keep would otherwise ship a damaged object without a word,
- * which is the one path in the review by which bad bytes reach the
- * deliverable in silence (G5). Unanswered is recoverable in the way
- * plan section 3.4 argues: the name is conflicted again, and writing
- * again or choosing onto puts the bytes back.
+ * And then the document, through the one writer the list's s and w
+ * use. Ruled by the author on 2026-09-15, on finding M9: "yep, this
+ * should be fixed". Until then the tree held the merge while the
+ * resolution still read "-", so a kill between the two lost the whole
+ * of what the person had decided and the picker had said the name was
+ * set to keep. The order is the object first and the document after
+ * it: the object is the write that can damage something, and the
+ * document is what speaks for it.
+ *
+ * The three ways it can end:
+ *
+ *   - The object write is refused before the open -- a name that is
+ *     not there, a link, a fifo -- and nothing is touched: a queued
+ *     line and a row that did not move.
+ *   - The object write fails after the open truncated, so the object
+ *     is short: the row goes back to unanswered whatever it read
+ *     before and the line says so, and the document is not written at
+ *     all (the review of 2026-09-11, G5). A row that already read
+ *     keep would otherwise ship a damaged object without a word.
+ *   - The object is written and the document is not: the row stays
+ *     keep in memory, the line says the bytes are written and the
+ *     resolution could not be saved and names the reason, and the
+ *     next s or w from the list writes it. The tree is ahead of the
+ *     document then, which is the state the person is told about
+ *     rather than left to find.
  */
 static enum zr_pk_act
 pk_merge_write(struct zr_picker *pk)
@@ -1456,8 +1475,14 @@ pk_merge_write(struct zr_picker *pk)
 		return (ZR_PK_REDRAW);
 	}
 	pk_set(pk, row, ZR_CH_KEEP);
-	pk_say(pk, "%s: the merged bytes are written and the name reads "
-	    "keep; the resolution is not saved yet", name);
+	if (zr_pk_write(pk, err, sizeof (err)) != 0) {
+		pk_say(pk, "%s: the merged bytes are written and the "
+		    "resolution could not be saved: %s", name, err);
+		zr_pk_merge_close(pk);
+		return (ZR_PK_REDRAW);
+	}
+	pk_say(pk, "%s: the merged bytes are written, the name reads keep "
+	    "and the resolution is saved", name);
 	zr_pk_merge_close(pk);
 	return (ZR_PK_REDRAW);
 }
@@ -1502,6 +1527,28 @@ pk_merge_key(struct zr_picker *pk, enum zr_pk_key key)
 	}
 }
 
+/*
+ * q, and Esc with it: the picker leaves, and says what it is leaving
+ * behind. Ruled by the author on 2026-09-15, on finding M9: no
+ * prompt and no question -- a person who pressed q meant q -- and one
+ * line naming how many answers no write has saved. It is queued like
+ * every other line of the model's and printed after the terminal is
+ * the person's again, which ground rule 6 is about and cell ZP68
+ * asserts; with nothing unsaved there is nothing to say and nothing
+ * is said. The status is the one q has always had (plan section 3.2):
+ * 2, or 1 where something was written.
+ */
+static enum zr_pk_act
+pk_quit(struct zr_picker *pk)
+{
+	uint32_t n = zr_pk_dirty(pk);
+
+	if (n != 0)
+		pk_say(pk, "%u answer%s not saved; the resolution on disk is "
+		    "as it was", n, n == 1 ? " is" : "s are");
+	return (ZR_PK_EXIT);
+}
+
 enum zr_pk_act
 zr_pk_key(struct zr_picker *pk, enum zr_pk_key key)
 {
@@ -1540,7 +1587,7 @@ zr_pk_key(struct zr_picker *pk, enum zr_pk_key key)
 	case ZR_PK_QUIT:
 	case ZR_PK_BACK:
 		/* and on the list, either leaves the picker */
-		return (ZR_PK_EXIT);
+		return (pk_quit(pk));
 	default:
 		return (ZR_PK_NOTHING);
 	}
@@ -1578,10 +1625,18 @@ zr_pk_counts(const struct zr_picker *pk)
 	return (pk != NULL ? &pk->pk_counts : NULL);
 }
 
-int
+uint32_t
 zr_pk_dirty(const struct zr_picker *pk)
 {
-	return (pk != NULL ? pk->pk_dirty : 0);
+	uint32_t i, n = 0;
+
+	if (pk == NULL)
+		return (0);
+	for (i = 0; i < pk->pk_nrows; i++)
+		if (pk->pk_rows[i].zk_line->zl_choice !=
+		    pk->pk_rows[i].zk_saved)
+			n++;
+	return (n);
 }
 
 enum zr_choice
