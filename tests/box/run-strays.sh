@@ -530,7 +530,10 @@ end_case() {
 		[ $st -eq 2 ] || \
 		    { cat "$tmp/abort"; fail "--abort on a settled result exited $st, want 2"; }
 		if [ "$form" = clone ]; then
-			zfs destroy "$POOL/result" || \
+			# -r: a done whose final check found drift keeps
+			# the gate snapshot on the result by design
+			# (ZX262), and it goes with the result here.
+			zfs destroy -r "$POOL/result" || \
 			    fail "cannot destroy the settled result"
 			rmdir "$MNT/result" 2>/dev/null
 		else
@@ -1003,9 +1006,23 @@ case_donedrift() {
 	[ -z "$(localprops "$rds")" ] || \
 	    fail "the exit 3 left $(localprops "$rds") on $rds"
 	[ ! -d "$rundir" ] || fail "the exit 3 left the run directory $rundir"
+	# ZX262: the final check found drift, so the gate snapshot --
+	# the result as the conflicts gate left it -- is kept and named,
+	# with the rollback and the destroy that deal with it; a clean
+	# done would have destroyed it with the tool's own from
+	# snapshot. Which dataset carries it is the form's: the clone,
+	# or onto itself.
+	grep -q "is kept: it is $rds as the conflicts gate left it" "$tmp/late" || \
+	    { cat "$tmp/late"; fail "the drifted done did not say the gate snapshot is kept"; }
+	gsnap=$(zfs list -H -o name -t snapshot -r "$rds" | grep -- '@zfs_rebase-zr-.*-gate$')
+	[ "$(printf '%s\n' "$gsnap" | grep -c .)" -eq 1 ] || \
+	    { zfs list -t snapshot -r "$rds"; fail "the drifted done did not keep exactly one gate snapshot on $rds"; }
+	grep -q "zfs rollback $gsnap puts the tree back" "$tmp/late" || \
+	    { cat "$tmp/late"; fail "the kept-snapshot line does not name $gsnap"; }
 	sethere
 	grep -q late "$hmnt$tgt" || fail "something mended the stray in $tgt"
-	echo "ok   $case_id: drifted 1 at done, exit 3, done all the same"
+	echo "ok   $case_id: drifted 1 at done, exit 3, done all the same,"
+	echo "     the gate snapshot kept and named"
 
 	# And the same question asked again of the settled result,
 	# which is what --verify MANIFEST is: no record to read, the
