@@ -28,7 +28,10 @@
  * two strings, with no name table and no walk -- which is exactly
  * what the gate has when it is reached from applying1.
  *
- * Matrix cells (tests/MATRIX.md): ZX242, ZX243 and ZX254 (where -o
+ * Matrix cells (tests/MATRIX.md): ZX266 (the gate snapshot's name,
+ * which is what --abort composes from the result and the tag when it
+ * returns a rebase at applying2 to the conflicts gate), ZX242, ZX243
+ * and ZX254 (where -o
  * points, asked before the pool is touched), ZX244 (the clone's name
  * out of --result, a bare name beside onto), ZX250 (the gate's
  * document half), and ZI13 to ZI23 and ZI40 of family ZI. ZX23, the
@@ -1232,12 +1235,63 @@ check_child_closefds(void)
 	scratch_close(&sc);
 }
 
+/*
+ * ZX266 and the name half of ZX265: the gate snapshot's name. It is a
+ * function of the result and the tag and of nothing else, which is
+ * what lets --abort compose it with no manifest to read and what
+ * lets a crash between the snapshot and the record leave nothing
+ * nameless. The prefix is the tool's own, so a person reading zfs
+ * list sees at once whose it is; the suffix is what keeps it from
+ * ever colliding with the name the tool takes for a side given as a
+ * dataset, which is the bare prefix and tag.
+ */
+static void
+check_gate_snap_name(void)
+{
+	char out[ZR_NAME_MAX], big[ZR_NAME_MAX];
+
+	CHECK(zr_gate_snap_name("zrm/result", "zr-1a2b3c4d5e6f", out,
+	    sizeof (out)) == 0);
+	CHECK(strcmp(out, "zrm/result@zfs_rebase-zr-1a2b3c4d5e6f-gate") == 0);
+	/* the tool's other name for the same tag, which this is not */
+	CHECK(strcmp(out, "zrm/result@zfs_rebase-zr-1a2b3c4d5e6f") != 0);
+	CHECK(zr_gate_snap_name("tank/home/main", "zr-000000000000", out,
+	    sizeof (out)) == 0);
+	CHECK(strcmp(out,
+	    "tank/home/main@zfs_rebase-zr-000000000000-gate") == 0);
+
+	/* a name that will not fit is refused, and never cut */
+	memset(big, 'n', sizeof (big) - 1);
+	big[sizeof (big) - 1] = '\0';
+	out[0] = 'x';
+	CHECK(zr_gate_snap_name(big, "zr-1a2b3c4d5e6f", out,
+	    sizeof (out)) != 0);
+	CHECK(out[0] == '\0');
+	CHECK(zr_gate_snap_name("zrm/result", "zr-1a2b3c4d5e6f", out, 8) != 0);
+
+	/* and arguments that name no rebase at all */
+	CHECK(zr_gate_snap_name(NULL, "zr-1", out, sizeof (out)) != 0);
+	CHECK(zr_gate_snap_name("zrm/result", NULL, out, sizeof (out)) != 0);
+	CHECK(zr_gate_snap_name("", "zr-1", out, sizeof (out)) != 0);
+	CHECK(zr_gate_snap_name("zrm/result", "", out, sizeof (out)) != 0);
+	CHECK(zr_gate_snap_name("zrm/result", "zr-1", NULL,
+	    sizeof (out)) != 0);
+	CHECK(zr_gate_snap_name("zrm/result", "zr-1", out, 0) != 0);
+	/*
+	 * A result that is already a snapshot is not a result: the
+	 * name would hold two '@' and answer to nothing.
+	 */
+	CHECK(zr_gate_snap_name("zrm/result@pre", "zr-1", out,
+	    sizeof (out)) != 0);
+}
+
 int
 main(void)
 {
 	check_flags_guard();
 	check_outdir();
 	check_result_name();
+	check_gate_snap_name();
 	check_child_arguments();
 	check_child_status();
 	check_child_signal();

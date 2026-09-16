@@ -239,7 +239,8 @@
  * an open rebase.
  */
 static const char *zr_record_props[] = {
-	ZR_PROP_MANIFEST, ZR_PROP_TAG, ZR_PROP_PHASE, ZR_PROP_QUIET
+	ZR_PROP_MANIFEST, ZR_PROP_TAG, ZR_PROP_PHASE, ZR_PROP_QUIET,
+	ZR_PROP_GATESNAP
 };
 
 #define	ZR_NRECORD	(sizeof (zr_record_props) / sizeof (zr_record_props[0]))
@@ -288,6 +289,17 @@ take_choice(const char *take)
  */
 #define	ZR_MADE_PREFIX		"zfs_rebase-"
 #define	ZR_MADE_TRIES		8
+
+/*
+ * And the suffix of the tool's other snapshot, the one it takes of
+ * the result at the hand-off into applying2: <result>@zfs_rebase-
+ * <tag>-gate. The prefix is the same, because it is the tool's own
+ * by the same rule and a person reading zfs list should see that at
+ * once; the suffix is what keeps it from ever being the name
+ * snapshot_input takes for a side given as a dataset, which is the
+ * bare prefix and tag on that side's own dataset.
+ */
+#define	ZR_GATE_SUFFIX		"-gate"
 
 /*
  * A dataset or a snapshot name is at most ZFS_MAX_DATASET_NAME_LEN,
@@ -1007,6 +1019,36 @@ snapshot_input(struct run *r, const char *dataset, char *buf, size_t buflen)
 	    "%s: no unused name for a snapshot of it", dataset);
 	buf[0] = '\0';
 	return (-1);
+}
+
+/*
+ * The name of the snapshot the tool takes of the result at the
+ * hand-off into applying2: <result>@zfs_rebase-<tag>-gate. It is a
+ * function of the result and the tag and of nothing else, which is
+ * what lets every path that has those two compose it -- --abort with
+ * no manifest to read among them -- and what lets a crash between
+ * the snapshot and the record leave nothing nameless.
+ *
+ * Returns 0 with buf filled, or -1 where it will not fit, which is
+ * refused rather than cut: a cut name is another dataset's.
+ */
+int
+zr_gate_snap_name(const char *result, const char *tag, char *buf, size_t len)
+{
+	int n;
+
+	if (result == NULL || tag == NULL || buf == NULL || len == 0)
+		return (-1);
+	if (result[0] == '\0' || tag[0] == '\0' ||
+	    strchr(result, '@') != NULL)
+		return (-1);
+	n = snprintf(buf, len, "%s@%s%s%s", result, ZR_MADE_PREFIX, tag,
+	    ZR_GATE_SUFFIX);
+	if (n < 0 || (size_t)n >= len) {
+		buf[0] = '\0';
+		return (-1);
+	}
+	return (0);
 }
 
 /*
@@ -3488,6 +3530,7 @@ struct record {
 	enum zr_hform		form;
 	char			take[8];	/* "onto", "from" or "-" */
 	char			presnap[ZR_SNAP_MAX];	/* dataset form */
+	char			gatesnap[ZR_SNAP_MAX];	/* past the gate */
 	char			readonly[8];		/* and this */
 	char			canmount[16];		/* and this */
 };
@@ -4158,6 +4201,14 @@ read_record(struct resume *s)
 		return (-1);
 	}
 	if (rec_str(s, ZR_PROP_PHASE, rb->phase, sizeof (rb->phase)) < 0)
+		return (-1);
+	/*
+	 * And the gate snapshot, which only a rebase past the
+	 * conflicts gate has. A record with none leaves it empty,
+	 * which is what every reader below tests for.
+	 */
+	if (rec_str(s, ZR_PROP_GATESNAP, rb->gatesnap,
+	    sizeof (rb->gatesnap)) < 0)
 		return (-1);
 	got = rec_str(s, ZR_PROP_QUIET, q, sizeof (q));
 	if (got < 0)
@@ -4978,6 +5029,132 @@ print_report(const struct resume *s, const struct zr_parsed *m,
 }
 
 /*
+ * The gate snapshot, taken away. snap is the name, from the record
+ * where there is one and composed where there is not; a name that is
+ * empty or that no snapshot answers to is nothing to do, which is
+ * what lets every caller ask without looking first and what lets
+ * --abort be run twice.
+ *
+ * Every path that destroys or rolls the result back has to come here
+ * first, and not for tidiness: lzc_destroy refuses a clone that has a
+ * snapshot, and a rollback to the pre-apply snapshot refuses while a
+ * later one stands (zr_zfs_rollback takes no -r). So --abort's full
+ * path and --restart both meet an EEXIST they never used to unless
+ * this runs before them.
+ *
+ * Returns 0, or -1 with the reason printed.
+ */
+static int
+gate_snap_drop(struct zr_zfs *z, const char *snap, int verbose)
+{
+	char err[512];
+	int rc;
+
+	if (snap == NULL || snap[0] == '\0' || strcmp(snap, ZR_NO_BASE) == 0)
+		return (0);
+	rc = zr_zfs_exists(z, snap, err, sizeof (err));
+	if (rc < 0) {
+		(void) fprintf(stderr, "zfs_rebase: %s: %s\n", snap, err);
+		return (-1);
+	}
+	if (rc == 0) {
+		if (verbose)
+			(void) fprintf(stderr, "zfs_rebase: %s is already "
+			    "gone\n", snap);
+		return (0);
+	}
+	if (zr_zfs_destroy_snap(z, snap, err, sizeof (err)) != 0) {
+		(void) fprintf(stderr, "zfs_rebase: destroy %s: %s\n", snap,
+		    err);
+		return (-1);
+	}
+	if (verbose)
+		(void) fprintf(stderr, "zfs_rebase: destroyed %s, the "
+		    "rebase's own\n", snap);
+	return (0);
+}
+
+/*
+ * The same, for a verb that has the result and the tag and no record
+ * field to read -- an --abort whose manifest is gone, and every
+ * caller that wants the name whether or not the record got written.
+ * A tag that composes no name is nothing to do: there is then no
+ * snapshot of ours that could be there.
+ */
+static int
+gate_snap_drop_named(struct zr_zfs *z, const char *result, const char *tag,
+    int verbose)
+{
+	char snap[ZR_SNAP_MAX];
+
+	if (zr_gate_snap_name(result, tag, snap, sizeof (snap)) != 0)
+		return (0);
+	return (gate_snap_drop(z, snap, verbose));
+}
+
+/*
+ * And taken, which is the hand-off into applying2 and nothing else:
+ * the document is complete, the person's work at the gate is in the
+ * tree, and what happens next is the one stage that writes over it
+ * without asking. The snapshot is the way back to this moment, and
+ * the record is where it is written down (tracker issue
+ * apply2-snapshot; the author on 2026-09-15: "agree").
+ *
+ * A hand-off that finds one recorded already destroys it first: one
+ * rebase has one gate snapshot at a time, and the one that matters is
+ * the state of the tree at the hand-off about to be made. The name is
+ * the same either way, so a destroy that fails leaves the create
+ * refusing the name and the hand-off refusing with it -- which is the
+ * safe way round, since it stops at the gate the snapshot exists to
+ * protect.
+ *
+ * The snapshot first and the record after it: a kill in between
+ * leaves a snapshot nobody names, and its name is a function of the
+ * result and the tag, so --abort finds and destroys it anyway
+ * (gate_snap_drop_named). The other order would leave a record
+ * naming nothing, which every reader would have to doubt.
+ *
+ * Returns 0, or -1 with err set.
+ */
+static int
+gate_snap_take(struct resume *s)
+{
+	char snap[ZR_SNAP_MAX];
+	char e[512];
+
+	if (zr_gate_snap_name(s->result, s->rb.tag, snap,
+	    sizeof (snap)) != 0) {
+		(void) snprintf(s->err, sizeof (s->err), "%s: no name for a "
+		    "snapshot of it at the gate", s->result);
+		return (-1);
+	}
+	if (gate_snap_drop(s->zfs, s->rb.gatesnap[0] != '\0' ?
+	    s->rb.gatesnap : snap, s->verbose) != 0) {
+		(void) snprintf(s->err, sizeof (s->err), "%s: the gate "
+		    "snapshot of the last hand-off could not be replaced",
+		    s->result);
+		return (-1);
+	}
+	s->rb.gatesnap[0] = '\0';
+	if (zr_zfs_snapshot(s->zfs, snap, e, sizeof (e)) != 0) {
+		(void) snprintf(s->err, sizeof (s->err), "%s: %s", snap, e);
+		return (-1);
+	}
+	if (zr_zfs_set_user(s->zfs, s->result, ZR_PROP_GATESNAP, snap, e,
+	    sizeof (e)) != 0) {
+		(void) snprintf(s->err, sizeof (s->err), "%s=%s: %s",
+		    ZR_PROP_GATESNAP, snap, e);
+		(void) gate_snap_drop(s->zfs, snap, s->verbose);
+		return (-1);
+	}
+	(void) snprintf(s->rb.gatesnap, sizeof (s->rb.gatesnap), "%s", snap);
+	if (s->verbose)
+		(void) fprintf(stderr, "zfs_rebase: took %s, which an abort "
+		    "from applying2 returns %s to\n", snap, s->result);
+	return (0);
+}
+
+/*
  * One applying stage: the gate, the classification the apply reads,
  * the apply and the re-walk. m is the document this stage applies --
  * the recorded manifest for applying1 -- and phase is the gate to
@@ -5701,6 +5878,32 @@ done_gate(struct resume *s)
 	release_record(s);
 	clear_record(s->zfs, s->result, s->verbose);
 	/*
+	 * And the gate snapshot, in the same step and under the
+	 * author's own condition: "release it when the verification
+	 * pass reports that the actions didn't corrupt". The check
+	 * above is that pass. Where it found no drift the snapshot has
+	 * done its work and goes; where it found drift it stays, and
+	 * is named, because drift after applying2 is exactly the
+	 * malfunction it was taken against and the person may want the
+	 * tree as the gate left it. done is passed either way -- it
+	 * never blocks on drift -- so this is the last moment anything
+	 * of the tool's names the snapshot, and the line has to carry
+	 * both what it is and how to be rid of it.
+	 */
+	if (s->rb.gatesnap[0] != '\0') {
+		if (drift == 0) {
+			(void) gate_snap_drop(s->zfs, s->rb.gatesnap,
+			    s->verbose);
+		} else {
+			(void) fprintf(stderr, "zfs_rebase: %s is kept: it is "
+			    "%s as the conflicts gate left it, which is what "
+			    "the drift above is against. zfs rollback %s puts "
+			    "the tree back to it and zfs destroy %s takes it "
+			    "away\n", s->rb.gatesnap, s->result,
+			    s->rb.gatesnap, s->rb.gatesnap);
+		}
+	}
+	/*
 	 * The from snapshot the tool took for itself lives exactly as
 	 * long as the rebase. It goes after the walks let go of it
 	 * and after the holds were released, both of which have
@@ -5820,6 +6023,18 @@ apply_choices(struct resume *s, const struct zr_resolution *res)
 	    again.zs_linked == 1 ? "" : "s",
 	    (unsigned long long)again.zs_latedirs,
 	    again.zs_latedirs == 1 ? "y" : "ies", first);
+	/*
+	 * And the way back, which this stage has and no other does:
+	 * the gate snapshot is the tree as the hand-off found it, so
+	 * nothing done at the gate is lost to this. It is said here
+	 * because this is the one message a person meets when
+	 * applying2 malfunctions.
+	 */
+	if (s->rb.gatesnap[0] != '\0')
+		(void) fprintf(stderr, "zfs_rebase: %s is the result as the "
+		    "conflicts gate left it; zfs_rebase --abort %s returns "
+		    "%s to it and leaves the rebase standing at that gate\n",
+		    s->rb.gatesnap, s->result, s->result);
 	return (-1);
 }
 
@@ -5935,6 +6150,18 @@ stage2(struct resume *s)
 		    left, left == 1 ? "" : "s", s->respath);
 		return (vfail(s, EXIT_PRECOND, NULL));
 	}
+	/*
+	 * The hand-off. The document is complete and the tree holds
+	 * whatever was done at the gate -- the picker's merge writes,
+	 * a hand's edits at the private mount -- and applying2 is
+	 * about to write over it. The snapshot is taken here, before
+	 * the phase moves and before a byte of the stage is written,
+	 * so that an --abort from applying2 returns the result to
+	 * this moment rather than to the pre-apply snapshot, which is
+	 * older than the gate and older than the work done there.
+	 */
+	if (gate_snap_take(s) != 0)
+		return (vfail(s, EXIT_INTERNAL, "snapshot"));
 	put_phase(s->zfs, s->result, ZR_PHASE_APPLYING2);
 	rc = EXIT_INTERNAL;
 	zr_pause(ZR_PHASE_APPLYING2);
@@ -6747,6 +6974,22 @@ zr_restart(const struct zr_verb_opts *o)
 		put_phase(s.zfs, s.result, ZR_PHASE_DECIDED);
 		(void) snprintf(s.rb.phase, sizeof (s.rb.phase), "%s",
 		    ZR_PHASE_DECIDED);
+		/*
+		 * And the gate snapshot before the rollback, where a
+		 * restart from applying2 has one: the rollback below
+		 * takes no -r and refuses while a snapshot later than
+		 * its target stands. What a restart discards is the
+		 * answering, and the work at the gate is part of it.
+		 */
+		if (gate_snap_drop_named(s.zfs, s.result, s.rb.tag,
+		    s.verbose) != 0) {
+			(void) snprintf(s.err, sizeof (s.err), "%s: the gate "
+			    "snapshot is in the way of the rollback",
+			    s.result);
+			rc = vfail(&s, EXIT_INTERNAL, "snapshot");
+			goto done;
+		}
+		s.rb.gatesnap[0] = '\0';
 		if (zr_zfs_rollback(s.zfs, s.result, s.rb.presnap, s.err,
 		    sizeof (s.err)) != 0) {
 			rc = vfail(&s, EXIT_INTERNAL, "rollback");
@@ -6781,6 +7024,18 @@ zr_restart(const struct zr_verb_opts *o)
 	 * clone of it lives, so there is no moment here where the
 	 * inputs are unprotected.
 	 */
+	/*
+	 * And the gate snapshot before the destroy, where a restart
+	 * from applying2 has one: lzc_destroy refuses a clone that
+	 * still has a snapshot on it.
+	 */
+	if (gate_snap_drop_named(s.zfs, s.result, s.rb.tag, s.verbose) != 0) {
+		(void) snprintf(s.err, sizeof (s.err), "%s: the gate snapshot "
+		    "is in the way of the destroy", s.result);
+		rc = vfail(&s, EXIT_INTERNAL, "snapshot");
+		goto done;
+	}
+	s.rb.gatesnap[0] = '\0';
 	if (zr_zfs_destroy(s.zfs, s.result, s.err, sizeof (s.err)) != 0) {
 		rc = vfail(&s, EXIT_INTERNAL, "destroy");
 		goto done;
@@ -7284,6 +7539,15 @@ abort_lost(struct zr_zfs *z, const char *result, const char *tag,
 			    "own snapshot, held under %s and named with it, "
 			    "and is destroyed\n", own, tag);
 	}
+	/*
+	 * And the gate snapshot, which is on the result rather than on
+	 * a side, so the walk above did not find it and the tag is
+	 * what names it. It goes even here, where nothing else of the
+	 * result is touched: it is the tool's own, and left behind it
+	 * would stand in the way of the zfs destroy this function is
+	 * about to tell the person to make.
+	 */
+	(void) gate_snap_drop_named(z, result, tag, verbose);
 	clear_record(z, result, verbose);
 	(void) fprintf(stderr, "zfs_rebase: the manifest file is gone, and "
 	    "with it the form, the pre-apply snapshot and the two properties "
@@ -7557,6 +7821,7 @@ zr_abort(const struct zr_verb_opts *o)
 	char manifest[ZR_NAME_MAX], resolution[ZR_NAME_MAX];
 	char result[ZR_NAME_MAX], given[ZR_NAME_MAX], hds[ZR_NAME_MAX];
 	char dir[ZR_NAME_MAX], phase[64], tag[ZR_TAG_MAX], err[512];
+	char gsnap[ZR_SNAP_MAX];
 	const int verbose = o->verbose;
 	const char *snap;
 	struct zr_ident id;
@@ -7674,14 +7939,64 @@ zr_abort(const struct zr_verb_opts *o)
 		rc = EXIT_PRECOND;
 		goto done;
 	}
+	phase[0] = '\0';
+	if (zr_zfs_get_user(z, result, ZR_PROP_PHASE, phase, sizeof (phase),
+	    err, sizeof (err)) <= 0)
+		phase[0] = '\0';
 	if (verbose) {
-		if (zr_zfs_get_user(z, result, ZR_PROP_PHASE, phase,
-		    sizeof (phase), err, sizeof (err)) > 0)
+		if (phase[0] != '\0')
 			(void) fprintf(stderr, "zfs_rebase: %s is at "
 			    "%s, held under %s\n", result, phase, tag);
 		else
 			(void) fprintf(stderr, "zfs_rebase: %s has no "
 			    "gate yet, held under %s\n", result, tag);
+	}
+	/*
+	 * The gate snapshot, which only a rebase at applying2 has, and
+	 * which changes what this verb means there.
+	 *
+	 * An --abort from applying2 returns the result to the state
+	 * the conflicts gate left it in and stops: the hand merges
+	 * made at that gate, the picker's writes and any edit at the
+	 * private mount are the person's work and are exactly what
+	 * this snapshot was taken to keep (tracker issue
+	 * apply2-snapshot, the author on 2026-09-15: "agree",
+	 * "--abort after the gate rolls back to it"). Rolling back to
+	 * it and then taking the rebase down as well would destroy
+	 * that work a moment after restoring it -- in the clone form
+	 * it would destroy the clone the work is in -- so the two
+	 * cannot both be meant, and the rebase is left standing at the
+	 * gate with its record, its holds and its documents. A person
+	 * who wants the whole rebase gone runs --abort again, which
+	 * now finds a rebase at conflicts and does what it always did.
+	 *
+	 * Nothing else is undone here: the result stays where it is,
+	 * mounted or not, since zr_zfs_rollback needs no unmount and
+	 * an open rebase belongs at the private mount.
+	 */
+	gsnap[0] = '\0';
+	if (zr_zfs_get_user(z, result, ZR_PROP_GATESNAP, gsnap,
+	    sizeof (gsnap), err, sizeof (err)) <= 0)
+		gsnap[0] = '\0';
+	if (gsnap[0] == '\0')
+		(void) zr_gate_snap_name(result, tag, gsnap, sizeof (gsnap));
+	if (strcmp(phase, ZR_PHASE_APPLYING2) == 0 && gsnap[0] != '\0' &&
+	    zr_zfs_exists(z, gsnap, err, sizeof (err)) > 0) {
+		if (zr_zfs_rollback(z, result, gsnap, err,
+		    sizeof (err)) != 0) {
+			(void) fprintf(stderr, "zfs_rebase: roll %s back to "
+			    "%s: %s\n", result, gsnap, err);
+			rc = EXIT_INTERNAL;
+			goto done;
+		}
+		put_phase(z, result, ZR_PHASE_CONFLICTS);
+		(void) fprintf(stderr, "zfs_rebase: %s is as the conflicts "
+		    "gate left it, the answering and the hand merges with "
+		    "it, and waits at that gate; zfs_rebase --continue %s "
+		    "takes it on, and zfs_rebase --abort %s again takes the "
+		    "whole rebase away\n", result, result, result);
+		rc = EXIT_CLEAN;
+		goto done;
 	}
 	/*
 	 * The manifest, which is the rest of the record. A file that is
@@ -7786,6 +8101,19 @@ zr_abort(const struct zr_verb_opts *o)
 	 * somebody is standing in refuses as an unmount and not as a
 	 * destroy; the clone then carries its record away with it.
 	 */
+	/*
+	 * And before any of it, the gate snapshot, where the rebase
+	 * reached applying2 and came back this way -- an abort of the
+	 * whole rebase from the conflicts gate it was returned to, or
+	 * one where the snapshot was never the thing to land on.
+	 * Neither branch below can run while it stands: lzc_destroy
+	 * refuses a clone that has a snapshot, and the rollback to the
+	 * pre-apply snapshot refuses while a later one is there. A
+	 * failure here stops the abort with everything still in place,
+	 * as every other step of it does.
+	 */
+	if (gate_snap_drop_named(z, result, tag, verbose) != 0)
+		goto done;
 	if (p.zp_form == ZR_HFORM_DATASET) {
 		if (abort_dataset(z, result, p.zp_presnap,
 		    p.zp_readonly, p.zp_canmount, dir,

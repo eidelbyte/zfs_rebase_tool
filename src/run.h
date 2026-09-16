@@ -102,6 +102,18 @@ int zr_outdir_ok(const char *, char *, size_t);
 int zr_result_name(const char *, const char *, char *, size_t);
 
 /*
+ * The name of the snapshot the tool takes of the result at the
+ * hand-off into applying2, which is what an --abort from applying2
+ * returns the result to: <result>@zfs_rebase-<tag>-gate. It is a
+ * function of the result and the tag alone, so every path that has
+ * those two can compose it without a manifest to read. 0 with buf
+ * filled, or -1 where the arguments are no use or the name will not
+ * fit, which is refused rather than cut.
+ */
+int zr_gate_snap_name(const char *result, const char *tag, char *buf,
+    size_t len);
+
+/*
  * The document half of the conflicts gate: every conflict line the
  * manifest marks that the resolution no longer has, put back into
  * it with take, which is the run's take mode read as a choice --

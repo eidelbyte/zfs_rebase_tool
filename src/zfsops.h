@@ -66,6 +66,16 @@
 #define	ZR_PROP_MANIFEST	"zfs_rebase:manifest"
 #define	ZR_PROP_TAG		"zfs_rebase:tag"
 #define	ZR_PROP_QUIET		"zfs_rebase:quiet"
+/*
+ * And the fifth, which only a rebase past the conflicts gate has:
+ * the snapshot of the result the tool takes at the hand-off into
+ * applying2, so that a malfunction there costs nothing that was done
+ * at the gate. It is written at a gate as the phase is, and not at
+ * the birth as the first three are, because the thing it names does
+ * not exist until that gate (tracker issue apply2-snapshot, ruled
+ * 2026-09-15).
+ */
+#define	ZR_PROP_GATESNAP	"zfs_rebase:gatesnap"
 
 /*
  * The record as the run hands it to the create. Every field is

@@ -862,6 +862,26 @@ skeleton.
 Nothing is decided again: the manifest is the decision.
 A resolution's edits are discarded by definition.
 .It Fl A , Fl -abort
+From
+.Sy applying2 ,
+a step of its own: the result is rolled back to the snapshot the tool took
+of it at the hand-off into that stage and the rebase is left standing at
+the
+.Sy conflicts
+gate, with its record, its holds, its two documents and its run directory
+all as they were and its phase back at that gate.
+Everything answered and hand merged there survives, which is the whole
+point of the snapshot; a
+.Fl -continue
+takes the rebase on from the gate, and a second
+.Fl -abort ,
+which now finds it at
+.Sy conflicts ,
+takes the whole rebase away as below.
+.Pp
+Anywhere else, and from
+.Sy applying2
+where that snapshot is gone, it is the whole rebase that goes.
 Put the result back first \(em the clone destroyed, or the dataset rolled
 back to its pre-apply snapshot and mounted where it belongs again with
 .Sy readonly
@@ -890,9 +910,12 @@ every gate, since the run writes its header before its record.
 Where it has been lost all the same, removed by a hand,
 .Fl -abort
 gives the holds back by walking the result's pool for the record's tag,
-destroys the snapshot the run took for itself where it took one, which
-that walk finds held under the tag and named with it, undoes the private
-mount and takes the record off, and then says what it cannot do without
+destroys the two snapshots the run took for itself where it took them \(em
+the one of a side given as a dataset, which that walk finds held under the
+tag and named with it, and the one of the result at the hand-off into
+.Sy applying2 ,
+whose name the tag composes \(em undoes the private mount and takes the
+record off, and then says what it cannot do without
 the manifest: the form, the pre-apply snapshot and the two property values
 went with the file, so it
 destroys nothing else and rolls nothing back, and it cannot put
@@ -1293,6 +1316,30 @@ stop there whatever it says
 .It Sy applying2
 carry the choices out again and go on
 .El
+.Pp
+The hand-off from
+.Sy conflicts
+into
+.Sy applying2
+takes one snapshot: the result as the gate leaves it, named
+.Ar result Ns @zfs_rebase- Ns Ar tag Ns -gate ,
+recorded as
+.Sy zfs_rebase:gatesnap ,
+and taken before the phase moves and before a byte of the stage is
+written.
+It is what an
+.Fl -abort
+from
+.Sy applying2
+returns the result to, so that the answering and the hand merges made at
+the gate survive a stage that goes wrong; a hand-off made again replaces
+it, and the done gate destroys it where the final check found no drift and
+keeps and names it where the check found some, that drift being the thing
+it was taken against.
+The
+.Sy --posix
+form has none of this: it compares three directories, owns no dataset and
+takes no snapshot at all.
 .Pp
 .Fl -no-merge
 is refused at
