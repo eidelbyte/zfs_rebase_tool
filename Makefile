@@ -15,8 +15,18 @@ CC ?= cc
 # here loses an assertion by it. The walk's own assert above that
 # refusal is turned into the refusal beside this change, in the
 # picker's half of the same review.
-CFLAGS = -std=c99 -Wall -Wextra -Werror -Wcast-qual -O2 -g -DNDEBUG -Isrc
-LDFLAGS =
+#
+# The base flags come from the environment where it has any, and the
+# ones the code needs are appended: a port build passes its own
+# CFLAGS and LDFLAGS through the environment and expects an upstream
+# Makefile to honour them, which a plain assignment threw away (the
+# review of 2026-09-11, B13; ruled 2026-09-15 with the plain Makefile
+# kept). -O2 -g are the defaults for a build with nothing in the
+# environment; the warning set, the standard and the include path are
+# ours whatever the environment says.
+CFLAGS ?= -O2 -g
+CFLAGS += -std=c99 -Wall -Wextra -Werror -Wcast-qual -DNDEBUG -Isrc
+LDFLAGS ?=
 
 # The standalone picker's link flags, which are the tool's minus the
 # ZFS layer: ground rule 1 says the helper links no libzfs, on the mac
