@@ -99,7 +99,11 @@ zr_apply_pause_at(unsigned int n)
 /*
  * And the same for the choices of a resolution; see apply.h. The
  * count is a local of zr_apply_choices and not a static, so every
- * call counts from one.
+ * call counts from one -- which is why the gate disarms as it fires
+ * (za_stop): the choices are applied in two passes, and a run the
+ * harness continued past its stop in the first pass would otherwise
+ * stop again in the second, where the harness is waiting for it to
+ * exit (the box, 2026-09-16, the two-conflict fixture).
  */
 static unsigned int za_cpause_at;
 
@@ -107,6 +111,17 @@ void
 zr_apply_choice_pause_at(unsigned int n)
 {
 	za_cpause_at = n;
+}
+
+/*
+ * The harness's stop, once per process: the gate it was asked at is
+ * cleared before the stop, so a continued run never stops here again.
+ */
+static void
+za_stop(unsigned int *gate)
+{
+	*gate = 0;
+	(void) raise(SIGSTOP);
 }
 
 /*
@@ -1867,7 +1882,7 @@ zr_apply_with(const struct zr_parsed *m, const char *onto_root,
 		 * same place a signal leaves the loop.
 		 */
 		if (++performed == za_pause_at)
-			(void) raise(SIGSTOP);
+			za_stop(&za_pause_at);
 		switch (a->za_kind) {
 		case ZR_ACT_RM:
 			if (za_do_rm(&c, a) != 0)
@@ -2764,7 +2779,7 @@ zr_apply_choices(const struct zr_resolution *res, const struct zr_parsed *m,
 			}
 			za_first_line(&c, i);
 			if (++acted == za_cpause_at)
-				(void) raise(SIGSTOP);
+				za_stop(&za_cpause_at);
 			if (za_link_onto(&c, &pb, (const char *)l->zl_path,
 			    l->zl_pathlen, &ab, (const char *)al->zl_path,
 			    al->zl_pathlen) != 0)
@@ -2781,7 +2796,7 @@ zr_apply_choices(const struct zr_resolution *res, const struct zr_parsed *m,
 		}
 		za_first_line(&c, i);
 		if (++acted == za_cpause_at)
-			(void) raise(SIGSTOP);
+			za_stop(&za_cpause_at);
 		if (za_put_back(&c, &pb, (const char *)l->zl_path,
 		    l->zl_pathlen, picks[i].zk_side,
 		    zr_choice_str(l->zl_choice)) != 0)
@@ -2818,7 +2833,7 @@ zr_apply_choices(const struct zr_resolution *res, const struct zr_parsed *m,
 		za_made(&a, ZR_ACT_RM, &pb, l->zl_pathlen, NULL, 0);
 		was = c.zc_st->zs_dropped;
 		if (++acted == za_cpause_at)
-			(void) raise(SIGSTOP);
+			za_stop(&za_cpause_at);
 		if (za_rm_one(&c, &a) != 0)
 			goto out;
 		if (c.zc_st->zs_dropped == was)
