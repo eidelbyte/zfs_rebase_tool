@@ -238,18 +238,6 @@ int zr_zfs_release_tag(struct zr_zfs *z, const char *pool, const char *tag,
     char *err, size_t errlen);
 
 /*
- * Hold snapshot under tag against a cleanup descriptor of this
- * process's own, so that the kernel gives the hold back when the
- * process ends, however it ends. That is what --verify wants and a
- * rebase does not: a report holds its inputs still for as long as it
- * reads them and leaves nothing behind, while a rebase's holds are
- * the rebase and outlive every process it takes. The descriptor is
- * opened on the first such hold and belongs to the handle.
- */
-int zr_zfs_hold_tmp(struct zr_zfs *z, const char *snapshot, const char *tag,
-    char *err, size_t errlen);
-
-/*
  * The snapshot of this pool whose guid is guid, if there is one: 1
  * with its full name in buf, 0 when the pool holds no such snapshot,
  * -1 with err set. Every filesystem of the pool is walked, depth

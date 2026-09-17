@@ -3927,7 +3927,6 @@ struct resume {
 	char			sidedir[3][ZR_NAME_MAX * 2];
 	char			respath[ZR_NAME_MAX];	/* the resolution */
 	char			given[ZR_NAME_MAX];	/* MANIFEST, resolved */
-	char			tmptag[ZR_TAG_MAX];	/* the report's hold */
 	char			found[3][ZR_SNAP_MAX];	/* by ZI_ */
 	int			gone[3];
 	unsigned		miss;		/* ZR_MISS_ of the walks */
@@ -4822,39 +4821,6 @@ check_given(struct resume *s, const struct zr_verb_opts *o)
 			return (-1);
 	}
 	return (0);
-}
-
-/*
- * A hold on each input the report found, for as long as this process
- * lives and no longer: the kernel gives a temporary hold back when
- * the descriptor it was filed against closes, and the death of the
- * process closes it however the process dies. The tag is this
- * report's own; the record's tag is the rebase's, and releasing that
- * afterwards would be releasing the rebase's grip on its own inputs.
- *
- * A hold that cannot be taken only warns. The report writes nothing
- * and can say nothing false because of it: what it would have
- * prevented is somebody destroying a snapshot in the middle of the
- * read, which the read itself would then fail on.
- */
-static void
-hold_for_report(struct resume *s)
-{
-	char e[512];
-	int i;
-
-	for (i = 0; i < 3; i++) {
-		if (s->gone[i] != 0)
-			continue;
-		if (zr_zfs_hold_tmp(s->zfs, s->found[i], s->tmptag, e,
-		    sizeof (e)) != 0)
-			(void) fprintf(stderr, "zfs_rebase: %s is not held for "
-			    "this report: %s\n", s->found[i], e);
-		else if (s->verbose)
-			(void) fprintf(stderr, "zfs_rebase: %s is held under "
-			    "%s until this report ends\n", s->found[i],
-			    s->tmptag);
-	}
 }
 
 /*
@@ -7601,11 +7567,29 @@ zr_report(const struct zr_verb_opts *o)
 	memset(&s, 0, sizeof (s));
 	s.report = 1;			/* the report is the whole verb */
 	s.verbose = o->verbose;
-	tag_make(s.tmptag, sizeof (s.tmptag), "zrv-");
 	code = resume_open(&s, o, 1);
 	if (code != EXIT_CLEAN)
 		goto done;
-	hold_for_report(&s);
+	/*
+	 * No hold of this report's own on the inputs it reads. It
+	 * used to take one on each, temporary, given back by the
+	 * kernel when the process died; but the kernel answers every
+	 * release of a hold -- temporary or not -- by unmounting the
+	 * snapshot's .zfs view (dsl_dataset_user_release_impl,
+	 * module/zfs/dsl_userhold.c, calls zfs_unmount_snap on each
+	 * snapshot released), and on FreeBSD that unmount is forced
+	 * (zfsctl_snapshot_unmount, module/os/freebsd/zfs/
+	 * zfs_ctldir.c, dounmount with MS_FORCE), which dooms the
+	 * descriptors of every other process reading that snapshot at
+	 * that moment: a --continue paused inside applying2 beside
+	 * this report came back to "open of the from file: Not a
+	 * directory" on the root it had held open (the box,
+	 * 2026-09-16, tools/probe-snapfd.c). An open rebase's inputs
+	 * are held already, by the record's own three holds; a settled
+	 * check reads what is there, and a snapshot destroyed under it
+	 * is what the read then fails on and says. The read-only verb
+	 * takes nothing and gives nothing back.
+	 */
 	if (resume_trees(&s) != 0) {
 		code = vfail(&s, EXIT_PRECOND, s.result);
 		goto done;

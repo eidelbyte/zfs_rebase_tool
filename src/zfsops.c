@@ -53,16 +53,9 @@
 /* A dataset name, a snapshot name and a hold tag all fit in this. */
 #define	ZZ_NAME_MAX	ZFS_MAX_DATASET_NAME_LEN
 
-/*
- * The libzfs handle, and one descriptor on /dev/zfs kept only for
- * the temporary holds a --verify takes: the kernel gives such a hold
- * back when that descriptor closes, and closing it is the one thing
- * a dying process always does. It is opened on the first temporary
- * hold and never otherwise.
- */
+/* The one libzfs handle of a process, opened once and closed once. */
 struct zr_zfs {
 	libzfs_handle_t	*zz_hdl;
-	int		zz_cleanupfd;
 };
 
 /* A failure libzfs did not record: libc's, or one of our own. */
@@ -155,7 +148,6 @@ zr_zfs_open(struct zr_zfs **out, char *err, size_t errlen)
 	if (z == NULL)
 		return (zz_err(err, errlen, "zfs open", ENOMEM));
 	(void) memset(z, 0, sizeof (struct zr_zfs));
-	z->zz_cleanupfd = -1;
 	/*
 	 * libzfs_init (lib/libzfs/libzfs_util.c) loads the module,
 	 * opens its own descriptor on /dev/zfs and calls
@@ -183,29 +175,28 @@ zr_zfs_close(struct zr_zfs *z)
 	if (z == NULL)
 		return;
 	/*
-	 * The cleanup descriptor goes with the handle, and with it
-	 * every temporary hold filed against it. The persistent holds
-	 * a rebase takes are filed against nothing and stay.
+	 * The persistent holds a rebase takes are filed against no
+	 * descriptor and stay; nothing of the handle's is given back
+	 * to the kernel here but the handle.
 	 */
-	if (z->zz_cleanupfd >= 0)
-		(void) close(z->zz_cleanupfd);
 	if (z->zz_hdl != NULL)
 		libzfs_fini(z->zz_hdl);
 	free(z);
 }
 
 /*
- * One hold, filed against cleanupfd. lzc_hold (lib/libzfs_core/
- * libzfs_core.c): the keys are snapshot names and each value is the
- * tag, a string. A cleanup descriptor of -1 is left out of the
- * ioctl's arguments altogether, and the kernel then files an
- * ordinary user hold that nothing but a release takes away; a real
- * descriptor makes the hold the kernel's to give back when that
- * descriptor closes.
+ * One hold. lzc_hold (lib/libzfs_core/libzfs_core.c): the keys are
+ * snapshot names and each value is the tag, a string. The cleanup
+ * descriptor is -1 and so left out of the ioctl's arguments
+ * altogether: the kernel files an ordinary user hold that nothing
+ * but a release takes away. No temporary hold is taken anywhere in
+ * the tool any more -- the kernel answers a release, temporary or
+ * not, with a forced unmount of the snapshot's .zfs view on FreeBSD
+ * (the box, 2026-09-16; see zr_report in run.c).
  */
 static int
-zz_hold(struct zr_zfs *z, const char *snapshot, const char *tag, int cleanupfd,
-    char *err, size_t errlen)
+zz_hold(struct zr_zfs *z, const char *snapshot, const char *tag, char *err,
+    size_t errlen)
 {
 	nvlist_t *errlist, *holds;
 	int rc;
@@ -223,7 +214,7 @@ zz_hold(struct zr_zfs *z, const char *snapshot, const char *tag, int cleanupfd,
 		nvlist_free(holds);
 		return (zz_err(err, errlen, "hold", rc));
 	}
-	rc = lzc_hold(holds, cleanupfd, &errlist);
+	rc = lzc_hold(holds, -1, &errlist);
 	nvlist_free(holds);
 	nvlist_free(errlist);
 	if (rc != 0)
@@ -235,34 +226,7 @@ int
 zr_zfs_hold(struct zr_zfs *z, const char *snapshot, const char *tag, char *err,
     size_t errlen)
 {
-	return (zz_hold(z, snapshot, tag, -1, err, errlen));
-}
-
-int
-zr_zfs_hold_tmp(struct zr_zfs *z, const char *snapshot, const char *tag,
-    char *err, size_t errlen)
-{
-	if (err != NULL && errlen > 0)
-		err[0] = '\0';
-	if (z == NULL)
-		return (zz_err(err, errlen, "hold", EINVAL));
-	if (z->zz_cleanupfd < 0) {
-		/*
-		 * An open of /dev/zfs of our own. zfs_ioc_hold takes
-		 * the descriptor with zfs_onexit_fd_hold (module/zfs/
-		 * zfs_ioctl.c), finds the onexit state of that minor
-		 * and files the hold against it, so the kernel drops
-		 * the hold when the descriptor closes -- which the
-		 * death of the process does, whatever kills it.
-		 * libzfs opens it exactly this way for zfs send's own
-		 * temporary holds (lib/libzfs/libzfs_sendrecv.c) and
-		 * for the diff (lib/libzfs/libzfs_diff.c).
-		 */
-		z->zz_cleanupfd = open(ZFS_DEV, O_RDWR | O_CLOEXEC);
-		if (z->zz_cleanupfd < 0)
-			return (zz_err(err, errlen, ZFS_DEV, errno));
-	}
-	return (zz_hold(z, snapshot, tag, z->zz_cleanupfd, err, errlen));
+	return (zz_hold(z, snapshot, tag, err, errlen));
 }
 
 int
@@ -1411,16 +1375,6 @@ zr_zfs_close(struct zr_zfs *z)
 int
 zr_zfs_hold(struct zr_zfs *z, const char *snapshot, const char *tag, char *err,
     size_t errlen)
-{
-	(void) z;
-	(void) snapshot;
-	(void) tag;
-	return (zz_unbuilt(err, errlen));
-}
-
-int
-zr_zfs_hold_tmp(struct zr_zfs *z, const char *snapshot, const char *tag,
-    char *err, size_t errlen)
 {
 	(void) z;
 	(void) snapshot;

@@ -1198,6 +1198,18 @@ A stranded rebase holds on purpose: it is continuable.
 In the clone form onto's snapshot cannot be destroyed for a second reason,
 which is ZFS's own rule about a clone's origin and not something this tool
 arranges.
+.Pp
+.Fl -verify
+takes no hold of its own: an open rebase's inputs are held already, and a
+settled check reads what is there.
+Know that releasing a hold makes ZFS unmount the snapshot's
+.Pa .zfs/snapshot
+view, and that on
+.Fx
+the unmount is forced: done and
+.Fl -abort ,
+which release the run's holds after their own reads are closed, take that
+view away from anyone else reading it at that moment.
 .Sh THE GATES
 A rebase's progress is a sequence of gates, written to
 .Sy zfs_rebase:phase
