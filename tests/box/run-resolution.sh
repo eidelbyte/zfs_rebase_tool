@@ -2044,12 +2044,13 @@ cont_bg() {			# GATE
 # about is the stage's own bookkeeping.
 to_applying2() {
 	at_conflicts
-	# onto and not keep: applying2 carries out no keep line, so a
-	# document answered keep throughout gives choice:1 nothing to
-	# pause at and the tool runs on to done ("never stopped at
-	# choice:1", the box, 2026-09-16). One name answered onto is one
-	# choice carried out, which is the pause.
-	answer_all "$res" onto
+	# from, and neither keep nor onto: applying2 carries out no keep
+	# line, and a conflicted name answered onto is onto's already --
+	# applying1 left it so -- and is left alone by the classification
+	# the apply reads; either way choice:1 has nothing to pause at
+	# and the tool runs on to done ("never stopped at choice:1", the
+	# box, 2026-09-16, twice). from is a write, which is the pause.
+	answer_all "$res" from
 	[ "$(res_left "$res")" = 0 ] || \
 	    { head -8 "$res"; fail "the document is not answered in full"; }
 	cont_bg choice:1
@@ -2299,7 +2300,7 @@ case_i_hup() {
 case_gatesnap() {
 	case_id="$fixture $form the gate snapshot at the hand-off"
 	at_conflicts
-	answer_all "$res" onto
+	answer_all "$res" from
 	cont_bg choice:1
 	[ "$(phasenow "$rds")" = applying2 ] || \
 	    fail "the pause is at '$(phasenow "$rds")', want applying2"
@@ -2340,7 +2341,7 @@ case_abort_applying2() {
 	printf 'the gate wrote this\n' > "$hmnt$mark" || \
 	    { ro_back; fail "cannot write $mark at the private mount"; }
 	ro_back
-	answer_all "$res" onto
+	answer_all "$res" from
 	cont_bg choice:1
 	kill -KILL "$pid" || fail "cannot signal the stopped tool"
 	wait "$pid"
@@ -2409,7 +2410,7 @@ case_restart_applying2() {
 case_twoverbs() {
 	case_id="$fixture $form two verbs on one rebase"
 	at_conflicts
-	answer_all "$res" onto
+	answer_all "$res" from
 	cont_bg choice:1
 	for verb in --continue --restart --abort; do
 		"$bin" $verb "$rds" > "$tmp/tv" 2>&1
