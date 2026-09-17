@@ -1132,6 +1132,17 @@ settle_busy_done() {
 	    { cat "$log"; fail "the refused settle removed the run directory $rundir"; }
 	[ -f "$man" ] || \
 	    { cat "$log"; fail "the refused settle removed the manifest $man"; }
+	# ZX252: and the clone is still writable. The settle is the step
+	# that can refuse, and readonly goes on only after it: a flip
+	# made before would leave this open rebase on a read-only clone,
+	# which the clone-writable ruling of 2026-09-10 forbids and
+	# which nothing would put back. The dataset form's readonly is
+	# the header's and the hand-back writes it, so this is the clone
+	# form's assertion alone.
+	if [ "$form" = clone ]; then
+		[ "$(recval readonly "$rds")" = off ] || \
+		    { cat "$log"; fail "the refused settle left $rds read-only"; }
+	fi
 	where_is priv
 	free_mount
 	"$bin" --continue "$rds" > "$tmp/cont" 2>&1
@@ -1149,8 +1160,8 @@ settle_busy_done() {
 	else
 		where_is void
 	fi
-	echo "ok   $case_id: exit 3 with the rebase kept whole, and the"
-	echo "     next --continue settled it"
+	echo "ok   $case_id: exit 3 with the rebase kept whole and still"
+	echo "     writable, and the next --continue settled it"
 	reset_pool
 }
 

@@ -1575,6 +1575,22 @@ allbutone)
 	}' "$res" > "$res.ed" || exit 9
 	mv "$res.ed" "$res" || exit 9
 	;;
+chmodtree)
+	# Answered onto in full, so that applying2 acts on every
+	# conflicted name, and the mode of one of those names changed
+	# at the result's private mount while this child has the tree
+	# -- a hand merge of the crudest kind, made at exactly the
+	# moment the verb's walks used to be standing (ZX255). onto and
+	# not keep on purpose: a keep line is never applied and never
+	# compared, so a chmod under one would prove nothing about
+	# which tree the stage read. The path is the case's to name,
+	# since only it knows the fixture.
+	sed -e 's/ -$/ onto/' -e 's/^#unanswered .*$/#unanswered 0/' \
+	    "$res" > "$res.ed" || exit 9
+	mv "$res.ed" "$res" || exit 9
+	[ -n "${ZR_ED_CHMOD:-}" ] || exit 9
+	chmod 0705 "$ZR_ED_CHMOD" || exit 9
+	;;
 dup)
 	# Answered in full, and then one leaf line written twice with
 	# #names moved with it, so that the only thing wrong with the
@@ -2008,6 +2024,418 @@ case_i_killed() {
 	end_case
 }
 
+# --- the cases the review and the rulings planned -------------------
+#
+# Everything below was written after the box trip of 2026-09-16, for
+# rows that named this script and had no case. Each sits beside the
+# case its row names and uses the helpers above and no others.
+
+# A --continue stopped at a pause gate and left in the background:
+# $pid is the tool, stopped, to be continued with SIGCONT or killed.
+cont_bg() {			# GATE
+	ZFS_REBASE_PAUSE=$1 "$bin" --continue "$rds" > "$tmp/cbg" 2>&1 &
+	pid=$!
+	wait_stop "$pid" || { cat "$tmp/cbg"; fail "never stopped at $1"; }
+}
+
+# A rebase taken to applying2 and left there by a SIGKILL, which is
+# where four of the cases below begin: the document answered keep, so
+# that the stage has nothing to do to the tree and what the case asks
+# about is the stage's own bookkeeping.
+to_applying2() {
+	at_conflicts
+	answer_all "$res" keep
+	[ "$(res_left "$res")" = 0 ] || \
+	    { head -8 "$res"; fail "the document is not answered in full"; }
+	cont_bg choice:1
+	kill -KILL "$pid" || fail "cannot signal the stopped tool"
+	wait "$pid"
+	pid=
+	[ "$(phasenow "$rds")" = applying2 ] || \
+	    fail "the state is '$(phasenow "$rds")', want applying2"
+	return 0
+}
+
+# The one gate snapshot of this rebase, or nothing.
+gate_snap() {
+	zfs list -H -o name -t snapshot -r "$rds" 2>/dev/null | \
+	    grep -- '@zfs_rebase-zr-.*-gate$'
+}
+
+# --- ZX245: a bare word for --result, composed beside onto ----------
+#
+# The harness gives --result the whole name everywhere else, so the
+# composition is never exercised against a pool: a bare word goes
+# beside onto's dataset, and what this asks is that the composed name
+# is the clone's and not only the header's -- created under it,
+# mounted under it, found under it by a verb, and destroyed under it.
+# The clone form only: the dataset form's --result names a snapshot.
+case_barename() {
+	case_id="$fixture $form --result as a bare word"
+	bman=$tmp/bare.manifest
+	bres=$bman.resolution
+	rm -f "$bman" "$bres"
+	brds=$POOL/bare
+	brundir=/var/db/zfs_rebase/$brds
+	"$bin" $flag -v -o "$bman" --off-of "$POOL/from@work" \
+	    --onto "$POOL/onto@work" --result bare > "$tmp/bare.log" 2>&1
+	st=$?
+	[ $st -eq 1 ] || \
+	    { cat "$tmp/bare.log"; fail "the run with a bare --result exited $st, want 1"; }
+	# composed beside onto, which is the pool here
+	[ "$(hdr result "$bman")" = "$brds" ] || \
+	    fail "the header names $(hdr result "$bman"), want $brds"
+	zfs list -H -o name "$brds" > /dev/null 2>&1 || \
+	    fail "no clone was created as $brds"
+	mounted_at "$brundir/mnt" || \
+	    fail "$brds is not at the private mount $brundir/mnt"
+	[ "$(recval zfs_rebase:manifest "$brds")" = "$bman" ] || \
+	    fail "the record on $brds does not name $bman"
+	# and a verb finds it under that name, by the short one at that
+	"$bin" --verify bare > "$tmp/bare.v" 2>&1
+	st=$?
+	[ $st -eq 0 ] || [ $st -eq 3 ] || \
+	    { cat "$tmp/bare.v"; fail "--verify bare exited $st"; }
+	answer_all "$bres" keep
+	"$bin" --continue bare > "$tmp/bare.c" 2>&1
+	st=$?
+	[ $st -eq 0 ] || \
+	    { cat "$tmp/bare.c"; fail "--continue bare exited $st, want 0"; }
+	[ -z "$(localprops "$brds")" ] || \
+	    fail "done left a record on $brds"
+	[ ! -e "$brundir" ] || fail "done left the run directory $brundir"
+	zfs list -H -o name "$brds" > /dev/null 2>&1 || \
+	    fail "done destroyed the composed clone $brds"
+	zfs destroy -r "$brds" || fail "cannot destroy the settled $brds"
+	rmdir "$MNT/bare" 2>/dev/null
+	rm -f "$bman" "$bres"
+	[ "$(holdcount)" = 0 ] || fail "the bare-name run left holds behind"
+	echo "ok   $case_id: composed as $brds, created, mounted, found and settled under it"
+	cases=$((cases + 1))
+}
+
+# --- ZX251: the applying1 hand-off puts a removed line back ---------
+#
+# M1's pool half. case_putback above makes the same edit on a rebase
+# standing at the conflicts gate, which always ran the document half;
+# this one leaves the rebase at applying1, which is the arrival that
+# used to skip it, and takes the hand-off both ways -- a plain
+# --continue and a --continue -i, whose child must be handed a
+# document that already has the line back.
+case_putback1() {		# plain | interactive
+	how=$1
+	case_id="$fixture $form a line removed, put back on the applying1 hand-off"
+	fresh_bg applying1
+	kill -KILL "$pid" || fail "cannot signal the stopped tool"
+	wait "$pid"
+	pid=
+	[ "$(phasenow "$rds")" = applying1 ] || \
+	    fail "the state is '$(phasenow "$rds")', want applying1"
+	one=$(leaf_conflict "$man")
+	[ -n "$one" ] || fail "the fixture marks no conflict on a leaf"
+	n0=$(res_names "$res")
+	drop_line "$res" "$one"
+	[ "$(res_names "$res")" = "$((n0 - 1))" ] || \
+	    { head -8 "$res"; fail "the hand edit did not take"; }
+	if [ "$how" = interactive ]; then
+		ed_mode open
+		"$bin" --continue -i "$ed" "$rds" > "$tmp/pb1" 2>&1
+	else
+		"$bin" --continue "$rds" > "$tmp/pb1" 2>&1
+	fi
+	st=$?
+	[ $st -eq 1 ] || \
+	    { cat "$tmp/pb1"; fail "--continue from applying1 exited $st, want 1"; }
+	grep -q '1 conflict line the manifest marks put back' "$tmp/pb1" || \
+	    { cat "$tmp/pb1"; fail "the hand-off did not put the line back"; }
+	leaf=$(basename "$one")
+	grep -q "^ *$leaf conflict [0-9][0-9]* -\$" "$res" || \
+	    { cat "$res"; fail "$one did not come back reading -"; }
+	[ "$(res_names "$res")" = "$n0" ] || \
+	    { head -8 "$res"; fail "#names is $(res_names "$res"), want $n0"; }
+	# and the run stopped at the gate with the count, rather than
+	# walking on into applying2 without the line
+	[ "$(phasenow "$rds")" = conflicts ] || \
+	    fail "the hand-off went on to '$(phasenow "$rds")'"
+	if [ "$how" = plain ]; then
+		# and the gate said how many are left, which is the
+		# line a child's non-zero exit returns before
+		grep -q "unanswered in the resolution $res\$" "$tmp/pb1" || \
+		    { cat "$tmp/pb1"; fail "the gate did not say how many are unanswered"; }
+	else
+		ed_ran 1
+		# the child was handed the document with the line in it
+		grep -q "^ *$leaf conflict [0-9][0-9]* -\$" "$ed_copy" || \
+		    { cat "$ed_copy"; fail "the child opened on a document without $one"; }
+	fi
+	echo "ok   $case_id ($how): $one came back before the gate read the document"
+	end_case
+}
+
+# --- ZX253: -i past the gate is taken and does nothing --------------
+#
+# Beside the --no-merge refusal case_killchoice makes from the same
+# state: --no-merge is refused at applying2 and -i is not (ruled
+# 2026-09-15, "-i is allowed but idempotent"). The run keeps applying
+# and reaches done, and no child opens at all, which is what ed_ran 0
+# is for.
+case_i_applying2() {
+	case_id="$fixture $form -c -i from applying2 is idle"
+	to_applying2
+	ed_mode open
+	"$bin" --continue -i "$ed" "$rds" > "$tmp/ia2" 2>&1
+	st=$?
+	[ $st -eq 0 ] || \
+	    { cat "$tmp/ia2"; fail "-c -i from applying2 exited $st, want 0"; }
+	ed_ran 0
+	at_done "$rds"
+	[ "$(holdcount)" = 0 ] || fail "done left holds behind"
+	echo "ok   $case_id: taken, idle, and the rebase reached done"
+	end_case
+}
+
+# --- ZX255: a chmod at the mount while the child has the tree -------
+#
+# L1's pool half. The editor answers the document and chmods a
+# conflicted object at the private mount, which is the tree the verb
+# walked before the fork. The walks are let go before the child and
+# made again after it, so applying2 works on the tree as the child
+# left it: done is reached, the change shows as drift at the done
+# gate, and the run never fails with the "did not make the document
+# true" refusal that a walk carried across the child produced.
+case_i_chmod() {
+	case_id="$fixture $form a chmod at the mount while the editor runs"
+	at_conflicts
+	one=$(leaf_conflict "$man")
+	[ -n "$one" ] || fail "the fixture marks no conflict on a leaf"
+	[ -f "$hmnt$one" ] || fail "$hmnt$one is no file to chmod"
+	ed_mode chmodtree
+	ZR_ED_CHMOD=$hmnt$one
+	export ZR_ED_CHMOD
+	"$bin" --continue -v -i "$ed" "$rds" > "$tmp/ic" 2>&1
+	st=$?
+	unset ZR_ED_CHMOD
+	ed_ran 1
+	# The refusal is what a walk carried across the child produces:
+	# the change is skipped in the first pass on metadata that has
+	# moved on and made in the second, and the stage calls that its
+	# own failure. With the walks let go and made again there is no
+	# first pass that could miss it.
+	if grep -q 'did not make the document true' "$tmp/ic"; then
+		cat "$tmp/ic"
+		fail "applying2 read the tree as it stood before the child"
+	fi
+	[ $st -eq 0 ] || \
+	    { cat "$tmp/ic"; fail "the run with the chmod exited $st, want 0"; }
+	at_done "$rds"
+	[ "$(holdcount)" = 0 ] || fail "done left holds behind"
+	# and the stage mended what it saw: the name is onto's again,
+	# which is why the done gate found nothing to call drift
+	same_as "$ontodir" "$hmnt" "$one"
+	echo "ok   $case_id: the stage read the tree the child left, and done was reached"
+	end_case
+}
+
+# --- ZX256: a stop between the child and the hand-off ---------------
+#
+# The editor answers the document in full and then lingers. A SIGHUP
+# to the tool while it lingers is noticed at the boundary after the
+# child and before the hand-off, so the run stops at the conflicts
+# gate with the document answered and never enters applying2.
+case_i_hup() {
+	case_id="$fixture $form SIGHUP while the editor runs"
+	ed_mode linger
+	if [ "$form" = clone ]; then
+		"$bin" $flag -v -o "$man" "--interactive=$ed" \
+		    --off-of "$POOL/from@work" --onto "$POOL/onto@work" \
+		    --result "$POOL/result" > "$log" 2>&1 &
+	else
+		"$bin" $flag -v -o "$man" "--interactive=$ed" \
+		    --from "$POOL/from@work" --onto "$POOL/onto" \
+		    --result pre > "$log" 2>&1 &
+	fi
+	pid=$!
+	i=0
+	while [ $i -lt 600 ]; do
+		[ -f "$ed_run" ] && break
+		sleep 0.2
+		i=$((i + 1))
+	done
+	[ -f "$ed_run" ] || { cat "$log"; fail "the editor never opened"; }
+	kill -HUP "$pid" || fail "cannot signal the waiting tool"
+	wait "$pid"
+	st=$?
+	pid=
+	[ $st -eq 1 ] || \
+	    { cat "$log"; fail "the run stopped by SIGHUP exited $st, want 1"; }
+	grep -q 'interrupted while the editor ran' "$log" || \
+	    { cat "$log"; fail "the run did not say it was interrupted at the gate"; }
+	[ "$(phasenow "$rds")" = conflicts ] || \
+	    fail "the stop left '$(phasenow "$rds")', want conflicts"
+	[ -z "$(gate_snap)" ] || \
+	    { gate_snap; fail "applying2 was entered after the stop"; }
+	answered_all_as "$res" keep "$nconf"
+	sethere
+	"$bin" --continue "$rds" > "$tmp/hup2" 2>&1
+	st=$?
+	[ $st -eq 0 ] || \
+	    { cat "$tmp/hup2"; fail "--continue after the stop exited $st, want 0"; }
+	at_done "$rds"
+	echo "ok   $case_id: stopped at the gate, applying2 never entered"
+	end_case
+}
+
+# --- ZX260 and ZX261: the gate snapshot at the hand-off -------------
+#
+# The tool is held at the first choice of applying2, which is past the
+# hand-off, and the snapshot and the property are read there. Then the
+# run is let go: a clean done destroys the snapshot and takes the
+# whole record off, which is the other half of ZX262.
+case_gatesnap() {
+	case_id="$fixture $form the gate snapshot at the hand-off"
+	at_conflicts
+	answer_all "$res" keep
+	cont_bg choice:1
+	[ "$(phasenow "$rds")" = applying2 ] || \
+	    fail "the pause is at '$(phasenow "$rds")', want applying2"
+	gsnap=$(gate_snap)
+	[ "$(printf '%s\n' "$gsnap" | grep -c .)" -eq 1 ] || \
+	    { zfs list -t snapshot -r "$rds"; fail "want exactly one gate snapshot on $rds"; }
+	[ "$(recval zfs_rebase:gatesnap "$rds")" = "$gsnap" ] || \
+	    fail "zfs_rebase:gatesnap is '$(recval zfs_rebase:gatesnap "$rds")', want $gsnap"
+	kill -CONT "$pid" || fail "cannot continue the stopped tool"
+	wait "$pid"
+	st=$?
+	pid=
+	[ $st -eq 0 ] || \
+	    { cat "$tmp/cbg"; fail "the continued run exited $st, want 0"; }
+	at_done "$rds"
+	[ -z "$(gate_snap)" ] || \
+	    { gate_snap; fail "a clean done kept the gate snapshot"; }
+	[ -z "$(localprops "$rds")" ] || \
+	    fail "done left $(localprops "$rds") on $rds"
+	echo "ok   $case_id: one snapshot at the hand-off, named by the record, gone at done"
+	end_case
+}
+
+# --- ZX263: --abort from applying2 lands on the gate snapshot -------
+#
+# A mark is written into the result at the gate, which stands for the
+# hand merges the gate is for, and the rebase is then left inside
+# applying2 by a kill. The abort returns the result to the gate
+# snapshot and stops there: the mark is still in the tree -- where the
+# old abort would have destroyed the clone the mark was in -- the
+# phase is back at conflicts, and everything else of the rebase is
+# where it was. A second abort takes the whole rebase away.
+case_abort_applying2() {
+	case_id="$fixture $form --abort from applying2 returns to the gate"
+	at_conflicts
+	mark=/zr-gate-mark
+	ro_off
+	printf 'the gate wrote this\n' > "$hmnt$mark" || \
+	    { ro_back; fail "cannot write $mark at the private mount"; }
+	ro_back
+	answer_all "$res" keep
+	cont_bg choice:1
+	kill -KILL "$pid" || fail "cannot signal the stopped tool"
+	wait "$pid"
+	pid=
+	[ "$(phasenow "$rds")" = applying2 ] || \
+	    fail "the state is '$(phasenow "$rds")', want applying2"
+	gsnap=$(gate_snap)
+	[ -n "$gsnap" ] || fail "no gate snapshot at applying2"
+	"$bin" --abort "$rds" > "$tmp/aa2" 2>&1
+	st=$?
+	[ $st -eq 0 ] || \
+	    { cat "$tmp/aa2"; fail "--abort from applying2 exited $st, want 0"; }
+	grep -q 'as the conflicts gate left it' "$tmp/aa2" || \
+	    { cat "$tmp/aa2"; fail "the abort did not say it returned to the gate"; }
+	[ "$(phasenow "$rds")" = conflicts ] || \
+	    fail "the abort left '$(phasenow "$rds")', want conflicts"
+	sethere
+	[ -f "$hmnt$mark" ] || \
+	    fail "the abort lost what was written at the gate"
+	[ "$(holdcount)" = 3 ] || \
+	    fail "$(holdcount) holds after the abort, want 3"
+	[ -d "$rundir" ] || fail "the abort removed the run directory $rundir"
+	[ -f "$man" ] || fail "the abort removed the manifest $man"
+	[ -f "$res" ] || fail "the abort removed the resolution $res"
+	[ -n "$(gate_snap)" ] || fail "the abort destroyed the gate snapshot"
+	echo "ok   $case_id: back at the gate with the gate's work"
+	# And the second --abort is end_case's own, which now finds a
+	# rebase at conflicts: it asserts the exit, that the result is
+	# gone, that no hold, no property and no run directory are
+	# left, and that the pool is as it was.
+	end_case
+}
+
+# --- ZX264: --restart from applying2 clears the snapshot first ------
+#
+# lzc_destroy refuses a clone that still has a snapshot and a
+# rollback refuses while a later one stands, so a --restart from
+# applying2 meets an EEXIST it never used to unless the gate snapshot
+# goes first. That it succeeds at all is the assertion; that the
+# snapshot is gone afterwards is the other half.
+case_restart_applying2() {
+	case_id="$fixture $form --restart from applying2"
+	to_applying2
+	[ -n "$(gate_snap)" ] || fail "no gate snapshot at applying2"
+	"$bin" --restart "$rds" > "$tmp/ra2" 2>&1
+	st=$?
+	[ $st -eq 0 ] || \
+	    { cat "$tmp/ra2"; fail "--restart from applying2 exited $st, want 0"; }
+	[ -z "$(gate_snap)" ] || \
+	    { gate_snap; fail "--restart left the gate snapshot behind"; }
+	[ "$(phasenow "$rds")" = decided ] || \
+	    fail "--restart left '$(phasenow "$rds")', want decided"
+	[ "$(res_left "$res")" = "$nconf" ] || \
+	    { head -8 "$res"; fail "--restart did not write the skeleton again"; }
+	echo "ok   $case_id: the snapshot went first and the restart stood"
+	end_case
+}
+
+# --- ZX272: two plain verbs on one rebase ---------------------------
+#
+# The point of the 2026-09-16 re-ruling. A --continue is held at a
+# pause gate, which leaves it stopped and alive; a second --continue
+# and an --abort on the same rebase must each be refused, naming that
+# process, where before this property neither met the other at all.
+# --verify sets nothing and is refused by nothing.
+case_twoverbs() {
+	case_id="$fixture $form two verbs on one rebase"
+	at_conflicts
+	answer_all "$res" keep
+	cont_bg choice:1
+	for verb in --continue --restart --abort; do
+		"$bin" $verb "$rds" > "$tmp/tv" 2>&1
+		st=$?
+		[ $st -eq 2 ] || \
+		    { cat "$tmp/tv"; fail "$verb under a running verb exited $st, want 2"; }
+		grep -q "another zfs_rebase has this rebase, running as pid $pid" \
+		    "$tmp/tv" || \
+		    { cat "$tmp/tv"; fail "$verb did not name the running process $pid"; }
+	done
+	# and the one verb that takes nothing over is not refused
+	"$bin" --verify "$rds" > "$tmp/tvv" 2>&1
+	st=$?
+	[ $st -eq 0 ] || [ $st -eq 3 ] || \
+	    { cat "$tmp/tvv"; fail "--verify under a running verb exited $st"; }
+	grep -q 'another zfs_rebase has this rebase' "$tmp/tvv" && \
+	    { cat "$tmp/tvv"; fail "--verify was refused by the active property"; }
+	kill -CONT "$pid" || fail "cannot continue the stopped tool"
+	wait "$pid"
+	st=$?
+	pid=
+	[ $st -eq 0 ] || \
+	    { cat "$tmp/cbg"; fail "the continued run exited $st, want 0"; }
+	at_done "$rds"
+	# and the property went with the record
+	[ -z "$(localprops "$rds")" ] || \
+	    fail "done left $(localprops "$rds") on $rds"
+	echo "ok   $case_id: three verbs refused by the pid, --verify not, then done"
+	end_case
+}
+
 # (l) --restart under a record with no --take, which writes the
 # skeleton again from the recorded manifest and discards the
 # answering: the child that opens after it opens on a document with
@@ -2161,6 +2589,23 @@ res_pass() {
 	case_i_nopicker
 	case_i_killed
 	case_i_restart
+	# And the cases the review and the rulings planned, each beside
+	# the one its row names above.
+	if [ "$form" = clone ]; then
+		case_barename
+	else
+		echo "skip $fixture $form the bare --result name: the dataset"
+		echo "     form's --result names a snapshot, not a clone"
+	fi
+	case_putback1 plain
+	case_putback1 interactive
+	case_i_applying2
+	case_i_chmod
+	case_i_hup
+	case_gatesnap
+	case_abort_applying2
+	case_restart_applying2
+	case_twoverbs
 	return 0
 }
 
