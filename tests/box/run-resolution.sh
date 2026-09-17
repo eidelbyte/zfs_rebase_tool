@@ -2386,17 +2386,22 @@ case_restart_applying2() {
 	case_id="$fixture $form --restart from applying2"
 	to_applying2
 	[ -n "$(gate_snap)" ] || fail "no gate snapshot at applying2"
+	# A restart with no --take mode in the record runs applying1
+	# again and stops at the conflicts gate with the skeleton
+	# written afresh: exit 1, the phase conflicts, every name
+	# unanswered -- the same end the older restart cases assert.
+	# The point here is only that it got there, past the snapshot.
 	"$bin" --restart "$rds" > "$tmp/ra2" 2>&1
 	st=$?
-	[ $st -eq 0 ] || \
-	    { cat "$tmp/ra2"; fail "--restart from applying2 exited $st, want 0"; }
+	[ $st -eq 1 ] || \
+	    { cat "$tmp/ra2"; fail "--restart from applying2 exited $st, want 1 (the gate)"; }
 	[ -z "$(gate_snap)" ] || \
 	    { gate_snap; fail "--restart left the gate snapshot behind"; }
-	[ "$(phasenow "$rds")" = decided ] || \
-	    fail "--restart left '$(phasenow "$rds")', want decided"
+	[ "$(phasenow "$rds")" = conflicts ] || \
+	    fail "--restart left '$(phasenow "$rds")', want conflicts"
 	[ "$(res_left "$res")" = "$nconf" ] || \
 	    { head -8 "$res"; fail "--restart did not write the skeleton again"; }
-	echo "ok   $case_id: the snapshot went first and the restart stood"
+	echo "ok   $case_id: the snapshot went first and the restart stood at the gate"
 	end_case
 }
 
