@@ -1094,8 +1094,10 @@ check_hint_marks(void)
  * (2026-03-02). So the version string is what says whether the bytes
  * can be trusted, and this asks for it once:
  *
- *   - FreeBSD diff3 OR_DIFF3_FIXED or later: diff3 is the byte
- *     authority.
+ *   - FreeBSD diff3 OR_DIFF3_FIXED or later, or GNU diffutils' diff3
+ *     (which FreeBSD 15.1-RELEASE ships in base as /usr/bin/diff3,
+ *     "diff3 (GNU diffutils) 2.8.7", and which the theory's battery
+ *     was recorded against): diff3 is the byte authority.
  *   - otherwise git merge-file -p --diff3, where git is installed.
  *     --diff3 is what clamps git to its eager level, which is our
  *     ceiling (v4-merge3.md section 4), as tools/merge-oracle.sh's
@@ -1524,6 +1526,7 @@ struct or_auth {
 	const char	*oa_diff3;	/* the path, or NULL */
 	const char	*oa_git;	/* the path, or NULL */
 	uint32_t	oa_version;	/* FreeBSD diff3's date, or 0 */
+	int		oa_gnu;		/* GNU diffutils' diff3 */
 	int		oa_bytes;	/* OR_BY_* */
 };
 
@@ -1579,11 +1582,14 @@ or_authority(struct or_auth *a, const char *dir)
 			text = or_slurp(path, &len);
 			if (text != NULL) {
 				a->oa_version = or_version(text);
+				a->oa_gnu = strstr(text, "GNU diffutils") !=
+				    NULL;
 				free(text);
 			}
 		}
 	}
-	if (a->oa_diff3 != NULL && a->oa_version >= OR_DIFF3_FIXED)
+	if (a->oa_diff3 != NULL &&
+	    (a->oa_gnu || a->oa_version >= OR_DIFF3_FIXED))
 		a->oa_bytes = OR_BY_DIFF3;
 	else if (a->oa_git != NULL)
 		a->oa_bytes = OR_BY_GIT;
@@ -1800,13 +1806,21 @@ run_oracle(uint32_t seed, uint32_t cases, uint32_t big)
 	printf("oracle: %s", a.oa_diff3 != NULL ? a.oa_diff3 : "no diff3");
 	if (a.oa_version != 0)
 		printf(" (FreeBSD diff3 %u)", (unsigned)a.oa_version);
+	else if (a.oa_gnu)
+		printf(" (GNU diffutils)");
 	else if (a.oa_diff3 != NULL)
-		printf(" (version unknown: not a FreeBSD diff3)");
+		printf(" (version unknown: neither FreeBSD's nor GNU's)");
 	printf(", git %s\n", a.oa_git != NULL ? a.oa_git : "absent");
 	switch (a.oa_bytes) {
 	case OR_BY_DIFF3:
-		printf("oracle: the bytes are diff3's, whose merge mode is "
-		    "right at %u and later\n", (unsigned)OR_DIFF3_FIXED);
+		if (a.oa_gnu)
+			printf("oracle: the bytes are diff3's: GNU diffutils, "
+			    "the reference the theory's battery was recorded "
+			    "against\n");
+		else
+			printf("oracle: the bytes are diff3's, whose merge "
+			    "mode is right at %u and later\n",
+			    (unsigned)OR_DIFF3_FIXED);
 		break;
 	case OR_BY_GIT:
 		printf("oracle: the bytes are git merge-file's; this diff3 "
