@@ -2098,6 +2098,31 @@ pk_resize(void)
 }
 
 /*
+ * The key, on the note's clock. A line in the key bar that is not
+ * the keys -- a refusal, a count after a reload -- stands until the
+ * next key or PK_NOTE_MS, whichever is first, so that the keys come
+ * back on their own for a hand that does not know which to press
+ * next (hand session 1 of the box trip of 2026-09-16: the refusal
+ * never went away). ERR under the clock is the clock and not the
+ * input gone: the caller drops the note and reads again with no
+ * clock, and an input that has gone away says so on that read.
+ */
+#define	PK_NOTE_MS	5000
+
+static int
+pk_getch_noted(const char *note)
+{
+	int c;
+
+	if (note == NULL)
+		return (getch());
+	(void) wtimeout(stdscr, PK_NOTE_MS);
+	c = getch();
+	(void) wtimeout(stdscr, -1);
+	return (c);
+}
+
+/*
  * Screen 2's loop, which is screen 1's shape with screen 2's keys.
  * It ends when the merge closes -- Esc, or a write that went through
  * -- and the model is what closes it, so the condition is simply
@@ -2137,10 +2162,14 @@ pk_merge_loop(struct zr_picker *pk)
 		}
 		pk_mscroll(mg, &v, &g);
 		pk_draw_merge(pk, mg, &v, &g, note);
-		c = getch();
+		c = pk_getch_noted(note);
 		if (c == ERR) {
 			if (pk_winch != 0)
 				continue;
+			if (note != NULL) {
+				note = NULL;	/* the note's time is up */
+				continue;
+			}
 			rc = 1;
 			break;
 		}
@@ -2170,9 +2199,10 @@ pk_merge_loop(struct zr_picker *pk)
  * key is a line the key made.
  *
  * getch returning ERR is a signal that interrupted the read -- a
- * resize, which the flag says -- or an input that has gone away, in
- * which case the picker leaves the way q leaves, rather than
- * spinning on a terminal nobody is at.
+ * resize, which the flag says -- or the note's clock, which the note
+ * says -- or an input that has gone away, in which case the picker
+ * leaves the way q leaves, rather than spinning on a terminal nobody
+ * is at.
  *
  * Returns 0 where the model said to leave, and -1 where the window
  * went below the floor: the caller then ends curses, puts the
@@ -2197,10 +2227,14 @@ pk_loop(struct zr_picker *pk)
 			return (-1);
 		pk_scroll(pk, &g, &top);
 		pk_draw(pk, &g, top, note);
-		c = getch();
+		c = pk_getch_noted(note);
 		if (c == ERR) {
 			if (pk_winch != 0)
 				continue;
+			if (note != NULL) {
+				note = NULL;	/* the note's time is up */
+				continue;
+			}
 			return (0);
 		}
 		if (c == KEY_RESIZE)

@@ -1862,6 +1862,7 @@ tests of their own and only wanted a row.
 | ZP149 | the refresh hook failing: the rows are left as they were and a line naming the failure is queued | covered: check_picker.c, a hook that returns -1 with a reason |
 | ZP150 | r on a pty: the key, the question, and the message after the reload | covered: check_picker.c on a pty, a session that presses r with nothing unsaved and sees the count change |
 | ZP151 | the tool-side refresh hook (run.c): the hook re-walks the trees and rewrites the resolution as the gate does, so the picker can see drift a hand made while it was suspended | planned: by hand on the box, hand session 9 of box-trip-2026-09-16.md, and not a case of run-resolution.sh: the hook is the built-in picker's r key, and the built-in picker wants a terminal, so the editor script the -i cases use cannot press it. The session is the one the trip already carries -- suspend the picker, chmod a name at the private mount, resume, press r, the drift row appears -- and the row stays planned until that session is run |
+| ZP152 | a line in the key bar that is not the keys -- a refusal, a count after a reload -- stands until the next key or PK_NOTE_MS (five seconds), whichever is first, so the keys come back with nothing pressed; ERR under that clock drops the note and never ends the picker | planned: box, by hand, hand session 1 of box-trip-2026-09-16.md: w on screen 2 with nothing picked, then hands off the keyboard |
 
 ## Positive-proof cells
 
