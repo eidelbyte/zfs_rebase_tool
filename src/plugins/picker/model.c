@@ -1978,97 +1978,52 @@ pk_merge_write(struct zr_picker *pk)
 	struct zr_pk_merge *mg = &pk->pk_merge;
 	struct zr_pk_row *row = &pk->pk_rows[mg->pm_row];
 	enum zr_pk_obj kind = row->zk_obj[ZR_PK_T_RESULT];
-	int wrote_content = 0;
+	unsigned char *bytes = NULL;
+	size_t blen = 0;
+	int has_bytes = 0, has_attrs = 0;
+	struct zr_attr resolved;
 	uint32_t first, names;
 	struct stat id;
 
+	memset(&id, 0, sizeof (id));
+	memset(&resolved, 0, sizeof (resolved));
 	pk_rowname(row, name, sizeof (name));
 
 	/*
-	 * Refuse while either view has an unpicked conflict (D).
+	 * Phase 1: compute both results, writing nothing. A refusal
+	 * in either view leaves the tree untouched (review fix M9).
 	 */
-	if (mg->pm_has_content && !mg->pm_content_same) {
-		unsigned char *bytes = NULL;
-		size_t len = 0;
 
-		if (zr_m3_result(&mg->pm_m3, &bytes, &len, err,
+	/* (a) content result */
+	if (mg->pm_has_content && !mg->pm_content_same) {
+		if (zr_m3_result(&mg->pm_m3, &bytes, &blen, err,
 		    sizeof (err)) != 0) {
 			pk_say(pk, "%s: content: %s", name, err);
-			if (zr_m3_first_unpicked(&mg->pm_m3, &first) == 0)
+			if (zr_m3_first_unpicked(&mg->pm_m3,
+			    &first) == 0)
 				mg->pm_cursor = first;
 			mg->pm_view = ZR_PK_VIEW_CONTENT;
 			return (ZR_PK_REDRAW);
 		}
-		/*
-		 * Write the merged bytes into the result's object.
-		 */
-		if (kind == ZR_PK_O_ABSENT) {
-			free(bytes);
-			pk_say(pk, "%s: the result tree holds no object at "
-			    "this name to write into", name);
-			return (ZR_PK_REDRAW);
-		}
-		if (kind != ZR_PK_O_TEXT && kind != ZR_PK_O_BINARY) {
-			free(bytes);
-			pk_say(pk, "%s: the result tree holds %s at this "
-			    "name, and the merged bytes go into a regular "
-			    "file or nowhere", name, pk_objword[kind]);
-			return (ZR_PK_REDRAW);
-		}
-		{
-			char *path;
-			int rc, damaged = 0;
-
-			path = pk_join(pk->pk_tree[ZR_PK_T_RESULT],
-			    row->zk_name, row->zk_namelen);
-			if (path == NULL) {
-				free(bytes);
-				pk_say(pk, "%s: there is no result tree to "
-				    "write into", name);
-				return (ZR_PK_REDRAW);
-			}
-			rc = pk_write_object(path, bytes, len, &damaged,
-			    &id, err, sizeof (err));
-			free(bytes);
-			free(path);
-			if (rc != 0) {
-				if (damaged == 0) {
-					pk_say(pk, "%s: %s", name, err);
-					return (ZR_PK_REDRAW);
-				}
-				pk_set(pk, row, ZR_CH_NONE);
-				pk_say(pk, "%s: the write failed part way "
-				    "(%s); the object is damaged and the "
-				    "name is unanswered again", name, err);
-				return (ZR_PK_REDRAW);
-			}
-		}
-		wrote_content = 1;
+		has_bytes = 1;
 	}
 
+	/* (b) metadata complete? */
 	if (mg->pm_has_meta &&
 	    !zr_pk_meta_complete(&mg->pm_meta)) {
+		uint32_t unp = mg->pm_meta.mm_nconflict -
+		    mg->pm_meta.mm_npicked;
+		free(bytes);
 		pk_say(pk, "%s: metadata: %u conflict%s unpicked",
-		    name,
-		    mg->pm_meta.mm_nconflict - mg->pm_meta.mm_npicked,
-		    (mg->pm_meta.mm_nconflict - mg->pm_meta.mm_npicked) == 1 ?
-		    "" : "s");
+		    name, unp, unp == 1 ? "" : "s");
 		mg->pm_view = ZR_PK_VIEW_META;
 		return (ZR_PK_REDRAW);
 	}
 
-	/*
-	 * Write the resolved attributes on the result's object,
-	 * when metadata differs between the sides. When all three
-	 * agree, the attributes the apply already set stand.
-	 */
+	/* resolve metadata */
 	if (mg->pm_has_meta && mg->pm_meta.mm_nrows > 0 &&
 	    (row->zk_diff == ZR_PK_DIFF_M ||
 	    row->zk_diff == ZR_PK_DIFF_CM)) {
-		struct zr_attr resolved;
-		char *path;
-		int islink, isdir;
-
 		if (zr_pk_meta_result(&mg->pm_meta,
 		    row->zk_has_at[ZR_PK_T_BASE] ?
 		    &row->zk_at[ZR_PK_T_BASE] : NULL,
@@ -2077,22 +2032,82 @@ pk_merge_write(struct zr_picker *pk)
 		    row->zk_has_at[ZR_PK_T_ONTO] ?
 		    &row->zk_at[ZR_PK_T_ONTO] : NULL,
 		    &resolved, err, sizeof (err)) != 0) {
+			free(bytes);
 			pk_say(pk, "%s: metadata: %s", name, err);
 			return (ZR_PK_REDRAW);
 		}
+		has_attrs = 1;
+	}
+
+	/*
+	 * Phase 2: both views clear, write the tree.
+	 * (c) content bytes, if any.
+	 */
+	if (has_bytes) {
+		char *path;
+		int rc, damaged = 0;
+
+		if (kind == ZR_PK_O_ABSENT) {
+			free(bytes);
+			zr_attr_free(&resolved);
+			pk_say(pk, "%s: the result tree holds no object "
+			    "at this name to write into", name);
+			return (ZR_PK_REDRAW);
+		}
+		if (kind != ZR_PK_O_TEXT && kind != ZR_PK_O_BINARY) {
+			free(bytes);
+			zr_attr_free(&resolved);
+			pk_say(pk, "%s: the result tree holds %s at "
+			    "this name, and the merged bytes go into "
+			    "a regular file or nowhere", name,
+			    pk_objword[kind]);
+			return (ZR_PK_REDRAW);
+		}
+		path = pk_join(pk->pk_tree[ZR_PK_T_RESULT],
+		    row->zk_name, row->zk_namelen);
+		if (path == NULL) {
+			free(bytes);
+			zr_attr_free(&resolved);
+			pk_say(pk, "%s: there is no result tree to "
+			    "write into", name);
+			return (ZR_PK_REDRAW);
+		}
+		rc = pk_write_object(path, bytes, blen, &damaged,
+		    &id, err, sizeof (err));
+		free(bytes);
+		free(path);
+		bytes = NULL;
+		if (rc != 0) {
+			zr_attr_free(&resolved);
+			if (damaged == 0) {
+				pk_say(pk, "%s: %s", name, err);
+				return (ZR_PK_REDRAW);
+			}
+			pk_set(pk, row, ZR_CH_NONE);
+			pk_say(pk, "%s: the write failed part way "
+			    "(%s); the object is damaged and the "
+			    "name is unanswered again", name, err);
+			return (ZR_PK_REDRAW);
+		}
+	}
+
+	/* (d) attributes */
+	if (has_attrs) {
+		char *path;
+		int islink, isdir;
 
 		path = pk_join(pk->pk_tree[ZR_PK_T_RESULT],
 		    row->zk_name, row->zk_namelen);
 		if (path == NULL) {
 			zr_attr_free(&resolved);
-			pk_say(pk, "%s: there is no result tree to write "
-			    "into", name);
+			pk_say(pk, "%s: there is no result tree to "
+			    "write into", name);
 			return (ZR_PK_REDRAW);
 		}
-		islink = (row->zk_obj[ZR_PK_T_RESULT] == ZR_PK_O_LINK);
-		isdir = (row->zk_obj[ZR_PK_T_RESULT] == ZR_PK_O_DIR);
-		if (pk_write_attrs(path, &resolved, islink, isdir, err,
-		    sizeof (err)) != 0) {
+		islink = (kind == ZR_PK_O_LINK);
+		isdir = (kind == ZR_PK_O_DIR);
+		if (pk_write_attrs(path, &resolved, islink, isdir,
+		    err, sizeof (err)) != 0) {
 			pk_say(pk, "%s: %s", name, err);
 			free(path);
 			zr_attr_free(&resolved);
@@ -2102,10 +2117,8 @@ pk_merge_write(struct zr_picker *pk)
 		zr_attr_free(&resolved);
 	}
 
-	/*
-	 * Get the identity of the result object for pool keep.
-	 */
-	if (!wrote_content) {
+	/* (e) K and the document */
+	if (!has_bytes) {
 		char *path = pk_join(pk->pk_tree[ZR_PK_T_RESULT],
 		    row->zk_name, row->zk_namelen);
 		if (path != NULL) {
@@ -2121,8 +2134,8 @@ pk_merge_write(struct zr_picker *pk)
 	pk_set(pk, row, ZR_CH_KEEP);
 	names = 1 + pk_pool_keep(pk, row, &id);
 	if (zr_pk_write(pk, err, sizeof (err)) != 0) {
-		pk_say(pk, "%s: the merged bytes are written and the "
-		    "resolution could not be saved: %s", name, err);
+		pk_say(pk, "%s: written and the resolution could not "
+		    "be saved: %s", name, err);
 		zr_pk_merge_close(pk);
 		return (ZR_PK_REDRAW);
 	}
@@ -2130,9 +2143,9 @@ pk_merge_write(struct zr_picker *pk)
 		pk_say(pk, "%s: written, the name reads keep and the "
 		    "resolution is saved", name);
 	else
-		pk_say(pk, "%s: written; the object has %u names here and "
-		    "all %u read keep, and the resolution is saved",
-		    name, names, names);
+		pk_say(pk, "%s: written; the object has %u names "
+		    "here and all %u read keep, and the resolution "
+		    "is saved", name, names, names);
 	zr_pk_merge_close(pk);
 	return (ZR_PK_REDRAW);
 }

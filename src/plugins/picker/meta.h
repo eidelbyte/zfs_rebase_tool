@@ -61,10 +61,9 @@ struct zr_mk_row {
 
 /*
  * The metadata merge of one row of the picker. The struct zr_attr
- * values are OWNED here and freed by zr_pk_meta_close.
+ * values are BORROWED: the caller keeps them alive until close.
  */
 struct zr_pk_meta {
-	struct zr_attr		mm_at[3];	/* base, from, onto */
 	int			mm_have[3];	/* whether tree exists */
 	struct zr_mk_row	*mm_rows;
 	uint32_t		mm_nrows;
@@ -118,5 +117,23 @@ int zr_pk_meta_result(const struct zr_pk_meta *mm,
  * Returns 1 if they differ, 0 if the same.
  */
 int zr_attrs_differ(const struct zr_attr *a, const struct zr_attr *b);
+
+/*
+ * Render an ACL to text for the metadata view. On FreeBSD the text
+ * uses numeric ids. On other platforms the walk already stored
+ * acl_to_text's output, so this returns a copy of it. Returns a
+ * malloced string the caller frees with free(3), or NULL when the
+ * ACL is absent or the platform has no ACL support. Never fails on
+ * an absent ACL.
+ */
+char *zr_acl_to_text(zr_acl_t acl);
+
+/*
+ * Render file flags to a name string. On FreeBSD and macOS this is
+ * fflagstostr(3); elsewhere hex. The result is malloced and the
+ * caller frees it. Returns NULL only on allocation failure; 0 flags
+ * yield "-".
+ */
+char *zr_flags_to_text(uint32_t flags);
 
 #endif	/* ZR_META_H */

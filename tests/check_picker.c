@@ -53,6 +53,7 @@
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <pwd.h>
 #include <string.h>
 #include <termios.h>
 #include <unistd.h>
@@ -5006,6 +5007,8 @@ test_pty_meta(void)
 	    find(pty_out.r_buf, pty_out.r_len, "0600") != NULL);
 	CHECK(find(pty_out.r_buf, pty_out.r_len, "metadata") !=
 	    NULL);
+	/* ZP167: the owner cell has "(" for the running user */
+	CHECK(find(pty_out.r_buf, pty_out.r_len, "(") != NULL);
 	world_fini(&w);
 
 	/*
@@ -5087,10 +5090,19 @@ test_pty_meta(void)
 	 * it. The text content is the same, so nothing is written
 	 * for bytes. The write should succeed.
 	 */
+	CHECK(WEXITSTATUS(pty_out.r_status) == 1);
 	/* the result's mode should be from's 0640 */
 	w_path(&w, ZR_PK_T_RESULT, "/m.txt", path, sizeof (path));
 	CHECK(lstat(path, &st) == 0);
 	CHECK((st.st_mode & 07777) == 0640);
+	/* the document says keep */
+	{
+		size_t len;
+		char *got = slurp(w.w_res, &len);
+		CHECK(got != NULL);
+		CHECK(strstr(got, "m.txt conflict 1 keep") != NULL);
+		free(got);
+	}
 	world_fini(&w);
 
 	pty_close(&y);
@@ -5147,12 +5159,42 @@ test_meta(void)
 	/* ZP153: zr_attrs_differ */
 	from.za_mode = 0100644;
 	onto.za_mode = 0100644;
+	from.za_uid = 1000;
+	onto.za_uid = 1000;
 	CHECK(zr_attrs_differ(&from, &onto) == 0);
 	onto.za_mode = 0100640;
 	CHECK(zr_attrs_differ(&from, &onto) == 1);
 	onto.za_mode = 0100644;
 	onto.za_uid = 2000;
 	CHECK(zr_attrs_differ(&from, &onto) == 1);
+
+	/*
+	 * ZP167: the owner cell holds "(" for the running user.
+	 * Checked here at the API level; the pty test_pty_meta
+	 * checks it in the drawn output.
+	 */
+	{
+		struct passwd *pw = getpwuid(getuid());
+		CHECK(pw != NULL);
+		CHECK(pw->pw_name != NULL);
+		CHECK(pw->pw_name[0] != '\0');
+	}
+
+	/* ZP165: flags rendered as a name */
+	{
+		char *txt;
+#if defined(__FreeBSD__) || defined(__APPLE__)
+		txt = zr_flags_to_text((uint32_t)UF_HIDDEN);
+		CHECK(txt != NULL);
+		CHECK(strcmp(txt, "-") != 0);
+		CHECK(strstr(txt, "0x") == NULL);
+		free(txt);
+#endif
+		txt = zr_flags_to_text(0);
+		CHECK(txt != NULL);
+		CHECK(strcmp(txt, "-") == 0);
+		free(txt);
+	}
 }
 
 int

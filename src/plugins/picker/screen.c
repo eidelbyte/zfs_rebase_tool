@@ -77,6 +77,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <grp.h>
+#include <pwd.h>
 #include <termios.h>
 #include <unistd.h>
 
@@ -1859,18 +1861,39 @@ pk_mk_value(const struct zr_mk_row *mr, const struct zr_attr *at,
 		    (unsigned)(at->za_mode & 07777));
 		return (buf);
 	case ZR_MK_OWNER:
-		(void) snprintf(buf, buflen, "%u",
-		    (unsigned)at->za_uid);
+		{
+			struct passwd *pw;
+			pw = getpwuid(at->za_uid);
+			if (pw != NULL)
+				(void) snprintf(buf, buflen, "%u (%s)",
+				    (unsigned)at->za_uid, pw->pw_name);
+			else
+				(void) snprintf(buf, buflen, "%u",
+				    (unsigned)at->za_uid);
+		}
 		return (buf);
 	case ZR_MK_GROUP:
-		(void) snprintf(buf, buflen, "%u",
-		    (unsigned)at->za_gid);
+		{
+			struct group *gr;
+			gr = getgrgid(at->za_gid);
+			if (gr != NULL)
+				(void) snprintf(buf, buflen, "%u (%s)",
+				    (unsigned)at->za_gid, gr->gr_name);
+			else
+				(void) snprintf(buf, buflen, "%u",
+				    (unsigned)at->za_gid);
+		}
 		return (buf);
 	case ZR_MK_FLAGS:
-		if (at->za_flags == 0)
-			return ("-");
-		(void) snprintf(buf, buflen, "0x%x",
-		    (unsigned)at->za_flags);
+		{
+			char *s = zr_flags_to_text(at->za_flags);
+			if (s != NULL) {
+				(void) snprintf(buf, buflen, "%s", s);
+				free(s);
+			} else {
+				(void) snprintf(buf, buflen, "-");
+			}
+		}
 		return (buf);
 	case ZR_MK_XATTR:
 		if (mr->mr_name == NULL)
@@ -1878,25 +1901,53 @@ pk_mk_value(const struct zr_mk_row *mr, const struct zr_attr *at,
 		{
 			uint32_t i;
 			for (i = 0; i < at->za_nxattrs; i++) {
+				const struct zr_xattr *xa;
 				if (strcmp(at->za_xattrs[i].zx_name,
-				    mr->mr_name) == 0) {
+				    mr->mr_name) != 0)
+					continue;
+				xa = &at->za_xattrs[i];
+				if (xa->zx_len == 0) {
 					(void) snprintf(buf, buflen,
-					    "%u B",
-					    (unsigned)at->za_xattrs[i].
-					    zx_len);
-					return (buf);
+					    "0 B");
+				} else {
+					char vis[64];
+					size_t vn;
+					vn = zr_vis_encode(
+					    xa->zx_value,
+					    xa->zx_len, vis,
+					    sizeof (vis));
+					if (vn < sizeof (vis) &&
+					    vn == xa->zx_len)
+						(void) snprintf(buf,
+						    buflen, "%s", vis);
+					else
+						(void) snprintf(buf,
+						    buflen,
+						    "%u B: %s",
+						    (unsigned)xa->zx_len,
+						    vis);
 				}
+				return (buf);
 			}
 		}
 		return ("(absent)");
 	case ZR_MK_ACL:
-		if (at->za_acl == NULL)
-			return ("-");
-		return ("(set)");
 	case ZR_MK_DACL:
-		if (at->za_dacl == NULL)
-			return ("-");
-		return ("(set)");
+		{
+			zr_acl_t acl = (mr->mr_kind == ZR_MK_ACL) ?
+			    at->za_acl : at->za_dacl;
+			char *txt;
+			if (acl == NULL)
+				return ("-");
+			txt = zr_acl_to_text(acl);
+			if (txt != NULL) {
+				(void) snprintf(buf, buflen, "%s", txt);
+				free(txt);
+			} else {
+				(void) snprintf(buf, buflen, "(set)");
+			}
+		}
+		return (buf);
 	}
 	return ("?");
 }
@@ -1975,9 +2026,121 @@ pk_view_state(const struct zr_pk_merge *mg, enum zr_pk_view which,
 }
 
 /*
+ * How many screen lines an ACL text occupies: one per entry line,
+ * at least one. A NULL ACL ("-") is one line.
+ */
+static int
+pk_acl_lines(const char *txt)
+{
+	int n = 1;
+	const char *p;
+
+	if (txt == NULL)
+		return (1);
+	for (p = txt; *p != '\0'; p++)
+		if (*p == '\n')
+			n++;
+	/* a trailing newline does not add a line */
+	if (p > txt && p[-1] == '\n')
+		n--;
+	return (n > 0 ? n : 1);
+}
+
+/*
+ * The Nth line of a newline-separated text, into buf. N is 0-based.
+ * Returns buf, or "-" if the line is out of range.
+ */
+static const char *
+pk_acl_line(const char *txt, int n, char *buf, size_t buflen)
+{
+	const char *p, *end;
+	int cur = 0;
+	size_t len;
+
+	if (txt == NULL)
+		return ("-");
+	p = txt;
+	while (cur < n) {
+		end = strchr(p, '\n');
+		if (end == NULL)
+			return ("");
+		p = end + 1;
+		cur++;
+	}
+	end = strchr(p, '\n');
+	if (end == NULL)
+		end = p + strlen(p);
+	len = (size_t)(end - p);
+	if (len >= buflen)
+		len = buflen - 1;
+	memcpy(buf, p, len);
+	buf[len] = '\0';
+	return (buf);
+}
+
+/*
+ * The height of one metadata row on screen: 1 for scalars, and
+ * the max of the three trees' ACL entry counts for ACL/DACL.
+ */
+static int
+pk_mk_height(const struct zr_mk_row *mr, const struct zr_pk_row *row)
+{
+	int h, t, th;
+	char *txt;
+	zr_acl_t acl;
+
+	if (mr->mr_kind != ZR_MK_ACL && mr->mr_kind != ZR_MK_DACL)
+		return (1);
+	h = 1;
+	for (t = 0; t < 3; t++) {
+		if (!row->zk_has_at[t])
+			continue;
+		acl = (mr->mr_kind == ZR_MK_ACL) ?
+		    row->zk_at[t].za_acl : row->zk_at[t].za_dacl;
+		txt = zr_acl_to_text(acl);
+		th = pk_acl_lines(txt);
+		free(txt);
+		if (th > h)
+			h = th;
+	}
+	return (h);
+}
+
+/*
+ * Draw one cell of an ACL/DACL at screen line sub (0-based within
+ * the cell). Renders the Nth line of the ACL text, truncated to cw.
+ */
+static void
+pk_draw_acl_cell(int ry, int x, int cw, int co,
+    const struct zr_mk_row *mr, const struct zr_attr *at,
+    int have, int sub)
+{
+	zr_acl_t acl;
+	char *txt;
+	char line[PK_LINEBUF];
+
+	if (!have) {
+		if (sub == 0)
+			pk_putm(ry, x, cw, co, 0, "-");
+		return;
+	}
+	acl = (mr->mr_kind == ZR_MK_ACL) ? at->za_acl : at->za_dacl;
+	if (acl == NULL) {
+		if (sub == 0)
+			pk_putm(ry, x, cw, co, 0, "-");
+		return;
+	}
+	txt = zr_acl_to_text(acl);
+	pk_putm(ry, x, cw, co, 0, pk_acl_line(txt, sub,
+	    line, sizeof (line)));
+	free(txt);
+}
+
+/*
  * Draw the metadata view on screen 2. One row per attribute, four
  * columns (base, from, onto, result), a cursor band on the conflict
  * row the cursor sits on, and markers mirroring the content pane.
+ * ACL and DACL rows can span multiple screen lines.
  */
 static void
 pk_draw_meta(struct zr_picker *pk, const struct zr_pk_merge *mg,
@@ -1988,7 +2151,9 @@ pk_draw_meta(struct zr_picker *pk, const struct zr_pk_merge *mg,
 	char buf[PK_LINEBUF], vbuf[4][64];
 	char name[PK_NAMEBUF], hunk[64], bar[PK_LINEBUF];
 	char otherst[80];
-	int nw, cw, y, avail, starty, nrows, top;
+	int nw, cw, avail, starty, sline, mri;
+	int *heights;
+	int totalh;
 	uint32_t i;
 
 	(void) erase();
@@ -2032,106 +2197,212 @@ pk_draw_meta(struct zr_picker *pk, const struct zr_pk_merge *mg,
 	pk_putm(1, 14 + cw * 2, cw, PK_CO_DIM, 0, "ONTO");
 	pk_putm(1, 14 + cw * 3, cw, PK_CO_DIM, 0, "RESULT");
 
+	/* compute heights */
+	heights = NULL;
+	if (mm->mm_nrows > 0) {
+		heights = calloc(mm->mm_nrows, sizeof (int));
+		if (heights == NULL)
+			goto draw_bar;
+	}
+	totalh = 0;
+	for (i = 0; i < mm->mm_nrows; i++) {
+		heights[i] = pk_mk_height(&mm->mm_rows[i], row);
+		totalh += heights[i];
+	}
+
 	/* attribute rows */
 	starty = 2;
 	avail = g->g_bary - 1 - starty;
 	if (avail < 1)
 		avail = 1;
-	nrows = (int)mm->mm_nrows;
 
-	/* scroll so the cursor row is visible */
-	top = 0;
-	if (nrows > avail) {
-		top = (int)mm->mm_cursor - avail / 2;
-		if (top < 0)
-			top = 0;
-		if (top > nrows - avail)
-			top = nrows - avail;
-	}
+	/*
+	 * Scroll so the cursor row is visible. Find the screen line
+	 * where the cursor's row starts.
+	 */
+	{
+		int cursor_start = 0, top = 0;
+		for (i = 0; i < mm->mm_cursor && i < mm->mm_nrows; i++)
+			cursor_start += heights[i];
+		if (totalh > avail) {
+			top = cursor_start - avail / 2;
+			if (top < 0)
+				top = 0;
+			if (top > totalh - avail)
+				top = totalh - avail;
+		}
 
-	for (y = 0; y < avail && top + y < nrows; y++) {
-		const struct zr_mk_row *mr;
-		int ry = starty + y;
-		int co, sel;
-		char mark[2];
+		/* draw from screen-line 'top' */
+		sline = 0;
+		mri = 0;
+		/* skip to the first visible metadata row */
+		while (mri < (int)mm->mm_nrows &&
+		    sline + heights[mri] <= top) {
+			sline += heights[mri];
+			mri++;
+		}
 
-		mr = &mm->mm_rows[top + y];
-		sel = (mr->mr_conflict &&
-		    (uint32_t)(top + y) == mm->mm_cursor);
-		pk_side(ry);
-
-		/* marker column */
-		mark[0] = pk_mk_marker(mr);
-		mark[1] = '\0';
-		co = PK_CO_DIM;
-		if (mark[0] == '!' || mark[0] == 'f' || mark[0] == 'o')
-			co = PK_CO_RED;
-		else if (mark[0] == '+')
-			co = PK_CO_GREEN;
-		pk_put(ry, 1, co, 0, mark);
-
-		/* cursor band on conflict rows */
-		if (sel)
-			pk_mark(ry, 2);
-
-		/* attr name */
-		pk_putm(ry, 3, 10, mr->mr_conflict ?
-		    PK_CO_RED : PK_CO_PLAIN, 0, pk_mk_kind(mr));
-
-		/* four value columns */
-		pk_putm(ry, 14, cw,
-		    PK_CO_DIM, 0,
-		    pk_mk_value(mr,
-		    &row->zk_at[ZR_PK_T_BASE],
-		    row->zk_has_at[ZR_PK_T_BASE],
-		    vbuf[0], sizeof (vbuf[0])));
-		pk_putm(ry, 14 + cw, cw,
-		    PK_CO_FROM, 0,
-		    pk_mk_value(mr,
-		    &row->zk_at[ZR_PK_T_FROM],
-		    row->zk_has_at[ZR_PK_T_FROM],
-		    vbuf[1], sizeof (vbuf[1])));
-		pk_putm(ry, 14 + cw * 2, cw,
-		    PK_CO_ONTO, 0,
-		    pk_mk_value(mr,
-		    &row->zk_at[ZR_PK_T_ONTO],
-		    row->zk_has_at[ZR_PK_T_ONTO],
-		    vbuf[2], sizeof (vbuf[2])));
-
-		/* result: the resolved value */
 		{
-			const struct zr_attr *src;
-			int have;
+			int ry = starty;
+			int sub_start = top - sline;
+			/* sub_start is the first sub-line to show */
 
-			switch (mr->mr_src) {
-			case ZR_MK_FROM:
-				src = &row->zk_at[ZR_PK_T_FROM];
-				have = row->zk_has_at[ZR_PK_T_FROM];
-				break;
-			case ZR_MK_ONTO:
-				src = &row->zk_at[ZR_PK_T_ONTO];
-				have = row->zk_has_at[ZR_PK_T_ONTO];
-				break;
-			case ZR_MK_BASE:
-				src = &row->zk_at[ZR_PK_T_BASE];
-				have = row->zk_has_at[ZR_PK_T_BASE];
-				break;
-			default:
-				src = NULL;
-				have = 0;
-				break;
+			while (mri < (int)mm->mm_nrows &&
+			    ry < starty + avail) {
+				const struct zr_mk_row *mr;
+				int h, sub, co, sel;
+				char mark[2];
+
+				mr = &mm->mm_rows[mri];
+				h = heights[mri];
+				sel = (mr->mr_conflict &&
+				    (uint32_t)mri == mm->mm_cursor);
+
+				for (sub = sub_start; sub < h &&
+				    ry < starty + avail; sub++, ry++) {
+					pk_side(ry);
+
+					if (sub == 0) {
+						/* marker */
+						mark[0] = pk_mk_marker(mr);
+						mark[1] = '\0';
+						co = PK_CO_DIM;
+						if (mark[0] == '!' ||
+						    mark[0] == 'f' ||
+						    mark[0] == 'o')
+							co = PK_CO_RED;
+						else if (mark[0] == '+')
+							co = PK_CO_GREEN;
+						pk_put(ry, 1, co, 0, mark);
+
+						/* attr name */
+						pk_putm(ry, 3, 10,
+						    mr->mr_conflict ?
+						    PK_CO_RED :
+						    PK_CO_PLAIN,
+						    0, pk_mk_kind(mr));
+					}
+
+					if (sel)
+						pk_mark(ry, 2);
+
+					/* values */
+					if (mr->mr_kind == ZR_MK_ACL ||
+					    mr->mr_kind == ZR_MK_DACL) {
+						pk_draw_acl_cell(ry, 14,
+						    cw, PK_CO_DIM, mr,
+						    &row->zk_at[0],
+						    row->zk_has_at[0], sub);
+						pk_draw_acl_cell(ry,
+						    14 + cw, cw, PK_CO_FROM,
+						    mr, &row->zk_at[1],
+						    row->zk_has_at[1], sub);
+						pk_draw_acl_cell(ry,
+						    14 + cw * 2, cw,
+						    PK_CO_ONTO, mr,
+						    &row->zk_at[2],
+						    row->zk_has_at[2], sub);
+						/* result ACL cell */
+						{
+						const struct zr_attr *s;
+						int hv;
+						switch (mr->mr_src) {
+						case ZR_MK_FROM:
+							s = &row->zk_at[1];
+							hv = row->zk_has_at[1];
+							break;
+						case ZR_MK_ONTO:
+							s = &row->zk_at[2];
+							hv = row->zk_has_at[2];
+							break;
+						case ZR_MK_BASE:
+							s = &row->zk_at[0];
+							hv = row->zk_has_at[0];
+							break;
+						default:
+							s = NULL;
+							hv = 0;
+							break;
+						}
+						if (s != NULL)
+							pk_draw_acl_cell(ry,
+							    14 + cw * 3, cw,
+							    PK_CO_GREEN, mr,
+							    s, hv, sub);
+						else if (sub == 0)
+							pk_putm(ry,
+							    14 + cw * 3, cw,
+							    PK_CO_RED, 0,
+							    "?");
+						}
+					} else if (sub == 0) {
+						/* scalar: one line */
+						pk_putm(ry, 14, cw,
+						    PK_CO_DIM, 0,
+						    pk_mk_value(mr,
+						    &row->zk_at[0],
+						    row->zk_has_at[0],
+						    vbuf[0],
+						    sizeof (vbuf[0])));
+						pk_putm(ry, 14 + cw, cw,
+						    PK_CO_FROM, 0,
+						    pk_mk_value(mr,
+						    &row->zk_at[1],
+						    row->zk_has_at[1],
+						    vbuf[1],
+						    sizeof (vbuf[1])));
+						pk_putm(ry, 14 + cw * 2,
+						    cw, PK_CO_ONTO, 0,
+						    pk_mk_value(mr,
+						    &row->zk_at[2],
+						    row->zk_has_at[2],
+						    vbuf[2],
+						    sizeof (vbuf[2])));
+						/* result */
+						{
+						const struct zr_attr *s;
+						int hv;
+						switch (mr->mr_src) {
+						case ZR_MK_FROM:
+							s = &row->zk_at[1];
+							hv = row->zk_has_at[1];
+							break;
+						case ZR_MK_ONTO:
+							s = &row->zk_at[2];
+							hv = row->zk_has_at[2];
+							break;
+						case ZR_MK_BASE:
+							s = &row->zk_at[0];
+							hv = row->zk_has_at[0];
+							break;
+						default:
+							s = NULL;
+							hv = 0;
+							break;
+						}
+						if (s != NULL)
+							pk_putm(ry,
+							    14 + cw * 3, cw,
+							    PK_CO_GREEN, 0,
+							    pk_mk_value(mr,
+							    s, hv, vbuf[3],
+							    sizeof (vbuf[3])));
+						else
+							pk_putm(ry,
+							    14 + cw * 3, cw,
+							    PK_CO_RED, 0,
+							    "?");
+						}
+					}
+				}
+				sub_start = 0;
+				mri++;
 			}
-			if (src != NULL)
-				pk_putm(ry, 14 + cw * 3, cw,
-				    PK_CO_GREEN, 0,
-				    pk_mk_value(mr, src, have,
-				    vbuf[3], sizeof (vbuf[3])));
-			else
-				pk_putm(ry, 14 + cw * 3, cw,
-				    PK_CO_RED, 0, "?");
 		}
 	}
+	free(heights);
 
+draw_bar:
 	/* bottom rule */
 	pk_rule(g->g_bary - 1, ACS_LTEE, ACS_RTEE, NULL);
 

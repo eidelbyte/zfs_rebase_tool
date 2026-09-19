@@ -9,10 +9,29 @@
  * copy (zo_attrs_equal's rule).
  */
 
+#ifdef __FreeBSD__
+#define	_XOPEN_SOURCE	700
+#define	__BSD_VISIBLE	1
+#endif
+#ifdef __APPLE__
+#define	_DARWIN_C_SOURCE
+#endif
+
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+
+#if defined(__FreeBSD__)
+#include <sys/acl.h>
+#elif defined(__APPLE__)
+#include <sys/acl.h>
+#endif
+
+#if defined(__FreeBSD__) || defined(__APPLE__)
+#define	MK_HAVE_FFLAGSTOSTR	1
+#endif
 
 #include "meta.h"
 
@@ -176,7 +195,12 @@ mk_u32_eq(uint32_t a, uint32_t b)
 	return (a == b);
 }
 
-/* Compare two mode_t values (permission bits only). */
+/*
+ * Compare two mode_t values on the permission bits only. A type
+ * difference (S_IFMT) is content (C in the DIFF column) and reaches
+ * no metadata row, since screen 2 never opens on it: the content
+ * differs on a non-text object, and zr_pk_why_not refuses the open.
+ */
 static int
 mk_mode_eq(mode_t a, mode_t b)
 {
@@ -252,7 +276,7 @@ zr_pk_meta_open(struct zr_pk_meta *out,
 	while (xi < b->za_nxattrs || yi < f->za_nxattrs ||
 	    zi < o->za_nxattrs) {
 		const char *name;
-		int cmp, hb, hf, ho, fe, be, oe;
+		int hb, hf, ho;
 		int bf, bo, fo;
 		const struct zr_xattr *xb, *xf, *xo;
 
@@ -299,10 +323,6 @@ zr_pk_meta_open(struct zr_pk_meta *out,
 		 * contribute. Use the tree-exists flag, not the
 		 * xattr-found flag, to determine the three-way.
 		 */
-		(void) cmp;
-		(void) fe;
-		(void) be;
-		(void) oe;
 		rc = mk_add(out, ZR_MK_XATTR, name,
 		    have_base, have_from, have_onto,
 		    bf, bo, fo);
@@ -315,31 +335,31 @@ zr_pk_meta_open(struct zr_pk_meta *out,
 	}
 
 	/* ACL */
-	{
-		int ba = (b->za_acl != NULL || !have_base);
-		int fa = (f->za_acl != NULL || !have_from);
-		int oa = (o->za_acl != NULL || !have_onto);
+	rc = mk_add(out, ZR_MK_ACL, NULL,
+	    have_base, have_from, have_onto,
+	    zr_acl_equal(b->za_acl, f->za_acl),
+	    zr_acl_equal(b->za_acl, o->za_acl),
+	    zr_acl_equal(f->za_acl, o->za_acl));
+	if (rc != 0)
+		goto fail;
 
-		(void) ba;
-		(void) fa;
-		(void) oa;
-		rc = mk_add(out, ZR_MK_ACL, NULL,
+	/*
+	 * Default ACL: only when some tree is a directory or any tree
+	 * holds one, so a regular file does not show a row of dashes.
+	 */
+	if ((have_base && S_ISDIR(b->za_mode)) ||
+	    (have_from && S_ISDIR(f->za_mode)) ||
+	    (have_onto && S_ISDIR(o->za_mode)) ||
+	    b->za_dacl != NULL || f->za_dacl != NULL ||
+	    o->za_dacl != NULL) {
+		rc = mk_add(out, ZR_MK_DACL, NULL,
 		    have_base, have_from, have_onto,
-		    zr_acl_equal(b->za_acl, f->za_acl),
-		    zr_acl_equal(b->za_acl, o->za_acl),
-		    zr_acl_equal(f->za_acl, o->za_acl));
+		    zr_acl_equal(b->za_dacl, f->za_dacl),
+		    zr_acl_equal(b->za_dacl, o->za_dacl),
+		    zr_acl_equal(f->za_dacl, o->za_dacl));
 		if (rc != 0)
 			goto fail;
 	}
-
-	/* default ACL */
-	rc = mk_add(out, ZR_MK_DACL, NULL,
-	    have_base, have_from, have_onto,
-	    zr_acl_equal(b->za_dacl, f->za_dacl),
-	    zr_acl_equal(b->za_dacl, o->za_dacl),
-	    zr_acl_equal(f->za_dacl, o->za_dacl));
-	if (rc != 0)
-		goto fail;
 
 	/* set cursor to first conflict */
 	out->mm_cursor = out->mm_nrows;
@@ -625,4 +645,66 @@ zr_pk_meta_result(const struct zr_pk_meta *mm,
 		}
 	}
 	return (0);
+}
+
+/*
+ * ---------------------------------------------------------------
+ * Rendering helpers for the metadata view.
+ * ---------------------------------------------------------------
+ */
+
+char *
+zr_acl_to_text(zr_acl_t acl)
+{
+#if defined(__FreeBSD__)
+	char *txt, *dup;
+	ssize_t len;
+
+	if (acl == NULL)
+		return (NULL);
+	txt = acl_to_text_np(acl, &len, ACL_TEXT_NUMERIC_IDS);
+	if (txt == NULL)
+		return (NULL);
+	dup = malloc((size_t)len + 1);
+	if (dup != NULL)
+		memcpy(dup, txt, (size_t)len + 1);
+	(void) acl_free(txt);
+	return (dup);
+#else
+	/*
+	 * On the stand-in the walk already stored acl_to_text's
+	 * output as a string, so a copy is all that is needed.
+	 */
+	if (acl == NULL)
+		return (NULL);
+	return (strdup(acl));
+#endif
+}
+
+char *
+zr_flags_to_text(uint32_t flags)
+{
+	char *s;
+
+	if (flags == 0)
+		return (strdup("-"));
+#ifdef MK_HAVE_FFLAGSTOSTR
+	s = fflagstostr((unsigned long)flags);
+	if (s != NULL) {
+		if (s[0] == '\0') {
+			/* flags set but none named: fall back to hex */
+			free(s);
+			s = malloc(16);
+			if (s != NULL)
+				(void) snprintf(s, 16, "0x%x",
+				    (unsigned)flags);
+			return (s);
+		}
+		return (s);
+	}
+#endif
+	s = malloc(16);
+	if (s != NULL)
+		(void) snprintf(s, 16, "0x%x", (unsigned)flags);
+	return (s);
 }
