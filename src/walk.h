@@ -158,4 +158,18 @@ void zr_acl_free(zr_acl_t a);
  */
 int zr_walk_openat(const struct zr_walk *w, zr_name_t nm, int oflags);
 
+/*
+ * Read one object's attributes over a standalone path: lstat,
+ * readlink (for a symlink), extended attributes and the ACL, using
+ * the same static readers the walk uses so that nothing is
+ * duplicated. out is zeroed on entry and filled on success; on
+ * failure it is zeroed and an error line goes into err. Either way
+ * it is safe to hand to zr_attr_free.
+ */
+int zr_attr_read(const char *path, struct zr_attr *out, char *err,
+    size_t errlen);
+
+/* Release one attribute set. A zeroed one is nothing to free. */
+void zr_attr_free(struct zr_attr *at);
+
 #endif	/* ZR_WALK_H */

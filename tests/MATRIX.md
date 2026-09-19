@@ -169,6 +169,9 @@ order {readdir's, sorted}; faults.
 | ZW33 | the archive bit ZFS keeps for itself (UF_ARCHIVE, set on every new object and every write) is masked out of za_flags: on ZFS the walk's word lacks the bit st_flags shows, ZW20's lstat compare with the mask | planned: box (check_walk on a ZFS TMPDIR); the Mac has no such bit |
 | ZW34 | the FreeBSD walk reads the extended attributes and the ACL of a file or a directory through a descriptor opened from the directory it was found in, and reads a symlink, a device, a fifo and a socket by path as before; the same attributes and the same ACLs come back either way | planned: box, the freebsd/ fixtures through run-suite.sh (sysxattr*.zrt for both namespaces, acl-*.zrt for both ACL kinds, mixed-attrs.zrt for the types with no descriptor); nothing on the Mac, whose section is unchanged |
 | ZW35 | the ACL flavor is asked once, of the root, and not of every entry: a tree on ZFS reads NFSv4 for every file and a tree on UFS POSIX.1e, and a walk of n files makes one lpathconf rather than 2n | planned: box, by truss or ktrace over a walk of a fixture tree (R15 of the code review); the answer itself is ZW18's and ZC9's |
+| ZW36 | zr_attr_read on a regular file: mode, uid, gid, size and xattrs read back, using the same static readers the walk uses | covered: check_walk.c, a file with mode 0640, one xattr and a known size |
+| ZW37 | zr_attr_read on a symlink: the target reads back and the mode says symlink | covered: check_walk.c, a dangling symlink whose target is verified |
+| ZW38 | zr_attr_read on a directory: mode reads back and no target is filled | covered: check_walk.c, a directory at mode 0750 |
 
 ZW31 and ZW32 are the two fields the pruning of ZC26 below reads,
 and the walk pays nothing for them: it lstat'd every object

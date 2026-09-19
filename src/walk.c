@@ -462,6 +462,34 @@ zw_attrs(struct zw_ctx *c, zr_name_t nm, int dfd, const char *leaf,
 }
 
 /*
+ * The same readers over a standalone path, for zr_attr_read: the
+ * flavor is asked of the path itself (which is the mount's answer)
+ * and the descriptor is opened the way zw_leaf_fd opens one.
+ */
+static int
+zw_attr_path(const char *path, const struct stat *st, struct zr_attr *at)
+{
+	int fd, rc, e, flavor;
+
+	flavor = zw_root_flavor(path);
+	fd = -1;
+	if (S_ISREG(st->st_mode))
+		fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+	else if (S_ISDIR(st->st_mode))
+		fd = open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW |
+		    O_CLOEXEC);
+	rc = zw_xattrs(fd, fd < 0 ? path : NULL, at);
+	if (rc == 0)
+		rc = zw_acl(fd, fd < 0 ? path : NULL, flavor, st, at);
+	if (fd >= 0) {
+		e = errno;
+		(void) close(fd);
+		errno = e;
+	}
+	return (rc);
+}
+
+/*
  * One entry of two ACLs, in place. Every ACL has a tag and a
  * permission mask; the qualifier -- the uid or gid an ACL_USER or
  * ACL_GROUP entry names, and nothing else carries one -- comes back
@@ -719,6 +747,19 @@ zw_acl(const char *full, const struct stat *st, struct zr_attr *at)
 	return (0);
 }
 
+/*
+ * The same readers over a standalone path, for zr_attr_read.
+ * AT_FDCWD with the full path is how openat reaches the file when
+ * there is no parent directory descriptor to start from.
+ */
+static int
+zw_attr_path(const char *path, const struct stat *st, struct zr_attr *at)
+{
+	if (zw_xattrs(AT_FDCWD, path, path, st, at) != 0)
+		return (-1);
+	return (zw_acl(path, st, at));
+}
+
 #elif defined(__linux__)
 
 #include <sys/xattr.h>
@@ -810,6 +851,15 @@ zw_acl(const char *full, const struct stat *st, struct zr_attr *at)
 	return (0);
 }
 
+/* The same readers over a standalone path, for zr_attr_read. */
+static int
+zw_attr_path(const char *path, const struct stat *st, struct zr_attr *at)
+{
+	if (zw_xattrs(AT_FDCWD, path, path, st, at) != 0)
+		return (-1);
+	return (zw_acl(path, st, at));
+}
+
 #else
 
 /* An unknown platform still walks; it just reads no attributes. */
@@ -833,6 +883,15 @@ zw_acl(const char *full, const struct stat *st, struct zr_attr *at)
 	at->za_acl = NULL;
 	at->za_dacl = NULL;
 	return (0);
+}
+
+/* The same readers over a standalone path, for zr_attr_read. */
+static int
+zw_attr_path(const char *path, const struct stat *st, struct zr_attr *at)
+{
+	if (zw_xattrs(AT_FDCWD, path, path, st, at) != 0)
+		return (-1);
+	return (zw_acl(path, st, at));
 }
 
 #endif	/* platform section ends */
@@ -860,6 +919,129 @@ zr_acl_free(zr_acl_t a)
 }
 
 #endif	/* !__FreeBSD__ */
+
+/*
+ * ---------------------------------------------------------------
+ * zr_attr_read: one object's attributes over a path.
+ * ---------------------------------------------------------------
+ *
+ * The walk captures attributes the first time a pool is seen; this
+ * reads them over a single path for callers that have no walk.  It
+ * calls the SAME static readers the walk uses -- zw_xattrs, zw_acl,
+ * and the readlink the walk calls itself -- so nothing is
+ * duplicated; the platform-specific zw_attr_path is the bridge.
+ */
+int
+zr_attr_read(const char *path, struct zr_attr *out, char *err, size_t errlen)
+{
+	struct stat st;
+
+	if (path == NULL || out == NULL) {
+		if (err != NULL && errlen > 0)
+			(void) snprintf(err, errlen, "zr_attr_read: NULL");
+		return (-1);
+	}
+	memset(out, 0, sizeof (*out));
+	if (lstat(path, &st) != 0) {
+		if (err != NULL && errlen > 0)
+			(void) snprintf(err, errlen, "%s: lstat: %s",
+			    path, strerror(errno));
+		return (-1);
+	}
+	out->za_mode = st.st_mode;
+	out->za_uid = st.st_uid;
+	out->za_gid = st.st_gid;
+#ifdef ZW_HAVE_ST_FLAGS
+	out->za_flags = ZR_ST_FLAGS(&st);
+#else
+	out->za_flags = 0;
+#endif
+	out->za_size = (uint64_t)st.st_size;
+	out->za_rdev = (uint64_t)st.st_rdev & ZW_DEVMASK;
+#ifdef ZW_HAVE_ST_GEN
+	out->za_gen = (uint64_t)st.st_gen;
+#else
+	out->za_gen = 0;
+#endif
+	out->za_ctime = ZW_CTIM(&st);
+	if (S_ISLNK(st.st_mode)) {
+		/*
+		 * readlinkat with AT_FDCWD: the path is absolute and
+		 * the walk's own zw_readlink takes a directory
+		 * descriptor; AT_FDCWD makes the two calls identical
+		 * once the path is absolute, and the readlink retry
+		 * loop is inline here rather than a dependency on the
+		 * walk's own static function.
+		 */
+		char *buf = NULL, *nb;
+		size_t cap = 256;
+		ssize_t n;
+
+		if (st.st_size > 0)
+			cap = (size_t)st.st_size + 1;
+		for (;;) {
+			nb = realloc(buf, cap);
+			if (nb == NULL) {
+				free(buf);
+				if (err != NULL && errlen > 0)
+					(void) snprintf(err, errlen,
+					    "%s: readlink: %s", path,
+					    strerror(ENOMEM));
+				return (-1);
+			}
+			buf = nb;
+			n = readlink(path, buf, cap);
+			if (n < 0) {
+				free(buf);
+				if (err != NULL && errlen > 0)
+					(void) snprintf(err, errlen,
+					    "%s: readlink: %s", path,
+					    strerror(errno));
+				return (-1);
+			}
+			if ((size_t)n < cap) {
+				buf[n] = '\0';
+				out->za_target = buf;
+				break;
+			}
+			if (cap > (size_t)-1 / 2) {
+				free(buf);
+				if (err != NULL && errlen > 0)
+					(void) snprintf(err, errlen,
+					    "%s: readlink: %s", path,
+					    strerror(ENAMETOOLONG));
+				return (-1);
+			}
+			cap *= 2;
+		}
+	}
+	if (zw_attr_path(path, &st, out) != 0) {
+		if (err != NULL && errlen > 0)
+			(void) snprintf(err, errlen, "%s: attributes: %s",
+			    path, strerror(errno));
+		zr_attr_free(out);
+		return (-1);
+	}
+	return (0);
+}
+
+void
+zr_attr_free(struct zr_attr *at)
+{
+	uint32_t i;
+
+	if (at == NULL)
+		return;
+	free(at->za_target);
+	for (i = 0; i < at->za_nxattrs; i++) {
+		free(at->za_xattrs[i].zx_name);
+		free(at->za_xattrs[i].zx_value);
+	}
+	free(at->za_xattrs);
+	zr_acl_free(at->za_acl);
+	zr_acl_free(at->za_dacl);
+	memset(at, 0, sizeof (*at));
+}
 
 /*
  * One open directory on the descent stack: the name it has, and its

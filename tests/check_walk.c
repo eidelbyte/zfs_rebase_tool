@@ -914,11 +914,81 @@ check_bad_root(const char *root)
 	zr_names_destroy(ns);
 }
 
+/*
+ * ZW36 zr_attr_read on a regular file: mode, uid, size and xattrs.
+ * ZW37 zr_attr_read on a symlink: the target reads back.
+ * ZW38 zr_attr_read on a directory: mode, no target.
+ */
+static void
+check_attr_read(const char *root)
+{
+	char full[PATHMAX], err[256];
+	struct zr_attr at;
+	struct stat st;
+
+	/* ZW36: a regular file with mode 0640, an xattr and a size */
+	join(full, sizeof (full), root, "/atfile");
+	{
+		int fd = open(full, O_WRONLY | O_CREAT | O_TRUNC, 0640);
+		CHECK(fd >= 0);
+		CHECK(write(fd, "hello", 5) == 5);
+		CHECK(close(fd) == 0);
+	}
+	CHECK(setx(full, XA1, "val", 3) == 0);
+	err[0] = '\0';
+	CHECK(zr_attr_read(full, &at, err, sizeof (err)) == 0);
+	CHECK(err[0] == '\0');
+	CHECK(S_ISREG(at.za_mode));
+	CHECK((at.za_mode & 07777) == 0640);
+	CHECK(at.za_uid == getuid());
+	CHECK(at.za_size == 5);
+	CHECK(at.za_target == NULL);
+	CHECK(at.za_nxattrs == 1);
+	CHECK(strcmp(at.za_xattrs[0].zx_name, XA1) == 0);
+	CHECK(at.za_xattrs[0].zx_len == 3);
+	CHECK(memcmp(at.za_xattrs[0].zx_value, "val", 3) == 0);
+	CHECK(lstat(full, &st) == 0);
+	CHECK(at.za_gid == st.st_gid);
+	zr_attr_free(&at);
+
+	/* ZW37: a symbolic link, target reads back */
+	join(full, sizeof (full), root, "/atlink");
+	CHECK(symlink("some/target", full) == 0);
+	err[0] = '\0';
+	CHECK(zr_attr_read(full, &at, err, sizeof (err)) == 0);
+	CHECK(err[0] == '\0');
+	CHECK(S_ISLNK(at.za_mode));
+	CHECK(at.za_target != NULL);
+	CHECK(strcmp(at.za_target, "some/target") == 0);
+	CHECK(at.za_size == (uint64_t)strlen("some/target"));
+	zr_attr_free(&at);
+
+	/* ZW38: a directory */
+	join(full, sizeof (full), root, "/atdir");
+	CHECK(mkdir(full, 0750) == 0);
+	err[0] = '\0';
+	CHECK(zr_attr_read(full, &at, err, sizeof (err)) == 0);
+	CHECK(err[0] == '\0');
+	CHECK(S_ISDIR(at.za_mode));
+	CHECK((at.za_mode & 07777) == 0750);
+	CHECK(at.za_target == NULL);
+	zr_attr_free(&at);
+
+	/* a path that does not exist is an error */
+	err[0] = '\0';
+	CHECK(zr_attr_read("/nonesuch/zrattr", &at, err,
+	    sizeof (err)) == -1);
+	CHECK(err[0] != '\0');
+	CHECK(strstr(err, "lstat") != NULL);
+	zr_attr_free(&at);
+}
+
 int
 main(void)
 {
 	char probe[256];
 	char odd[256];
+	char atrd[256];
 
 	check_acl_equal();
 
@@ -932,6 +1002,11 @@ main(void)
 	check_odd_tree(odd);
 	check_bad_root(odd);
 	rmtree(odd);
+
+	tmp_template(atrd, sizeof (atrd), "zrwalka.XXXXXX");
+	CHECK(mkdtemp(atrd) != NULL);
+	check_attr_read(atrd);
+	rmtree(atrd);
 
 	printf("check_walk: %d checks passed\n", checks);
 	return (0);
