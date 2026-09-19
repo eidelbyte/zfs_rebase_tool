@@ -127,7 +127,8 @@
 #define	PK_X_TY		4
 #define	PK_X_FO		8	/* "E / E", five wide, as wide as drift */
 #define	PK_X_GRP	15
-#define	PK_X_NAME	22
+#define	PK_X_DIFF	21
+#define	PK_X_NAME	25
 #define	PK_W_NAME_MIN	8	/* below this the choice column moves in */
 
 /* One vis-encoded name, and one line of text built for the screen. */
@@ -831,6 +832,21 @@ pk_draw_row(const struct zr_picker *pk, const struct pk_geom *g, int y,
 	pk_put(y, PK_X_FO + 4, pk_fo_co(row->zk_fo[1], 1), 0, one);
 	pk_grp_field(row, field, sizeof (field), &co);
 	pk_put(y, PK_X_GRP, co, 0, field);
+	/* the DIFF column */
+	switch (row->zk_diff) {
+	case ZR_PK_DIFF_C:
+		pk_put(y, PK_X_DIFF, PK_CO_GREEN, 0, "C");
+		break;
+	case ZR_PK_DIFF_M:
+		pk_put(y, PK_X_DIFF, PK_CO_CYAN, 0, "M");
+		break;
+	case ZR_PK_DIFF_CM:
+		pk_put(y, PK_X_DIFF, PK_CO_GREEN, 0, "CM");
+		break;
+	default:
+		pk_put(y, PK_X_DIFF, PK_CO_DIM, 0, "-");
+		break;
+	}
 	pk_name_field(row, g->g_namew, field, sizeof (field));
 	pk_put(y, g->g_namex, PK_CO_PLAIN, 0, field);
 	/*
@@ -901,6 +917,7 @@ pk_draw_titles(const struct pk_geom *g, int y)
 {
 	pk_side(y);
 	pk_put(y, PK_X_TY, PK_CO_DIM, 0, "TY  F / O  GRP");
+	pk_put(y, PK_X_DIFF, PK_CO_DIM, 0, "DF");
 	pk_put(y, g->g_namex, PK_CO_DIM, 0, "NAME");
 	pk_put(y, g->g_choicex, PK_CO_DIM, 0, "CHOICE");
 }
