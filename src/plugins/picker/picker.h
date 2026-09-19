@@ -10,6 +10,7 @@
 
 #include "manifest.h"
 #include "merge.h"
+#include "meta.h"
 
 /*
  * The entry the launcher calls in the forked child
@@ -92,12 +93,14 @@ enum zr_pk_key {
 	 * key goes to it and to nothing else. ZR_PK_WRITE is in both
 	 * screens and means the merge write in this one.
 	 */
-	ZR_PK_PICK_FROM,	/* 1: this hunk takes from's lines */
-	ZR_PK_PICK_ONTO,	/* 2: this hunk takes onto's */
+	ZR_PK_PICK_FROM,	/* f: this row/hunk takes from's value */
+	ZR_PK_PICK_ONTO,	/* o: this row/hunk takes onto's */
 	ZR_PK_BASE,		/* b: the hunk's base range in its place */
-	ZR_PK_NEXT,		/* n: the next conflicting hunk */
+	ZR_PK_NEXT,		/* n: the next conflicting row/hunk */
 	ZR_PK_PREV,		/* p: the one before */
-	ZR_PK_TOGGLE,		/* c: the stable stretches folded away */
+	ZR_PK_TOGGLE,		/* a: conflicts only (was c before meta) */
+	ZR_PK_VIEW_C,		/* c: switch to the content view */
+	ZR_PK_VIEW_M,		/* m: switch to the metadata view */
 	ZR_PK_BACK		/* Esc: back to the list, the choice kept */
 };
 
@@ -151,6 +154,18 @@ enum zr_pk_tree {
 };
 
 #define	ZR_PK_NTREE	4
+
+/*
+ * The DIFF column: what differs between the two sides. C is content,
+ * M is metadata (per zo_attrs_equal's rule), CM is both, "-" is
+ * neither or a side is absent.
+ */
+enum zr_pk_diff {
+	ZR_PK_DIFF_NONE,	/* neither differs, or a side absent */
+	ZR_PK_DIFF_C,		/* content differs */
+	ZR_PK_DIFF_M,		/* metadata differs */
+	ZR_PK_DIFF_CM		/* both differ */
+};
 
 /*
  * The three trees a merge is made of, which are the first three of
@@ -231,6 +246,9 @@ struct zr_pk_row {
 	enum zr_pk_obj		zk_obj[ZR_PK_NTREE];
 	uint64_t		zk_size[ZR_PK_NTREE];
 	enum zr_pk_fo		zk_fo[2];	/* from, then onto */
+	enum zr_pk_diff		zk_diff;	/* the DIFF column */
+	struct zr_attr		zk_at[ZR_PK_NTREE]; /* per-tree attrs */
+	int			zk_has_at[ZR_PK_NTREE]; /* attr was read */
 };
 
 /*
@@ -288,6 +306,17 @@ struct zr_pk_counts {
  * hunk at all. The picks live on the chunks and nowhere else, so
  * folding the stable stretches away cannot lose one.
  */
+/*
+ * Which view of screen 2: the content merge (today's) or the
+ * metadata three-way (new). The view with unpicked conflicts opens
+ * first; content before metadata when both have some; content when
+ * neither has.
+ */
+enum zr_pk_view {
+	ZR_PK_VIEW_CONTENT,
+	ZR_PK_VIEW_META
+};
+
 struct zr_pk_merge {
 	int		pm_open;	/* a merge is open on pm_row */
 	uint32_t	pm_row;		/* the row it was opened on */
@@ -295,8 +324,13 @@ struct zr_pk_merge {
 	unsigned char	*pm_bytes[ZR_PK_NSIDE];
 	size_t		pm_len[ZR_PK_NSIDE];
 	uint32_t	pm_cursor;	/* the hunk the keys act on */
-	int		pm_only;	/* c: the stable stretches folded */
+	int		pm_only;	/* c/a: the stable stretches folded */
 	int		pm_base;	/* b: base in place of the answer */
+	enum zr_pk_view	pm_view;	/* which view is up */
+	struct zr_pk_meta pm_meta;	/* the metadata three-way */
+	int		pm_has_content;	/* content view has something */
+	int		pm_has_meta;	/* metadata view has something */
+	int		pm_content_same; /* content is the same on both */
 };
 
 /*

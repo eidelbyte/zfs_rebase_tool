@@ -220,7 +220,7 @@ LIBDIFF_OBJS = $(BUILD)/diff_main.o $(BUILD)/diff_myers.o \
 # 3.1). It goes into LIB_OBJS, so the tool and the tests reach it the
 # way they reach every other object.
 PICKER_OBJS = $(BUILD)/picker.o $(BUILD)/model.o $(BUILD)/screen.o \
-	$(BUILD)/altscreen.o
+	$(BUILD)/altscreen.o $(BUILD)/meta.o
 
 # What the tool links for -i's built-in child, which is what the knob
 # chooses: the picker whole -- its three objects, the merge and the
@@ -378,7 +378,8 @@ $(BUILD)/args.o: src/args.c src/args.h src/decide.h src/name.h
 	$(CC) $(CFLAGS) -c -o $@ src/args.c
 
 $(BUILD)/launch.o: src/launch.c src/launch.h src/plugins/picker/picker.h \
-	src/plugins/picker/merge.h src/manifest.h src/decide.h src/name.h
+	src/plugins/picker/meta.h src/plugins/picker/merge.h \
+	src/manifest.h src/decide.h src/name.h src/walk.h
 	$(CC) $(CFLAGS) -c -o $@ src/launch.c
 
 # The built-in picker, an internal plugin of its own: it depends on
@@ -386,7 +387,8 @@ $(BUILD)/launch.o: src/launch.c src/launch.h src/plugins/picker/picker.h \
 # builds with the same flags and no include path of its own -- src is
 # already on it, and launch.c names the header by its path under it.
 $(BUILD)/picker.o: src/plugins/picker/picker.c src/plugins/picker/picker.h \
-	src/plugins/picker/merge.h src/manifest.h src/decide.h src/name.h
+	src/plugins/picker/meta.h src/plugins/picker/merge.h \
+	src/manifest.h src/decide.h src/name.h src/walk.h
 	$(CC) $(CFLAGS) -c -o $@ src/plugins/picker/picker.c
 
 # The stub entry, which is the whole of the picker in a PICKER=no
@@ -394,7 +396,8 @@ $(BUILD)/picker.o: src/plugins/picker/picker.c src/plugins/picker/picker.h \
 # declaration the launcher calls through and the definition it
 # reaches are held to each other in both builds.
 $(BUILD)/pickerstub.o: src/plugins/picker/stub.c src/plugins/picker/picker.h \
-	src/plugins/picker/merge.h src/manifest.h src/decide.h src/name.h
+	src/plugins/picker/meta.h src/plugins/picker/merge.h \
+	src/manifest.h src/decide.h src/name.h src/walk.h
 	$(CC) $(CFLAGS) -c -o $@ src/plugins/picker/stub.c
 
 # The carried libdiff, one object per source, in the source's own
@@ -426,9 +429,14 @@ $(BUILD)/recallocarray.o: $(LIBDIFF)/compat/recallocarray.c \
 	$(CC) $(LIBDIFF_CFLAGS) $(LIBDIFF_BZERO_CFLAGS) -c -o $@ \
 	    $(LIBDIFF)/compat/recallocarray.c
 $(BUILD)/model.o: src/plugins/picker/model.c src/plugins/picker/picker.h \
-	src/plugins/picker/merge.h src/manifest.h src/decide.h src/name.h \
-	src/vis.h
+	src/plugins/picker/meta.h src/plugins/picker/merge.h \
+	src/manifest.h src/decide.h src/name.h src/vis.h src/walk.h \
+	src/attrset.h
 	$(CC) $(CFLAGS) -c -o $@ src/plugins/picker/model.c
+
+$(BUILD)/meta.o: src/plugins/picker/meta.c src/plugins/picker/meta.h \
+	src/walk.h src/name.h
+	$(CC) $(CFLAGS) -c -o $@ src/plugins/picker/meta.c
 
 # The three-way merge. diff3.c is the walk, adapted from FreeBSD's
 # usr.bin/diff3/diff3.c and a file of ours: it knows nothing of libdiff
@@ -448,17 +456,19 @@ $(BUILD)/merge.o: src/plugins/picker/merge.c src/plugins/picker/merge.h \
 	    src/plugins/picker/merge.c
 
 $(BUILD)/screen.o: src/plugins/picker/screen.c src/plugins/picker/picker.h \
-	src/plugins/picker/merge.h src/manifest.h src/decide.h src/name.h \
-	src/vis.h
+	src/plugins/picker/meta.h src/plugins/picker/merge.h \
+	src/manifest.h src/decide.h src/name.h src/vis.h src/walk.h
 	$(CC) $(CFLAGS) -c -o $@ src/plugins/picker/screen.c
 
 $(BUILD)/altscreen.o: src/plugins/picker/altscreen.c \
-	src/plugins/picker/picker.h src/plugins/picker/merge.h \
-	src/manifest.h src/decide.h src/name.h
+	src/plugins/picker/picker.h src/plugins/picker/meta.h \
+	src/plugins/picker/merge.h src/manifest.h src/decide.h src/name.h \
+	src/walk.h
 	$(CC) $(CFLAGS) -c -o $@ src/plugins/picker/altscreen.c
 
 $(BUILD)/pickermain.o: src/plugins/picker/main.c src/plugins/picker/picker.h \
-	src/plugins/picker/merge.h src/manifest.h src/decide.h src/name.h
+	src/plugins/picker/meta.h src/plugins/picker/merge.h \
+	src/manifest.h src/decide.h src/name.h src/walk.h
 	$(CC) $(CFLAGS) -c -o $@ src/plugins/picker/main.c
 
 $(BUILD)/vis.o: src/vis.c src/vis.h

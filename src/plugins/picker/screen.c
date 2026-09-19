@@ -1154,7 +1154,8 @@ pk_draw(const struct zr_picker *pk, const struct pk_geom *g, uint32_t top,
 
 /* The key bar of screen 2. There is no result editor this sprint. */
 #define	PK_MKEYS	"f/o take from/onto  - unpick  b base  n/p hunk  " \
-			"c conflicts only  w write  q/esc back"
+			"a conflicts only  c content  m metadata  w write  " \
+			"q/esc back"
 
 /*
  * One drawn cell: the gutter, the cursor's cell, the line number and
@@ -2048,8 +2049,12 @@ pk_map_merge(int c)
 		return (ZR_PK_NEXT);
 	case 'p':
 		return (ZR_PK_PREV);
-	case 'c':
+	case 'a':
 		return (ZR_PK_TOGGLE);
+	case 'c':
+		return (ZR_PK_VIEW_C);
+	case 'm':
+		return (ZR_PK_VIEW_M);
 	case 'w':
 		return (ZR_PK_WRITE);
 	case '\033':

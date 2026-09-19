@@ -52,6 +52,8 @@
 
 #include "picker.h"
 #include "vis.h"
+#include "attrset.h"
+#include "walk.h"
 
 /*
  * The two names the sibling rule knows: the resolution is
@@ -661,6 +663,124 @@ pk_trees_ok(struct zr_picker *pk)
 }
 
 /*
+ * Compare the content of two regular files streaming, with a bounded
+ * buffer. Returns 1 if they differ, 0 if the same, -1 on error.
+ */
+#define	PK_CMP_BUF	(64u * 1024u)
+
+static int
+pk_files_differ(const char *pa, const char *pb)
+{
+	unsigned char ba[PK_CMP_BUF], bb[PK_CMP_BUF];
+	int fa, fb, rc = 0;
+	ssize_t na, nb;
+
+	fa = open(pa, O_RDONLY | O_NOFOLLOW);
+	if (fa < 0)
+		return (-1);
+	fb = open(pb, O_RDONLY | O_NOFOLLOW);
+	if (fb < 0) {
+		(void) close(fa);
+		return (-1);
+	}
+	for (;;) {
+		do {
+			na = read(fa, ba, sizeof (ba));
+		} while (na < 0 && errno == EINTR);
+		do {
+			nb = read(fb, bb, sizeof (bb));
+		} while (nb < 0 && errno == EINTR);
+		if (na < 0 || nb < 0) {
+			rc = -1;
+			break;
+		}
+		if (na != nb) {
+			rc = 1;
+			break;
+		}
+		if (na == 0)
+			break;	/* both at EOF */
+		if (memcmp(ba, bb, (size_t)na) != 0) {
+			rc = 1;
+			break;
+		}
+	}
+	(void) close(fa);
+	(void) close(fb);
+	return (rc);
+}
+
+/*
+ * The DIFF column for one row: C where the two sides' content
+ * differs, M where their attributes differ, CM where both, "-"
+ * where neither or a side is absent.
+ */
+static enum zr_pk_diff
+pk_diff(const struct zr_picker *pk, const struct zr_pk_row *row)
+{
+	int cdiff = 0, mdiff = 0;
+	enum zr_pk_obj fobj, oobj;
+
+	fobj = row->zk_obj[ZR_PK_T_FROM];
+	oobj = row->zk_obj[ZR_PK_T_ONTO];
+
+	/* both must be present */
+	if (fobj == ZR_PK_O_ABSENT || oobj == ZR_PK_O_ABSENT)
+		return (ZR_PK_DIFF_NONE);
+
+	/* different types means C */
+	if (fobj != oobj) {
+		cdiff = 1;
+	} else if (fobj == ZR_PK_O_TEXT || fobj == ZR_PK_O_BINARY) {
+		/* regular files: compare by size then content */
+		if (row->zk_size[ZR_PK_T_FROM] !=
+		    row->zk_size[ZR_PK_T_ONTO]) {
+			cdiff = 1;
+		} else {
+			char *pa, *pb;
+			pa = pk_join(pk->pk_tree[ZR_PK_T_FROM],
+			    row->zk_name, row->zk_namelen);
+			pb = pk_join(pk->pk_tree[ZR_PK_T_ONTO],
+			    row->zk_name, row->zk_namelen);
+			if (pa != NULL && pb != NULL) {
+				if (pk_files_differ(pa, pb) > 0)
+					cdiff = 1;
+			}
+			free(pa);
+			free(pb);
+		}
+	} else if (fobj == ZR_PK_O_LINK) {
+		/* symlinks: compare targets */
+		if (row->zk_has_at[ZR_PK_T_FROM] &&
+		    row->zk_has_at[ZR_PK_T_ONTO]) {
+			const char *ta = row->zk_at[ZR_PK_T_FROM].za_target;
+			const char *tb = row->zk_at[ZR_PK_T_ONTO].za_target;
+			if (ta == NULL || tb == NULL) {
+				if (ta != tb) cdiff = 1;
+			} else if (strcmp(ta, tb) != 0) {
+				cdiff = 1;
+			}
+		}
+	}
+	/* dirs, specials with same type: no content to compare */
+
+	/* attributes differ? */
+	if (row->zk_has_at[ZR_PK_T_FROM] &&
+	    row->zk_has_at[ZR_PK_T_ONTO] &&
+	    zr_attrs_differ(&row->zk_at[ZR_PK_T_FROM],
+	    &row->zk_at[ZR_PK_T_ONTO]))
+		mdiff = 1;
+
+	if (cdiff && mdiff)
+		return (ZR_PK_DIFF_CM);
+	if (cdiff)
+		return (ZR_PK_DIFF_C);
+	if (mdiff)
+		return (ZR_PK_DIFF_M);
+	return (ZR_PK_DIFF_NONE);
+}
+
+/*
  * One row per line of the resolution, in the writer's own order: the
  * document is what says which names are answered here.
  */
@@ -728,6 +848,34 @@ pk_build(struct zr_picker *pk, char *err, size_t errlen)
 		    row->zk_obj[ZR_PK_T_FROM]);
 		row->zk_fo[1] = pk_fo(row->zk_obj[ZR_PK_T_BASE],
 		    row->zk_obj[ZR_PK_T_ONTO]);
+
+		/*
+		 * Read attributes for each tree where the object
+		 * exists. The result tree's attrs are read too, for
+		 * the metadata write.
+		 */
+		for (t = 0; t < ZR_PK_NTREE; t++) {
+			char *p;
+			if (row->zk_obj[t] == ZR_PK_O_ABSENT) {
+				row->zk_has_at[t] = 0;
+				continue;
+			}
+			p = pk_join(pk->pk_tree[t],
+			    row->zk_name, row->zk_namelen);
+			if (p == NULL) {
+				row->zk_has_at[t] = 0;
+				continue;
+			}
+			if (zr_attr_read(p, &row->zk_at[t],
+			    NULL, 0) == 0)
+				row->zk_has_at[t] = 1;
+			else
+				row->zk_has_at[t] = 0;
+			free(p);
+		}
+
+		/* DIFF: from vs onto, both must be present */
+		row->zk_diff = pk_diff(pk, row);
 		pk->pk_nrows++;
 	}
 	for (i = 0; i < nmarks; i++) {
@@ -844,6 +992,17 @@ zr_pk_fini(struct zr_picker *pk)
 	if (pk == NULL)
 		return;
 	zr_pk_merge_close(pk);
+	{
+		struct zr_pk_row *rp;
+		uint32_t ri;
+		int ti;
+		for (ri = 0; ri < pk->pk_nrows; ri++) {
+			rp = &pk->pk_rows[ri];
+			for (ti = 0; ti < ZR_PK_NTREE; ti++)
+				if (rp->zk_has_at[ti])
+					zr_attr_free(&rp->zk_at[ti]);
+		}
+	}
 	zr_resolution_fini(&pk->pk_res);
 	zr_parsed_fini(&pk->pk_man);
 	free(pk->pk_rows);
@@ -1135,7 +1294,7 @@ const char *
 zr_pk_why_not(const struct zr_picker *pk, uint32_t i, char *buf, size_t buflen)
 {
 	const struct zr_pk_row *row = zr_pk_row(pk, i);
-	int t;
+	int t, all_text;
 
 	if (row == NULL) {
 		(void) snprintf(buf, buflen, "there is no such row");
@@ -1147,22 +1306,48 @@ zr_pk_why_not(const struct zr_picker *pk, uint32_t i, char *buf, size_t buflen)
 		return (buf);
 	}
 	/*
-	 * add/add: neither side's name was there before, so there is no
-	 * base to anchor against and the two sides are compared with
-	 * each other (plan section 3.4, cells ZP13 and ZP95). Every
-	 * other absent tree is a choice and not a merge, and falls to
-	 * the loop below -- delete/edit loudest of all.
+	 * add/add text: the two-way compare (plan section 3.4).
 	 */
 	if (row->zk_obj[ZR_PK_T_BASE] == ZR_PK_O_ABSENT &&
 	    row->zk_obj[ZR_PK_T_FROM] == ZR_PK_O_TEXT &&
 	    row->zk_obj[ZR_PK_T_ONTO] == ZR_PK_O_TEXT)
 		return (NULL);
+	/*
+	 * All three sides text: the content merge (the original rule).
+	 */
+	all_text = 1;
+	for (t = 0; t < ZR_PK_NSIDE; t++) {
+		if (row->zk_obj[t] != ZR_PK_O_TEXT)
+			all_text = 0;
+	}
+	if (all_text)
+		return (NULL);
+	/*
+	 * Both sides present with the same content and different
+	 * metadata: opens on the metadata view alone (design E).
+	 * A non-text object whose content differs is refused.
+	 */
+	if (row->zk_obj[ZR_PK_T_FROM] != ZR_PK_O_ABSENT &&
+	    row->zk_obj[ZR_PK_T_ONTO] != ZR_PK_O_ABSENT &&
+	    row->zk_diff == ZR_PK_DIFF_M)
+		return (NULL);
 	for (t = 0; t < ZR_PK_NSIDE; t++) {
 		if (row->zk_obj[t] == ZR_PK_O_TEXT)
 			continue;
-		(void) snprintf(buf, buflen, "%s is %s", pk_treeword[t],
+		if (row->zk_obj[t] == ZR_PK_O_ABSENT)
+			continue;
+		(void) snprintf(buf, buflen, "%s is %s; it is picked "
+		    "whole on screen 1 with f or o", pk_treeword[t],
 		    pk_objword[row->zk_obj[t]]);
 		return (buf);
+	}
+	/* absent sides: delete/edit, etc. */
+	for (t = 0; t < ZR_PK_NSIDE; t++) {
+		if (row->zk_obj[t] == ZR_PK_O_ABSENT) {
+			(void) snprintf(buf, buflen, "%s is %s",
+			    pk_treeword[t], pk_objword[row->zk_obj[t]]);
+			return (buf);
+		}
 	}
 	return (NULL);
 }
@@ -1507,7 +1692,7 @@ zr_pk_merge_open(struct zr_picker *pk)
 	struct zr_pk_row *row;
 	const char *no;
 	char *path;
-	int t;
+	int t, all_text, has_content;
 
 	if (pk == NULL)
 		return (-1);
@@ -1525,38 +1710,89 @@ zr_pk_merge_open(struct zr_picker *pk)
 	}
 	memset(mg, 0, sizeof (*mg));
 	mg->pm_row = pk->pk_cursor;
-	for (t = 0; t < ZR_PK_NSIDE; t++) {
-		/*
-		 * Base alone may be missing, and its buffer stays NULL,
-		 * which is what zr_m3_open reads as the add/add form. An
-		 * empty base OBJECT is a buffer with a length of 0 and is
-		 * a different thing, which is why the test is the row's
-		 * object kind and not the length that comes back.
-		 */
-		if (row->zk_obj[t] == ZR_PK_O_ABSENT)
-			continue;
-		path = pk_join(pk->pk_tree[t], row->zk_name, row->zk_namelen);
-		if (path == NULL) {
-			pk_say(pk, "%s: %s has no tree path", name,
-			    pk_treeword[t]);
-			goto fail;
-		}
-		if (pk_slurp(path, &mg->pm_bytes[t], &mg->pm_len[t], err,
-		    sizeof (err)) != 0) {
-			pk_say(pk, "%s: %s: %s", name, pk_treeword[t], err);
+
+	/*
+	 * Determine if the row has a content view: both sides must be
+	 * text (including add/add where base is absent).
+	 */
+	all_text = 1;
+	for (t = ZR_PK_T_FROM; t <= ZR_PK_T_ONTO; t++) {
+		if (row->zk_obj[t] != ZR_PK_O_TEXT)
+			all_text = 0;
+	}
+	if (row->zk_obj[ZR_PK_T_BASE] != ZR_PK_O_ABSENT &&
+	    row->zk_obj[ZR_PK_T_BASE] != ZR_PK_O_TEXT)
+		all_text = 0;
+
+	has_content = all_text;
+	mg->pm_has_content = has_content;
+	mg->pm_content_same = (row->zk_diff == ZR_PK_DIFF_NONE ||
+	    row->zk_diff == ZR_PK_DIFF_M);
+
+	/* slurp content for text objects */
+	if (has_content) {
+		for (t = 0; t < ZR_PK_NSIDE; t++) {
+			if (row->zk_obj[t] == ZR_PK_O_ABSENT)
+				continue;
+			path = pk_join(pk->pk_tree[t], row->zk_name,
+			    row->zk_namelen);
+			if (path == NULL) {
+				pk_say(pk, "%s: %s has no tree path", name,
+				    pk_treeword[t]);
+				goto fail;
+			}
+			if (pk_slurp(path, &mg->pm_bytes[t],
+			    &mg->pm_len[t], err, sizeof (err)) != 0) {
+				pk_say(pk, "%s: %s: %s", name,
+				    pk_treeword[t], err);
+				free(path);
+				goto fail;
+			}
 			free(path);
+		}
+		if (zr_m3_open(&mg->pm_m3, mg->pm_bytes[ZR_PK_T_BASE],
+		    mg->pm_len[ZR_PK_T_BASE], mg->pm_bytes[ZR_PK_T_FROM],
+		    mg->pm_len[ZR_PK_T_FROM], mg->pm_bytes[ZR_PK_T_ONTO],
+		    mg->pm_len[ZR_PK_T_ONTO], err, sizeof (err)) != 0) {
+			pk_say(pk, "%s: %s", name, err);
 			goto fail;
 		}
-		free(path);
+		pk_merge_first(mg);
 	}
-	if (zr_m3_open(&mg->pm_m3, mg->pm_bytes[ZR_PK_T_BASE],
-	    mg->pm_len[ZR_PK_T_BASE], mg->pm_bytes[ZR_PK_T_FROM],
-	    mg->pm_len[ZR_PK_T_FROM], mg->pm_bytes[ZR_PK_T_ONTO],
-	    mg->pm_len[ZR_PK_T_ONTO], err, sizeof (err)) != 0) {
-		pk_say(pk, "%s: %s", name, err);
-		goto fail;
+
+	/* open the metadata three-way */
+	mg->pm_has_meta = (row->zk_has_at[ZR_PK_T_FROM] ||
+	    row->zk_has_at[ZR_PK_T_ONTO]);
+	if (mg->pm_has_meta) {
+		if (zr_pk_meta_open(&mg->pm_meta,
+		    row->zk_has_at[ZR_PK_T_BASE] ?
+		    &row->zk_at[ZR_PK_T_BASE] : NULL,
+		    row->zk_has_at[ZR_PK_T_BASE],
+		    row->zk_has_at[ZR_PK_T_FROM] ?
+		    &row->zk_at[ZR_PK_T_FROM] : NULL,
+		    row->zk_has_at[ZR_PK_T_FROM],
+		    row->zk_has_at[ZR_PK_T_ONTO] ?
+		    &row->zk_at[ZR_PK_T_ONTO] : NULL,
+		    row->zk_has_at[ZR_PK_T_ONTO]) != 0) {
+			pk_say(pk, "%s: metadata three-way failed", name);
+			goto fail;
+		}
 	}
-	pk_merge_first(mg);
+
+	/*
+	 * Which view opens first (design B): the view with unpicked
+	 * conflicts opens first; content before metadata when both
+	 * have some; content when neither has.
+	 */
+	if (has_content && mg->pm_m3.nconflict > 0)
+		mg->pm_view = ZR_PK_VIEW_CONTENT;
+	else if (mg->pm_has_meta && mg->pm_meta.mm_nconflict > 0)
+		mg->pm_view = ZR_PK_VIEW_META;
+	else if (has_content)
+		mg->pm_view = ZR_PK_VIEW_CONTENT;
+	else
+		mg->pm_view = ZR_PK_VIEW_META;
+
 	mg->pm_open = 1;
 	return (0);
 fail:
@@ -1577,6 +1813,7 @@ zr_pk_merge_close(struct zr_picker *pk)
 	zr_m3_fini(&mg->pm_m3);
 	for (t = 0; t < ZR_PK_NSIDE; t++)
 		free(mg->pm_bytes[t]);
+	zr_pk_meta_close(&mg->pm_meta);
 	memset(mg, 0, sizeof (*mg));
 }
 
@@ -1694,6 +1931,46 @@ pk_merge_move(struct zr_picker *pk, int back)
  *     document then, which is the state the person is told about
  *     rather than left to find.
  */
+/*
+ * Write the resolved attributes on the result's object, in the
+ * apply's order: chown, chmod, xattrs, ACL, flags last.
+ */
+static int
+pk_write_attrs(const char *path, const struct zr_attr *at, int islink,
+    int isdir, char *err, size_t errlen)
+{
+	struct stat st;
+
+	if (lstat(path, &st) != 0) {
+		(void) snprintf(err, errlen, "stat: %s", strerror(errno));
+		return (-1);
+	}
+	if (st.st_uid != at->za_uid || st.st_gid != at->za_gid) {
+		if (lchown(path, at->za_uid, at->za_gid) != 0) {
+			(void) snprintf(err, errlen, "chown: %s",
+			    strerror(errno));
+			return (-1);
+		}
+	}
+	if (zr_chmod(path, at->za_mode, islink) != 0) {
+		(void) snprintf(err, errlen, "chmod: %s", strerror(errno));
+		return (-1);
+	}
+	if (zr_setxattrs(path, at) != 0) {
+		(void) snprintf(err, errlen, "xattrs: %s", strerror(errno));
+		return (-1);
+	}
+	if (zr_setacl(path, at, isdir) != 0) {
+		(void) snprintf(err, errlen, "acl: %s", strerror(errno));
+		return (-1);
+	}
+	if (zr_setflags(path, at->za_flags) != 0) {
+		(void) snprintf(err, errlen, "flags: %s", strerror(errno));
+		return (-1);
+	}
+	return (0);
+}
+
 static enum zr_pk_act
 pk_merge_write(struct zr_picker *pk)
 {
@@ -1701,59 +1978,146 @@ pk_merge_write(struct zr_picker *pk)
 	struct zr_pk_merge *mg = &pk->pk_merge;
 	struct zr_pk_row *row = &pk->pk_rows[mg->pm_row];
 	enum zr_pk_obj kind = row->zk_obj[ZR_PK_T_RESULT];
-	unsigned char *bytes = NULL;
-	size_t len = 0;
+	int wrote_content = 0;
 	uint32_t first, names;
 	struct stat id;
-	char *path;
-	int rc, damaged = 0;
 
 	pk_rowname(row, name, sizeof (name));
-	if (zr_m3_result(&mg->pm_m3, &bytes, &len, err, sizeof (err)) != 0) {
-		pk_say(pk, "%s: %s", name, err);
-		if (zr_m3_first_unpicked(&mg->pm_m3, &first) == 0)
-			mg->pm_cursor = first;
-		return (ZR_PK_REDRAW);
-	}
+
 	/*
-	 * What the row already knows about the result tree, which the
-	 * open read and nothing read until now (M5): the merged bytes
-	 * go into a regular file and into nothing else.
+	 * Refuse while either view has an unpicked conflict (D).
 	 */
-	if (kind == ZR_PK_O_ABSENT) {
-		free(bytes);
-		pk_say(pk, "%s: the result tree holds no object at this name "
-		    "to write into", name);
-		return (ZR_PK_REDRAW);
-	}
-	if (kind != ZR_PK_O_TEXT && kind != ZR_PK_O_BINARY) {
-		free(bytes);
-		pk_say(pk, "%s: the result tree holds %s at this name, and "
-		    "the merged bytes go into a regular file or nowhere",
-		    name, pk_objword[kind]);
-		return (ZR_PK_REDRAW);
-	}
-	path = pk_join(pk->pk_tree[ZR_PK_T_RESULT], row->zk_name,
-	    row->zk_namelen);
-	if (path == NULL) {
-		free(bytes);
-		pk_say(pk, "%s: there is no result tree to write into", name);
-		return (ZR_PK_REDRAW);
-	}
-	rc = pk_write_object(path, bytes, len, &damaged, &id, err,
-	    sizeof (err));
-	free(bytes);
-	free(path);
-	if (rc != 0) {
-		if (damaged == 0) {
-			pk_say(pk, "%s: %s", name, err);
+	if (mg->pm_has_content && !mg->pm_content_same) {
+		unsigned char *bytes = NULL;
+		size_t len = 0;
+
+		if (zr_m3_result(&mg->pm_m3, &bytes, &len, err,
+		    sizeof (err)) != 0) {
+			pk_say(pk, "%s: content: %s", name, err);
+			if (zr_m3_first_unpicked(&mg->pm_m3, &first) == 0)
+				mg->pm_cursor = first;
+			mg->pm_view = ZR_PK_VIEW_CONTENT;
 			return (ZR_PK_REDRAW);
 		}
-		pk_set(pk, row, ZR_CH_NONE);
-		pk_say(pk, "%s: the write failed part way (%s); the object "
-		    "is damaged and the name is unanswered again", name, err);
+		/*
+		 * Write the merged bytes into the result's object.
+		 */
+		if (kind == ZR_PK_O_ABSENT) {
+			free(bytes);
+			pk_say(pk, "%s: the result tree holds no object at "
+			    "this name to write into", name);
+			return (ZR_PK_REDRAW);
+		}
+		if (kind != ZR_PK_O_TEXT && kind != ZR_PK_O_BINARY) {
+			free(bytes);
+			pk_say(pk, "%s: the result tree holds %s at this "
+			    "name, and the merged bytes go into a regular "
+			    "file or nowhere", name, pk_objword[kind]);
+			return (ZR_PK_REDRAW);
+		}
+		{
+			char *path;
+			int rc, damaged = 0;
+
+			path = pk_join(pk->pk_tree[ZR_PK_T_RESULT],
+			    row->zk_name, row->zk_namelen);
+			if (path == NULL) {
+				free(bytes);
+				pk_say(pk, "%s: there is no result tree to "
+				    "write into", name);
+				return (ZR_PK_REDRAW);
+			}
+			rc = pk_write_object(path, bytes, len, &damaged,
+			    &id, err, sizeof (err));
+			free(bytes);
+			free(path);
+			if (rc != 0) {
+				if (damaged == 0) {
+					pk_say(pk, "%s: %s", name, err);
+					return (ZR_PK_REDRAW);
+				}
+				pk_set(pk, row, ZR_CH_NONE);
+				pk_say(pk, "%s: the write failed part way "
+				    "(%s); the object is damaged and the "
+				    "name is unanswered again", name, err);
+				return (ZR_PK_REDRAW);
+			}
+		}
+		wrote_content = 1;
+	}
+
+	if (mg->pm_has_meta &&
+	    !zr_pk_meta_complete(&mg->pm_meta)) {
+		pk_say(pk, "%s: metadata: %u conflict%s unpicked",
+		    name,
+		    mg->pm_meta.mm_nconflict - mg->pm_meta.mm_npicked,
+		    (mg->pm_meta.mm_nconflict - mg->pm_meta.mm_npicked) == 1 ?
+		    "" : "s");
+		mg->pm_view = ZR_PK_VIEW_META;
 		return (ZR_PK_REDRAW);
 	}
+
+	/*
+	 * Write the resolved attributes on the result's object,
+	 * when metadata differs between the sides. When all three
+	 * agree, the attributes the apply already set stand.
+	 */
+	if (mg->pm_has_meta && mg->pm_meta.mm_nrows > 0 &&
+	    (row->zk_diff == ZR_PK_DIFF_M ||
+	    row->zk_diff == ZR_PK_DIFF_CM)) {
+		struct zr_attr resolved;
+		char *path;
+		int islink, isdir;
+
+		if (zr_pk_meta_result(&mg->pm_meta,
+		    row->zk_has_at[ZR_PK_T_BASE] ?
+		    &row->zk_at[ZR_PK_T_BASE] : NULL,
+		    row->zk_has_at[ZR_PK_T_FROM] ?
+		    &row->zk_at[ZR_PK_T_FROM] : NULL,
+		    row->zk_has_at[ZR_PK_T_ONTO] ?
+		    &row->zk_at[ZR_PK_T_ONTO] : NULL,
+		    &resolved, err, sizeof (err)) != 0) {
+			pk_say(pk, "%s: metadata: %s", name, err);
+			return (ZR_PK_REDRAW);
+		}
+
+		path = pk_join(pk->pk_tree[ZR_PK_T_RESULT],
+		    row->zk_name, row->zk_namelen);
+		if (path == NULL) {
+			zr_attr_free(&resolved);
+			pk_say(pk, "%s: there is no result tree to write "
+			    "into", name);
+			return (ZR_PK_REDRAW);
+		}
+		islink = (row->zk_obj[ZR_PK_T_RESULT] == ZR_PK_O_LINK);
+		isdir = (row->zk_obj[ZR_PK_T_RESULT] == ZR_PK_O_DIR);
+		if (pk_write_attrs(path, &resolved, islink, isdir, err,
+		    sizeof (err)) != 0) {
+			pk_say(pk, "%s: %s", name, err);
+			free(path);
+			zr_attr_free(&resolved);
+			return (ZR_PK_REDRAW);
+		}
+		free(path);
+		zr_attr_free(&resolved);
+	}
+
+	/*
+	 * Get the identity of the result object for pool keep.
+	 */
+	if (!wrote_content) {
+		char *path = pk_join(pk->pk_tree[ZR_PK_T_RESULT],
+		    row->zk_name, row->zk_namelen);
+		if (path != NULL) {
+			struct stat st2;
+			if (lstat(path, &st2) == 0) {
+				id.st_dev = st2.st_dev;
+				id.st_ino = st2.st_ino;
+			}
+			free(path);
+		}
+	}
+
 	pk_set(pk, row, ZR_CH_KEEP);
 	names = 1 + pk_pool_keep(pk, row, &id);
 	if (zr_pk_write(pk, err, sizeof (err)) != 0) {
@@ -1763,12 +2127,12 @@ pk_merge_write(struct zr_picker *pk)
 		return (ZR_PK_REDRAW);
 	}
 	if (names == 1)
-		pk_say(pk, "%s: the merged bytes are written, the name reads "
-		    "keep and the resolution is saved", name);
+		pk_say(pk, "%s: written, the name reads keep and the "
+		    "resolution is saved", name);
 	else
-		pk_say(pk, "%s: the merged bytes are written; the object has "
-		    "%u names here and all %u read keep, and the resolution "
-		    "is saved", name, names, names);
+		pk_say(pk, "%s: written; the object has %u names here and "
+		    "all %u read keep, and the resolution is saved",
+		    name, names, names);
 	zr_pk_merge_close(pk);
 	return (ZR_PK_REDRAW);
 }
@@ -1784,6 +2148,70 @@ pk_merge_key(struct zr_picker *pk, enum zr_pk_key key)
 {
 	struct zr_pk_merge *mg = &pk->pk_merge;
 
+	/* view switching: c for content, m for metadata */
+	if (key == ZR_PK_VIEW_C) {
+		if (!mg->pm_has_content) {
+			pk_say(pk, "this row has no content view");
+			return (ZR_PK_REDRAW);
+		}
+		mg->pm_view = ZR_PK_VIEW_CONTENT;
+		return (ZR_PK_REDRAW);
+	}
+	if (key == ZR_PK_VIEW_M) {
+		if (!mg->pm_has_meta) {
+			pk_say(pk, "this row has no metadata view");
+			return (ZR_PK_REDRAW);
+		}
+		mg->pm_view = ZR_PK_VIEW_META;
+		return (ZR_PK_REDRAW);
+	}
+
+	/* common keys */
+	switch (key) {
+	case ZR_PK_BACK:
+	case ZR_PK_QUIT:
+		zr_pk_merge_close(pk);
+		return (ZR_PK_REDRAW);
+	case ZR_PK_WRITE:
+		return (pk_merge_write(pk));
+	case ZR_PK_TOGGLE:
+		/* a: conflicts only, in either view */
+		mg->pm_only = mg->pm_only == 0;
+		return (ZR_PK_REDRAW);
+	default:
+		break;
+	}
+
+	/* view-specific keys */
+	if (mg->pm_view == ZR_PK_VIEW_META) {
+		switch (key) {
+		case ZR_PK_PICK_FROM:
+			if (zr_pk_meta_pick(&mg->pm_meta, 0) == 0)
+				return (ZR_PK_REDRAW);
+			return (ZR_PK_NOTHING);
+		case ZR_PK_PICK_ONTO:
+			if (zr_pk_meta_pick(&mg->pm_meta, 1) == 0)
+				return (ZR_PK_REDRAW);
+			return (ZR_PK_NOTHING);
+		case ZR_PK_CLEAR:
+			if (zr_pk_meta_unpick(&mg->pm_meta) == 0)
+				return (ZR_PK_REDRAW);
+			return (ZR_PK_NOTHING);
+		case ZR_PK_NEXT:
+			return (zr_pk_meta_next(&mg->pm_meta) ?
+			    ZR_PK_REDRAW : ZR_PK_NOTHING);
+		case ZR_PK_PREV:
+			return (zr_pk_meta_prev(&mg->pm_meta) ?
+			    ZR_PK_REDRAW : ZR_PK_NOTHING);
+		case ZR_PK_BASE:
+			/* b does nothing in the metadata view */
+			return (ZR_PK_NOTHING);
+		default:
+			return (ZR_PK_NOTHING);
+		}
+	}
+
+	/* content view keys (the original behavior) */
 	switch (key) {
 	case ZR_PK_PICK_FROM:
 		return (pk_merge_pick(pk, ZR_M3_PICK_FROM));
@@ -1798,16 +2226,6 @@ pk_merge_key(struct zr_picker *pk, enum zr_pk_key key)
 		return (pk_merge_move(pk, 0));
 	case ZR_PK_PREV:
 		return (pk_merge_move(pk, 1));
-	case ZR_PK_TOGGLE:
-		mg->pm_only = mg->pm_only == 0;
-		return (ZR_PK_REDRAW);
-	case ZR_PK_BACK:
-	case ZR_PK_QUIT:
-		/* either key leaves the screen it is on (the author) */
-		zr_pk_merge_close(pk);
-		return (ZR_PK_REDRAW);
-	case ZR_PK_WRITE:
-		return (pk_merge_write(pk));
 	default:
 		return (ZR_PK_NOTHING);
 	}

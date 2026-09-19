@@ -4060,7 +4060,7 @@ static const char res_merge_pty[] =
 static void
 test_pty_merge(void)
 {
-	static const char *const keys[] = { "\r", "c", "c", "b", "b", "f",
+	static const char *const keys[] = { "\r", "a", "a", "b", "b", "f",
 		"w", "w", NULL };
 	struct termios before;
 	struct child c;
@@ -4108,7 +4108,7 @@ test_pty_merge(void)
 	CHECK(find(pty_out.r_buf, pty_out.r_len, "=======") != NULL);
 	CHECK(find(pty_out.r_buf, pty_out.r_len, ">>>>>>> onto") != NULL);
 	/*
-	 * ZP88: c folded every stretch that needs no choice into one
+	 * ZP88: a folded every stretch that needs no choice into one
 	 * line per run (the author, 2026-09-10: conflicts only means
 	 * conflicts only, not just the stable stretches).
 	 */
@@ -4919,6 +4919,71 @@ test_no_terminal(void)
 	world_fini(&w);
 }
 
+/*
+ * ZP153: the DIFF column.
+ * ZP154: the metadata three-way.
+ * ZP155: w refusal naming the view.
+ * ZP156: the write landing attributes.
+ */
+static void
+test_meta(void)
+{
+	struct zr_pk_meta mm;
+	struct zr_attr base, from, onto, resolved;
+	char err[256];
+
+	/* ZP154: mode conflict: base=0644, from=0640, onto=0600 */
+	memset(&base, 0, sizeof (base));
+	memset(&from, 0, sizeof (from));
+	memset(&onto, 0, sizeof (onto));
+	base.za_mode = 0100644;
+	from.za_mode = 0100640;
+	onto.za_mode = 0100600;
+	base.za_uid = 1000;
+	from.za_uid = 1000;
+	onto.za_uid = 1000;
+	CHECK(zr_pk_meta_open(&mm, &base, 1, &from, 1, &onto, 1) == 0);
+	CHECK(mm.mm_nrows > 0);
+	/* mode should conflict: both changed differently */
+	CHECK(mm.mm_rows[0].mr_kind == ZR_MK_MODE);
+	CHECK(mm.mm_rows[0].mr_conflict == 1);
+	CHECK(mm.mm_nconflict >= 1);
+	/* owner should be base (all same) */
+	CHECK(mm.mm_rows[1].mr_kind == ZR_MK_OWNER);
+	CHECK(mm.mm_rows[1].mr_src == ZR_MK_BASE);
+	CHECK(mm.mm_rows[1].mr_conflict == 0);
+	/* pick from for the mode conflict */
+	CHECK(zr_pk_meta_pick(&mm, 0) == 0);
+	CHECK(mm.mm_rows[0].mr_src == ZR_MK_FROM);
+	/* result has from's mode */
+	err[0] = '\0';
+	CHECK(zr_pk_meta_result(&mm, &base, &from, &onto,
+	    &resolved, err, sizeof (err)) == 0);
+	CHECK((resolved.za_mode & 07777) == 0640);
+	CHECK(resolved.za_uid == 1000);
+	zr_attr_free(&resolved);
+	/* unpick and pick onto */
+	CHECK(zr_pk_meta_unpick(&mm) == 0);
+	CHECK(mm.mm_rows[0].mr_src == ZR_MK_NONE);
+	CHECK(zr_pk_meta_pick(&mm, 1) == 0);
+	CHECK(mm.mm_rows[0].mr_src == ZR_MK_ONTO);
+	CHECK(zr_pk_meta_result(&mm, &base, &from, &onto,
+	    &resolved, err, sizeof (err)) == 0);
+	CHECK((resolved.za_mode & 07777) == 0600);
+	zr_attr_free(&resolved);
+	zr_pk_meta_close(&mm);
+
+	/* ZP153: zr_attrs_differ */
+	from.za_mode = 0100644;
+	onto.za_mode = 0100644;
+	CHECK(zr_attrs_differ(&from, &onto) == 0);
+	onto.za_mode = 0100640;
+	CHECK(zr_attrs_differ(&from, &onto) == 1);
+	onto.za_mode = 0100644;
+	onto.za_uid = 2000;
+	CHECK(zr_attrs_differ(&from, &onto) == 1);
+}
+
 int
 main(void)
 {
@@ -4977,6 +5042,7 @@ main(void)
 	test_pty_refresh();
 	test_pty_dirs();
 	test_no_terminal();
+	test_meta();
 	printf("check_picker: %d checks passed\n", checks);
 	return (0);
 }
