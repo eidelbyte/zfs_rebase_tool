@@ -3770,6 +3770,8 @@ drew_digit(const char *buf, size_t len)
 /* The alternate screen was entered and left, whoever did the switching. */
 #define	ALT_ON		"\033[?1049h"
 #define	ALT_OFF		"\033[?1049l"
+/* xterm's cnorm ends in this: the picker hides the cursor, endwin shows it */
+#define	CNORM		"\033[?25h"
 
 static void
 alt_left(const struct run *r)
@@ -3840,13 +3842,20 @@ test_pty_signals(void)
  * ZP125: the terminal's settings are back before the teardown's
  * blocking calls, so a second signal inside the teardown cannot leave
  * them raw (the review of 2026-09-11, S1: "TERMINAL LEFT RAW, termios
- * CHANGED, status: signal 15").
+ * CHANGED, status: signal 15"); and the second signal waits for that
+ * teardown, so the screen comes back whole as well (the box, hand
+ * session 2 of 2026-09-18: Ctrl-C is SIGINT from the terminal and
+ * SIGTERM from the tool in one instant, and the SIGTERM cut endwin
+ * short -- the frame stayed, the cursor was gone until a reset).
  *
  * The terminal is stalled first: the master is left unread and enough
  * keys are typed to fill the terminal's output buffer, so the picker
  * blocks inside curses. Then SIGINT, then SIGTERM behind it. The
  * first handler is inside endwin, which writes and therefore blocks;
- * the second finds the one-shot guard set and returns at once.
+ * the second is held in the handler's mask until the first has
+ * re-raised, and the picker dies of SIGINT, the lower of the two
+ * pending, once the wait loop below drains the master and lets
+ * endwin finish.
  *
  * The case reads the terminal twice: once WHILE that is going on,
  * before anything drains it, because that is the state a process
@@ -3854,12 +3863,16 @@ test_pty_signals(void)
  * order, with endwin first and the settings last, both reads are a
  * raw terminal and the picker is dead of signal 15 -- the verifier's
  * own result of 2026-09-11, word for word. Against this one both are
- * the person's own settings.
+ * the person's own settings. Against an empty handler mask the
+ * picker is dead of signal 15 with the alternate screen never left
+ * and the cursor never shown; against the full one the drained
+ * output ends with both.
  *
  * The stall is what makes it a reproduction rather than a race: with
  * the master unread, the picker is blocked inside curses when the
  * first signal arrives, so the first handler is inside endwin, which
- * is where the old order left the settings unreachable.
+ * is where the old order left the settings unreachable and where the
+ * second signal found it.
  */
 static void
 test_pty_two_signals(void)
@@ -3901,7 +3914,10 @@ test_pty_two_signals(void)
 	CHECK((pty_out.r_stalled.c_lflag & (tcflag_t)ICANON) != 0);
 	CHECK((pty_out.r_stalled.c_lflag & (tcflag_t)ECHO) != 0);
 	CHECK(WIFSIGNALED(pty_out.r_status));
-	CHECK(WTERMSIG(pty_out.r_status) == SIGTERM);
+	CHECK(WTERMSIG(pty_out.r_status) == SIGINT);
+	/* endwin ran to its end: the alternate screen left, the cursor shown */
+	alt_left(&pty_out);
+	CHECK(find(pty_out.r_buf, pty_out.r_len, CNORM) != NULL);
 	tty_same(&y, &before);
 	world_fini(&w);
 	pty_close(&y);

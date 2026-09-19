@@ -245,6 +245,19 @@ struct pk_geom {
  * promises has been done before it is reached (the review of
  * 2026-09-11, S1 and S5: a second signal arriving while the first
  * restore was inside endwin left the terminal raw).
+ *
+ * A second fatal signal no longer cuts endwin short: the handlers
+ * are installed with the whole fatal set in their mask, so it waits
+ * until the first handler has re-raised and is delivered with it.
+ * Without that, a Ctrl-C on a real terminal always lost the screen:
+ * the terminal hands SIGINT to the whole foreground group, the
+ * tool's own handler answers it by sending the child SIGTERM in the
+ * same instant, and that SIGTERM landed inside this endwin, whose
+ * bytes -- the alternate screen left, the cursor shown -- never went
+ * out (the box, hand session 2 of 2026-09-18: the picker's frame
+ * still on the screen under the tool's lines, the cursor gone until
+ * a reset). The settings were back, as this order promises, and
+ * nothing else was.
  */
 static void
 pk_restore(void)
@@ -357,11 +370,25 @@ pk_arm(void)
 	struct sigaction sa;
 	size_t i;
 
+	/*
+	 * Every fatal signal is in every fatal handler's mask, so a
+	 * second one waits for the first handler's teardown instead
+	 * of cutting it short (pk_restore says what that cost). The
+	 * handler ends by re-raising its own signal, and the one held
+	 * is delivered beside it when the mask comes off; the process
+	 * dies of the lower-numbered of the two. The one thing held
+	 * with it is a teardown blocked on a terminal that has stopped
+	 * its output, which a second Ctrl-C or the tool's SIGTERM used
+	 * to cut short and now waits for; SIGKILL still does not wait.
+	 */
 	memset(&sa, 0, sizeof (sa));
 	(void) sigemptyset(&sa.sa_mask);
+	for (i = 0; i < sizeof (fatal) / sizeof (fatal[0]); i++)
+		(void) sigaddset(&sa.sa_mask, fatal[i]);
 	sa.sa_handler = pk_onsig;
 	for (i = 0; i < sizeof (fatal) / sizeof (fatal[0]); i++)
 		(void) sigaction(fatal[i], &sa, NULL);
+	(void) sigemptyset(&sa.sa_mask);
 	sa.sa_handler = pk_onwinch;
 	(void) sigaction(SIGWINCH, &sa, NULL);
 	(void) atexit(pk_atexit);
