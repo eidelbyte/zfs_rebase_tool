@@ -4184,7 +4184,7 @@ static void
 test_pty_numbers(void)
 {
 	static const char *const k_open[] = { "\r", "q", "q", NULL };
-	static const char *const k_base[] = { "\r", "f", "b", "q", "q",
+	static const char *const k_base[] = { "\r", "f", "b", "q", "d", "q",
 		NULL };
 	char *base, *from, *onto;
 	struct child c;
@@ -4248,17 +4248,19 @@ test_pty_numbers(void)
 	pty_drive(&y, &w, &c, &pty_out);
 	CHECK(WIFEXITED(pty_out.r_status));
 	/*
-	 * What b drew, up to the moment the list came back: the base
+	 * What b drew, up to the moment q asked about the pick (ZP180;
+	 * the question's own count is a digit and is not b's): the base
 	 * rows in the result pane's place, and not one digit, because
 	 * no line number changed. Curses writes the difference between
 	 * two screens, so a number that had moved would be here.
 	 */
 	{
-		const char *back = find(pty_out.r_buf, pty_out.r_len,
-		    "zfs_rebase: conflicts");
-		size_t n = back != NULL ? (size_t)(back - pty_out.r_buf) :
+		const char *ask = find(pty_out.r_buf, pty_out.r_len,
+		    "1 pick not written");
+		size_t n = ask != NULL ? (size_t)(ask - pty_out.r_buf) :
 		    pty_out.r_len;
 
+		CHECK(ask != NULL);
 		CHECK(find(pty_out.r_buf, n, "bravobase") != NULL);
 		CHECK(drew_digit(pty_out.r_buf, n) == 0);
 	}
@@ -4420,10 +4422,99 @@ test_pty_merge_saves(void)
 }
 
 /*
- * ZP138: q with answers no write has saved says how many, in one line
- * after the terminal is the person's again, and leaves with the
- * status it has always had; q with nothing unsaved says nothing (the
- * author, 2026-09-15, on M9: no prompt, one line).
+ * ZP180: Esc or q on screen 2 with a pick no write has taken asks
+ * once in the key bar. d drops the pick and goes back to the list,
+ * where q leaves with 2 and the object and the document as they
+ * were; w from the question writes the merge and closes the screen,
+ * where q then leaves with 1 as ZP137 has it (the author, 2026-09-18,
+ * hand session 6). Esc with no pick made closes the screen at once:
+ * ZP119's k_open script presses it and is not asked.
+ */
+static void
+test_pty_merge_asks(void)
+{
+	static const char *const k_drop[] = { "\r", "f", "q", "d", "q",
+		NULL };
+	static const char *const k_write[] = { "\r", "f", "q", "w", "q",
+		NULL };
+	static const char asked[] = "not written";
+	struct child c;
+	struct world w;
+	struct pty y;
+	size_t len;
+	char *got;
+
+	if (picker_bin() == NULL) {
+		printf("skip ZP180: zfs_rebase-picker is not built\n");
+		return;
+	}
+	if (pty_open(&y) != 0) {
+		printf("skip ZP180: no pty here (%s)\n", strerror(errno));
+		return;
+	}
+	memset(&c, 0, sizeof (c));
+	c.c_term = "xterm";
+
+	/*
+	 * q, then d: the pick dropped, nothing written. q and not Esc,
+	 * which maps to the same key: a lone Esc with d typed inside
+	 * the escape window reads as one sequence and is dropped, and
+	 * the script would then wait at the question for ever.
+	 */
+	world_init(&w);
+	world_docs(&w, man_merge_pty, res_merge_pty);
+	w_text(&w, ZR_PK_T_BASE, "/conf.txt", P_BASE);
+	w_text(&w, ZR_PK_T_FROM, "/conf.txt", P_FROM);
+	w_text(&w, ZR_PK_T_ONTO, "/conf.txt", P_ONTO);
+	w_text(&w, ZR_PK_T_RESULT, "/conf.txt", P_BASE);
+	c.c_keys = k_drop;
+	pty_drive(&y, &w, &c, &pty_out);
+	CHECK(WIFEXITED(pty_out.r_status));
+	CHECK(WEXITSTATUS(pty_out.r_status) == 2);
+	CHECK(find(pty_out.r_buf, pty_out.r_len, asked) != NULL);
+	got = w_slurp(&w, ZR_PK_T_RESULT, "/conf.txt", &len);
+	CHECK(got != NULL);
+	same("the object after d", got, len, P_BASE, strlen(P_BASE));
+	free(got);
+	got = slurp(w.w_res, &len);
+	CHECK(got != NULL);
+	same("the document after d", got, len, res_merge_pty,
+	    strlen(res_merge_pty));
+	free(got);
+	world_fini(&w);
+
+	/* q, then w: written from the question, the screen closed */
+	world_init(&w);
+	world_docs(&w, man_merge_pty, res_merge_pty);
+	w_text(&w, ZR_PK_T_BASE, "/conf.txt", P_BASE);
+	w_text(&w, ZR_PK_T_FROM, "/conf.txt", P_FROM);
+	w_text(&w, ZR_PK_T_ONTO, "/conf.txt", P_ONTO);
+	w_text(&w, ZR_PK_T_RESULT, "/conf.txt", P_BASE);
+	c.c_keys = k_write;
+	pty_drive(&y, &w, &c, &pty_out);
+	CHECK(WIFEXITED(pty_out.r_status));
+	CHECK(WEXITSTATUS(pty_out.r_status) == 1);
+	CHECK(find(pty_out.r_buf, pty_out.r_len, asked) != NULL);
+	got = w_slurp(&w, ZR_PK_T_RESULT, "/conf.txt", &len);
+	CHECK(got != NULL);
+	same("the object after w", got, len, P_FROM, strlen(P_FROM));
+	free(got);
+	got = slurp(w.w_res, &len);
+	CHECK(got != NULL);
+	CHECK(strstr(got, "    conf.txt conflict 1 keep\n") != NULL);
+	free(got);
+	world_fini(&w);
+	pty_close(&y);
+}
+
+/*
+ * ZP138: q with answers no write has saved asks once in the key bar.
+ * d leaves with 2 and one line naming how many, printed after the
+ * terminal is the person's again; s saves and leaves with 1 and says
+ * nothing; any other key cancels and the list stays, so the next q
+ * asks again; q with nothing unsaved leaves at once and says nothing
+ * (the author, 2026-09-18, hand session 6, over the no-question half
+ * of M9).
  *
  * The line is held against the last escape byte the way ZP68 holds
  * the open's own messages: curses is what writes escapes, so a line
@@ -4432,9 +4523,13 @@ test_pty_merge_saves(void)
 static void
 test_pty_unsaved(void)
 {
-	static const char *const k_answer[] = { "f", "q", NULL };
+	static const char *const k_answer[] = { "f", "q", "d", NULL };
+	static const char *const k_keep[] = { "f", "q", "s", NULL };
+	static const char *const k_cancel[] = { "f", "q", "x", "q", "d",
+		NULL };
 	static const char *const k_bare[] = { "q", NULL };
 	static const char said[] = "not saved";
+	static const char asked[] = "s save+quit";
 	const char *last, *at;
 	struct child c;
 	struct world w;
@@ -4453,13 +4548,14 @@ test_pty_unsaved(void)
 	memset(&c, 0, sizeof (c));
 	c.c_term = "xterm";
 
-	/* one answer given and none saved: the line, and exit 2 */
+	/* one answer given and none saved, q then d: the line, and exit 2 */
 	world_init(&w);
 	world_docs(&w, man_two, res_pty);
 	c.c_keys = k_answer;
 	pty_drive(&y, &w, &c, &pty_out);
 	CHECK(WIFEXITED(pty_out.r_status));
 	CHECK(WEXITSTATUS(pty_out.r_status) == 2);
+	CHECK(find(pty_out.r_buf, pty_out.r_len, asked) != NULL);
 	at = find(pty_out.r_buf, pty_out.r_len, said);
 	CHECK(at != NULL);
 	CHECK(find(pty_out.r_buf, pty_out.r_len, "1 answer") != NULL);
@@ -4469,10 +4565,39 @@ test_pty_unsaved(void)
 			last = pty_out.r_buf + i;
 	CHECK(last != NULL);
 	CHECK(at > last);
-	/* and nothing was written, since q writes nothing */
+	/* and nothing was written, since d writes nothing */
 	got = slurp(w.w_res, &len);
 	CHECK(got != NULL);
 	same("q wrote nothing", got, len, res_pty, strlen(res_pty));
+	free(got);
+	world_fini(&w);
+
+	/* q then s: saved, exit 1, and nothing to say */
+	world_init(&w);
+	world_docs(&w, man_two, res_pty);
+	c.c_keys = k_keep;
+	pty_drive(&y, &w, &c, &pty_out);
+	CHECK(WIFEXITED(pty_out.r_status));
+	CHECK(WEXITSTATUS(pty_out.r_status) == 1);
+	CHECK(find(pty_out.r_buf, pty_out.r_len, asked) != NULL);
+	CHECK(find(pty_out.r_buf, pty_out.r_len, said) == NULL);
+	got = slurp(w.w_res, &len);
+	CHECK(got != NULL);
+	CHECK(strstr(got, "    p conflict 1 from\n") != NULL);
+	free(got);
+	world_fini(&w);
+
+	/* q then any other key: the list stays, and the next q asks again */
+	world_init(&w);
+	world_docs(&w, man_two, res_pty);
+	c.c_keys = k_cancel;
+	pty_drive(&y, &w, &c, &pty_out);
+	CHECK(WIFEXITED(pty_out.r_status));
+	CHECK(WEXITSTATUS(pty_out.r_status) == 2);
+	CHECK(find(pty_out.r_buf, pty_out.r_len, said) != NULL);
+	got = slurp(w.w_res, &len);
+	CHECK(got != NULL);
+	same("cancel wrote nothing", got, len, res_pty, strlen(res_pty));
 	free(got);
 	world_fini(&w);
 
@@ -4847,6 +4972,7 @@ main(void)
 	test_pty_merge_saves();
 	test_pty_pool();
 	test_pty_unsaved();
+	test_pty_merge_asks();
 	test_pty_same_child();
 	test_pty_refresh();
 	test_pty_dirs();

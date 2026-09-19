@@ -1071,6 +1071,31 @@ pk_draw_bar(int y, const char *line)
 	(void) attrset(A_NORMAL);
 }
 
+/*
+ * A question in the key bar: the line drawn there, one key taken. The
+ * three questions the picker asks -- r, q and Esc with something
+ * unsaved behind them -- go through here, so that they look alike and
+ * the note clock never runs under one.
+ */
+static int
+pk_ask(int y, const char *line)
+{
+	pk_draw_bar(y, line);
+	(void) refresh();
+	return (getch());
+}
+
+/* The key bar's row for one geometry of the list. */
+static int
+pk_bary(const struct pk_geom *g)
+{
+	int y = g->g_listy + g->g_listh;
+
+	if (g->g_detail != 0)
+		y += PK_H_DETAIL;
+	return (y);
+}
+
 static void
 pk_draw(const struct zr_picker *pk, const struct pk_geom *g, uint32_t top,
     const char *note)
@@ -2207,6 +2232,28 @@ pk_merge_loop(struct zr_picker *pk)
 		k = pk_map_merge(c);
 		if (k < 0)
 			continue;
+		/*
+		 * Esc or q with picks no write has taken: the key bar
+		 * asks once (the same ruling, for screen 2). w writes,
+		 * and refuses as w does while a conflict is unpicked;
+		 * d drops the picks and goes back; any other key
+		 * cancels. With no pick made the screen closes at once.
+		 */
+		if (k == ZR_PK_BACK && zr_pk_merge_picked(pk) > 0) {
+			char ask[ZR_PK_MSGLEN];
+			uint32_t np = zr_pk_merge_picked(pk);
+
+			(void) snprintf(ask, sizeof (ask),
+			    "%u pick%s not written: w write  d discard"
+			    "  other cancel", np, np == 1 ? "" : "s");
+			c = pk_ask(g.g_bary, ask);
+			if (c == 'w') {
+				k = ZR_PK_WRITE;
+			} else if (c != 'd') {
+				note = NULL;
+				continue;
+			}
+		}
 		before = zr_pk_last(pk);
 		(void) zr_pk_key(pk, (enum zr_pk_key)k);
 		now = zr_pk_last(pk);
@@ -2286,18 +2333,12 @@ pk_loop(struct zr_picker *pk)
 		 */
 		if (k == ZR_PK_REFRESH && zr_pk_dirty(pk) > 0) {
 			char err2[ZR_PK_MSGLEN];
-			int bary;
 
-			bary = g.g_listy + g.g_listh;
-			if (g.g_detail != 0)
-				bary += PK_H_DETAIL;
 			(void) snprintf(err2, sizeof (err2),
 			    "%u unsaved: s save+reload  d discard+reload"
 			    "  other cancel",
 			    zr_pk_dirty(pk));
-			pk_draw_bar(bary, err2);
-			(void) refresh();
-			c = getch();
+			c = pk_ask(pk_bary(&g), err2);
 			if (c == 's') {
 				if (zr_pk_write(pk, err2,
 				    sizeof (err2)) != 0) {
@@ -2336,6 +2377,35 @@ pk_loop(struct zr_picker *pk)
 				note = NULL;
 			}
 			continue;
+		}
+		/*
+		 * q with unsaved answers: the key bar asks once (the
+		 * author, 2026-09-18, hand session 6, over the
+		 * no-question half of M9: "I wish we would have a
+		 * warning, unwritten changes pop-up"). s saves and
+		 * leaves with 1; d leaves with 2 and the model's own
+		 * line naming what was dropped; any other key cancels.
+		 * With nothing unsaved q leaves at once and says nothing.
+		 */
+		if (k == ZR_PK_QUIT && zr_pk_dirty(pk) > 0) {
+			char err2[ZR_PK_MSGLEN];
+
+			(void) snprintf(err2, sizeof (err2),
+			    "%u unsaved: s save+quit  d discard+quit"
+			    "  other cancel",
+			    zr_pk_dirty(pk));
+			c = pk_ask(pk_bary(&g), err2);
+			if (c == 's') {
+				if (zr_pk_write(pk, err2,
+				    sizeof (err2)) != 0) {
+					zr_pk_note(pk, err2);
+					note = zr_pk_last(pk);
+					continue;
+				}
+			} else if (c != 'd') {
+				note = NULL;
+				continue;
+			}
 		}
 		before = zr_pk_last(pk);
 		now = NULL;

@@ -1923,6 +1923,21 @@ zr_pk_counts(const struct zr_picker *pk)
 	return (pk != NULL ? &pk->pk_counts : NULL);
 }
 
+/*
+ * How many conflict hunks of the open merge hold an answer that no
+ * write has taken: what Esc and q on screen 2 would drop, and what
+ * the screen asks about before they do. 0 with no merge open.
+ */
+uint32_t
+zr_pk_merge_picked(const struct zr_picker *pk)
+{
+	const struct zr_pk_merge *mg = &pk->pk_merge;
+
+	if (pk == NULL || mg->pm_open == 0)
+		return (0);
+	return (mg->pm_m3.nconflict - zr_m3_unpicked(&mg->pm_m3));
+}
+
 uint32_t
 zr_pk_dirty(const struct zr_picker *pk)
 {

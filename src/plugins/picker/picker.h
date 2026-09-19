@@ -516,6 +516,7 @@ int zr_pk_merge_open(struct zr_picker *pk);
 void zr_pk_merge_close(struct zr_picker *pk);
 struct zr_pk_merge *zr_pk_merge(struct zr_picker *pk);
 uint32_t zr_pk_merge_hunk(const struct zr_picker *pk);
+uint32_t zr_pk_merge_picked(const struct zr_picker *pk);
 
 /*
  * One line into the queue the screen drains after endwin, for the
