@@ -2350,10 +2350,16 @@ uint32_t
 zr_pk_merge_picked(const struct zr_picker *pk)
 {
 	const struct zr_pk_merge *mg = &pk->pk_merge;
+	uint32_t n = 0;
 
 	if (pk == NULL || mg->pm_open == 0)
 		return (0);
-	return (mg->pm_m3.nconflict - zr_m3_unpicked(&mg->pm_m3));
+	if (mg->pm_has_content)
+		n += mg->pm_m3.nconflict -
+		    zr_m3_unpicked(&mg->pm_m3);
+	if (mg->pm_has_meta)
+		n += mg->pm_meta.mm_npicked;
+	return (n);
 }
 
 uint32_t

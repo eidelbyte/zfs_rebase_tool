@@ -1819,6 +1819,335 @@ pk_draw_cell(const struct zr_m3 *m, const struct pk_view *v, int y, int x,
 	pk_putm(y, x + head, w - head, c->c_co, sel, text);
 }
 
+/*
+ * ---------------------------------------------------------------
+ * The metadata view: one row per attribute, four columns.
+ * ---------------------------------------------------------------
+ */
+
+/* The name of a metadata row's kind. */
+static const char *
+pk_mk_kind(const struct zr_mk_row *mr)
+{
+	switch (mr->mr_kind) {
+	case ZR_MK_MODE:	return ("mode");
+	case ZR_MK_OWNER:	return ("owner");
+	case ZR_MK_GROUP:	return ("group");
+	case ZR_MK_FLAGS:	return ("flags");
+	case ZR_MK_XATTR:	return (mr->mr_name != NULL ?
+				    mr->mr_name : "xattr");
+	case ZR_MK_ACL:		return ("acl");
+	case ZR_MK_DACL:	return ("dacl");
+	}
+	return ("?");
+}
+
+/*
+ * The value of one attribute on one tree, rendered into buf.
+ * Returns a pointer into buf or a static string.
+ */
+static const char *
+pk_mk_value(const struct zr_mk_row *mr, const struct zr_attr *at,
+    int have, char *buf, size_t buflen)
+{
+	if (!have)
+		return ("-");
+
+	switch (mr->mr_kind) {
+	case ZR_MK_MODE:
+		(void) snprintf(buf, buflen, "%04o",
+		    (unsigned)(at->za_mode & 07777));
+		return (buf);
+	case ZR_MK_OWNER:
+		(void) snprintf(buf, buflen, "%u",
+		    (unsigned)at->za_uid);
+		return (buf);
+	case ZR_MK_GROUP:
+		(void) snprintf(buf, buflen, "%u",
+		    (unsigned)at->za_gid);
+		return (buf);
+	case ZR_MK_FLAGS:
+		if (at->za_flags == 0)
+			return ("-");
+		(void) snprintf(buf, buflen, "0x%x",
+		    (unsigned)at->za_flags);
+		return (buf);
+	case ZR_MK_XATTR:
+		if (mr->mr_name == NULL)
+			return ("-");
+		{
+			uint32_t i;
+			for (i = 0; i < at->za_nxattrs; i++) {
+				if (strcmp(at->za_xattrs[i].zx_name,
+				    mr->mr_name) == 0) {
+					(void) snprintf(buf, buflen,
+					    "%u B",
+					    (unsigned)at->za_xattrs[i].
+					    zx_len);
+					return (buf);
+				}
+			}
+		}
+		return ("(absent)");
+	case ZR_MK_ACL:
+		if (at->za_acl == NULL)
+			return ("-");
+		return ("(set)");
+	case ZR_MK_DACL:
+		if (at->za_dacl == NULL)
+			return ("-");
+		return ("(set)");
+	}
+	return ("?");
+}
+
+/* The marker for a resolved row: where the value came from. */
+static char
+pk_mk_marker(const struct zr_mk_row *mr)
+{
+	if (mr->mr_conflict && mr->mr_pick < 0)
+		return ('!');
+	switch (mr->mr_src) {
+	case ZR_MK_FROM:
+		return (mr->mr_conflict ? 'f' : '+');
+	case ZR_MK_ONTO:
+		return (mr->mr_conflict ? 'o' : '+');
+	case ZR_MK_BASE:
+		return (' ');
+	default:
+		return ('!');
+	}
+}
+
+/* A one-line summary of one view's state for the other view's bar. */
+static void
+pk_view_state(const struct zr_pk_merge *mg, enum zr_pk_view which,
+    char *out, size_t outlen)
+{
+	if (which == ZR_PK_VIEW_CONTENT) {
+		if (!mg->pm_has_content) {
+			(void) snprintf(out, outlen, "c content: none");
+			return;
+		}
+		if (mg->pm_content_same) {
+			(void) snprintf(out, outlen, "c content: same");
+			return;
+		}
+		{
+			uint32_t u = zr_m3_unpicked(&mg->pm_m3);
+			if (u > 0)
+				(void) snprintf(out, outlen,
+				    "c content: %u unpicked",
+				    (unsigned)u);
+			else if (mg->pm_m3.nconflict > 0)
+				(void) snprintf(out, outlen,
+				    "c content: %u conflict%s",
+				    (unsigned)mg->pm_m3.nconflict,
+				    mg->pm_m3.nconflict == 1 ?
+				    "" : "s");
+			else
+				(void) snprintf(out, outlen,
+				    "c content: same");
+		}
+		return;
+	}
+	/* ZR_PK_VIEW_META */
+	if (!mg->pm_has_meta) {
+		(void) snprintf(out, outlen, "m metadata: none");
+		return;
+	}
+	{
+		const struct zr_pk_meta *mm = &mg->pm_meta;
+		uint32_t unp = mm->mm_nconflict - mm->mm_npicked;
+		if (unp > 0)
+			(void) snprintf(out, outlen,
+			    "m metadata: %u unpicked",
+			    (unsigned)unp);
+		else if (mm->mm_nconflict > 0)
+			(void) snprintf(out, outlen,
+			    "m metadata: %u conflict%s",
+			    (unsigned)mm->mm_nconflict,
+			    mm->mm_nconflict == 1 ? "" : "s");
+		else
+			(void) snprintf(out, outlen,
+			    "m metadata: same");
+	}
+}
+
+/*
+ * Draw the metadata view on screen 2. One row per attribute, four
+ * columns (base, from, onto, result), a cursor band on the conflict
+ * row the cursor sits on, and markers mirroring the content pane.
+ */
+static void
+pk_draw_meta(struct zr_picker *pk, const struct zr_pk_merge *mg,
+    const struct pk_mgeom *g, const char *note)
+{
+	const struct zr_pk_meta *mm = &mg->pm_meta;
+	const struct zr_pk_row *row = zr_pk_row(pk, mg->pm_row);
+	char buf[PK_LINEBUF], vbuf[4][64];
+	char name[PK_NAMEBUF], hunk[64], bar[PK_LINEBUF];
+	char otherst[80];
+	int nw, cw, y, avail, starty, nrows, top;
+	uint32_t i;
+
+	(void) erase();
+
+	/* the title */
+	nw = pk_w - 44;
+	if (nw < 8)
+		nw = 8;
+	pk_name_field(row, nw, name, sizeof (name));
+	if (mm->mm_nconflict == 0) {
+		(void) snprintf(hunk, sizeof (hunk),
+		    "nothing to answer");
+	} else {
+		uint32_t cur = 0, n = 0;
+		for (i = 0; i < mm->mm_nrows; i++) {
+			if (mm->mm_rows[i].mr_conflict) {
+				n++;
+				if (i == mm->mm_cursor)
+					cur = n;
+			}
+		}
+		(void) snprintf(hunk, sizeof (hunk),
+		    "attr %u of %u", (unsigned)cur,
+		    (unsigned)mm->mm_nconflict);
+	}
+	(void) snprintf(buf, sizeof (buf),
+	    " %s  metadata  %s ", name, hunk);
+	pk_rule(0, ACS_ULCORNER, ACS_URCORNER, NULL);
+	pk_put(0, 3, PK_CO_PLAIN, 0, buf);
+
+	/* column headers */
+	cw = (pk_w - 14) / 4;
+	if (cw < 6)
+		cw = 6;
+	if (cw > 20)
+		cw = 20;
+	pk_side(1);
+	pk_putm(1, 3, 10, PK_CO_DIM, 0, "ATTR");
+	pk_putm(1, 14, cw, PK_CO_DIM, 0, "BASE");
+	pk_putm(1, 14 + cw, cw, PK_CO_DIM, 0, "FROM");
+	pk_putm(1, 14 + cw * 2, cw, PK_CO_DIM, 0, "ONTO");
+	pk_putm(1, 14 + cw * 3, cw, PK_CO_DIM, 0, "RESULT");
+
+	/* attribute rows */
+	starty = 2;
+	avail = g->g_bary - 1 - starty;
+	if (avail < 1)
+		avail = 1;
+	nrows = (int)mm->mm_nrows;
+
+	/* scroll so the cursor row is visible */
+	top = 0;
+	if (nrows > avail) {
+		top = (int)mm->mm_cursor - avail / 2;
+		if (top < 0)
+			top = 0;
+		if (top > nrows - avail)
+			top = nrows - avail;
+	}
+
+	for (y = 0; y < avail && top + y < nrows; y++) {
+		const struct zr_mk_row *mr;
+		int ry = starty + y;
+		int co, sel;
+		char mark[2];
+
+		mr = &mm->mm_rows[top + y];
+		sel = (mr->mr_conflict &&
+		    (uint32_t)(top + y) == mm->mm_cursor);
+		pk_side(ry);
+
+		/* marker column */
+		mark[0] = pk_mk_marker(mr);
+		mark[1] = '\0';
+		co = PK_CO_DIM;
+		if (mark[0] == '!' || mark[0] == 'f' || mark[0] == 'o')
+			co = PK_CO_RED;
+		else if (mark[0] == '+')
+			co = PK_CO_GREEN;
+		pk_put(ry, 1, co, 0, mark);
+
+		/* cursor band on conflict rows */
+		if (sel)
+			pk_mark(ry, 2);
+
+		/* attr name */
+		pk_putm(ry, 3, 10, mr->mr_conflict ?
+		    PK_CO_RED : PK_CO_PLAIN, 0, pk_mk_kind(mr));
+
+		/* four value columns */
+		pk_putm(ry, 14, cw,
+		    PK_CO_DIM, 0,
+		    pk_mk_value(mr,
+		    &row->zk_at[ZR_PK_T_BASE],
+		    row->zk_has_at[ZR_PK_T_BASE],
+		    vbuf[0], sizeof (vbuf[0])));
+		pk_putm(ry, 14 + cw, cw,
+		    PK_CO_FROM, 0,
+		    pk_mk_value(mr,
+		    &row->zk_at[ZR_PK_T_FROM],
+		    row->zk_has_at[ZR_PK_T_FROM],
+		    vbuf[1], sizeof (vbuf[1])));
+		pk_putm(ry, 14 + cw * 2, cw,
+		    PK_CO_ONTO, 0,
+		    pk_mk_value(mr,
+		    &row->zk_at[ZR_PK_T_ONTO],
+		    row->zk_has_at[ZR_PK_T_ONTO],
+		    vbuf[2], sizeof (vbuf[2])));
+
+		/* result: the resolved value */
+		{
+			const struct zr_attr *src;
+			int have;
+
+			switch (mr->mr_src) {
+			case ZR_MK_FROM:
+				src = &row->zk_at[ZR_PK_T_FROM];
+				have = row->zk_has_at[ZR_PK_T_FROM];
+				break;
+			case ZR_MK_ONTO:
+				src = &row->zk_at[ZR_PK_T_ONTO];
+				have = row->zk_has_at[ZR_PK_T_ONTO];
+				break;
+			case ZR_MK_BASE:
+				src = &row->zk_at[ZR_PK_T_BASE];
+				have = row->zk_has_at[ZR_PK_T_BASE];
+				break;
+			default:
+				src = NULL;
+				have = 0;
+				break;
+			}
+			if (src != NULL)
+				pk_putm(ry, 14 + cw * 3, cw,
+				    PK_CO_GREEN, 0,
+				    pk_mk_value(mr, src, have,
+				    vbuf[3], sizeof (vbuf[3])));
+			else
+				pk_putm(ry, 14 + cw * 3, cw,
+				    PK_CO_RED, 0, "?");
+		}
+	}
+
+	/* bottom rule */
+	pk_rule(g->g_bary - 1, ACS_LTEE, ACS_RTEE, NULL);
+
+	/* key bar with the other view's state */
+	pk_view_state(mg, ZR_PK_VIEW_CONTENT, otherst, sizeof (otherst));
+	if (note != NULL)
+		(void) snprintf(bar, sizeof (bar), "%s", note);
+	else
+		(void) snprintf(bar, sizeof (bar),
+		    "f/o pick  - unpick  n/p attr  "
+		    "a conflicts only  c content  w write  "
+		    "q/esc back  %s", otherst);
+	pk_draw_bar(g->g_bary, bar);
+	(void) refresh();
+}
+
 /* The title in the top rule: the name, what it is, and which hunk. */
 static void
 pk_merge_title(const struct zr_picker *pk, const struct zr_pk_merge *mg,
@@ -1852,11 +2181,19 @@ static void
 pk_draw_merge(struct zr_picker *pk, const struct zr_pk_merge *mg,
     const struct pk_view *v, const struct pk_mgeom *g, const char *note)
 {
-	const struct zr_m3 *m = &mg->pm_m3;
-	chtype at = pk_style(PK_CO_DIM, 0);
+	const struct zr_m3 *m;
+	chtype at;
 	char buf[PK_LINEBUF];
 	uint32_t i;
 	int y, x;
+
+	/* dispatch to the metadata view when that is up */
+	if (mg->pm_view == ZR_PK_VIEW_META) {
+		pk_draw_meta(pk, mg, g, note);
+		return;
+	}
+	m = &mg->pm_m3;
+	at = pk_style(PK_CO_DIM, 0);
 
 	(void) erase();
 	/*
@@ -1928,7 +2265,16 @@ pk_draw_merge(struct zr_picker *pk, const struct zr_pk_merge *mg,
 			pk_mark(ry, 1 + PK_M_CUR);
 	}
 	pk_rule(g->g_bary - 1, ACS_LTEE, ACS_RTEE, NULL);
-	pk_draw_bar(g->g_bary, note != NULL ? note : PK_MKEYS);
+	if (note != NULL) {
+		pk_draw_bar(g->g_bary, note);
+	} else {
+		char cbar[PK_LINEBUF], otherst[80];
+		pk_view_state(mg, ZR_PK_VIEW_META,
+		    otherst, sizeof (otherst));
+		(void) snprintf(cbar, sizeof (cbar), "%s  %s",
+		    PK_MKEYS, otherst);
+		pk_draw_bar(g->g_bary, cbar);
+	}
 	(void) refresh();
 }
 

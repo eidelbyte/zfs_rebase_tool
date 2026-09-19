@@ -4925,6 +4925,177 @@ test_no_terminal(void)
  * ZP155: w refusal naming the view.
  * ZP156: the write landing attributes.
  */
+
+/*
+ * A fixture with the same text on both sides and different modes,
+ * so the merge opens on the metadata view.
+ */
+static const char man_meta_pty[] =
+	M_HDR("0", "1")
+	"/\n    m.txt conflict 1\n    ..\n"
+	REC("1", "changed-both", "/m.txt changed on both sides");
+
+static const char res_meta_pty[] =
+	R_HDR("1", "1") "/\n    m.txt conflict 1 -\n    ..\n";
+
+#define	M_TEXT		"same on both sides\n"
+
+/*
+ * ZP159: m shows the metadata view: attribute names (mode, owner)
+ *        and values are visible in the pty output.
+ * ZP160: c from the metadata view switches to the content view;
+ *        a folds conflicts only.
+ * ZP161: the bar text names the other view's state.
+ * ZP162: metadata pick, q, d drops the pick (mode unchanged).
+ * ZP163: metadata pick, q, w writes the pick (mode changed).
+ */
+static void
+test_pty_meta(void)
+{
+	static const char *const k_show[] = { "\r", "m", "q", "q",
+		NULL };
+	static const char *const k_cm[] = { "\r", "m", "c", "m",
+		"a", "q", "q", NULL };
+	static const char *const k_drop[] = { "\r", "m", "f", "q",
+		"d", "q", NULL };
+	static const char *const k_write[] = { "\r", "m", "f", "w",
+		"q", NULL };
+	struct child c;
+	struct world w;
+	struct pty y;
+	char path[PATHMAX];
+	struct stat st;
+
+	if (picker_bin() == NULL) {
+		printf("skip ZP159-ZP163: "
+		    "zfs_rebase-picker is not built\n");
+		return;
+	}
+	if (pty_open(&y) != 0) {
+		printf("skip ZP159-ZP163: no pty (%s)\n",
+		    strerror(errno));
+		return;
+	}
+	memset(&c, 0, sizeof (c));
+	c.c_term = "xterm";
+
+	/*
+	 * ZP159: m shows the metadata view, with attribute names
+	 * and mode values visible in the output.
+	 */
+	world_init(&w);
+	world_docs(&w, man_meta_pty, res_meta_pty);
+	w_text(&w, ZR_PK_T_BASE, "/m.txt", M_TEXT);
+	w_text(&w, ZR_PK_T_FROM, "/m.txt", M_TEXT);
+	w_text(&w, ZR_PK_T_ONTO, "/m.txt", M_TEXT);
+	w_text(&w, ZR_PK_T_RESULT, "/m.txt", M_TEXT);
+	/* make from 0640 and onto 0600 so mode conflicts */
+	w_path(&w, ZR_PK_T_BASE, "/m.txt", path, sizeof (path));
+	CHECK(chmod(path, 0644) == 0);
+	w_path(&w, ZR_PK_T_FROM, "/m.txt", path, sizeof (path));
+	CHECK(chmod(path, 0640) == 0);
+	w_path(&w, ZR_PK_T_ONTO, "/m.txt", path, sizeof (path));
+	CHECK(chmod(path, 0600) == 0);
+	c.c_keys = k_show;
+	pty_drive(&y, &w, &c, &pty_out);
+	CHECK(WIFEXITED(pty_out.r_status));
+	CHECK(WEXITSTATUS(pty_out.r_status) == 2);
+	/* the word "mode" and a mode value should appear */
+	CHECK(find(pty_out.r_buf, pty_out.r_len, "mode") != NULL);
+	CHECK(find(pty_out.r_buf, pty_out.r_len, "0640") != NULL ||
+	    find(pty_out.r_buf, pty_out.r_len, "0600") != NULL);
+	CHECK(find(pty_out.r_buf, pty_out.r_len, "metadata") !=
+	    NULL);
+	world_fini(&w);
+
+	/*
+	 * ZP160: c from the metadata view goes to the content view.
+	 * ZP161: the bar text names the other view.
+	 */
+	world_init(&w);
+	world_docs(&w, man_meta_pty, res_meta_pty);
+	w_text(&w, ZR_PK_T_BASE, "/m.txt", M_TEXT);
+	w_text(&w, ZR_PK_T_FROM, "/m.txt", M_TEXT);
+	w_text(&w, ZR_PK_T_ONTO, "/m.txt", M_TEXT);
+	w_text(&w, ZR_PK_T_RESULT, "/m.txt", M_TEXT);
+	w_path(&w, ZR_PK_T_FROM, "/m.txt", path, sizeof (path));
+	CHECK(chmod(path, 0640) == 0);
+	w_path(&w, ZR_PK_T_ONTO, "/m.txt", path, sizeof (path));
+	CHECK(chmod(path, 0600) == 0);
+	c.c_keys = k_cm;
+	pty_drive(&y, &w, &c, &pty_out);
+	CHECK(WIFEXITED(pty_out.r_status));
+	CHECK(WEXITSTATUS(pty_out.r_status) == 2);
+	/* the content view should have been shown */
+	CHECK(find(pty_out.r_buf, pty_out.r_len, "RESULT") != NULL);
+	world_fini(&w);
+
+	/*
+	 * ZP162: metadata pick, q, d drops the pick. The mode of
+	 * the result's object is unchanged (still the create mode).
+	 */
+	world_init(&w);
+	world_docs(&w, man_meta_pty, res_meta_pty);
+	w_text(&w, ZR_PK_T_BASE, "/m.txt", M_TEXT);
+	w_text(&w, ZR_PK_T_FROM, "/m.txt", M_TEXT);
+	w_text(&w, ZR_PK_T_ONTO, "/m.txt", M_TEXT);
+	w_text(&w, ZR_PK_T_RESULT, "/m.txt", M_TEXT);
+	w_path(&w, ZR_PK_T_BASE, "/m.txt", path, sizeof (path));
+	CHECK(chmod(path, 0644) == 0);
+	w_path(&w, ZR_PK_T_FROM, "/m.txt", path, sizeof (path));
+	CHECK(chmod(path, 0640) == 0);
+	w_path(&w, ZR_PK_T_ONTO, "/m.txt", path, sizeof (path));
+	CHECK(chmod(path, 0600) == 0);
+	w_path(&w, ZR_PK_T_RESULT, "/m.txt", path, sizeof (path));
+	CHECK(chmod(path, 0644) == 0);
+	c.c_keys = k_drop;
+	pty_drive(&y, &w, &c, &pty_out);
+	CHECK(WIFEXITED(pty_out.r_status));
+	CHECK(WEXITSTATUS(pty_out.r_status) == 2);
+	CHECK(find(pty_out.r_buf, pty_out.r_len, "not written") !=
+	    NULL);
+	/* the result's mode is unchanged */
+	w_path(&w, ZR_PK_T_RESULT, "/m.txt", path, sizeof (path));
+	CHECK(lstat(path, &st) == 0);
+	CHECK((st.st_mode & 07777) == 0644);
+	world_fini(&w);
+
+	/*
+	 * ZP163: metadata pick (f = from), w writes the merge.
+	 * The result's mode should be from's 0640.
+	 */
+	world_init(&w);
+	world_docs(&w, man_meta_pty, res_meta_pty);
+	w_text(&w, ZR_PK_T_BASE, "/m.txt", M_TEXT);
+	w_text(&w, ZR_PK_T_FROM, "/m.txt", M_TEXT);
+	w_text(&w, ZR_PK_T_ONTO, "/m.txt", M_TEXT);
+	w_text(&w, ZR_PK_T_RESULT, "/m.txt", M_TEXT);
+	w_path(&w, ZR_PK_T_BASE, "/m.txt", path, sizeof (path));
+	CHECK(chmod(path, 0644) == 0);
+	w_path(&w, ZR_PK_T_FROM, "/m.txt", path, sizeof (path));
+	CHECK(chmod(path, 0640) == 0);
+	w_path(&w, ZR_PK_T_ONTO, "/m.txt", path, sizeof (path));
+	CHECK(chmod(path, 0600) == 0);
+	w_path(&w, ZR_PK_T_RESULT, "/m.txt", path, sizeof (path));
+	CHECK(chmod(path, 0644) == 0);
+	c.c_keys = k_write;
+	pty_drive(&y, &w, &c, &pty_out);
+	CHECK(WIFEXITED(pty_out.r_status));
+	/*
+	 * The merge opened on the metadata view (same content,
+	 * different metadata), so f picks from's mode, and w writes
+	 * it. The text content is the same, so nothing is written
+	 * for bytes. The write should succeed.
+	 */
+	/* the result's mode should be from's 0640 */
+	w_path(&w, ZR_PK_T_RESULT, "/m.txt", path, sizeof (path));
+	CHECK(lstat(path, &st) == 0);
+	CHECK((st.st_mode & 07777) == 0640);
+	world_fini(&w);
+
+	pty_close(&y);
+}
+
 static void
 test_meta(void)
 {
@@ -5042,6 +5213,7 @@ main(void)
 	test_pty_refresh();
 	test_pty_dirs();
 	test_no_terminal();
+	test_pty_meta();
 	test_meta();
 	printf("check_picker: %d checks passed\n", checks);
 	return (0);
