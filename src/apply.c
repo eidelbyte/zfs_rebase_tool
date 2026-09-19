@@ -59,6 +59,7 @@
 #include <unistd.h>
 
 #include "apply.h"
+#include "attrset.h"
 #include "manifest.h"
 #include "name.h"
 #include "verify.h"
@@ -126,24 +127,14 @@ za_stop(unsigned int *gate)
 
 /*
  * ---------------------------------------------------------------
- * The platform section. Everything outside it is plain POSIX; here
- * are the extended attributes, the ACL and the file flags, and the
- * kernel-side copy. FreeBSD is the target -- there the tool writes
- * a ZFS clone, and that section is written first and in full. macOS
- * is the development stand-in, where this core is built and tested
- * without ZFS; Linux is a courtesy. Each platform supplies:
+ * The platform section. Everything outside it is plain POSIX.
+ * The extended attributes, the ACL and the file flags are in
+ * attrset.c, shared by the apply and the picker so that both stamp
+ * an object identically: zr_setxattrs, zr_setacl, zr_setflags.
+ * What remains here is the copy_file_range knob and the defines
+ * the apply's own code reads.
  *
- *	za_setxattrs()	make the target's attribute set equal to the
- *			from object's: set every one of from's, remove
- *			every one the target has that from lacks
- *	za_setacl()	write from's ACL, or, where from had none and
- *			the filesystem is NFSv4, strip the target's
- *			back to the trivial one the mode says
- *	za_setflags()	the file flags, where the platform has them
- *
- * Each returns 0 on success and -1 with errno set on failure. A
- * filesystem with no attributes, no ACL and no flags is a success,
- * not a failure. ZA_HAVE_ST_FLAGS says the platform's struct stat
+ * ZA_HAVE_ST_FLAGS says the platform's struct stat
  * has st_flags; ZA_HAVE_COPY_FILE_RANGE says the kernel can copy a
  * range without the bytes passing through this program.
  * ---------------------------------------------------------------
@@ -181,9 +172,6 @@ za_stop(unsigned int *gate)
 #define	ZA_LOCKED	((uint32_t)(SF_IMMUTABLE | SF_APPEND | UF_IMMUTABLE | \
 			UF_APPEND) | ZA_SF_NOUNLINK | ZA_UF_NOUNLINK)
 #endif
-#if defined(__FreeBSD__) || defined(__APPLE__) || defined(__linux__)
-#define	ZA_HAVE_XATTRS		1
-#endif
 
 /*
  * The POSIX 2008 names for the two times a copy carries. macOS
@@ -199,420 +187,19 @@ za_stop(unsigned int *gate)
 #define	ZA_MTIME(s)	((s)->st_mtim)
 #endif
 
-#ifdef ZA_HAVE_XATTRS
-
-/*
- * The errnos that mean "there is nothing here to write" rather than
- * "the apply failed": a filesystem with no attribute support, a
- * namespace this process may not touch -- the system namespace is
- * root's on FreeBSD -- and the several spellings of "no such
- * attribute", which a delete races into.
- */
-static int
-za_absent(int e)
-{
-	if (e == ENOTSUP || e == EOPNOTSUPP || e == EPERM || e == EACCES)
-		return (1);
-#ifdef ENOATTR
-	if (e == ENOATTR)
-		return (1);
-#endif
-#ifdef ENODATA
-	if (e == ENODATA)
-		return (1);
-#endif
-	return (0);
-}
-
-/* Does the from object carry this attribute, under its stored name? */
-static int
-za_has(const struct zr_attr *at, const char *name, size_t len)
-{
-	uint32_t i;
-
-	for (i = 0; i < at->za_nxattrs; i++) {
-		if (strlen(at->za_xattrs[i].zx_name) == len &&
-		    memcmp(at->za_xattrs[i].zx_name, name, len) == 0)
-			return (1);
-	}
-	return (0);
-}
-
-#endif	/* ZA_HAVE_XATTRS */
-
 #if defined(__FreeBSD__)
-
 #include <sys/param.h>
-
-#include <sys/acl.h>
-#include <sys/extattr.h>
-
 #if defined(__FreeBSD_version) && __FreeBSD_version >= 1300000
 #define	ZA_HAVE_COPY_FILE_RANGE	1
 #endif
-
-/* "system." plus an attribute name of at most 255 bytes, plus a NUL */
-#define	ZA_FBSD_NAME	264
-
-/*
- * The walk stores a FreeBSD attribute under its namespace prefix, so
- * that the two namespaces cannot collide in za_xattrs. Undo that
- * here. A name with neither prefix came from a walk on another
- * platform and belongs in the user namespace, which is the only one
- * an unprivileged process may write.
- */
-static void
-za_ns_split(const char *name, int *ns, const char **bare)
-{
-	if (strncmp(name, "user.", 5) == 0) {
-		*ns = EXTATTR_NAMESPACE_USER;
-		*bare = name + 5;
-		return;
-	}
-	if (strncmp(name, "system.", 7) == 0) {
-		*ns = EXTATTR_NAMESPACE_SYSTEM;
-		*bare = name + 7;
-		return;
-	}
-	*ns = EXTATTR_NAMESPACE_USER;
-	*bare = name;
-}
-
-/*
- * Remove from one namespace every attribute the from object lacks.
- * extattr_list_link returns the names as a run of (one length byte,
- * that many bytes) pairs, none of them terminated, which is what the
- * walk reads too.
- */
-static int
-za_prune_ns(const char *full, int ns, const char *prefix,
-    const struct zr_attr *at)
-{
-	char qname[ZA_FBSD_NAME];
-	char *list;
-	ssize_t want, n;
-	size_t i, plen, len;
-	int rc;
-
-	want = extattr_list_link(full, ns, NULL, 0);
-	if (want < 0)
-		return (za_absent(errno) ? 0 : -1);
-	list = malloc((size_t)want + 1);
-	if (list == NULL)
-		return (-1);
-	n = extattr_list_link(full, ns, list, (size_t)want);
-	if (n < 0) {
-		free(list);
-		return (za_absent(errno) ? 0 : -1);
-	}
-	plen = strlen(prefix);
-	memcpy(qname, prefix, plen);
-	rc = 0;
-	for (i = 0; rc == 0 && i < (size_t)n; i += len) {
-		len = (size_t)(unsigned char)list[i];
-		i++;
-		if (i + len > (size_t)n || plen + len + 1 > sizeof (qname)) {
-			errno = EINVAL;
-			rc = -1;
-			break;
-		}
-		memcpy(qname + plen, list + i, len);
-		qname[plen + len] = '\0';
-		if (za_has(at, qname, plen + len))
-			continue;
-		if (extattr_delete_link(full, ns, qname + plen) != 0 &&
-		    !za_absent(errno))
-			rc = -1;
-	}
-	free(list);
-	return (rc);
-}
-
-static int
-za_setxattrs(const char *full, const struct zr_attr *at)
-{
-	const char *bare;
-	uint32_t i;
-	int ns;
-
-	for (i = 0; i < at->za_nxattrs; i++) {
-		za_ns_split(at->za_xattrs[i].zx_name, &ns, &bare);
-		if (extattr_set_link(full, ns, bare,
-		    at->za_xattrs[i].zx_value,
-		    at->za_xattrs[i].zx_len) < 0)
-			return (-1);
-	}
-	if (za_prune_ns(full, EXTATTR_NAMESPACE_USER, "user.", at) != 0)
-		return (-1);
-	return (za_prune_ns(full, EXTATTR_NAMESPACE_SYSTEM, "system.", at));
-}
-
-/*
- * Which flavor of ACL the target carries: ZFS has NFSv4 ACLs, UFS
- * has POSIX.1e, and a filesystem with neither answers no to both.
- * lpathconf asks of the link itself, as the walk's reader does.
- */
-static int
-za_acl_flavor(const char *full, acl_type_t *typep)
-{
-	if (lpathconf(full, _PC_ACL_NFS4) > 0) {
-		*typep = ACL_TYPE_NFS4;
-		return (1);
-	}
-	if (lpathconf(full, _PC_ACL_EXTENDED) > 0) {
-		*typep = ACL_TYPE_ACCESS;
-		return (1);
-	}
-	return (0);
-}
-
-/*
- * The walk stores nothing for an NFSv4 ACL the mode already says in
- * full. Writing nothing would leave whatever the onto object had, so
- * a non-trivial ACL would survive a write that was meant to make the
- * object equal to from's. Strip it back to what the mode says.
- */
-static int
-za_acl_strip(const char *full)
-{
-	acl_t a, s;
-	int rc;
-
-	a = acl_get_link_np(full, ACL_TYPE_NFS4);
-	if (a == NULL)
-		return (za_absent(errno) || errno == EINVAL ? 0 : -1);
-	s = acl_strip_np(a, 0);
-	(void) acl_free(a);
-	if (s == NULL)
-		return (-1);
-	rc = acl_set_link_np(full, ACL_TYPE_NFS4, s);
-	(void) acl_free(s);
-	return (rc);
-}
-
-/*
- * A POSIX.1e directory has two ACLs, the one that governs it and the
- * one its new children inherit, and both are written. An NFSv4 ACL
- * has one, inheritance being written into its entries.
- *
- * The walk kept the acl_t itself, so what goes on the object here is
- * the structure the from side's kernel handed out, entry for entry
- * and bit for bit. There is no text in between to print and parse
- * back, and so nothing an id that will not resolve, or a spelling
- * either end renders differently, could change on the way.
- *
- * acl_set_link_np sorts a POSIX.1e ACL in place before it submits
- * it (lib/libc/posix1e/acl_set.c), so this hands the walk's own
- * structure to a call that may reorder it. That is a normalisation,
- * not a change of meaning -- a POSIX.1e ACL is a set, and the
- * kernel stores it sorted anyway -- and an NFSv4 ACL, the ZFS case
- * and the one whose order is meaning, is never touched.
- */
-static int
-za_setacl(const char *full, const struct zr_attr *at, int isdir)
-{
-	acl_type_t type;
-
-	if (za_acl_flavor(full, &type) == 0)
-		return (0);
-	if (at->za_acl == NULL) {
-		if (type == ACL_TYPE_NFS4)
-			return (za_acl_strip(full));
-		if (isdir && acl_delete_def_link_np(full) != 0 &&
-		    !za_absent(errno) && errno != EINVAL)
-			return (-1);
-		return (0);
-	}
-	if (acl_set_link_np(full, type, at->za_acl) != 0)
-		return (-1);
-	if (type != ACL_TYPE_ACCESS || !isdir)
-		return (0);
-	if (at->za_dacl == NULL) {
-		if (acl_delete_def_link_np(full) != 0 && !za_absent(errno) &&
-		    errno != EINVAL)
-			return (-1);
-		return (0);
-	}
-	return (acl_set_link_np(full, ACL_TYPE_DEFAULT, at->za_dacl));
-}
-
-static int
-za_setflags(const char *full, uint32_t flags)
-{
-	return (lchflags(full, (unsigned long)flags));
-}
-
-#elif defined(__APPLE__)
-
-#include <sys/acl.h>
-#include <sys/xattr.h>
-
-static int
-za_setxattrs(const char *full, const struct zr_attr *at)
-{
-	char *list;
-	ssize_t want, n;
-	size_t i, len;
-	uint32_t k;
-	int rc;
-
-	for (k = 0; k < at->za_nxattrs; k++) {
-		if (setxattr(full, at->za_xattrs[k].zx_name,
-		    at->za_xattrs[k].zx_value, at->za_xattrs[k].zx_len, 0,
-		    XATTR_NOFOLLOW) != 0)
-			return (-1);
-	}
-	want = listxattr(full, NULL, 0, XATTR_NOFOLLOW);
-	if (want < 0)
-		return (za_absent(errno) ? 0 : -1);
-	list = malloc((size_t)want + 1);
-	if (list == NULL)
-		return (-1);
-	n = listxattr(full, list, (size_t)want, XATTR_NOFOLLOW);
-	if (n < 0) {
-		free(list);
-		return (za_absent(errno) ? 0 : -1);
-	}
-	rc = 0;
-	/* the list is the names, each one NUL-terminated */
-	for (i = 0; rc == 0 && i < (size_t)n; i += len + 1) {
-		len = strlen(list + i);
-		if (len == 0 || za_has(at, list + i, len))
-			continue;
-		if (removexattr(full, list + i, XATTR_NOFOLLOW) != 0 &&
-		    !za_absent(errno))
-			rc = -1;
-	}
-	free(list);
-	return (rc);
-}
-
-/*
- * The stand-in: one extended ACL, no flavors to tell apart, no
- * default ACL to write and no strip to undo a trivial one. What this
- * proves is that the text the walk kept goes back on the object;
- * NFSv4 against POSIX.1e is FreeBSD's to answer.
- */
-static int
-za_setacl(const char *full, const struct zr_attr *at, int isdir)
-{
-	acl_t a;
-	int rc;
-
-	(void) isdir;
-	if (at->za_acl == NULL)
-		return (0);
-	a = acl_from_text(at->za_acl);
-	if (a == NULL)
-		return (-1);
-	rc = acl_set_link_np(full, ACL_TYPE_EXTENDED, a);
-	(void) acl_free(a);
-	return (rc);
-}
-
-static int
-za_setflags(const char *full, uint32_t flags)
-{
-	return (lchflags(full, flags));
-}
-
 #elif defined(__linux__)
-
-#include <sys/xattr.h>
-
 #define	ZA_HAVE_COPY_FILE_RANGE	1
+#endif
 
-static int
-za_setxattrs(const char *full, const struct zr_attr *at)
-{
-	char *list;
-	ssize_t want, n;
-	size_t i, len;
-	uint32_t k;
-	int rc;
-
-	for (k = 0; k < at->za_nxattrs; k++) {
-		if (lsetxattr(full, at->za_xattrs[k].zx_name,
-		    at->za_xattrs[k].zx_value, at->za_xattrs[k].zx_len,
-		    0) != 0)
-			return (-1);
-	}
-	want = llistxattr(full, NULL, 0);
-	if (want < 0)
-		return (za_absent(errno) ? 0 : -1);
-	list = malloc((size_t)want + 1);
-	if (list == NULL)
-		return (-1);
-	n = llistxattr(full, list, (size_t)want);
-	if (n < 0) {
-		free(list);
-		return (za_absent(errno) ? 0 : -1);
-	}
-	rc = 0;
-	/* the list is the names, each one NUL-terminated */
-	for (i = 0; rc == 0 && i < (size_t)n; i += len + 1) {
-		len = strlen(list + i);
-		if (len == 0 || za_has(at, list + i, len))
-			continue;
-		if (lremovexattr(full, list + i) != 0 && !za_absent(errno))
-			rc = -1;
-	}
-	free(list);
-	return (rc);
-}
-
-/* A POSIX.1e ACL on Linux is already one of the xattrs above. */
-static int
-za_setacl(const char *full, const struct zr_attr *at, int isdir)
-{
-	(void) full;
-	(void) at;
-	(void) isdir;
-	return (0);
-}
-
-/* No file flags in the stat Linux hands back, so none to write. */
-static int
-za_setflags(const char *full, uint32_t flags)
-{
-	(void) full;
-	(void) flags;
-	return (0);
-}
-
-#else
-
-/* An unknown platform still applies; it just writes no attributes. */
-static int
-za_setxattrs(const char *full, const struct zr_attr *at)
-{
-	(void) full;
-	(void) at;
-	return (0);
-}
-
-static int
-za_setacl(const char *full, const struct zr_attr *at, int isdir)
-{
-	(void) full;
-	(void) at;
-	(void) isdir;
-	return (0);
-}
-
-static int
-za_setflags(const char *full, uint32_t flags)
-{
-	(void) full;
-	(void) flags;
-	return (0);
-}
-
-#endif	/* platform section ends */
 
 /*
  * The apply's own state. zc_full is scratch: onto_root with one
- * action path appended, which is what the platform calls above need,
+ * action path appended, which is what the platform calls need,
  * since none of them takes a descriptor and a name. zc_pend is the
  * stack of directories whose rm is waiting for its scope to close;
  * it borrows the paths from the parsed manifest, which outlives it.
@@ -812,7 +399,7 @@ za_unlock_st(struct za_ctx *c, const unsigned char *path, size_t len,
 		errno = ENOMEM;
 		return (za_failp(c, path, "memory"));
 	}
-	if (za_setflags(full, fl & ~(uint32_t)ZA_LOCKED) != 0)
+	if (zr_setflags(full, fl & ~(uint32_t)ZA_LOCKED) != 0)
 		return (za_failp(c, path, "clearing the flags in the way"));
 #else
 	(void) c;
@@ -1055,9 +642,9 @@ za_attrs(struct za_ctx *c, const struct zr_action *a,
 		errno = ENOMEM;
 		return (za_fail(c, a, "memory"));
 	}
-	if (za_setxattrs(full, at) != 0)
+	if (zr_setxattrs(full, at) != 0)
 		return (za_fail(c, a, "extended attributes"));
-	if (za_setacl(full, at, src->zs_type == ZR_T_DIR) != 0)
+	if (zr_setacl(full, at, src->zs_type == ZR_T_DIR) != 0)
 		return (za_fail(c, a, "acl"));
 	ts[0] = ZA_ATIME(fst);
 	ts[1] = ZA_MTIME(fst);
@@ -1076,11 +663,11 @@ za_attrs(struct za_ctx *c, const struct zr_action *a,
 	 * whether or not the source's word made this call.
 	 */
 	if (ZR_ST_FLAGS(&st) != at->za_flags &&
-	    za_setflags(full, at->za_flags |
+	    zr_setflags(full, at->za_flags |
 	    ((uint32_t)st.st_flags & ZR_FLAGS_NOISE)) != 0)
 		return (za_fail(c, a, "flags"));
 #else
-	if (za_setflags(full, at->za_flags) != 0)
+	if (zr_setflags(full, at->za_flags) != 0)
 		return (za_fail(c, a, "flags"));
 #endif
 	return (0);

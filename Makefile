@@ -247,8 +247,8 @@ PICKERMAIN_OBJS = $(BUILD)/pickermain.o
 # Library objects are everything but main.o; tests link against them.
 LIB_OBJS = $(BUILD)/vis.o $(BUILD)/name.o $(BUILD)/decide.o $(BUILD)/fixture.o \
 	$(BUILD)/manifest.o $(BUILD)/walk.o $(BUILD)/yellow.o $(BUILD)/verify.o \
-	$(BUILD)/apply.o $(BUILD)/zfsops.o $(BUILD)/run.o $(BUILD)/args.o \
-	$(BUILD)/launch.o $(PICKER_LIB)
+	$(BUILD)/apply.o $(BUILD)/attrset.o $(BUILD)/zfsops.o $(BUILD)/run.o \
+	$(BUILD)/args.o $(BUILD)/launch.o $(PICKER_LIB)
 CORE_OBJS = $(BUILD)/main.o $(LIB_OBJS)
 
 # What the standalone picker links: itself, the two document parsers,
@@ -260,8 +260,8 @@ CORE_OBJS = $(BUILD)/main.o $(LIB_OBJS)
 # is the picker's own, and it brings the carried libdiff with it. It
 # is still the least that links -- no driver, no ZFS layer.
 PICKER_BIN_OBJS = $(PICKERMAIN_OBJS) $(PICKER_OBJS) $(BUILD)/manifest.o \
-	$(BUILD)/decide.o $(BUILD)/name.o $(BUILD)/vis.o $(BUILD)/merge.o $(BUILD)/diff3.o \
-	$(LIBDIFF_OBJS)
+	$(BUILD)/decide.o $(BUILD)/name.o $(BUILD)/vis.o $(BUILD)/walk.o \
+	$(BUILD)/attrset.o $(BUILD)/merge.o $(BUILD)/diff3.o $(LIBDIFF_OBJS)
 
 # check_picker and check_merge call what a PICKER=no build does not
 # carry, so the knob picks the list too. Every other test links the
@@ -487,9 +487,12 @@ $(BUILD)/verify.o: src/verify.c src/verify.h src/manifest.h src/decide.h \
 	src/walk.h src/name.h src/yellow.h
 	$(CC) $(CFLAGS) -c -o $@ src/verify.c
 
-$(BUILD)/apply.o: src/apply.c src/apply.h src/verify.h src/manifest.h \
-	src/decide.h src/walk.h src/name.h src/yellow.h
+$(BUILD)/apply.o: src/apply.c src/apply.h src/attrset.h src/verify.h \
+	src/manifest.h src/decide.h src/walk.h src/name.h src/yellow.h
 	$(CC) $(CFLAGS) -c -o $@ src/apply.c
+
+$(BUILD)/attrset.o: src/attrset.c src/attrset.h src/walk.h src/name.h
+	$(CC) $(CFLAGS) -c -o $@ src/attrset.c
 
 $(BUILD)/zfsops.o: src/zfsops.c src/zfsops.h
 	$(CC) $(CFLAGS) $(ZFSOPS_CFLAGS) -c -o $@ src/zfsops.c
@@ -602,8 +605,8 @@ gate:
 NOPICKER_OBJS = $(BUILD)/main.o $(BUILD)/vis.o $(BUILD)/name.o \
 	$(BUILD)/decide.o $(BUILD)/fixture.o $(BUILD)/manifest.o \
 	$(BUILD)/walk.o $(BUILD)/yellow.o $(BUILD)/verify.o \
-	$(BUILD)/apply.o $(BUILD)/zfsops.o $(BUILD)/run.o $(BUILD)/args.o \
-	$(BUILD)/launch.o $(BUILD)/pickerstub.o
+	$(BUILD)/apply.o $(BUILD)/attrset.o $(BUILD)/zfsops.o $(BUILD)/run.o \
+	$(BUILD)/args.o $(BUILD)/launch.o $(BUILD)/pickerstub.o
 
 nopicker:
 	@if [ "$$(cat $(BUILD)/.flavor 2>/dev/null)" = freebsd ]; then \
