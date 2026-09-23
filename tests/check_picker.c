@@ -57,6 +57,10 @@
 #include <string.h>
 #include <termios.h>
 #include <unistd.h>
+#ifdef __FreeBSD__
+#include <sys/acl.h>
+#include <sys/extattr.h>
+#endif
 
 #include "manifest.h"
 #include "plugins/picker/picker.h"
@@ -5108,6 +5112,220 @@ test_pty_meta(void)
 	pty_close(&y);
 }
 
+#ifdef __FreeBSD__
+/*
+ * The metadata merge over FreeBSD's own attributes, which the mac's
+ * test_pty_meta cannot make: file flags, user-namespace xattrs and
+ * NFSv4 ACLs, each picked by a key and read back from the result
+ * with the system's own calls rather than off the screen.
+ */
+
+static const char man_meta_fb_file[] =
+	M_HDR("0", "1")
+	"/\n    m.txt conflict 1\n    ..\n"
+	REC("1", "changed-both", "/m.txt changed on both sides");
+
+static const char res_meta_fb_file[] =
+	R_HDR("1", "1") "/\n    m.txt conflict 1 -\n    ..\n";
+
+static const char man_meta_fb_dir[] =
+	M_HDR("0", "1")
+	"/\n    d/ conflict 1\n        ..\n    ..\n"
+	REC("1", "changed-both", "/d changed on both sides");
+
+static const char res_meta_fb_dir[] =
+	R_HDR("1", "1") "/\n    d/ conflict 1 -\n        ..\n    ..\n";
+
+#define	FB_FLAGS	(UF_NODUMP | UF_HIDDEN)
+
+static void
+fb_xattr(const char *path, const char *name, const char *val)
+{
+	CHECK(extattr_set_file(path, EXTATTR_NAMESPACE_USER, name, val,
+	    strlen(val)) == (ssize_t)strlen(val));
+}
+
+/* Does the user xattr NAME on PATH hold exactly WANT? */
+static int
+fb_xattr_is(const char *path, const char *name, const char *want)
+{
+	char buf[64];
+	ssize_t n;
+
+	n = extattr_get_file(path, EXTATTR_NAMESPACE_USER, name, buf,
+	    sizeof (buf));
+	return (n == (ssize_t)strlen(want) && memcmp(buf, want, n) == 0);
+}
+
+/* One entry, in acl_from_text's NFSv4 form, put first on PATH's ACL. */
+static int
+fb_acl_add(const char *path, const char *entry)
+{
+	acl_t acl, one;
+	acl_entry_t src, dst;
+	int rc = -1;
+
+	acl = acl_get_file(path, ACL_TYPE_NFS4);
+	one = acl_from_text(entry);
+	if (acl != NULL && one != NULL &&
+	    acl_get_entry(one, ACL_FIRST_ENTRY, &src) == 1 &&
+	    acl_create_entry_np(&acl, &dst, 0) == 0 &&
+	    acl_copy_entry(dst, src) == 0 &&
+	    acl_set_file(path, ACL_TYPE_NFS4, acl) == 0)
+		rc = 0;
+	if (one != NULL)
+		(void) acl_free(one);
+	if (acl != NULL)
+		(void) acl_free(acl);
+	return (rc);
+}
+
+/* PATH's ACL as text with numeric ids, for the caller to free. */
+static char *
+fb_acl_text(const char *path)
+{
+	acl_t acl;
+	char *txt, *out;
+
+	acl = acl_get_file(path, ACL_TYPE_NFS4);
+	if (acl == NULL)
+		return (NULL);
+	txt = acl_to_text_np(acl, NULL, ACL_TEXT_NUMERIC_IDS);
+	(void) acl_free(acl);
+	if (txt == NULL)
+		return (NULL);
+	out = strdup(txt);
+	(void) acl_free(txt);
+	return (out);
+}
+
+/*
+ * ZP181: one file, same bytes on both sides. mode conflicts (base
+ *        0644, from 0640, onto 0600), flags conflict (none, nodump,
+ *        hidden), user.zr.a conflicts (absent, fromv, ontov), and
+ *        user.zr.b changed on from alone (b0, b1, b0). The rows are
+ *        mode, owner, group, flags, user.zr.a, user.zr.b, acl, so
+ *        the keys f, n, o, n, o answer mode from, flags onto and
+ *        zr.a onto; zr.b resolves to from by itself.
+ * ZP182: a directory whose two sides each added a different allow
+ *        entry, user 1001 on from and user 1002 on onto; f on the
+ *        acl row keeps from's entry and drops onto's.
+ */
+static void
+test_pty_meta_fbsd(void)
+{
+	static const char *const k_file[] = { "\r", "f", "n", "o", "n",
+		"o", "w", "q", NULL };
+	static const char *const k_dir[] = { "\r", "f", "w", "q", NULL };
+	struct child c;
+	struct world w;
+	struct pty y;
+	char path[PATHMAX];
+	struct stat st, sf, so;
+	char *got, *acl;
+	size_t len;
+	int t;
+
+	if (picker_bin() == NULL) {
+		printf("skip ZP181-ZP182: "
+		    "zfs_rebase-picker is not built\n");
+		return;
+	}
+	if (pty_open(&y) != 0) {
+		printf("skip ZP181-ZP182: no pty (%s)\n",
+		    strerror(errno));
+		return;
+	}
+	memset(&c, 0, sizeof (c));
+	c.c_term = "xterm";
+
+	/* ZP181: the file. The result starts as onto's copy. */
+	world_init(&w);
+	world_docs(&w, man_meta_fb_file, res_meta_fb_file);
+	for (t = 0; t < ZR_PK_NTREE; t++)
+		w_text(&w, t, "/m.txt", M_TEXT);
+	w_path(&w, ZR_PK_T_BASE, "/m.txt", path, sizeof (path));
+	CHECK(chmod(path, 0644) == 0);
+	fb_xattr(path, "zr.b", "b0");
+	w_path(&w, ZR_PK_T_FROM, "/m.txt", path, sizeof (path));
+	CHECK(chmod(path, 0640) == 0);
+	CHECK(chflags(path, UF_NODUMP) == 0);
+	fb_xattr(path, "zr.a", "fromv");
+	fb_xattr(path, "zr.b", "b1");
+	for (t = ZR_PK_T_ONTO; t <= ZR_PK_T_RESULT; t++) {
+		w_path(&w, t, "/m.txt", path, sizeof (path));
+		CHECK(chmod(path, 0600) == 0);
+		CHECK(chflags(path, UF_HIDDEN) == 0);
+		fb_xattr(path, "zr.a", "ontov");
+		fb_xattr(path, "zr.b", "b0");
+	}
+	c.c_keys = k_file;
+	pty_drive(&y, &w, &c, &pty_out);
+	CHECK(WIFEXITED(pty_out.r_status));
+	CHECK(WEXITSTATUS(pty_out.r_status) == 1);
+	CHECK(find(pty_out.r_buf, pty_out.r_len, "hidden") != NULL);
+	w_path(&w, ZR_PK_T_RESULT, "/m.txt", path, sizeof (path));
+	CHECK(lstat(path, &st) == 0);
+	CHECK((st.st_mode & 07777) == 0640);
+	CHECK((st.st_flags & FB_FLAGS) == UF_HIDDEN);
+	CHECK(fb_xattr_is(path, "zr.a", "ontov"));
+	CHECK(fb_xattr_is(path, "zr.b", "b1"));
+	got = slurp(w.w_res, &len);
+	CHECK(got != NULL && strstr(got, "m.txt conflict 1 keep") != NULL);
+	free(got);
+	world_fini(&w);
+
+	/* ZP182: the directory, where the file system has NFSv4 ACLs. */
+	world_init(&w);
+	world_docs(&w, man_meta_fb_dir, res_meta_fb_dir);
+	for (t = 0; t < ZR_PK_NTREE; t++)
+		w_dir(&w, t, "/d");
+	w_path(&w, ZR_PK_T_BASE, "/d", path, sizeof (path));
+	if (pathconf(path, _PC_ACL_NFS4) <= 0) {
+		printf("skip ZP182: no NFSv4 ACLs under %s\n", w.w_root);
+		world_fini(&w);
+		pty_close(&y);
+		return;
+	}
+	w_path(&w, ZR_PK_T_FROM, "/d", path, sizeof (path));
+	CHECK(fb_acl_add(path, "user:1001:rwx::allow") == 0);
+	CHECK(lstat(path, &sf) == 0);
+	for (t = ZR_PK_T_ONTO; t <= ZR_PK_T_RESULT; t++) {
+		w_path(&w, t, "/d", path, sizeof (path));
+		CHECK(fb_acl_add(path, "user:1002:r::allow") == 0);
+	}
+	/*
+	 * An allow entry for a named user leaves owner@, group@ and
+	 * everyone@ alone, so the modes should still agree; if they do
+	 * not, the mode row is a second conflict and the keys below
+	 * answer the wrong one, so say so here and not at the read.
+	 */
+	CHECK(lstat(path, &so) == 0);
+	CHECK((sf.st_mode & 07777) == (so.st_mode & 07777));
+	c.c_keys = k_dir;
+	pty_drive(&y, &w, &c, &pty_out);
+	CHECK(WIFEXITED(pty_out.r_status));
+	CHECK(WEXITSTATUS(pty_out.r_status) == 1);
+	w_path(&w, ZR_PK_T_RESULT, "/d", path, sizeof (path));
+	acl = fb_acl_text(path);
+	CHECK(acl != NULL);
+	if (acl == NULL) {
+		(void) printf("  the result's acl unread: %s\n",
+		    strerror(errno));
+	} else {
+		CHECK(strstr(acl, "user:1001:") != NULL);
+		CHECK(strstr(acl, "user:1002:") == NULL);
+		free(acl);
+	}
+	got = slurp(w.w_res, &len);
+	CHECK(got != NULL && strstr(got, "d/ conflict 1 keep") != NULL);
+	free(got);
+	world_fini(&w);
+
+	pty_close(&y);
+}
+#endif	/* __FreeBSD__ */
+
 static void
 test_meta(void)
 {
@@ -5256,6 +5474,9 @@ main(void)
 	test_pty_dirs();
 	test_no_terminal();
 	test_pty_meta();
+#ifdef __FreeBSD__
+	test_pty_meta_fbsd();
+#endif
 	test_meta();
 	printf("check_picker: %d checks passed\n", checks);
 	return (0);
