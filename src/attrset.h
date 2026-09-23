@@ -27,6 +27,15 @@ int zr_setxattrs(const char *path, const struct zr_attr *at);
 int zr_setacl(const char *path, const struct zr_attr *at, int isdir);
 
 /*
+ * After a chmod: does the object still carry the ACL at asked for?
+ * 1 where it does, where at holds none, or where the platform's ACL
+ * does not follow the mode; 0 where the chmod replaced an NFSv4 ACL
+ * with a trivial one (aclmode=discard); -1 with errno set where the
+ * ACL could not be read.
+ */
+int zr_acl_stands(const char *path, const struct zr_attr *at);
+
+/*
  * Set the file flags. On a platform with no st_flags this is a
  * no-op that succeeds. Returns 0 or -1 with errno set.
  */

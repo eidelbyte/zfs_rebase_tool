@@ -5325,6 +5325,9 @@ fb_acl_text(const char *path)
  * ZP182: a directory whose two sides each added a different allow
  *        entry, user 1001 on from and user 1002 on onto; f on the
  *        acl row keeps from's entry and drops onto's.
+ * ZP188: the mode from one side and the NFSv4 ACL from the other:
+ *        the ACL always stands, and the picked mode stands or the
+ *        key bar says why not.
  */
 static void
 test_pty_meta_fbsd(void)
@@ -5332,6 +5335,7 @@ test_pty_meta_fbsd(void)
 	static const char *const k_file[] = { "\r", "f", "n", "o", "n",
 		"o", "w", "q", NULL };
 	static const char *const k_dir[] = { "\r", "f", "w", "q", NULL };
+	static const char *const k_dir_w[] = { "\r", "w", "q", NULL };
 	struct child c;
 	struct world w;
 	struct pty y;
@@ -5342,12 +5346,12 @@ test_pty_meta_fbsd(void)
 	int t;
 
 	if (picker_bin() == NULL) {
-		printf("skip ZP181-ZP182: "
+		printf("skip ZP181-ZP182, ZP188: "
 		    "zfs_rebase-picker is not built\n");
 		return;
 	}
 	if (pty_open(&y) != 0) {
-		printf("skip ZP181-ZP182: no pty (%s)\n",
+		printf("skip ZP181-ZP182, ZP188: no pty (%s)\n",
 		    strerror(errno));
 		return;
 	}
@@ -5397,7 +5401,7 @@ test_pty_meta_fbsd(void)
 		w_dir(&w, t, "/d");
 	w_path(&w, ZR_PK_T_BASE, "/d", path, sizeof (path));
 	if (pathconf(path, _PC_ACL_NFS4) <= 0) {
-		printf("skip ZP182: no NFSv4 ACLs under %s\n", w.w_root);
+		printf("skip ZP182, ZP188: no NFSv4 ACLs under %s\n", w.w_root);
 		world_fini(&w);
 		pty_close(&y);
 		return;
@@ -5431,6 +5435,48 @@ test_pty_meta_fbsd(void)
 		CHECK(strstr(acl, "user:1001:") != NULL);
 		CHECK(strstr(acl, "user:1002:") == NULL);
 		free(acl);
+	}
+	got = slurp(w.w_res, &len);
+	CHECK(got != NULL && strstr(got, "d/ conflict 1 keep") != NULL);
+	free(got);
+	world_fini(&w);
+
+	/*
+	 * ZP188: the mode from from (0750) and the ACL from onto (a
+	 * user 1002 entry), each changed on one side, so nothing to
+	 * answer and w writes both. The entry must stand whatever
+	 * TMPDIR's aclmode is; the mode is 0750 with no warning where
+	 * the dataset lets it stand, and the warning is drawn where not.
+	 */
+	world_init(&w);
+	world_docs(&w, man_meta_fb_dir, res_meta_fb_dir);
+	for (t = 0; t < ZR_PK_NTREE; t++)
+		w_dir(&w, t, "/d");
+	w_path(&w, ZR_PK_T_FROM, "/d", path, sizeof (path));
+	CHECK(chmod(path, 0750) == 0);
+	for (t = ZR_PK_T_ONTO; t <= ZR_PK_T_RESULT; t++) {
+		w_path(&w, t, "/d", path, sizeof (path));
+		CHECK(chmod(path, 0755) == 0);
+		CHECK(fb_acl_add(path, "user:1002:r::allow") == 0);
+	}
+	c.c_keys = k_dir_w;
+	pty_drive(&y, &w, &c, &pty_out);
+	CHECK(WIFEXITED(pty_out.r_status));
+	CHECK(WEXITSTATUS(pty_out.r_status) == 1);
+	w_path(&w, ZR_PK_T_RESULT, "/d", path, sizeof (path));
+	acl = fb_acl_text(path);
+	CHECK(acl != NULL && strstr(acl, "user:1002:") != NULL);
+	free(acl);
+	CHECK(lstat(path, &st) == 0);
+	if ((st.st_mode & 07777) == 0750) {
+		CHECK(find(pty_out.r_buf, pty_out.r_len,
+		    "not the 0750 picked") == NULL);
+		printf("ZP188: the picked mode stood beside the ACL\n");
+	} else {
+		CHECK(find(pty_out.r_buf, pty_out.r_len,
+		    "not the 0750 picked") != NULL);
+		printf("ZP188: the ACL won, mode %04o, warned\n",
+		    (unsigned)(st.st_mode & 07777));
 	}
 	got = slurp(w.w_res, &len);
 	CHECK(got != NULL && strstr(got, "d/ conflict 1 keep") != NULL);

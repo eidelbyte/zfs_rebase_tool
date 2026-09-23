@@ -228,6 +228,37 @@ zr_setflags(const char *path, uint32_t flags)
 	return (lchflags(path, flags));
 }
 
+/*
+ * An NFSv4 ACL carries the mode in its owner@, group@ and everyone@
+ * entries, and what a chmod does to the rest is the dataset's aclmode:
+ * discard (the default) builds a trivial ACL from the new mode and
+ * drops every other entry, passthrough and groupmask keep them, and
+ * restricted refuses the chmod (module/os/freebsd/zfs/zfs_acl.c,
+ * zfs_acl_chmod_setattr). The walk reads a trivial ACL as none, so
+ * at holding an ACL and the object holding a trivial one after the
+ * chmod is the discard case exactly. A POSIX.1e ACL's mask follows
+ * the mode and loses nothing, so it always stands.
+ */
+int
+zr_acl_stands(const char *path, const struct zr_attr *at)
+{
+	acl_type_t type;
+	acl_t a;
+	int trivial = 0, rc;
+
+	if (at->za_acl == NULL || zr_acl_flavor(path, &type) == 0 ||
+	    type != ACL_TYPE_NFS4)
+		return (1);
+	a = acl_get_link_np(path, type);
+	if (a == NULL)
+		return (-1);
+	rc = acl_is_trivial_np(a, &trivial);
+	(void) acl_free(a);
+	if (rc != 0)
+		return (-1);
+	return (trivial == 0);
+}
+
 #elif defined(__APPLE__)
 
 #include <sys/acl.h>
@@ -295,6 +326,15 @@ zr_setflags(const char *path, uint32_t flags)
 	return (lchflags(path, flags));
 }
 
+/* The ACL here is independent of the mode: a chmod takes nothing. */
+int
+zr_acl_stands(const char *path, const struct zr_attr *at)
+{
+	(void) path;
+	(void) at;
+	return (1);
+}
+
 #elif defined(__linux__)
 
 #include <sys/xattr.h>
@@ -354,6 +394,15 @@ zr_setflags(const char *path, uint32_t flags)
 	return (0);
 }
 
+/* The ACL here is independent of the mode: a chmod takes nothing. */
+int
+zr_acl_stands(const char *path, const struct zr_attr *at)
+{
+	(void) path;
+	(void) at;
+	return (1);
+}
+
 #else
 
 int
@@ -379,6 +428,15 @@ zr_setflags(const char *path, uint32_t flags)
 	(void) path;
 	(void) flags;
 	return (0);
+}
+
+/* The ACL here is independent of the mode: a chmod takes nothing. */
+int
+zr_acl_stands(const char *path, const struct zr_attr *at)
+{
+	(void) path;
+	(void) at;
+	return (1);
 }
 
 #endif	/* platform section ends */

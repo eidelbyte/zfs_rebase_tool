@@ -1932,15 +1932,31 @@ pk_merge_move(struct zr_picker *pk, int back)
  *     rather than left to find.
  */
 /*
- * Write the resolved attributes on the result's object, in the
- * apply's order: chown, chmod, xattrs, ACL, flags last.
+ * Write the resolved attributes on the result's object: chown,
+ * xattrs, the ACL, then the mode, and the flags last so none of them
+ * blocks the others.
+ *
+ * The mode goes after the ACL, which is not the apply's order, and
+ * for a reason the apply never meets: the metadata view can take the
+ * mode from one side and the ACL from the other (the author,
+ * 2026-09-23). An NFSv4 ACL carries a mode of its own, so setting it
+ * leaves the object at the ACL's mode, and the chmod that follows
+ * puts the picked one on top. Where the dataset's aclmode will not
+ * let the two stand together the ACL wins and WARN says why: a chmod
+ * that dropped the ACL (discard) is undone by setting the ACL again,
+ * and a chmod refused beside it (restricted) is left refused. The
+ * picked ACL is never lost to the picked mode. WARN is empty where
+ * the picked mode stands.
  */
 static int
 pk_write_attrs(const char *path, const struct zr_attr *at, int islink,
-    int isdir, char *err, size_t errlen)
+    int isdir, char *err, size_t errlen, char *warn, size_t warnlen)
 {
 	struct stat st;
+	mode_t want = at->za_mode & 07777;
+	int stands;
 
+	warn[0] = '\0';
 	if (lstat(path, &st) != 0) {
 		(void) snprintf(err, errlen, "stat: %s", strerror(errno));
 		return (-1);
@@ -1952,10 +1968,6 @@ pk_write_attrs(const char *path, const struct zr_attr *at, int islink,
 			return (-1);
 		}
 	}
-	if (zr_chmod(path, at->za_mode, islink) != 0) {
-		(void) snprintf(err, errlen, "chmod: %s", strerror(errno));
-		return (-1);
-	}
 	if (zr_setxattrs(path, at) != 0) {
 		(void) snprintf(err, errlen, "xattrs: %s", strerror(errno));
 		return (-1);
@@ -1963,6 +1975,39 @@ pk_write_attrs(const char *path, const struct zr_attr *at, int islink,
 	if (zr_setacl(path, at, isdir) != 0) {
 		(void) snprintf(err, errlen, "acl: %s", strerror(errno));
 		return (-1);
+	}
+	if (lstat(path, &st) != 0) {
+		(void) snprintf(err, errlen, "stat: %s", strerror(errno));
+		return (-1);
+	}
+	if ((st.st_mode & 07777) != want) {
+		if (zr_chmod(path, at->za_mode, islink) != 0) {
+			if (at->za_acl == NULL) {
+				(void) snprintf(err, errlen, "chmod: %s",
+				    strerror(errno));
+				return (-1);
+			}
+			(void) snprintf(warn, warnlen, "mode %04o and not "
+			    "the %04o picked: the file system refuses a "
+			    "chmod beside this ACL (%s)",
+			    (unsigned)(st.st_mode & 07777), (unsigned)want,
+			    strerror(errno));
+		} else if ((stands = zr_acl_stands(path, at)) < 0) {
+			(void) snprintf(err, errlen, "acl: %s",
+			    strerror(errno));
+			return (-1);
+		} else if (stands == 0) {
+			if (zr_setacl(path, at, isdir) != 0 ||
+			    lstat(path, &st) != 0) {
+				(void) snprintf(err, errlen, "acl: %s",
+				    strerror(errno));
+				return (-1);
+			}
+			(void) snprintf(warn, warnlen, "mode %04o and not "
+			    "the %04o picked: the file system's chmod drops "
+			    "this ACL, so the ACL was set again",
+			    (unsigned)(st.st_mode & 07777), (unsigned)want);
+		}
 	}
 	if (zr_setflags(path, at->za_flags) != 0) {
 		(void) snprintf(err, errlen, "flags: %s", strerror(errno));
@@ -1974,7 +2019,7 @@ pk_write_attrs(const char *path, const struct zr_attr *at, int islink,
 static enum zr_pk_act
 pk_merge_write(struct zr_picker *pk)
 {
-	char name[PK_NAMEBUF], err[ZR_PK_MSGLEN];
+	char name[PK_NAMEBUF], err[ZR_PK_MSGLEN], warn[ZR_PK_MSGLEN];
 	struct zr_pk_merge *mg = &pk->pk_merge;
 	struct zr_pk_row *row = &pk->pk_rows[mg->pm_row];
 	enum zr_pk_obj kind = row->zk_obj[ZR_PK_T_RESULT];
@@ -2092,6 +2137,7 @@ pk_merge_write(struct zr_picker *pk)
 	}
 
 	/* (d) attributes */
+	warn[0] = '\0';
 	if (has_attrs) {
 		char *path;
 		int islink, isdir;
@@ -2107,7 +2153,7 @@ pk_merge_write(struct zr_picker *pk)
 		islink = (kind == ZR_PK_O_LINK);
 		isdir = (kind == ZR_PK_O_DIR);
 		if (pk_write_attrs(path, &resolved, islink, isdir,
-		    err, sizeof (err)) != 0) {
+		    err, sizeof (err), warn, sizeof (warn)) != 0) {
 			pk_say(pk, "%s: %s", name, err);
 			free(path);
 			zr_attr_free(&resolved);
@@ -2139,7 +2185,10 @@ pk_merge_write(struct zr_picker *pk)
 		zr_pk_merge_close(pk);
 		return (ZR_PK_REDRAW);
 	}
-	if (names == 1)
+	if (warn[0] != '\0')
+		pk_say(pk, "%s: written and saved, reads keep; %s", name,
+		    warn);
+	else if (names == 1)
 		pk_say(pk, "%s: written, the name reads keep and the "
 		    "resolution is saved", name);
 	else
