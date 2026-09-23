@@ -1970,6 +1970,23 @@ pk_mk_marker(const struct zr_mk_row *mr)
 	}
 }
 
+/*
+ * The marker's color, as the content view colors its gutter: red for
+ * a conflict still to answer, the answering side's own color once f
+ * or o has answered it, green for a value one side changed alone.
+ */
+static int
+pk_mk_color(const struct zr_mk_row *mr)
+{
+	if (mr->mr_conflict && mr->mr_pick < 0)
+		return (PK_CO_RED);
+	if (mr->mr_conflict)
+		return (mr->mr_src == ZR_MK_ONTO ? PK_CO_ONTO : PK_CO_FROM);
+	if (mr->mr_src == ZR_MK_FROM || mr->mr_src == ZR_MK_ONTO)
+		return (PK_CO_GREEN);
+	return (PK_CO_DIM);
+}
+
 /* A one-line summary of one view's state for the other view's bar. */
 static void
 pk_view_state(const struct zr_pk_merge *mg, enum zr_pk_view which,
@@ -2067,6 +2084,12 @@ pk_acl_line(const char *txt, int n, char *buf, size_t buflen)
 		p = end + 1;
 		cur++;
 	}
+	/*
+	 * acl_to_text_np pads each entry on the left so the colons of a
+	 * whole ACL line up; a cell of its own starts at the text.
+	 */
+	while (*p == ' ' || *p == '\t')
+		p++;
 	end = strchr(p, '\n');
 	if (end == NULL)
 		end = p + strlen(p);
@@ -2140,6 +2163,15 @@ pk_draw_acl_cell(int ry, int x, int cw, int co,
 #define	PK_MK_AWMIN	10
 
 /*
+ * The metadata view's row head, as screen 2's content cells lay
+ * theirs out (ZP118): the marker, a space, the cursor's cell, a
+ * space, then the name.
+ */
+#define	PK_MK_GUT	1
+#define	PK_MK_CUR	(PK_MK_GUT + 2)
+#define	PK_MK_NAME	(PK_MK_CUR + 2)
+
+/*
  * Draw the metadata view on screen 2. One row per attribute, four
  * columns (base, from, onto, result), a cursor band on the conflict
  * row the cursor sits on, and markers mirroring the content pane.
@@ -2203,16 +2235,14 @@ pk_draw_meta(struct zr_picker *pk, const struct zr_pk_merge *mg,
 		aw = pk_w / 4;
 	if (aw < PK_MK_AWMIN)
 		aw = PK_MK_AWMIN;
-	vx = 3 + aw + 1;
+	vx = PK_MK_NAME + aw + 1;
 
 	/* column headers */
 	cw = (pk_w - vx) / 4;
 	if (cw < 6)
 		cw = 6;
-	if (cw > 20)
-		cw = 20;
 	pk_side(1);
-	pk_putm(1, 3, aw, PK_CO_DIM, 0, "ATTR");
+	pk_putm(1, PK_MK_NAME, aw, PK_CO_DIM, 0, "ATTR");
 	pk_putm(1, vx, cw, PK_CO_DIM, 0, "BASE");
 	pk_putm(1, vx + cw, cw, PK_CO_DIM, 0, "FROM");
 	pk_putm(1, vx + cw * 2, cw, PK_CO_DIM, 0, "ONTO");
@@ -2293,25 +2323,19 @@ pk_draw_meta(struct zr_picker *pk, const struct zr_pk_merge *mg,
 						/* marker */
 						mark[0] = pk_mk_marker(mr);
 						mark[1] = '\0';
-						co = PK_CO_DIM;
-						if (mark[0] == '!' ||
-						    mark[0] == 'f' ||
-						    mark[0] == 'o')
-							co = PK_CO_RED;
-						else if (mark[0] == '+')
-							co = PK_CO_GREEN;
-						pk_put(ry, 1, co, 0, mark);
+						co = pk_mk_color(mr);
+						pk_put(ry, PK_MK_GUT, co, 0,
+						    mark);
 
 						/* attr name */
-						pk_putm(ry, 3, aw,
-						    mr->mr_conflict ?
-						    PK_CO_RED :
+						pk_putm(ry, PK_MK_NAME, aw,
+						    mr->mr_conflict ? co :
 						    PK_CO_PLAIN,
 						    0, pk_mk_kind(mr));
 					}
 
 					if (sel)
-						pk_mark(ry, 2);
+						pk_mark(ry, PK_MK_CUR);
 
 					/* values */
 					if (mr->mr_kind == ZR_MK_ACL ||
