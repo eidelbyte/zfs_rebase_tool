@@ -1837,7 +1837,7 @@ pk_mk_kind(const struct zr_mk_row *mr)
 	case ZR_MK_GROUP:	return ("group");
 	case ZR_MK_FLAGS:	return ("flags");
 	case ZR_MK_XATTR:	return (mr->mr_name != NULL ?
-				    mr->mr_name : "xattr");
+				    mr->mr_name : "xattrs");
 	case ZR_MK_ACL:		return ("acl");
 	case ZR_MK_DACL:	return ("dacl");
 	}
@@ -1998,7 +1998,7 @@ pk_view_state(const struct zr_pk_merge *mg, enum zr_pk_view which,
 				    "" : "s");
 			else
 				(void) snprintf(out, outlen,
-				    "c content: same");
+				    "c content: merged");
 		}
 		return;
 	}
@@ -2136,6 +2136,9 @@ pk_draw_acl_cell(int ry, int x, int cw, int co,
 	free(txt);
 }
 
+/* The narrowest the metadata view's ATTR column gets. */
+#define	PK_MK_AWMIN	10
+
 /*
  * Draw the metadata view on screen 2. One row per attribute, four
  * columns (base, from, onto, result), a cursor band on the conflict
@@ -2151,7 +2154,7 @@ pk_draw_meta(struct zr_picker *pk, const struct zr_pk_merge *mg,
 	char buf[PK_LINEBUF], vbuf[4][64];
 	char name[PK_NAMEBUF], hunk[64], bar[PK_LINEBUF];
 	char otherst[80];
-	int nw, cw, avail, starty, sline, mri;
+	int nw, cw, aw, vx, avail, starty, sline, mri;
 	int *heights;
 	int totalh;
 	uint32_t i;
@@ -2184,18 +2187,36 @@ pk_draw_meta(struct zr_picker *pk, const struct zr_pk_merge *mg,
 	pk_rule(0, ACS_ULCORNER, ACS_URCORNER, NULL);
 	pk_put(0, 3, PK_CO_PLAIN, 0, buf);
 
+	/*
+	 * The ATTR column is as wide as the longest row's name, so an
+	 * xattr's name ("user.backup.exclude") is not cut, between
+	 * PK_MK_AWMIN and a quarter of the screen. The values start one
+	 * cell after it.
+	 */
+	aw = PK_MK_AWMIN;
+	for (i = 0; i < mm->mm_nrows; i++) {
+		int nl = (int)strlen(pk_mk_kind(&mm->mm_rows[i]));
+		if (nl > aw)
+			aw = nl;
+	}
+	if (aw > pk_w / 4)
+		aw = pk_w / 4;
+	if (aw < PK_MK_AWMIN)
+		aw = PK_MK_AWMIN;
+	vx = 3 + aw + 1;
+
 	/* column headers */
-	cw = (pk_w - 14) / 4;
+	cw = (pk_w - vx) / 4;
 	if (cw < 6)
 		cw = 6;
 	if (cw > 20)
 		cw = 20;
 	pk_side(1);
-	pk_putm(1, 3, 10, PK_CO_DIM, 0, "ATTR");
-	pk_putm(1, 14, cw, PK_CO_DIM, 0, "BASE");
-	pk_putm(1, 14 + cw, cw, PK_CO_DIM, 0, "FROM");
-	pk_putm(1, 14 + cw * 2, cw, PK_CO_DIM, 0, "ONTO");
-	pk_putm(1, 14 + cw * 3, cw, PK_CO_DIM, 0, "RESULT");
+	pk_putm(1, 3, aw, PK_CO_DIM, 0, "ATTR");
+	pk_putm(1, vx, cw, PK_CO_DIM, 0, "BASE");
+	pk_putm(1, vx + cw, cw, PK_CO_DIM, 0, "FROM");
+	pk_putm(1, vx + cw * 2, cw, PK_CO_DIM, 0, "ONTO");
+	pk_putm(1, vx + cw * 3, cw, PK_CO_DIM, 0, "RESULT");
 
 	/* compute heights */
 	heights = NULL;
@@ -2215,6 +2236,12 @@ pk_draw_meta(struct zr_picker *pk, const struct zr_pk_merge *mg,
 	avail = g->g_bary - 1 - starty;
 	if (avail < 1)
 		avail = 1;
+	/*
+	 * The side rules down to the key bar's rule, on the lines no
+	 * attribute reaches as well, as the content view draws them.
+	 */
+	for (sline = starty; sline < starty + avail; sline++)
+		pk_side(sline);
 
 	/*
 	 * Scroll so the cursor row is visible. Find the screen line
@@ -2276,7 +2303,7 @@ pk_draw_meta(struct zr_picker *pk, const struct zr_pk_merge *mg,
 						pk_put(ry, 1, co, 0, mark);
 
 						/* attr name */
-						pk_putm(ry, 3, 10,
+						pk_putm(ry, 3, aw,
 						    mr->mr_conflict ?
 						    PK_CO_RED :
 						    PK_CO_PLAIN,
@@ -2289,16 +2316,16 @@ pk_draw_meta(struct zr_picker *pk, const struct zr_pk_merge *mg,
 					/* values */
 					if (mr->mr_kind == ZR_MK_ACL ||
 					    mr->mr_kind == ZR_MK_DACL) {
-						pk_draw_acl_cell(ry, 14,
+						pk_draw_acl_cell(ry, vx,
 						    cw, PK_CO_DIM, mr,
 						    &row->zk_at[0],
 						    row->zk_has_at[0], sub);
 						pk_draw_acl_cell(ry,
-						    14 + cw, cw, PK_CO_FROM,
+						    vx + cw, cw, PK_CO_FROM,
 						    mr, &row->zk_at[1],
 						    row->zk_has_at[1], sub);
 						pk_draw_acl_cell(ry,
-						    14 + cw * 2, cw,
+						    vx + cw * 2, cw,
 						    PK_CO_ONTO, mr,
 						    &row->zk_at[2],
 						    row->zk_has_at[2], sub);
@@ -2326,32 +2353,32 @@ pk_draw_meta(struct zr_picker *pk, const struct zr_pk_merge *mg,
 						}
 						if (s != NULL)
 							pk_draw_acl_cell(ry,
-							    14 + cw * 3, cw,
+							    vx + cw * 3, cw,
 							    PK_CO_GREEN, mr,
 							    s, hv, sub);
 						else if (sub == 0)
 							pk_putm(ry,
-							    14 + cw * 3, cw,
+							    vx + cw * 3, cw,
 							    PK_CO_RED, 0,
 							    "?");
 						}
 					} else if (sub == 0) {
 						/* scalar: one line */
-						pk_putm(ry, 14, cw,
+						pk_putm(ry, vx, cw,
 						    PK_CO_DIM, 0,
 						    pk_mk_value(mr,
 						    &row->zk_at[0],
 						    row->zk_has_at[0],
 						    vbuf[0],
 						    sizeof (vbuf[0])));
-						pk_putm(ry, 14 + cw, cw,
+						pk_putm(ry, vx + cw, cw,
 						    PK_CO_FROM, 0,
 						    pk_mk_value(mr,
 						    &row->zk_at[1],
 						    row->zk_has_at[1],
 						    vbuf[1],
 						    sizeof (vbuf[1])));
-						pk_putm(ry, 14 + cw * 2,
+						pk_putm(ry, vx + cw * 2,
 						    cw, PK_CO_ONTO, 0,
 						    pk_mk_value(mr,
 						    &row->zk_at[2],
@@ -2382,14 +2409,14 @@ pk_draw_meta(struct zr_picker *pk, const struct zr_pk_merge *mg,
 						}
 						if (s != NULL)
 							pk_putm(ry,
-							    14 + cw * 3, cw,
+							    vx + cw * 3, cw,
 							    PK_CO_GREEN, 0,
 							    pk_mk_value(mr,
 							    s, hv, vbuf[3],
 							    sizeof (vbuf[3])));
 						else
 							pk_putm(ry,
-							    14 + cw * 3, cw,
+							    vx + cw * 3, cw,
 							    PK_CO_RED, 0,
 							    "?");
 						}

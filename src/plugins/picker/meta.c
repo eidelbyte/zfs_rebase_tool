@@ -334,6 +334,21 @@ zr_pk_meta_open(struct zr_pk_meta *out,
 		if (ho) zi++;
 	}
 
+	/*
+	 * No tree has an xattr at all: one row with no name, so the
+	 * view says "none" the way the acl row does, and a person can
+	 * tell an empty set from one that was never read. It compares
+	 * equal on every side, so it resolves and is never a conflict,
+	 * and zr_pk_meta_result skips a row with no name.
+	 */
+	if (b->za_nxattrs == 0 && f->za_nxattrs == 0 &&
+	    o->za_nxattrs == 0) {
+		rc = mk_add(out, ZR_MK_XATTR, NULL,
+		    have_base, have_from, have_onto, 1, 1, 1);
+		if (rc != 0)
+			goto fail;
+	}
+
 	/* ACL */
 	rc = mk_add(out, ZR_MK_ACL, NULL,
 	    have_base, have_from, have_onto,

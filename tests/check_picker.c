@@ -61,6 +61,9 @@
 #include <sys/acl.h>
 #include <sys/extattr.h>
 #endif
+#ifdef __APPLE__
+#include <sys/xattr.h>
+#endif
 
 #include "manifest.h"
 #include "plugins/picker/picker.h"
@@ -5112,6 +5115,118 @@ test_pty_meta(void)
 	pty_close(&y);
 }
 
+/*
+ * One user xattr set on PATH, where the platform has a user
+ * namespace this test knows how to write: 0, or -1 where it does
+ * not or the file system refused.
+ */
+static int
+w_xattr(const char *path, const char *name, const char *val)
+{
+#if defined(__FreeBSD__)
+	return (extattr_set_file(path, EXTATTR_NAMESPACE_USER, name, val,
+	    strlen(val)) == (ssize_t)strlen(val) ? 0 : -1);
+#elif defined(__APPLE__)
+	return (setxattr(path, name, val, strlen(val), 0, XATTR_NOFOLLOW));
+#else
+	(void) path;
+	(void) name;
+	(void) val;
+	return (-1);
+#endif
+}
+
+/*
+ * A CM row whose two edits are two lines apart, so the bytes merge
+ * with no conflict, and whose modes conflict.
+ */
+#define	MV_BASE		"one\ntwo\nthree\nfour\n"
+#define	MV_FROM		"ONE\ntwo\nthree\nfour\n"
+#define	MV_ONTO		"one\ntwo\nthree\nFOUR\n"
+#define	MV_XNAME	"zr.long.name"
+
+static void
+mv_world(struct world *w)
+{
+	char path[PATHMAX];
+
+	world_init(w);
+	world_docs(w, man_meta_pty, res_meta_pty);
+	w_text(w, ZR_PK_T_BASE, "/m.txt", MV_BASE);
+	w_text(w, ZR_PK_T_FROM, "/m.txt", MV_FROM);
+	w_text(w, ZR_PK_T_ONTO, "/m.txt", MV_ONTO);
+	w_text(w, ZR_PK_T_RESULT, "/m.txt", MV_ONTO);
+	w_path(w, ZR_PK_T_BASE, "/m.txt", path, sizeof (path));
+	CHECK(chmod(path, 0644) == 0);
+	w_path(w, ZR_PK_T_FROM, "/m.txt", path, sizeof (path));
+	CHECK(chmod(path, 0640) == 0);
+	w_path(w, ZR_PK_T_ONTO, "/m.txt", path, sizeof (path));
+	CHECK(chmod(path, 0600) == 0);
+	w_path(w, ZR_PK_T_RESULT, "/m.txt", path, sizeof (path));
+	CHECK(chmod(path, 0600) == 0);
+}
+
+/*
+ * ZP184: no tree has an xattr, so the metadata view has one
+ *        "xattrs" row.
+ * ZP185: the bytes differ and merge clean, so the metadata view's
+ *        bar says "c content: merged" and never "same".
+ * ZP186: an xattr name longer than ten is drawn whole.
+ */
+static void
+test_pty_meta_view(void)
+{
+	static const char *const keys[] = { "\r", "m", "q", "q", NULL };
+	struct child c;
+	struct world w;
+	struct pty y;
+	char path[PATHMAX];
+
+	if (picker_bin() == NULL) {
+		printf("skip ZP184-ZP186: "
+		    "zfs_rebase-picker is not built\n");
+		return;
+	}
+	if (pty_open(&y) != 0) {
+		printf("skip ZP184-ZP186: no pty (%s)\n",
+		    strerror(errno));
+		return;
+	}
+	memset(&c, 0, sizeof (c));
+	c.c_term = "xterm";
+	c.c_cols = 120;
+	c.c_keys = keys;
+
+	/* ZP184 and ZP185 */
+	mv_world(&w);
+	pty_drive(&y, &w, &c, &pty_out);
+	CHECK(WIFEXITED(pty_out.r_status));
+	CHECK(WEXITSTATUS(pty_out.r_status) == 2);
+	CHECK(find(pty_out.r_buf, pty_out.r_len, "xattrs") != NULL);
+	CHECK(find(pty_out.r_buf, pty_out.r_len, "c content: merged") !=
+	    NULL);
+	CHECK(find(pty_out.r_buf, pty_out.r_len, "c content: same") ==
+	    NULL);
+	world_fini(&w);
+
+	/* ZP186, where the platform lets the test set a user xattr */
+	mv_world(&w);
+	w_path(&w, ZR_PK_T_FROM, "/m.txt", path, sizeof (path));
+	if (w_xattr(path, MV_XNAME, "1") != 0) {
+		printf("skip ZP186: no user xattr on %s (%s)\n", path,
+		    strerror(errno));
+	} else {
+		pty_drive(&y, &w, &c, &pty_out);
+		CHECK(WIFEXITED(pty_out.r_status));
+		CHECK(find(pty_out.r_buf, pty_out.r_len, MV_XNAME) != NULL);
+		/* and the empty row is gone once a tree has one */
+		CHECK(find(pty_out.r_buf, pty_out.r_len, "xattrs") == NULL);
+	}
+	world_fini(&w);
+
+	pty_close(&y);
+}
+
 #ifdef __FreeBSD__
 /*
  * The metadata merge over FreeBSD's own attributes, which the mac's
@@ -5474,6 +5589,7 @@ main(void)
 	test_pty_dirs();
 	test_no_terminal();
 	test_pty_meta();
+	test_pty_meta_view();
 #ifdef __FreeBSD__
 	test_pty_meta_fbsd();
 #endif
