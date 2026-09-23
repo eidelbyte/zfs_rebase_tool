@@ -668,15 +668,161 @@ zr_pk_meta_result(const struct zr_pk_meta *mm,
  * ---------------------------------------------------------------
  */
 
+#if defined(__FreeBSD__)
+/*
+ * An NFSv4 ACL drawn in the short form setfacl(1) takes: for each
+ * entry the tag, the letters of the permissions that are set, the
+ * flags only where there are any, and the type -- "user:80:rwxp:allow"
+ * where acl_to_text_np writes "user:80:rwxp----------:-------:allow",
+ * a dash for every letter not set. The letters and their order are
+ * libc's own (lib/libc/posix1e/acl_support_nfs4.c), so a letter here
+ * means what it means to getfacl. Built from the entries and not by
+ * editing acl_to_text_np's string. For the screen alone: nothing
+ * compares or writes it.
+ */
+static const struct {
+	acl_perm_t	mp_perm;
+	char		mp_c;
+} mk_nfs4_perms[] = {
+	{ ACL_READ_DATA, 'r' }, { ACL_WRITE_DATA, 'w' },
+	{ ACL_EXECUTE, 'x' }, { ACL_APPEND_DATA, 'p' },
+	{ ACL_DELETE_CHILD, 'D' }, { ACL_DELETE, 'd' },
+	{ ACL_READ_ATTRIBUTES, 'a' }, { ACL_WRITE_ATTRIBUTES, 'A' },
+	{ ACL_READ_NAMED_ATTRS, 'R' }, { ACL_WRITE_NAMED_ATTRS, 'W' },
+	{ ACL_READ_ACL, 'c' }, { ACL_WRITE_ACL, 'C' },
+	{ ACL_WRITE_OWNER, 'o' }, { ACL_SYNCHRONIZE, 's' }
+};
+
+static const struct {
+	acl_flag_t	mf_flag;
+	char		mf_c;
+} mk_nfs4_flags[] = {
+	{ ACL_ENTRY_FILE_INHERIT, 'f' },
+	{ ACL_ENTRY_DIRECTORY_INHERIT, 'd' },
+	{ ACL_ENTRY_INHERIT_ONLY, 'i' },
+	{ ACL_ENTRY_NO_PROPAGATE_INHERIT, 'n' },
+	{ ACL_ENTRY_SUCCESSFUL_ACCESS, 'S' },
+	{ ACL_ENTRY_FAILED_ACCESS, 'F' },
+	{ ACL_ENTRY_INHERITED, 'I' }
+};
+
+#define	MK_NELEM(a)	(sizeof (a) / sizeof ((a)[0]))
+
+/* One entry, short form, into buf. 0, or -1 where it cannot be read. */
+static int
+mk_nfs4_entry(acl_entry_t e, char *buf, size_t buflen)
+{
+	acl_tag_t tag;
+	acl_entry_type_t et;
+	acl_permset_t ps;
+	acl_flagset_t fs;
+	char who[32], perms[MK_NELEM(mk_nfs4_perms) + 1];
+	char flags[MK_NELEM(mk_nfs4_flags) + 1];
+	const char *type;
+	size_t i, np = 0, nf = 0;
+	void *q;
+
+	if (acl_get_tag_type(e, &tag) != 0 ||
+	    acl_get_entry_type_np(e, &et) != 0 ||
+	    acl_get_permset(e, &ps) != 0 ||
+	    acl_get_flagset_np(e, &fs) != 0)
+		return (-1);
+	switch (tag) {
+	case ACL_USER_OBJ:
+		(void) snprintf(who, sizeof (who), "owner@");
+		break;
+	case ACL_GROUP_OBJ:
+		(void) snprintf(who, sizeof (who), "group@");
+		break;
+	case ACL_EVERYONE:
+		(void) snprintf(who, sizeof (who), "everyone@");
+		break;
+	case ACL_USER:
+	case ACL_GROUP:
+		if ((q = acl_get_qualifier(e)) == NULL)
+			return (-1);
+		(void) snprintf(who, sizeof (who), "%s:%u",
+		    tag == ACL_USER ? "user" : "group",
+		    tag == ACL_USER ? (unsigned)*(uid_t *)q :
+		    (unsigned)*(gid_t *)q);
+		(void) acl_free(q);
+		break;
+	default:
+		return (-1);
+	}
+	for (i = 0; i < MK_NELEM(mk_nfs4_perms); i++)
+		if (acl_get_perm_np(ps, mk_nfs4_perms[i].mp_perm) == 1)
+			perms[np++] = mk_nfs4_perms[i].mp_c;
+	if (np == 0)
+		perms[np++] = '-';
+	perms[np] = '\0';
+	for (i = 0; i < MK_NELEM(mk_nfs4_flags); i++)
+		if (acl_get_flag_np(fs, mk_nfs4_flags[i].mf_flag) == 1)
+			flags[nf++] = mk_nfs4_flags[i].mf_c;
+	flags[nf] = '\0';
+	switch (et) {
+	case ACL_ENTRY_TYPE_ALLOW:	type = "allow"; break;
+	case ACL_ENTRY_TYPE_DENY:	type = "deny"; break;
+	case ACL_ENTRY_TYPE_AUDIT:	type = "audit"; break;
+	case ACL_ENTRY_TYPE_ALARM:	type = "alarm"; break;
+	default:			return (-1);
+	}
+	if (nf > 0)
+		(void) snprintf(buf, buflen, "%s:%s:%s:%s", who, perms,
+		    flags, type);
+	else
+		(void) snprintf(buf, buflen, "%s:%s:%s", who, perms, type);
+	return (0);
+}
+
+/* The whole ACL, one entry a line, or NULL for the caller's fallback. */
+static char *
+mk_nfs4_text(acl_t acl)
+{
+	acl_entry_t e;
+	char line[96], *out = NULL, *tab;
+	size_t len = 0, ll;
+	int id = ACL_FIRST_ENTRY, rc;
+
+	while ((rc = acl_get_entry(acl, id, &e)) == 1) {
+		id = ACL_NEXT_ENTRY;
+		if (mk_nfs4_entry(e, line, sizeof (line)) != 0) {
+			free(out);
+			return (NULL);
+		}
+		ll = strlen(line);
+		tab = realloc(out, len + ll + 2);
+		if (tab == NULL) {
+			free(out);
+			return (NULL);
+		}
+		out = tab;
+		if (len > 0)
+			out[len++] = '\n';
+		memcpy(out + len, line, ll + 1);
+		len += ll;
+	}
+	if (rc != 0 || out == NULL) {
+		free(out);
+		return (NULL);
+	}
+	return (out);
+}
+#endif	/* __FreeBSD__ */
+
 char *
 zr_acl_to_text(zr_acl_t acl)
 {
 #if defined(__FreeBSD__)
 	char *txt, *dup;
 	ssize_t len;
+	int brand;
 
 	if (acl == NULL)
 		return (NULL);
+	if (acl_get_brand_np(acl, &brand) == 0 && brand == ACL_BRAND_NFS4 &&
+	    (dup = mk_nfs4_text(acl)) != NULL)
+		return (dup);
 	txt = acl_to_text_np(acl, &len, ACL_TEXT_NUMERIC_IDS);
 	if (txt == NULL)
 		return (NULL);

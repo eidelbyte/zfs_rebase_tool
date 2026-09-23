@@ -5325,6 +5325,7 @@ fb_acl_text(const char *path)
  * ZP182: a directory whose two sides each added a different allow
  *        entry, user 1001 on from and user 1002 on onto; f on the
  *        acl row keeps from's entry and drops onto's.
+ * ZP192: that directory's entries drawn in setfacl's short form.
  * ZP188: the mode from one side and the NFSv4 ACL from the other:
  *        the ACL always stands, and the picked mode stands or the
  *        key bar says why not.
@@ -5422,9 +5423,15 @@ test_pty_meta_fbsd(void)
 	CHECK(lstat(path, &so) == 0);
 	CHECK((sf.st_mode & 07777) == (so.st_mode & 07777));
 	c.c_keys = k_dir;
+	c.c_cols = 160;
 	pty_drive(&y, &w, &c, &pty_out);
+	c.c_cols = 0;
 	CHECK(WIFEXITED(pty_out.r_status));
 	CHECK(WEXITSTATUS(pty_out.r_status) == 1);
+	/* ZP192: the entry in setfacl's short form, no run of dashes */
+	CHECK(find(pty_out.r_buf, pty_out.r_len,
+	    "user:1001:rwx:allow") != NULL);
+	CHECK(find(pty_out.r_buf, pty_out.r_len, "rwx-") == NULL);
 	w_path(&w, ZR_PK_T_RESULT, "/d", path, sizeof (path));
 	acl = fb_acl_text(path);
 	CHECK(acl != NULL);

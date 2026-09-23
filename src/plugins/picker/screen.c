@@ -2238,15 +2238,19 @@ pk_draw_meta(struct zr_picker *pk, const struct zr_pk_merge *mg,
 	vx = PK_MK_NAME + aw + 1;
 
 	/* column headers */
+	/*
+	 * Each value column is cw wide and draws cw - 1, so a cell cut
+	 * at its edge never runs into the next column's text.
+	 */
 	cw = (pk_w - vx) / 4;
 	if (cw < 6)
 		cw = 6;
 	pk_side(1);
 	pk_putm(1, PK_MK_NAME, aw, PK_CO_DIM, 0, "ATTR");
-	pk_putm(1, vx, cw, PK_CO_DIM, 0, "BASE");
-	pk_putm(1, vx + cw, cw, PK_CO_DIM, 0, "FROM");
-	pk_putm(1, vx + cw * 2, cw, PK_CO_DIM, 0, "ONTO");
-	pk_putm(1, vx + cw * 3, cw, PK_CO_DIM, 0, "RESULT");
+	pk_putm(1, vx, cw - 1, PK_CO_DIM, 0, "BASE");
+	pk_putm(1, vx + cw, cw - 1, PK_CO_DIM, 0, "FROM");
+	pk_putm(1, vx + cw * 2, cw - 1, PK_CO_DIM, 0, "ONTO");
+	pk_putm(1, vx + cw * 3, cw - 1, PK_CO_DIM, 0, "RESULT");
 
 	/* compute heights */
 	heights = NULL;
@@ -2341,15 +2345,15 @@ pk_draw_meta(struct zr_picker *pk, const struct zr_pk_merge *mg,
 					if (mr->mr_kind == ZR_MK_ACL ||
 					    mr->mr_kind == ZR_MK_DACL) {
 						pk_draw_acl_cell(ry, vx,
-						    cw, PK_CO_DIM, mr,
+						    cw - 1, PK_CO_DIM, mr,
 						    &row->zk_at[0],
 						    row->zk_has_at[0], sub);
 						pk_draw_acl_cell(ry,
-						    vx + cw, cw, PK_CO_FROM,
+						    vx + cw, cw - 1, PK_CO_FROM,
 						    mr, &row->zk_at[1],
 						    row->zk_has_at[1], sub);
 						pk_draw_acl_cell(ry,
-						    vx + cw * 2, cw,
+						    vx + cw * 2, cw - 1,
 						    PK_CO_ONTO, mr,
 						    &row->zk_at[2],
 						    row->zk_has_at[2], sub);
@@ -2377,25 +2381,25 @@ pk_draw_meta(struct zr_picker *pk, const struct zr_pk_merge *mg,
 						}
 						if (s != NULL)
 							pk_draw_acl_cell(ry,
-							    vx + cw * 3, cw,
+							    vx + cw * 3, cw - 1,
 							    PK_CO_GREEN, mr,
 							    s, hv, sub);
 						else if (sub == 0)
 							pk_putm(ry,
-							    vx + cw * 3, cw,
+							    vx + cw * 3, cw - 1,
 							    PK_CO_RED, 0,
 							    "?");
 						}
 					} else if (sub == 0) {
 						/* scalar: one line */
-						pk_putm(ry, vx, cw,
+						pk_putm(ry, vx, cw - 1,
 						    PK_CO_DIM, 0,
 						    pk_mk_value(mr,
 						    &row->zk_at[0],
 						    row->zk_has_at[0],
 						    vbuf[0],
 						    sizeof (vbuf[0])));
-						pk_putm(ry, vx + cw, cw,
+						pk_putm(ry, vx + cw, cw - 1,
 						    PK_CO_FROM, 0,
 						    pk_mk_value(mr,
 						    &row->zk_at[1],
@@ -2403,7 +2407,7 @@ pk_draw_meta(struct zr_picker *pk, const struct zr_pk_merge *mg,
 						    vbuf[1],
 						    sizeof (vbuf[1])));
 						pk_putm(ry, vx + cw * 2,
-						    cw, PK_CO_ONTO, 0,
+						    cw - 1, PK_CO_ONTO, 0,
 						    pk_mk_value(mr,
 						    &row->zk_at[2],
 						    row->zk_has_at[2],
@@ -2433,14 +2437,14 @@ pk_draw_meta(struct zr_picker *pk, const struct zr_pk_merge *mg,
 						}
 						if (s != NULL)
 							pk_putm(ry,
-							    vx + cw * 3, cw,
+							    vx + cw * 3, cw - 1,
 							    PK_CO_GREEN, 0,
 							    pk_mk_value(mr,
 							    s, hv, vbuf[3],
 							    sizeof (vbuf[3])));
 						else
 							pk_putm(ry,
-							    vx + cw * 3, cw,
+							    vx + cw * 3, cw - 1,
 							    PK_CO_RED, 0,
 							    "?");
 						}
