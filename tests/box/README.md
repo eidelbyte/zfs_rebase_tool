@@ -797,6 +797,23 @@ build/ is left as it was, and the probe is always rebuilt, since a
 stale one answers the old questions. Its answers are recorded in
 sprints/sprint-5/probe-mount.txt.
 
+## wipe-hand.sh
+
+    sudo sh tests/box/wipe-hand.sh        # says what it would remove
+    sudo sh tests/box/wipe-hand.sh -y     # removes it
+
+puts the box back before a hand session, or after a harness that was
+killed before its own cleanup ran. It knows its targets by name, as
+each harness's leftover() does: the hand sessions' pool zrm and every
+harness's pool (zrtbox, zrtkill, zrtres, zrtprobe, zrtreplay,
+zrtprecond, zrtstray, zrtlf, zrtscale), the md device whose backing
+file is that pool's image and no other, the run directories under
+/var/db/zfs_rebase for those pools, the tmpfs at /tmp/zrp-tiny, and
+the hand sessions' directories under /tmp. Every rebase in a pool is
+taken away with the tool's own --abort before the pool is destroyed,
+and a run directory left over is given to --abort by its path. A
+directory with something mounted under it is left, and said so.
+
 ## The pause hook
 
     ZFS_REBASE_PAUSE=<gate> zfs_rebase ...
