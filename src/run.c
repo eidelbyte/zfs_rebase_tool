@@ -3127,110 +3127,22 @@ reread_skeleton(struct run *r)
  * the rebase is at the conflicts gate and a --continue takes it on.
  */
 /*
- * The refresh hook for the fresh run's built-in picker.
- *
- * The same sequence as the resume path's hook, over the fresh run's
- * own structures.  It runs in the forked child's copy of struct run;
- * see the comment above resume_refresh for why that is safe.
- *
- * The fresh run's trees were released (release_trees) before the
- * child was forked.  The hook re-walks them with read_trees, reads the
- * resolution back from the file the picker has been editing, runs
- * the verify, adds drift and put-back lines, writes the resolution,
- * and releases the trees again.
+ * The fresh run's hook: the same core, over a struct resume filled
+ * from the run as it stands at its conflicts gate -- the two sides at
+ * the .zfs/snapshot directories the picker was handed, the result at
+ * the private mount, the manifest and the resolution read off their
+ * files, and the run's --take for the put-back lines. The run wrote
+ * both documents itself and the picker writes only the one, so the
+ * resolution is parsed as it is and not held to a record's header,
+ * which this child has no copy of. It is filled after the declaration
+ * of struct resume, which is why it lives down here with it.
  */
+static int run_refresh_core(struct run *r, char *err, size_t errlen);
+
 static int
 run_refresh(void *arg, char *err, size_t errlen)
 {
-	struct run *r = arg;
-	struct zr_verify_report rep;
-	struct zr_resolution res;
-	struct zr_parsed man;
-	FILE *mf, *rf;
-	char e[512];
-	uint32_t back = 0;
-	int rc = 0;
-
-	memset(&rep, 0, sizeof (rep));
-	memset(&res, 0, sizeof (res));
-	memset(&man, 0, sizeof (man));
-
-	/* Re-walk all four trees. */
-	if (read_trees(r) != 0) {
-		(void) snprintf(err, errlen, "%s", r->err);
-		return (-1);
-	}
-
-	/* Read the manifest from disk. */
-	mf = fopen(r->manpath, "r");
-	if (mf == NULL) {
-		(void) snprintf(err, errlen, "%s: %s", r->manpath,
-		    strerror(errno));
-		release_trees(r);
-		return (-1);
-	}
-	if (zr_manifest_parse(mf, &man, e, sizeof (e)) != 0) {
-		(void) fclose(mf);
-		(void) snprintf(err, errlen, "%s: %s", r->manpath, e);
-		release_trees(r);
-		return (-1);
-	}
-	(void) fclose(mf);
-
-	/* Read the resolution from disk. */
-	rf = fopen(r->respath, "r");
-	if (rf == NULL) {
-		(void) snprintf(err, errlen, "%s: %s", r->respath,
-		    strerror(errno));
-		zr_parsed_fini(&man);
-		release_trees(r);
-		return (-1);
-	}
-	if (zr_resolution_parse(rf, &res, e, sizeof (e)) != 0) {
-		(void) fclose(rf);
-		(void) snprintf(err, errlen, "%s: %s", r->respath, e);
-		zr_parsed_fini(&man);
-		release_trees(r);
-		return (-1);
-	}
-	(void) fclose(rf);
-
-	/* Classify the result against the manifest. */
-	rc = zr_verify_with(&man, &res, r->oracle, &r->wo, &r->wf,
-	    &r->wr, 0, &rep, e, sizeof (e));
-	if (rc != 0) {
-		(void) snprintf(err, errlen, "%s", e);
-		goto out;
-	}
-
-	/* Put back conflict lines the manifest marks that are missing. */
-	if (zr_conflicts_back(&man, &res, r->names,
-	    take_choice(run_take(r)), &back, e, sizeof (e)) != 0) {
-		(void) snprintf(err, errlen, "%s", e);
-		rc = -1;
-		goto out;
-	}
-
-	/*
-	 * Write the resolution if anything changed (drift or
-	 * put-back).  The write is the atomic sibling-and-rename the
-	 * library uses, so the picker's next re-read finds one whole
-	 * document or the other.
-	 */
-	if (rep.zv_ndiffs > 0 || back > 0) {
-		if (zr_doc_write(r->respath, emit_resolution, &res,
-		    r->err, sizeof (r->err)) != 0) {
-			(void) snprintf(err, errlen, "%s", r->err);
-			rc = -1;
-		}
-	}
-
-out:
-	zr_verify_report_fini(&rep);
-	zr_resolution_fini(&res);
-	zr_parsed_fini(&man);
-	release_trees(r);
-	return (rc);
+	return (run_refresh_core(arg, err, errlen));
 }
 
 static int
@@ -3939,6 +3851,12 @@ struct resume {
 	struct zr_resolution	res;		/* the recorded resolution */
 	int			hasres;		/* 1 read, 0 gone, -1 bad */
 	char			reserr[512];	/* why, when it is -1 */
+	/*
+	 * Set in the built-in picker's child for its refresh hook:
+	 * curses has the terminal, so the gate's own lines about what
+	 * it added are not printed (the picker reloads and shows it).
+	 */
+	int			quiet;
 	char			err[512];
 };
 
@@ -5880,6 +5798,8 @@ add_drift(struct resume *s, const struct zr_verify_report *rep)
 	if (zr_doc_write(s->respath, emit_resolution, &s->res, s->err,
 	    sizeof (s->err)) != 0)
 		return (-1);
+	if (s->quiet)
+		return (0);
 	if (n != 0)
 		(void) fprintf(stderr, "zfs_rebase: %u drift line%s added to "
 		    "the resolution %s\n", n, n == 1 ? "" : "s", s->respath);
@@ -6579,56 +6499,164 @@ input_dir(struct resume *s, int which, char *out, size_t outlen)
 }
 
 /*
- * The refresh hook for the resume path's built-in picker (ruling 30 of
- * 2026-09-15, tracker issue picker-refresh).
+ * The refresh core both built-in picker hooks share (ruling 30 of
+ * 2026-09-15, tracker issue picker-refresh): the conflicts gate's
+ * classification and document half, run again in the picker's child
+ * on the trees as they stand. It is the sequence conflicts_check makes
+ * -- classify the result against the manifest, put back the conflict
+ * lines the manifest marks that the document lacks, add a drift line
+ * for each name that moved, write the document if any of that changed
+ * it -- and nothing else.
  *
- * It runs in the forked child's copy of struct resume, so nothing it
- * opens leaks to the parent: the child holds a copy of the parent's
- * memory, and what it opens and walks dies with it.  The only shared
- * thing is the resolution file on disk, which the parent re-reads
- * after the child exits as it already does.  The document this writes
- * is the same the gate would write -- the same functions, the same
- * drift-and-put-back sequence -- so the parent's own gate pass on
- * return finds nothing more to add.
+ * Three things make it the child's and not the gate's:
+ *
+ * - The trees are walked by path, at the directories the gate walked
+ *   and handed the picker (sidedir, workmnt), and never found again
+ *   through libzfs: the launcher closed every descriptor of the
+ *   tool's before it called the picker, /dev/zfs among them (L6 of
+ *   the code review), and a libzfs call here met EBADF on the box
+ *   (the author, 2026-09-23, "refresh failed: zrm/lo: cannot open
+ *   'zrm/lo': Bad file descriptor").
+ * - The caller hands in the resolution as it is on disk now, since
+ *   the picker has been saving to it; the copy the gate read before
+ *   the fork is older than the person's answers.
+ * - Nothing is printed: curses has the terminal. The picker reloads
+ *   the document and shows what changed.
+ *
+ * s->man and s->res are the caller's, parsed; the walks are made and
+ * let go here. Returns 0, or -1 with s->err set.
+ */
+static int
+refresh_core(struct resume *s)
+{
+	static const int side[2][2] = {
+		{ ZI_ONTO, ZS_ONTO }, { ZI_FROM, ZS_FROM }
+	};
+	struct zr_verify_report rep;
+	int i, rc;
+
+	memset(&rep, 0, sizeof (rep));
+	s->quiet = 1;
+	s->names = zr_names_create();
+	if (s->names == NULL) {
+		(void) snprintf(s->err, sizeof (s->err), "out of memory");
+		return (-1);
+	}
+	for (i = 0; i < 2; i++) {
+		int which = side[i][0], slot = side[i][1];
+
+		if (s->gone[which] != 0 || s->sidedir[slot][0] == '\0') {
+			rc = empty_walk(s, slot);
+		} else {
+			rc = zr_walk(s->sidedir[slot], s->names, &s->w[slot],
+			    s->err, sizeof (s->err));
+			if (rc == 0)
+				s->walked |= 1 << slot;
+		}
+		if (rc != 0) {
+			close_trees(s);
+			return (-1);
+		}
+	}
+	if (zr_walk(s->workmnt, s->names, &s->w[ZS_RESULT], s->err,
+	    sizeof (s->err)) != 0) {
+		close_trees(s);
+		return (-1);
+	}
+	s->walked |= 1 << ZS_RESULT;
+	if (build_oracle(s) != 0) {
+		close_trees(s);
+		return (-1);
+	}
+	rc = classify(s, &s->man, &rep);
+	if (rc == 0)
+		rc = add_drift(s, &rep);
+	zr_verify_report_fini(&rep);
+	close_trees(s);
+	return (rc);
+}
+
+/*
+ * The resume path's hook: its own structure, which is the gate's, with
+ * the resolution read again off the file under the record's header
+ * checks.
  */
 static int
 resume_refresh(void *arg, char *err, size_t errlen)
 {
 	struct resume *s = arg;
-	struct zr_verify_report rep;
-	int rc;
 
-	memset(&rep, 0, sizeof (rep));
-
-	/* Walk the trees again: they were closed before the child. */
-	if (walk_trees(s) != 0) {
-		(void) snprintf(err, errlen, "%s", s->err);
+	if (reread_resolution(s) <= 0) {
+		(void) snprintf(err, errlen, "%s", s->hasres == 0 ?
+		    "the resolution is gone" : s->reserr);
 		return (-1);
 	}
-
-	/*
-	 * The gate's classification and document half, exactly as an
-	 * arrival at the gate makes them: classify the result against
-	 * the manifest, put back any conflict lines the manifest marks
-	 * that the resolution lacks, add any drift lines the classify
-	 * found, and write the resolution.  These are the same
-	 * functions conflicts_check calls.
-	 */
-	rc = classify(s, &s->man, &rep);
-	if (rc != 0) {
-		zr_verify_report_fini(&rep);
-		close_trees(s);
-		(void) snprintf(err, errlen, "%s", s->err);
-		return (-1);
-	}
-	rc = add_drift(s, &rep);
-	zr_verify_report_fini(&rep);
-	close_trees(s);
-	if (rc != 0) {
+	if (refresh_core(s) != 0) {
 		(void) snprintf(err, errlen, "%s", s->err);
 		return (-1);
 	}
 	return (0);
+}
+
+static int
+run_refresh_core(struct run *r, char *err, size_t errlen)
+{
+	struct resume *s;
+	FILE *fp;
+	int rc = -1;
+
+	/* one of these is too big for the child's stack to be careless */
+	s = calloc(1, sizeof (struct resume));
+	if (s == NULL) {
+		(void) snprintf(err, errlen, "out of memory");
+		return (-1);
+	}
+	(void) snprintf(s->workmnt, sizeof (s->workmnt), "%s", r->workmnt);
+	(void) snprintf(s->respath, sizeof (s->respath), "%s", r->respath);
+	snapdir(s->sidedir[ZS_ONTO], sizeof (s->sidedir[ZS_ONTO]),
+	    r->ontomnt, r->ontosnap);
+	snapdir(s->sidedir[ZS_FROM], sizeof (s->sidedir[ZS_FROM]),
+	    r->frommnt, r->fromsnap);
+	(void) snprintf(s->rb.take, sizeof (s->rb.take), "%s", run_take(r));
+
+	fp = fopen(r->manpath, "r");
+	if (fp == NULL) {
+		(void) snprintf(err, errlen, "%s: %s", r->manpath,
+		    strerror(errno));
+		goto out;
+	}
+	if (zr_manifest_parse(fp, &s->man, s->err, sizeof (s->err)) != 0) {
+		(void) fclose(fp);
+		(void) snprintf(err, errlen, "%s: %s", r->manpath, s->err);
+		goto out;
+	}
+	(void) fclose(fp);
+	s->parsed = 1;
+	fp = fopen(r->respath, "r");
+	if (fp == NULL) {
+		(void) snprintf(err, errlen, "%s: %s", r->respath,
+		    strerror(errno));
+		goto out;
+	}
+	if (zr_resolution_parse(fp, &s->res, s->err, sizeof (s->err)) != 0) {
+		(void) fclose(fp);
+		(void) snprintf(err, errlen, "%s: %s", r->respath, s->err);
+		goto out;
+	}
+	(void) fclose(fp);
+	s->hasres = 1;
+	if (refresh_core(s) != 0) {
+		(void) snprintf(err, errlen, "%s", s->err);
+		goto out;
+	}
+	rc = 0;
+out:
+	if (s->hasres > 0)
+		zr_resolution_fini(&s->res);
+	if (s->parsed)
+		zr_parsed_fini(&s->man);
+	free(s);
+	return (rc);
 }
 
 static int
