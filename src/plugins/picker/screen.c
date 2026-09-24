@@ -963,6 +963,24 @@ pk_draw_tree(int y, int x, const struct zr_pk_row *row, int tree, int co,
 	return (pk_putx(y, x, PK_CO_PLAIN, 0, "  "));
 }
 
+/* The cells pk_draw_tree takes for the same tree, drawing nothing. */
+static int
+pk_tree_len(const struct zr_pk_row *row, int tree, const char *label,
+    const char *verb)
+{
+	char buf[PK_LINEBUF];
+	int n = (int)strlen(label);
+
+	if (row->zk_obj[tree] == ZR_PK_O_ABSENT)
+		n += (int)strlen("absent");
+	else
+		n += snprintf(buf, sizeof (buf), "%llu B",
+		    (unsigned long long)row->zk_size[tree]);
+	if (verb != NULL)
+		n += 1 + (int)strlen(verb);
+	return (n + 2);
+}
+
 static const char *
 pk_fo_word(enum zr_pk_fo fo)
 {
@@ -1008,9 +1026,9 @@ static void
 pk_draw_detail(const struct zr_picker *pk, int y)
 {
 	const struct zr_pk_row *row = zr_pk_row(pk, zr_pk_cursor(pk));
-	char buf[PK_LINEBUF];
+	char buf[PK_LINEBUF], link[64];
 	uint32_t names;
-	int x;
+	int x, lead;
 
 	pk_rule(y, ACS_LTEE, ACS_RTEE, NULL);
 	pk_side(y + 1);
@@ -1036,12 +1054,55 @@ pk_draw_detail(const struct zr_picker *pk, int y)
 		x = pk_putx(y + 1, x, PK_CO_PLAIN, 0, "  ");
 		(void) pk_putx(y + 1, x, PK_CO_CYAN, 0, buf);
 	}
-	x = pk_draw_tree(y + 2, 1, row, ZR_PK_T_BASE, PK_CO_DIM, " base ",
-	    NULL);
+	/*
+	 * How many names the result's own object has, where it has more
+	 * than one. A pool is one file and every name it has, and a
+	 * merge written here reaches all of them, so the person is told
+	 * before they press w and not after (the author, 2026-09-15, on
+	 * the review's question 14). One name is the ordinary case and
+	 * says nothing.
+	 *
+	 * The line is cut at the frame, and this is the part of it a
+	 * person must not miss (the author, 2026-09-23, box session 1:
+	 * the whole clause needed 94 columns even with three tiny
+	 * files). The sizes are bytes and grow with the file. So the
+	 * clause goes after the sizes and before the group, which gives
+	 * way first; where the whole clause will not fit there the short
+	 * form does; and where not even that fits, the short form opens
+	 * the line and the sizes are what is cut.
+	 */
+	link[0] = '\0';
+	lead = 0;
+	if (row->zk_nlink > 1) {
+		int sizes = pk_tree_len(row, ZR_PK_T_BASE, " base ", NULL) +
+		    pk_tree_len(row, ZR_PK_T_FROM, "from ",
+		    pk_fo_word(row->zk_fo[0])) +
+		    pk_tree_len(row, ZR_PK_T_ONTO, "onto ",
+		    pk_fo_word(row->zk_fo[1]));
+
+		(void) snprintf(link, sizeof (link),
+		    "the result holds it under %u names  ",
+		    (unsigned)row->zk_nlink);
+		if (1 + sizes + (int)strlen(link) > pk_w - 1) {
+			(void) snprintf(link, sizeof (link),
+			    "held under %u names  ",
+			    (unsigned)row->zk_nlink);
+			lead = (1 + sizes + (int)strlen(link) > pk_w - 1);
+		}
+	}
+	x = 1;
+	if (lead) {
+		x = pk_putx(y + 2, x, PK_CO_PLAIN, 0, " ");
+		x = pk_putx(y + 2, x, PK_CO_CYAN, 0, link);
+	}
+	x = pk_draw_tree(y + 2, x, row, ZR_PK_T_BASE, PK_CO_DIM,
+	    lead ? "base " : " base ", NULL);
 	x = pk_draw_tree(y + 2, x, row, ZR_PK_T_FROM, PK_CO_FROM, "from ",
 	    pk_fo_word(row->zk_fo[0]));
 	x = pk_draw_tree(y + 2, x, row, ZR_PK_T_ONTO, PK_CO_ONTO, "onto ",
 	    pk_fo_word(row->zk_fo[1]));
+	if (link[0] != '\0' && !lead)
+		x = pk_putx(y + 2, x, PK_CO_CYAN, 0, link);
 	names = zr_pk_group_names(pk, row->zk_group);
 	if (names == 1)
 		(void) snprintf(buf, sizeof (buf), "group %u is this one name",
@@ -1049,21 +1110,7 @@ pk_draw_detail(const struct zr_picker *pk, int y)
 	else
 		(void) snprintf(buf, sizeof (buf), "group %u is %u names",
 		    (unsigned)row->zk_group, (unsigned)names);
-	x = pk_putx(y + 2, x, PK_CO_DIM, 0, buf);
-	/*
-	 * And how many names the result's own object has, where it has
-	 * more than one. A pool is one file and every name it has, and
-	 * a merge written here reaches all of them, so the person is
-	 * told before they press w and not after (the author,
-	 * 2026-09-15, on the review's question 14). One name is the
-	 * ordinary case and says nothing.
-	 */
-	if (row->zk_nlink > 1) {
-		(void) snprintf(buf, sizeof (buf),
-		    "  the result holds it under %u names",
-		    (unsigned)row->zk_nlink);
-		(void) pk_putx(y + 2, x, PK_CO_CYAN, 0, buf);
-	}
+	(void) pk_putx(y + 2, x, PK_CO_DIM, 0, buf);
 }
 
 /*
