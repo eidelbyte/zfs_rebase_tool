@@ -27,6 +27,7 @@
 
 #include <stddef.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "picker.h"
 
@@ -60,6 +61,23 @@ zr_picker_main(int argc, char **argv)
 	int status, rc;
 
 	err[0] = '\0';
+	/*
+	 * -m, --merge-non-conflict: the headless pass, then out. The
+	 * "-m" stands where the launcher put it, after the program's
+	 * name, and the argv after it is -i's own.
+	 */
+	if (argc == ZR_PK_ARGC + 1 && strcmp(argv[1], "-m") == 0) {
+		argv[1] = argv[0];
+		if (zr_pk_open(&pk, ZR_PK_ARGC, argv + 1, err,
+		    sizeof (err)) != 0) {
+			(void) fprintf(stderr, "%s: %s\n", PK_PROG, err);
+			zr_pk_fini(&pk);
+			return (2);
+		}
+		(void) zr_pk_automerge(&pk, stderr, PK_PROG);
+		zr_pk_fini(&pk);
+		return (0);
+	}
 	if (zr_pk_open(&pk, argc, argv, err, sizeof (err)) != 0) {
 		(void) fprintf(stderr, "%s: %s\n", PK_PROG, err);
 		zr_pk_fini(&pk);

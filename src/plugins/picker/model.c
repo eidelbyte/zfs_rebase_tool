@@ -2199,6 +2199,42 @@ pk_merge_write(struct zr_picker *pk)
 	return (ZR_PK_REDRAW);
 }
 
+uint32_t
+zr_pk_automerge(struct zr_picker *pk, FILE *out, const char *prog)
+{
+	struct zr_pk_merge *mg = &pk->pk_merge;
+	struct zr_pk_row *row;
+	const char *msg;
+	uint32_t i, before;
+
+	before = pk_unanswered(pk);
+	for (i = 0; i < pk->pk_nrows; i++) {
+		row = &pk->pk_rows[i];
+		if (row->zk_kind != ZR_PK_L_CONFLICT || row->zk_rec == NULL ||
+		    (row->zk_rec->zr_flags & ZR_CF_GREEN) != 0 ||
+		    zr_pk_isscope(row) || zr_pk_choice(row) != ZR_CH_NONE ||
+		    !zr_pk_can_open(pk, i))
+			continue;
+		pk->pk_cursor = i;
+		if (zr_pk_merge_open(pk) == 0) {
+			if ((mg->pm_has_content && !mg->pm_content_same &&
+			    mg->pm_m3.nconflict != 0) ||
+			    (mg->pm_has_meta &&
+			    mg->pm_meta.mm_nconflict != 0))
+				zr_pk_merge_close(pk);
+			else
+				(void) pk_merge_write(pk);
+			if (mg->pm_open != 0)
+				zr_pk_merge_close(pk);
+		}
+		while ((msg = zr_pk_msg(pk)) != NULL) {
+			if (out != NULL)
+				(void) fprintf(out, "%s: %s\n", prog, msg);
+		}
+	}
+	return (before - pk_unanswered(pk));
+}
+
 /*
  * Every key, while a merge is open. The list's own keys mean nothing
  * here: the cursor cannot move under a merge that was opened on the

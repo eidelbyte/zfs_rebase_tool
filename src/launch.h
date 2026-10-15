@@ -55,10 +55,23 @@ struct zr_launch {
 	 */
 	int		(*refresh)(void *rarg, char *err, size_t errlen);
 	void		*rarg;
+	/*
+	 * -m, --merge-non-conflict: the built-in, headless. It merges
+	 * three ways every conflict whose merge has no conflict, writes
+	 * each into the result and answers it keep, saves the document
+	 * and exits, drawing nothing; what it leaves is read back as
+	 * -i's is. command is NULL and refresh unused for it.
+	 */
+	int		merge;
 };
 
-/* How many arguments the built-in child is given, argv[0] counted. */
-#define	ZR_LAUNCH_ARGC	6
+/*
+ * How many arguments the built-in child is given, argv[0] counted:
+ * ZR_LAUNCH_ARGC for -i's picker, and one more, the "-m" after the
+ * program's name, for the merge (ZR_LAUNCH_ARGMAX).
+ */
+#define	ZR_LAUNCH_ARGC		6
+#define	ZR_LAUNCH_ARGMAX	(ZR_LAUNCH_ARGC + 1)
 
 /*
  * Fork the child, wait for it, and say what became of it. Returns 0
@@ -110,9 +123,11 @@ void zr_launch_closefds(void);
  * The built-in child's argv, built into the caller's array:
  *
  *	zfs_rebase-picker RESOLUTION BASE FROM ONTO RESULT
+ *	zfs_rebase-picker -m RESOLUTION BASE FROM ONTO RESULT
  *
- * and a NULL after them, so n must be ZR_LAUNCH_ARGC + 1 or more.
- * Returns the argument count, or -1 where the array is too small.
+ * the second for lp->merge, and a NULL after them, so n must be one
+ * more than the count. Returns the argument count, or -1 where the
+ * array is too small.
  * The entries point into lp's own strings, which the caller owns;
  * a NULL there is given to the child as "".
  */

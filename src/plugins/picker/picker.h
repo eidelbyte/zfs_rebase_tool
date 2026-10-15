@@ -7,6 +7,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 
 #include "manifest.h"
 #include "merge.h"
@@ -20,7 +21,11 @@
  *	zfs_rebase-picker RESOLUTION BASE FROM ONTO RESULT
  *
  * where the last four are the directories the trees are at and "" is
- * a tree there is no path for. The status it returns is the child's:
+ * a tree there is no path for; or, for -m (--merge-non-conflict), the
+ * same with "-m" after the program's name, which makes the headless
+ * pass of zr_pk_automerge, draws nothing, and returns 0 when the pass
+ * ran and 2 when the documents would not open. The status it returns
+ * is the child's:
  * 0 the document written with no name left unanswered, so the tool
  * goes on; 1 saved and stop, the answers so far written and the gate
  * left standing; 2 abandoned with nothing written, which is also
@@ -392,6 +397,21 @@ struct zr_picker {
  */
 int zr_pk_open(struct zr_picker *out, int argc, char **argv, char *err,
     size_t errlen);
+
+/*
+ * -m, --merge-non-conflict: the headless pass over every row. A row is
+ * taken when it is a conflict line the manifest marks, still
+ * unanswered, of a group with no pooling class -- a name moved or
+ * split two ways is a person's to settle whatever its text says --
+ * and it opens three ways (zr_pk_can_open). It is written when both
+ * of its merges, the content's and the metadata's, have no conflict,
+ * by screen 2's w: the object, then its attributes, every name of it
+ * set to keep and the document saved. Anything else is left as it
+ * was. The lines the model queues are printed to OUT as they come,
+ * each after PROG and ": ", when OUT is not NULL. Returns the number
+ * of names the pass set to keep, the pooled names among them.
+ */
+uint32_t zr_pk_automerge(struct zr_picker *pk, FILE *out, const char *prog);
 
 /*
  * Arm the refresh hook, which the r key calls before re-reading the

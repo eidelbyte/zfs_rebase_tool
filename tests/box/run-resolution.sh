@@ -165,6 +165,19 @@
 #    and then -c -i, which opens on the skeleton the restart wrote.
 #    Cells: ZI24 to ZI35.
 #
+# 13. -m, --merge-non-conflict, over two worlds of its own (a
+#    fixture's file is one line, and a clean merge needs two changes
+#    in one file that do not touch). (a) A fresh run merges the file
+#    whose two sides changed different lines, answers it keep, says
+#    so, and stops on the file both changed at one line; that one by
+#    hand and a --continue reach done with the merge standing. (b) A
+#    plain run stopped at the gate and --continue -m: the same on
+#    the resume path. (c) A world whose every conflict merges clean:
+#    -m alone reaches done in one process. In a PICKER=no build the
+#    stub says it has no picker to merge through and the gate stands
+#    with nothing answered, and (b) and (c) are skipped.
+#    Cells: ZI44, ZI45, ZI46.
+#
 # Every case ends by taking the rebase away -- --abort where one is
 # still open, and by hand where it reached done, since done takes the
 # record off and leaves --abort nothing to find -- and the pool is
@@ -2657,11 +2670,158 @@ one_fixture() {
 	echo "ok   $fixture: the resolution carried out both ways, in both forms"
 }
 
+# --- 13. -m, --merge-non-conflict -----------------------------------
+# Its own directories and not a fixture's: a fixture's file is one
+# line (tests/fixtures/FORMAT.md), and a merge with no conflict needs
+# two changes in one file that do not touch. clean.txt is changed at
+# its first line on from and at its last on onto; both.txt at the
+# same line on both, which conflicts. The clean world has clean.txt
+# alone.
+merge_fdir() {
+	fdir=$tmp/merge-$1
+	rm -rf "$fdir"
+	mkdir -p "$fdir/base" "$fdir/from" "$fdir/onto" || exit 2
+	printf 'a\nb\nc\nd\ne\n' > "$fdir/base/clean.txt"
+	printf 'A\nb\nc\nd\ne\n' > "$fdir/from/clean.txt"
+	printf 'a\nb\nc\nd\nE\n' > "$fdir/onto/clean.txt"
+	if [ "$1" = both ]; then
+		printf 'x\ny\n' > "$fdir/base/both.txt"
+		printf 'X\ny\n' > "$fdir/from/both.txt"
+		printf 'Z\ny\n' > "$fdir/onto/both.txt"
+	fi
+	flag=""
+}
+merged_clean() {
+	[ "$(cat "$hmnt/clean.txt")" = "$(printf 'A\nb\nc\nd\nE')" ] || \
+	    { cat "$hmnt/clean.txt"; fail "clean.txt is not the merge: $1"; }
+}
+nopicker_line='^zfs_rebase: this build has no picker, and --merge-non-conflict merges through it$'
+
+# (a) a fresh run: clean.txt merged and answered keep, both.txt left,
+# the count said, the gate standing; then both.txt by hand and a
+# plain --continue to done, where the merge stands. In a PICKER=no
+# build the stub says so and the gate stands with nothing answered.
+case_m_fresh() {
+	case_id="merge $form -m on a fresh run"
+	fresh -m
+	st=$?
+	if grep -q "$nopicker_line" "$log"; then
+		[ $st -eq 1 ] || { cat "$log"; fail "-m with no picker exited $st, want 1"; }
+		grep -q "continue with: zfs_rebase -c $rds -m" "$log" || \
+		    { cat "$log"; fail "the run did not say the gate stands"; }
+		[ "$(res_left "$res")" = 2 ] || \
+		    { head -8 "$res"; fail "something answered the skeleton"; }
+		echo "ok   $case_id: no picker in this build, the gate stands"
+		nopicker=1
+		end_case
+		return 0
+	fi
+	[ $st -eq 1 ] || { cat "$log"; fail "-m exited $st, want 1"; }
+	grep -q '^zfs_rebase: --merge-non-conflict merged 1 name three ways with no conflict; 1 unanswered$' "$log" || \
+	    { cat "$log"; fail "the run did not say what -m merged"; }
+	grep -q '^    clean.txt conflict [0-9]* keep$' "$res" || \
+	    { cat "$res"; fail "clean.txt does not read keep"; }
+	grep -q '^    both.txt conflict [0-9]* -$' "$res" || \
+	    { cat "$res"; fail "both.txt was answered"; }
+	sethere
+	merged_clean "at the gate"
+	answer_one "$res"
+	"$bin" --continue "$rds" > "$tmp/cont" 2>&1
+	st=$?
+	[ $st -eq 0 ] || { cat "$tmp/cont"; fail "the --continue exited $st, want 0"; }
+	sethere
+	merged_clean "at done"
+	echo "ok   $case_id: one merged, one left, the merge stands at done"
+	end_case
+}
+
+# (b) the resume path: a plain run stopped at the gate, then
+# --continue -m merges clean.txt and stops on both.txt.
+case_m_continue() {
+	case_id="merge $form --continue -m"
+	at_conflicts
+	"$bin" --continue -m "$rds" > "$tmp/cont" 2>&1
+	st=$?
+	[ $st -eq 1 ] || { cat "$tmp/cont"; fail "--continue -m exited $st, want 1"; }
+	grep -q '^zfs_rebase: --merge-non-conflict merged 1 name three ways with no conflict; 1 unanswered$' "$tmp/cont" || \
+	    { cat "$tmp/cont"; fail "the --continue did not say what -m merged"; }
+	grep -q '^    clean.txt conflict [0-9]* keep$' "$res" || \
+	    { cat "$res"; fail "clean.txt does not read keep"; }
+	sethere
+	merged_clean "after --continue -m"
+	echo "ok   $case_id: merged on the resume path, the gate standing"
+	end_case
+}
+
+# (c) every conflict merges clean: -m alone goes to done in one
+# process, the merge at keep.
+case_m_done() {
+	case_id="merge $form -m to done"
+	fresh -m
+	st=$?
+	[ $st -eq 0 ] || { cat "$log"; fail "-m exited $st, want 0"; }
+	grep -q '^zfs_rebase: --merge-non-conflict merged 1 name three ways with no conflict; 0 unanswered$' "$log" || \
+	    { cat "$log"; fail "the run did not say what -m merged"; }
+	grep -q "the resolution $res is answered in full; going on" "$log" || \
+	    { cat "$log"; fail "the run did not pass its own conflicts gate"; }
+	sethere
+	merged_clean "at done"
+	echo "ok   $case_id: done in one process"
+	end_case
+}
+
+merge_pass() {
+	form=$1
+	if [ "$form" = clone ]; then
+		rds=$POOL/result
+	else
+		rds=$POOL/onto
+	fi
+	rundir=/var/db/zfs_rebase/$rds
+	hmnt=$rundir/mnt
+	if [ "$form" = clone ]; then
+		ontodir=$MNT/onto/.zfs/snapshot/work
+	else
+		ontodir=$hmnt/.zfs/snapshot/pre
+	fi
+	fromdir=$MNT/from/.zfs/snapshot/work
+	man=$tmp/manifest
+	res=$man.resolution
+	log=$tmp/pass.log
+	prog_step "the -m world $2, the $form form"
+	say "the -m world $2, the $form form"
+	if [ "$2" = both ]; then
+		case_m_fresh
+		if [ "$nopicker" = 0 ]; then
+			case_m_continue
+		fi
+	elif [ "$nopicker" = 0 ]; then
+		case_m_done
+	else
+		echo "skip merge $form -m to done: no picker in this build"
+	fi
+	return 0
+}
+
+one_merge() {
+	fixture=merge
+	nopicker=0
+	for world in both clean; do
+		merge_fdir "$world"
+		make_pool
+		merge_pass clone "$world"
+		merge_pass dataset "$world"
+		drop_pool
+	done
+	echo "ok   the -m worlds: merged both ways, in both forms"
+}
+
 nfx=0
 for f in $fixtures; do nfx=$((nfx + 1)); done
-prog_start $((nfx * 2)) "fixture forms"
+prog_start $((nfx * 2 + 4)) "fixture forms and the -m worlds"
 for f in $fixtures; do
 	one_fixture "$f"
 done
+one_merge
 echo "run-resolution: $cases cases passed"
 exit 0

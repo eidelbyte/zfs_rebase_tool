@@ -7,12 +7,13 @@ which files it could not decide and why.
 
     zfs_rebase [-p] [-v] [-q] [--manifest FILE] \
         [--allow-unrelated --base SNAP] \
-        [--take-onto | --take-from] [--interactive [CMD]] [--no-merge] \
+        [--take-onto | --take-from] [--merge-non-conflict] \
+        [--interactive [CMD]] [--no-merge] \
         --from SNAP|DATASET --onto SNAP|DATASET --result NAME
     zfs_rebase --dry-run [-p] [--manifest FILE] \
         --from SNAP|DATASET --onto SNAP|DATASET
-    zfs_rebase --continue [--interactive [CMD]] [--no-merge] \
-        [--from SNAP] [--onto SNAP] IDENT
+    zfs_rebase --continue [--merge-non-conflict] [--interactive [CMD]] \
+        [--no-merge] [--from SNAP] [--onto SNAP] IDENT
     zfs_rebase --restart IDENT
     zfs_rebase --abort IDENT
     zfs_rebase --verify IDENT
@@ -67,6 +68,7 @@ it; a start writes a manifest and reads none, so it takes no IDENT.
 | `--take-onto` | `-O` | write the skeleton with every conflict answered onto |
 | `--take-from` | `-F` | write the skeleton with every conflict answered from; the two exclude each other |
 | `--interactive` | `-i` | open a child on the resolution at the conflicts gate, wait for it, and read the document back when it exits 0; anything else leaves the gate standing. Its optional value is the command that edits the file -- run as `sh -c 'CMD "$@"' CMD PATH`, so the command's own flags are part of it (`"code --wait"`) and the path is its last argument -- and with no value the built-in picker opens. Not every build has one: `make PICKER=no`, and a package with its PICKER option off, leave the picker and its curses library out, and there `-i CMD` is this same flag while `-i` alone says `this build has no picker; name an editor with -i CMD` and exits 2, which leaves the gate standing like any other non-zero exit. A bare word after -i is that command unless it is the only bare word on a verb's line, where it is IDENT; `--interactive=CMD` always names the command, and an empty value there is refused. For this invocation only (not latched: say it on each --continue) |
+| `--merge-non-conflict` | `-m` | at the conflicts gate, merge three ways every conflict whose text and attributes merge with no conflict, answer it keep, and go on by what is left; the built-in picker's merge, headless, so not in a `PICKER=no` build |
 | `--no-merge` | `-M` | stop at the conflicts gate however the resolution reads; an error once the gate is passed |
 | `--continue` | `-c` | take the rebase on from the gate its record names |
 | `--restart` | `-R` | the result back as onto was, the manifest applied again from the first gate, the resolution back to its skeleton |
@@ -380,6 +382,14 @@ the one code path a --continue uses. --no-merge holds it at the gate
 instead, and is refused once the gate is passed. The gate is
 headless by default: this is a system tool, and it opens nothing of
 its own unless it is asked to.
+--merge-non-conflict (-m) asks for the one thing that is not a
+person's choice: at the gate, before any -i, the built-in picker runs
+headless over every unanswered conflict that opens three ways and
+belongs to no pooling group, and where both its text and its
+attributes merge with no conflict it writes the merge into the result
+and answers the line keep, as its second screen's w does. What is
+left waits, or opens in -i; a rebase whose every conflict merges this
+way goes to done in one process.
 --interactive asks: at the gate the tool forks a child on the
 resolution -- the command -i names, or the built-in picker where it
 names none, and a build made without the picker (`make PICKER=no`, or
@@ -557,8 +567,8 @@ of them stand beside IDENT; --result is what a start calls the thing
 it makes, and beside any verb it is refused, exit 2, saying what a
 verb takes instead.
 
-    zfs_rebase --continue [--interactive [CMD]] [--no-merge] \
-        [--from SNAP] [--onto SNAP] IDENT
+    zfs_rebase --continue [--merge-non-conflict] [--interactive [CMD]] \
+        [--no-merge] [--from SNAP] [--onto SNAP] IDENT
 
 takes the rebase on from the gate its record names, through the
 gates that are left, in one process. Applying is idempotent -- every

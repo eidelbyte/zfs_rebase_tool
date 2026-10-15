@@ -3125,6 +3125,10 @@ reread_skeleton(struct run *r)
  * Returns 0 with r->unanswered true of the file the child left, or
  * the status to give up with, the reason already printed. Either way
  * the rebase is at the conflicts gate and a --continue takes it on.
+ *
+ * MERGE asks for the built-in headless, for -m: it merges what merges
+ * with no conflict and exits, and is read back the same way; the tool
+ * says how many names it answered.
  */
 /*
  * The fresh run's hook: the same core, over a struct resume filled
@@ -3139,6 +3143,17 @@ reread_skeleton(struct run *r)
  */
 static int run_refresh_core(struct run *r, char *err, size_t errlen);
 
+/* What -m's child answered, said from the counts before and after. */
+static void
+merged_note(uint32_t before, uint32_t after)
+{
+	uint32_t n = before > after ? before - after : 0;
+
+	(void) fprintf(stderr, "zfs_rebase: --merge-non-conflict merged %u "
+	    "name%s three ways with no conflict; %u unanswered\n", n,
+	    n == 1 ? "" : "s", after);
+}
+
 static int
 run_refresh(void *arg, char *err, size_t errlen)
 {
@@ -3146,12 +3161,13 @@ run_refresh(void *arg, char *err, size_t errlen)
 }
 
 static int
-run_interactive(struct run *r)
+run_interactive(struct run *r, int merge)
 {
 	struct zr_launch lp;
 	char basedir[ZR_NAME_MAX * 2], fromdir[ZR_NAME_MAX * 2];
 	char ontodir[ZR_NAME_MAX * 2];
 	char e[512];
+	uint32_t before;
 	int rc;
 
 	basedir[0] = '\0';
@@ -3160,7 +3176,8 @@ run_interactive(struct run *r)
 	snapdir(fromdir, sizeof (fromdir), r->frommnt, r->fromsnap);
 	snapdir(ontodir, sizeof (ontodir), r->ontomnt, r->ontosnap);
 	memset(&lp, 0, sizeof (lp));
-	lp.command = r->o.editor;
+	lp.command = merge != 0 ? NULL : r->o.editor;
+	lp.merge = merge;
 	lp.resolution = r->respath;
 	lp.base = basedir;
 	lp.from = fromdir;
@@ -3170,12 +3187,14 @@ run_interactive(struct run *r)
 	 * The refresh hook for the built-in picker's r key: re-walk
 	 * the trees and rewrite the resolution with any drift a hand
 	 * made while the picker was suspended.  An -i CMD editor has
-	 * no hook (its child execs, so the pointer would be lost).
+	 * no hook (its child execs, so the pointer would be lost), and
+	 * the merge no key to press.
 	 */
-	if (r->o.editor == NULL) {
+	if (merge == 0 && r->o.editor == NULL) {
 		lp.refresh = run_refresh;
 		lp.rarg = r;
 	}
+	before = r->unanswered;
 	/*
 	 * The child writes into the result itself -- the picker's
 	 * merge does, and an editor the person points at a file does
@@ -3188,7 +3207,7 @@ run_interactive(struct run *r)
 		(void) fprintf(stderr, "zfs_rebase: %s\n", e);
 		(void) fprintf(stderr, "zfs_rebase: the resolution %s stands "
 		    "at the conflicts gate; continue with: zfs_rebase -c %s "
-		    "-i\n", r->respath, r->rds);
+		    "%s\n", r->respath, r->rds, merge != 0 ? "-m" : "-i");
 		return (EXIT_CONFLICTS);
 	}
 	/*
@@ -3202,6 +3221,8 @@ run_interactive(struct run *r)
 		    r->err);
 		return (EXIT_PRECOND);
 	}
+	if (merge != 0)
+		merged_note(before, r->unanswered);
 	return (0);
 }
 
@@ -3603,6 +3624,20 @@ zr_run(const struct zr_run_opts *o)
 		    r.d.zd_nconflicts, r.d.zd_nconflicts == 1 ? "" : "s",
 		    r.rds);
 		/*
+		 * -m's child first, headless: every conflict whose
+		 * three-way merge has none merged and answered keep
+		 * (ruled 2026-10-15). What it leaves is read back as
+		 * -i's is, and -i then opens on what is left.
+		 */
+		if (o->mergenc) {
+			rc = run_interactive(&r, 1);
+			if (rc != 0) {
+				manifest_note(&r);
+				kept_hint(&r);
+				goto done;
+			}
+		}
+		/*
 		 * And the child, where -i asked for one: after all of
 		 * that and before any of the three messages below,
 		 * whether or not the skeleton came out complete
@@ -3611,7 +3646,7 @@ zr_run(const struct zr_run_opts *o)
 		 * except that anything but 0 leaves the gate standing.
 		 */
 		if (o->interactive) {
-			rc = run_interactive(&r);
+			rc = run_interactive(&r, 0);
 			if (rc != 0) {
 				manifest_note(&r);
 				kept_hint(&r);
@@ -3808,6 +3843,7 @@ struct resume {
 	int			zfslent;	/* the caller's, not to close */
 	char			result[ZR_NAME_MAX];
 	int			nomerge;	/* --no-merge on the command */
+	int			mergenc;	/* -m on the command */
 	int			interactive;	/* --interactive on it */
 	const char		*editor;	/* its value, or NULL */
 	int			report;		/* the verb is --verify */
@@ -6660,16 +6696,18 @@ out:
 }
 
 static int
-resume_interactive(struct resume *s)
+resume_interactive(struct resume *s, int merge)
 {
 	struct zr_launch lp;
 	char basedir[ZR_NAME_MAX * 2];
 	char e[512];
+	uint32_t before;
 	int rc;
 
 	input_dir(s, ZI_BASE, basedir, sizeof (basedir));
 	memset(&lp, 0, sizeof (lp));
-	lp.command = s->editor;
+	lp.command = merge != 0 ? NULL : s->editor;
+	lp.merge = merge;
 	lp.resolution = s->respath;
 	lp.base = basedir;
 	lp.from = s->sidedir[ZS_FROM];
@@ -6680,10 +6718,11 @@ resume_interactive(struct resume *s)
 	 * the trees and rewrite the resolution with any drift.  An
 	 * -i CMD editor has no hook (its child execs).
 	 */
-	if (s->editor == NULL) {
+	if (merge == 0 && s->editor == NULL) {
 		lp.refresh = resume_refresh;
 		lp.rarg = s;
 	}
+	before = zr_resolution_unanswered(&s->res);
 	/*
 	 * The directories above are strings walk_side and input_dir
 	 * left behind and outlive the walks; the walks themselves go
@@ -6697,7 +6736,7 @@ resume_interactive(struct resume *s)
 		(void) fprintf(stderr, "zfs_rebase: %s\n", e);
 		(void) fprintf(stderr, "zfs_rebase: the resolution %s stands "
 		    "at the conflicts gate; continue with: zfs_rebase -c %s "
-		    "-i\n", s->respath, s->result);
+		    "%s\n", s->respath, s->result, merge != 0 ? "-m" : "-i");
 		return (EXIT_CONFLICTS);
 	}
 	/*
@@ -6716,6 +6755,8 @@ resume_interactive(struct resume *s)
 	}
 	if (s->hasres == 0)
 		return (no_resolution(s));
+	if (merge != 0)
+		merged_note(before, zr_resolution_unanswered(&s->res));
 	return (0);
 }
 
@@ -6761,13 +6802,23 @@ stage_conflicts(struct resume *s, int checked)
 	if (conflicts_check(s, checked) != 0)
 		return (vfail(s, EXIT_INTERNAL, "verify"));
 	/*
+	 * -m's child first, headless, after the verify and before -i:
+	 * what merges with no conflict is merged and answered keep,
+	 * and -i opens on what is left (ruled 2026-10-15).
+	 */
+	if (s->mergenc != 0) {
+		rc = resume_interactive(s, 1);
+		if (rc != 0)
+			return (rc);
+	}
+	/*
 	 * And the child, where -i asked for one: after the verify and
 	 * its drift lines, and before the document is read for what
 	 * it says, whether or not it is already complete (ruling 2).
 	 * -M -i therefore opens the child and then holds the gate.
 	 */
 	if (s->interactive != 0) {
-		rc = resume_interactive(s);
+		rc = resume_interactive(s, 0);
 		if (rc != 0)
 			return (rc);
 	}
@@ -6849,7 +6900,7 @@ stage1(struct resume *s)
 	 * gate function is where that child opens. The same three
 	 * tests are made after it, over the document the child left.
 	 */
-	if (s->interactive != 0 ||
+	if (s->interactive != 0 || s->mergenc != 0 ||
 	    (s->hasres > 0 && zr_resolution_unanswered(&s->res) == 0))
 		return (stage_conflicts(s, 1));
 	return (EXIT_CONFLICTS);
@@ -7297,6 +7348,7 @@ zr_continue(const struct zr_verb_opts *o)
 
 	memset(&s, 0, sizeof (s));
 	s.nomerge = o->nomerge;
+	s.mergenc = o->mergenc;
 	s.interactive = o->interactive;
 	s.editor = o->editor;
 	s.verbose = o->verbose;

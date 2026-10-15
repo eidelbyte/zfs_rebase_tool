@@ -22,6 +22,7 @@
 .Op Fl q | Fl -quiet
 .Oo Fl u | Fl -allow-unrelated Fl b | Fl -base Ar snapshot Oc
 .Oo Fl O | Fl -take-onto | Fl F | Fl -take-from Oc
+.Op Fl m | Fl -merge-non-conflict
 .Op Fl i | Fl -interactive Op Ar command
 .Op Fl M | Fl -no-merge
 .Fl f | Fl -from Ar snapshot Ns | Ns Ar dataset
@@ -35,6 +36,7 @@
 .Fl t | Fl -onto Ar snapshot Ns | Ns Ar dataset
 .Nm
 .Fl c | Fl -continue
+.Op Fl m | Fl -merge-non-conflict
 .Op Fl i | Fl -interactive Op Ar command
 .Op Fl M | Fl -no-merge
 .Op Fl v | Fl -verbose
@@ -744,6 +746,40 @@ The flag is not latched: it belongs to the invocation, so a
 that should open a child says it each time, and a start given it that
 reaches the gate in the same process is interactive there.
 Nothing about it is written into the record or the header.
+.It Fl m , Fl -merge-non-conflict
+At the
+.Sy conflicts
+gate, before any
+.Fl i
+child opens, run the built-in picker headless: every conflict line the
+manifest marks that is still unanswered, of a group with no pooling class
+(a name moved or split two ways is a person's to settle whatever its text
+says), and that opens three ways, is merged as the picker's second screen
+merges it.
+Where both the text merge and the three-way of the attributes come out
+with no conflict, the merged object is written into the result and the
+line answered
+.Sy keep ;
+anything else is left as it was.
+The tool then says how many names the merge answered and reads the
+document back, as it does after
+.Fl i :
+a
+.Fl i
+child opens on what is left, and the gate goes on, or stands, by what the
+document says.
+A rebase every conflict of which merges this way goes to done in one
+process.
+The merge is the built-in picker's, so a build made with
+.Va PICKER=no
+has none: the child says so and exits 2, and the gate stands.
+A fresh run and
+.Fl -continue
+only, like
+.Fl i ;
+it is not latched, so say it on each
+.Fl -continue
+that should merge.
 .It Fl M , Fl -no-merge
 Stop at the
 .Sy conflicts

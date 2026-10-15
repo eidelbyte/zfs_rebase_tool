@@ -9,6 +9,7 @@
  * Matrix cells (tests/MATRIX.md, family ZX): ZX100 to ZX121,
  * ZX137 to ZX139 for --quiet and for the --overwrite that is gone,
  * ZX241 for the four gate flags a dry run refuses beside it,
+ * ZX276 to ZX278 for -m, --merge-non-conflict, beside them,
  * ZX188 and ZX189 for --verify as a verb and only a verb,
  * ZX180 to ZX187 for IDENT as the one operand, -o at the start
  * alone, --allow-unrelated needing --base, and the two sides on a
@@ -76,6 +77,7 @@ static char w_takeonto[] = "--take-onto";
 static char w_takefrom[] = "--take-from";
 static char w_interactive[] = "--interactive";
 static char w_nomerge[] = "--no-merge";
+static char w_mergenc[] = "--merge-non-conflict";
 static char w_continue[] = "--continue";
 static char w_restart[] = "--restart";
 static char w_abort[] = "--abort";
@@ -98,6 +100,7 @@ static char s_takeonto[] = "-O";
 static char s_takefrom[] = "-F";
 static char s_interactive[] = "-i";
 static char s_nomerge[] = "-M";
+static char s_mergenc[] = "-m";
 static char s_continue[] = "-c";
 static char s_restart[] = "-R";
 static char s_abort[] = "-A";
@@ -137,6 +140,7 @@ static const struct {
 	{ w_takefrom, s_takefrom },
 	{ w_interactive, s_interactive },
 	{ w_nomerge, s_nomerge },
+	{ w_mergenc, s_mergenc },
 	{ w_continue, s_continue },
 	{ w_restart, s_restart },
 	{ w_abort, s_abort },
@@ -237,7 +241,7 @@ test_pairs_run(void)
 	    w_result, v_result };
 	char *with[10];
 	char *one[] = { w_perm, w_verbose, w_takeonto, w_takefrom,
-	    w_interactive, w_nomerge, w_quiet };
+	    w_interactive, w_nomerge, w_mergenc, w_quiet };
 	char *val[] = { w_manifest, w_base };
 	size_t i;
 	int n;
@@ -245,7 +249,7 @@ test_pairs_run(void)
 	/* ZX100: --from, --onto and --result themselves. */
 	check_pair(base, (int)NELEM(base));
 
-	/* ZX102, ZX103, ZX105, ZX106, ZX137: one flag, no value. */
+	/* ZX102, ZX103, ZX105, ZX106, ZX137, ZX276: one flag, no value. */
 	for (i = 0; i < NELEM(one); i++) {
 		memcpy(with, base, sizeof (base));
 		n = (int)NELEM(base);
@@ -281,7 +285,7 @@ test_pairs_verbs(void)
 {
 	char *cont[] = { w_prog, w_continue, v_result };
 	char *contv[] = { w_prog, w_continue, w_interactive, w_nomerge,
-	    w_verbose, v_result };
+	    w_mergenc, w_verbose, v_result };
 	char *rest[] = { w_prog, w_restart, v_result };
 	char *abrt[] = { w_prog, w_abort, w_verbose, v_result };
 	char *rep[] = { w_prog, w_verify, v_result };
@@ -299,7 +303,7 @@ test_pairs_verbs(void)
 	a = parse_ok(contv, (int)NELEM(contv));
 	CHECK(a.za_verb == ZR_VERB_CONTINUE);
 	CHECK(a.za_verify == 0 && a.za_interactive == 1 && a.za_nomerge == 1);
-	CHECK(a.za_verbose == 1);
+	CHECK(a.za_mergenc == 1 && a.za_verbose == 1);
 	a = parse_ok(rest, (int)NELEM(rest));
 	CHECK(a.za_verb == ZR_VERB_RESTART);
 	a = parse_ok(abrt, (int)NELEM(abrt));
@@ -414,7 +418,11 @@ test_harness_verbs(void)
 		char *three[] = { w_prog, w_edit, v_fixture, v_bdir };
 		char *odd[] = { w_prog, w_posix, w_verify, v_bdir, v_fdir,
 		    v_odir };
+		/* ZX278: it stops at the manifest, before any gate */
+		char *merge[] = { w_prog, w_posix, s_mergenc, v_bdir, v_fdir,
+		    v_odir };
 
+		parse_bad(merge, (int)NELEM(merge));
 		parse_bad(two, (int)NELEM(two));
 		parse_bad(four, (int)NELEM(four));
 		parse_bad(three, (int)NELEM(three));
@@ -468,20 +476,21 @@ test_take_on_verbs(void)
 }
 
 /*
- * ZX115, ZX116: --interactive and --no-merge belong to the two
- * commands that reach the conflicts gate -- a fresh run and
- * --continue -- and to nothing else.
+ * ZX115, ZX116, ZX276: --interactive, --no-merge and
+ * --merge-non-conflict belong to the two commands that reach the
+ * conflicts gate -- a fresh run and --continue -- and to nothing
+ * else.
  */
 static void
 test_gate_flags_on_verbs(void)
 {
 	char *verb[] = { w_restart, w_abort, w_verify };
-	char *gate[] = { w_interactive, w_nomerge };
+	char *gate[] = { w_interactive, w_nomerge, w_mergenc, s_mergenc };
 	char *cmd[6];
 	char *run[] = { w_prog, w_from, v_from, w_onto, v_onto,
-	    w_result, v_result, w_interactive, w_nomerge };
+	    w_result, v_result, w_interactive, w_nomerge, w_mergenc };
 	char *cont[] = { w_prog, w_continue, v_result, w_interactive,
-	    w_nomerge };
+	    w_nomerge, s_mergenc };
 	struct zr_args a;
 	size_t i, j;
 
@@ -497,9 +506,11 @@ test_gate_flags_on_verbs(void)
 	a = parse_ok(run, (int)NELEM(run));
 	CHECK(a.za_verb == ZR_VERB_RUN);
 	CHECK(a.za_interactive == 1 && a.za_nomerge == 1);
+	CHECK(a.za_mergenc == 1);
 	a = parse_ok(cont, (int)NELEM(cont));
 	CHECK(a.za_verb == ZR_VERB_CONTINUE);
 	CHECK(a.za_interactive == 1 && a.za_nomerge == 1);
+	CHECK(a.za_mergenc == 1);
 }
 
 /*
@@ -735,7 +746,7 @@ test_quiet_and_overwrite(void)
 }
 
 /*
- * ZX241: a dry run refuses the four gate flags for the reason it
+ * ZX241, ZX277: a dry run refuses the five gate flags for the reason it
  * refuses --quiet. It writes a manifest and stops: no skeleton is
  * written for --take-onto or --take-from to answer, no conflicts
  * gate is reached for --interactive or --no-merge to hold, and
@@ -746,8 +757,10 @@ test_quiet_and_overwrite(void)
 static void
 test_dryrun_gate_flags(void)
 {
-	char *gate[] = { w_takeonto, w_takefrom, w_interactive, w_nomerge };
-	char *sgate[] = { s_takeonto, s_takefrom, s_interactive, s_nomerge };
+	char *gate[] = { w_takeonto, w_takefrom, w_interactive, w_nomerge,
+	    w_mergenc };
+	char *sgate[] = { s_takeonto, s_takefrom, s_interactive, s_nomerge,
+	    s_mergenc };
 	char *dry[] = { w_prog, w_dryrun, w_from, v_from, w_onto, v_onto,
 	    NULL };
 	char *run[] = { w_prog, w_from, v_from, w_onto, v_onto, w_result,

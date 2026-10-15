@@ -173,16 +173,24 @@ zr_launch_closefds(void)
 int
 zr_launch_argv(const struct zr_launch *lp, char *argv[], int n)
 {
-	if (lp == NULL || argv == NULL || n < ZR_LAUNCH_ARGC + 1)
+	int c, k;
+
+	if (lp == NULL || argv == NULL)
 		return (-1);
-	argv[0] = zl_word("zfs_rebase-picker");
-	argv[1] = zl_word(lp->resolution);
-	argv[2] = zl_word(lp->base);
-	argv[3] = zl_word(lp->from);
-	argv[4] = zl_word(lp->onto);
-	argv[5] = zl_word(lp->result);
-	argv[ZR_LAUNCH_ARGC] = NULL;
-	return (ZR_LAUNCH_ARGC);
+	c = lp->merge != 0 ? ZR_LAUNCH_ARGMAX : ZR_LAUNCH_ARGC;
+	if (n < c + 1)
+		return (-1);
+	k = 0;
+	argv[k++] = zl_word("zfs_rebase-picker");
+	if (lp->merge != 0)
+		argv[k++] = zl_word("-m");
+	argv[k++] = zl_word(lp->resolution);
+	argv[k++] = zl_word(lp->base);
+	argv[k++] = zl_word(lp->from);
+	argv[k++] = zl_word(lp->onto);
+	argv[k++] = zl_word(lp->result);
+	argv[k] = NULL;
+	return (c);
 }
 
 /*
@@ -267,7 +275,7 @@ zl_run_child(const struct zr_launch *lp, const char *script, char *argv[],
     const sigset_t *mask)
 {
 	struct sigaction dfl;
-	int rc;
+	int rc, argc;
 
 	memset(&dfl, 0, sizeof (dfl));
 	(void) sigemptyset(&dfl.sa_mask);
@@ -315,7 +323,9 @@ zl_run_child(const struct zr_launch *lp, const char *script, char *argv[],
 	 */
 	if (lp->refresh != NULL)
 		zr_picker_arm_refresh(lp->refresh, lp->rarg);
-	rc = zr_picker_main(ZR_LAUNCH_ARGC, argv);
+	for (argc = 0; argv[argc] != NULL; argc++)
+		;
+	rc = zr_picker_main(argc, argv);
 	/*
 	 * Out through _exit and not exit: the parent's atexit hooks
 	 * and stdio buffers are this process's too, and running them
@@ -333,7 +343,7 @@ zr_launch(const struct zr_launch *lp, char *err, size_t errlen)
 	struct termios saved, now;
 	sigset_t block, oldmask;
 	char script[ZL_SCRIPT_MAX];
-	char *argv[ZR_LAUNCH_ARGC + 1];
+	char *argv[ZR_LAUNCH_ARGMAX + 1];
 	pid_t pid, got;
 	int status = 0, code, hastio = 0, tfd, ownfd = 0;
 
@@ -345,6 +355,11 @@ zr_launch(const struct zr_launch *lp, char *err, size_t errlen)
 	}
 	script[0] = '\0';
 	argv[0] = NULL;
+	if (lp->merge != 0 && lp->command != NULL) {
+		zl_say(err, errlen, "the merge is the built-in's, and "
+		    "names no command");
+		return (-1);
+	}
 	if (lp->command != NULL) {
 		if (strlen(lp->command) + sizeof (ZL_SUFFIX) >
 		    sizeof (script)) {

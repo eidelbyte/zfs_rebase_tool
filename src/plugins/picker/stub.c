@@ -30,8 +30,13 @@
 int
 zr_picker_main(int argc, char **argv)
 {
-	(void) argc;
-	(void) argv;
+	/* -m merges through the picker this build was made without */
+	if (argc > 1 && argv[1][0] == '-' && argv[1][1] == 'm' &&
+	    argv[1][2] == '\0') {
+		(void) fprintf(stderr, "zfs_rebase: this build has no "
+		    "picker, and --merge-non-conflict merges through it\n");
+		return (2);
+	}
 	(void) fprintf(stderr, "zfs_rebase: this build has no picker; "
 	    "name an editor with -i CMD\n");
 	return (2);

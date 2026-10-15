@@ -35,13 +35,15 @@
 static const char usage[] =
 	"usage: zfs_rebase [-p] [-v] [-q] [--manifest FILE]\n"
 	"                  [--allow-unrelated --base SNAP]\n"
-	"                  [--take-onto | --take-from] [--interactive [CMD]] "
-	    "[--no-merge]\n"
+	"                  [--take-onto | --take-from] [--merge-non-conflict]\n"
+	"                  [--interactive [CMD]] [--no-merge]\n"
 	"                  --from SNAP|DATASET --onto SNAP|DATASET --result "
 	    "NAME\n"
 	"       zfs_rebase --dry-run [-p] [--manifest FILE]\n"
 	"                  --from SNAP|DATASET --onto SNAP|DATASET\n"
-	"       zfs_rebase --continue [--interactive [CMD]] [--no-merge]\n"
+	"       zfs_rebase --continue [--merge-non-conflict] "
+	    "[--interactive [CMD]]\n"
+	"                  [--no-merge]\n"
 	"                  [--from SNAP] [--onto SNAP] IDENT\n"
 	"       zfs_rebase --restart IDENT\n"
 	"       zfs_rebase --abort   IDENT\n"
@@ -93,6 +95,14 @@ static const char usage[] =
 	"                          unless it is the only one on a verb's\n"
 	"                          line, where it is IDENT. This invocation\n"
 	"                          only: say it on each --continue\n"
+	"  -m, --merge-non-conflict\n"
+	"                          at the conflicts gate, merge three ways\n"
+	"                          every changed-both conflict whose text\n"
+	"                          and attributes merge with no conflict,\n"
+	"                          and answer it keep; before -i, which\n"
+	"                          opens on what is left. The built-in\n"
+	"                          picker's merge, so not in a PICKER=no\n"
+	"                          build. This invocation only\n"
 	"  -M, --no-merge          stop at the conflicts gate however the\n"
 	"                          resolution is answered; an error past it\n"
 	"  -c, --continue          take the rebase on from the gate it left\n"
@@ -366,6 +376,7 @@ main(int argc, char **argv)
 	vo.editor = a.za_editor;
 	vo.interactive = a.za_interactive;
 	vo.nomerge = a.za_nomerge;
+	vo.mergenc = a.za_mergenc;
 	vo.verbose = a.za_verbose;
 	switch (a.za_verb) {
 	case ZR_VERB_BUILD_FIXTURE:
@@ -408,6 +419,7 @@ main(int argc, char **argv)
 	ro.takefrom = a.za_takefrom;
 	ro.interactive = a.za_interactive;
 	ro.nomerge = a.za_nomerge;
+	ro.mergenc = a.za_mergenc;
 	ro.verbose = a.za_verbose;
 	return (zr_run(&ro));
 }

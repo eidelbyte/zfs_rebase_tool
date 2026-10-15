@@ -33,6 +33,7 @@ enum zr_optid {
 	ZO_TAKEFROM,
 	ZO_INTERACTIVE,
 	ZO_NOMERGE,
+	ZO_MERGENC,
 	ZO_CONTINUE,
 	ZO_RESTART,
 	ZO_ABORT,
@@ -78,6 +79,7 @@ static const struct zr_opt zr_opts[] = {
 	{ "take-from",		'F', ZA_NOVAL, ZO_TAKEFROM },
 	{ "interactive",	'i', ZA_OPTVAL, ZO_INTERACTIVE },
 	{ "no-merge",		'M', ZA_NOVAL, ZO_NOMERGE },
+	{ "merge-non-conflict",	'm', ZA_NOVAL, ZO_MERGENC },
 	{ "continue",		'c', ZA_NOVAL, ZO_CONTINUE },
 	{ "restart",		'R', ZA_NOVAL, ZO_RESTART },
 	{ "abort",		'A', ZA_NOVAL, ZO_ABORT },
@@ -242,6 +244,9 @@ za_set(struct zr_args *out, const struct zr_opt *opt, const char *val,
 	case ZO_NOMERGE:
 		out->za_nomerge = 1;
 		break;
+	case ZO_MERGENC:
+		out->za_mergenc = 1;
+		break;
 	case ZO_CONTINUE:
 		*cont = 1;
 		break;
@@ -374,6 +379,10 @@ za_gate_flags(const struct zr_args *out, char *err, size_t errlen)
 			return (za_no(err, errlen, "--no-merge is for a "
 			    "rebase and --continue, which reach the conflicts "
 			    "gate, not for %s", word));
+		if (out->za_mergenc != 0)
+			return (za_no(err, errlen, "--merge-non-conflict is "
+			    "for a rebase and --continue, which reach the "
+			    "conflicts gate, not for %s", word));
 	}
 	return (0);
 }
@@ -522,13 +531,14 @@ za_run_flags(const struct zr_args *out, char *err, size_t errlen)
 	 */
 	if (out->za_dryrun != 0 && (out->za_takeonto != 0 ||
 	    out->za_takefrom != 0 || out->za_interactive != 0 ||
-	    out->za_nomerge != 0))
+	    out->za_nomerge != 0 || out->za_mergenc != 0))
 		return (za_no(err, errlen, "--dry-run writes a manifest and "
 		    "stops; %s says nothing to it",
 		    out->za_takeonto != 0 ? "--take-onto" :
 		    out->za_takefrom != 0 ? "--take-from" :
 		    out->za_interactive != 0 ? "--interactive" :
-		    "--no-merge"));
+		    out->za_nomerge != 0 ? "--no-merge" :
+		    "--merge-non-conflict"));
 	return (0);
 }
 

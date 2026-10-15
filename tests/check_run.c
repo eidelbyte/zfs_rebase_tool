@@ -847,6 +847,49 @@ check_builtin_child(void)
 	scratch_close(&sc);
 }
 
+/*
+ * ZI44: the merge child (-m): the built-in, headless, given the same
+ * argv with "-m" after the program's name. In either build it is a
+ * launch like any other: the picker refuses this scratch, which has
+ * no manifest beside its resolution, and the stub of a PICKER=no
+ * build says it has no picker; both exit 2. A command beside it is
+ * refused, since the merge is the built-in's.
+ */
+static void
+check_merge_child(void)
+{
+	struct zr_launch lp;
+	struct scratch sc;
+	char *argv[ZR_LAUNCH_ARGMAX + 1];
+	char err[512];
+
+	scratch_open(&sc);
+	launch_on(&lp, &sc, NULL);
+	lp.merge = 1;
+	CHECK(zr_launch(&lp, err, sizeof (err)) != 0);
+	says(err, "2");
+
+	CHECK(zr_launch_argv(&lp, argv, ZR_LAUNCH_ARGMAX + 1) ==
+	    ZR_LAUNCH_ARGMAX);
+	CHECK(strcmp(argv[0], "zfs_rebase-picker") == 0);
+	CHECK(strcmp(argv[1], "-m") == 0);
+	CHECK(strcmp(argv[2], sc.res) == 0);
+	CHECK(strcmp(argv[3], "/b") == 0);
+	CHECK(strcmp(argv[4], "/f") == 0);
+	CHECK(strcmp(argv[5], "/o") == 0);
+	CHECK(strcmp(argv[6], "/r") == 0);
+	CHECK(argv[ZR_LAUNCH_ARGMAX] == NULL);
+	/* the array -i's argv fits is one short for it */
+	CHECK(zr_launch_argv(&lp, argv, ZR_LAUNCH_ARGC + 1) == -1);
+
+	/* the merge names no command */
+	launch_on(&lp, &sc, "true");
+	lp.merge = 1;
+	CHECK(zr_launch(&lp, err, sizeof (err)) != 0);
+	says(err, "names no command");
+	scratch_close(&sc);
+}
+
 /* One path that must be refused for standing in the way already. */
 static void
 outdir_taken(const char *path)
@@ -1399,6 +1442,7 @@ main(void)
 	check_terminal_restored();
 	check_terminal_devtty();
 	check_builtin_child();
+	check_merge_child();
 	check_child_closefds();
 	check_gate_marks_back();
 	printf("check_run: %d checks passed\n", checks);

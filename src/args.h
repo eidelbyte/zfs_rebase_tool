@@ -72,6 +72,7 @@ struct zr_args {
 	int		za_takefrom;	/* -F, --take-from */
 	int		za_interactive;	/* -i, --interactive */
 	int		za_nomerge;	/* -M, --no-merge */
+	int		za_mergenc;	/* -m, --merge-non-conflict */
 };
 
 /*

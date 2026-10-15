@@ -5583,6 +5583,277 @@ test_meta(void)
 	}
 }
 
+/*
+ * ---------------------------------------------------------------
+ * -m, --merge-non-conflict: the headless pass (zr_pk_automerge).
+ * ---------------------------------------------------------------
+ */
+
+/* The mode of a name in one tree of the world. */
+static void
+w_mode(const struct world *w, int t, const char *rel, mode_t mode)
+{
+	char path[PATHMAX];
+
+	w_path(w, t, rel, path, sizeof (path));
+	CHECK(chmod(path, mode) == 0);
+}
+
+/* A name's bytes in the result, held to WANT. */
+static void
+result_is(const struct world *w, const char *rel, const char *want)
+{
+	size_t len;
+	char *got;
+
+	got = w_slurp(w, ZR_PK_T_RESULT, rel, &len);
+	CHECK(got != NULL);
+	if (got != NULL)
+		same(rel, got, len, want, strlen(want));
+	free(got);
+}
+
+/*
+ * ZP195, ZP196, ZP197: over the merge world, one.txt -- a change on
+ * from's side alone -- is the one name taken: written as from has it
+ * and answered keep, the document saved. m2.txt conflicts in two
+ * hunks and is left, its object as it was; add.txt is contested-home,
+ * a pooling class, and is left though its text is the add/add
+ * compare; del.txt has no from and no merge view.
+ */
+static void
+test_automerge(void)
+{
+	struct zr_picker pk;
+	struct world w;
+
+	world_init(&w);
+	build_merge(&w);
+	open_ok("automerge", &w, &pk);
+	drain(&pk);
+	CHECK(zr_pk_automerge(&pk, NULL, "t") == 1);
+	CHECK(zr_pk_choice(zr_pk_row(&pk, G_ONE)) == ZR_CH_KEEP);
+	CHECK(zr_pk_choice(zr_pk_row(&pk, G_M2)) == ZR_CH_NONE);
+	CHECK(zr_pk_choice(zr_pk_row(&pk, G_ADD)) == ZR_CH_NONE);
+	CHECK(zr_pk_choice(zr_pk_row(&pk, G_DEL)) == ZR_CH_NONE);
+	CHECK(zr_pk_merge(&pk) == NULL);
+	zr_pk_fini(&pk);
+	result_is(&w, "/one.txt", "s1\nFF\n");
+	result_is(&w, "/m2.txt", G_M2_BASE);
+	result_is(&w, "/add.txt", "addfrom\n");
+	/* and the document on the disk says so */
+	open_ok("automerge again", &w, &pk);
+	CHECK(zr_pk_choice(zr_pk_row(&pk, G_ONE)) == ZR_CH_KEEP);
+	CHECK(zr_pk_choice(zr_pk_row(&pk, G_M2)) == ZR_CH_NONE);
+	/* a second pass finds nothing more to take */
+	CHECK(zr_pk_automerge(&pk, NULL, "t") == 0);
+	zr_pk_fini(&pk);
+	world_fini(&w);
+}
+
+static const char man_meta[] =
+	M_HDR("0", "2")
+	"/\n    mix.txt conflict 1\n    mode.txt conflict 2\n    ..\n"
+	REC("1", "changed-both", "/mix.txt changed on both sides")
+	REC("2", "changed-both", "/mode.txt changed on both sides");
+
+static const char res_meta[] =
+	R_HDR("2", "2")
+	"/\n    mix.txt conflict 1 -\n    mode.txt conflict 2 -\n    ..\n";
+
+/*
+ * ZP196, ZP198: the metadata three-way counts as the text does.
+ * mix.txt has onto's text and from's mode, neither side touching the
+ * other's, and comes out with both; mode.txt merges clean as text
+ * but its mode was changed both ways, so it is left as it was.
+ */
+static void
+test_automerge_meta(void)
+{
+	struct zr_picker pk;
+	struct world w;
+	struct stat st;
+
+	world_init(&w);
+	world_docs(&w, man_meta, res_meta);
+	w_text(&w, ZR_PK_T_BASE, "/mix.txt", "m\n");
+	w_text(&w, ZR_PK_T_FROM, "/mix.txt", "m\n");
+	w_text(&w, ZR_PK_T_ONTO, "/mix.txt", "M\n");
+	w_text(&w, ZR_PK_T_RESULT, "/mix.txt", "M\n");
+	w_mode(&w, ZR_PK_T_BASE, "/mix.txt", 0644);
+	w_mode(&w, ZR_PK_T_FROM, "/mix.txt", 0600);
+	w_mode(&w, ZR_PK_T_ONTO, "/mix.txt", 0644);
+	w_mode(&w, ZR_PK_T_RESULT, "/mix.txt", 0644);
+	w_text(&w, ZR_PK_T_BASE, "/mode.txt", "x\n");
+	w_text(&w, ZR_PK_T_FROM, "/mode.txt", "X\n");
+	w_text(&w, ZR_PK_T_ONTO, "/mode.txt", "x\n");
+	w_text(&w, ZR_PK_T_RESULT, "/mode.txt", "x\n");
+	w_mode(&w, ZR_PK_T_BASE, "/mode.txt", 0644);
+	w_mode(&w, ZR_PK_T_FROM, "/mode.txt", 0600);
+	w_mode(&w, ZR_PK_T_ONTO, "/mode.txt", 0640);
+	w_mode(&w, ZR_PK_T_RESULT, "/mode.txt", 0640);
+	open_ok("automerge meta", &w, &pk);
+	drain(&pk);
+	CHECK(zr_pk_automerge(&pk, NULL, "t") == 1);
+	CHECK(zr_pk_choice(zr_pk_row(&pk, 0)) == ZR_CH_KEEP);
+	CHECK(zr_pk_choice(zr_pk_row(&pk, 1)) == ZR_CH_NONE);
+	zr_pk_fini(&pk);
+	result_is(&w, "/mix.txt", "M\n");
+	w_stat(&w, ZR_PK_T_RESULT, "/mix.txt", &st);
+	CHECK((st.st_mode & 07777) == 0600);
+	result_is(&w, "/mode.txt", "x\n");
+	w_stat(&w, ZR_PK_T_RESULT, "/mode.txt", &st);
+	CHECK((st.st_mode & 07777) == 0640);
+	world_fini(&w);
+}
+
+static const char man_amkinds[] =
+	M_HDR("0", "3")
+	"/\n    a.txt conflict 1\n    b.txt conflict 2\n"
+	"    e.txt conflict 3\n    ..\n"
+	REC("1", "changed-both", "/a.txt changed on both sides")
+	REC("2", "changed-both", "/b.txt changed on both sides")
+	REC("3", "contested-home", "/e.txt was given two homes");
+
+static const char res_amkinds[] =
+	R_HDR("5", "3")
+	"/\n    a.txt conflict 1 onto\n    b.txt conflict 2 -\n"
+	"    c.txt conflict 9 -\n    d.txt drift keep\n"
+	"    e.txt conflict 3 -\n    ..\n";
+
+/*
+ * ZP197: only an unanswered line the manifest marks, of a group with
+ * no pooling class, is the pass's. a.txt was answered onto and stays
+ * onto; c.txt is a line a hand added and d.txt a drift line, and
+ * both are left; e.txt is contested-home, a name given two homes,
+ * which is a person's to settle; b.txt, which all five would merge
+ * clean, is the one taken.
+ */
+static void
+test_automerge_kinds(void)
+{
+	static const char *const n[] = { "/a.txt", "/b.txt", "/c.txt",
+	    "/d.txt", "/e.txt" };
+	struct zr_picker pk;
+	struct world w;
+	size_t i;
+	int t;
+
+	world_init(&w);
+	world_docs(&w, man_amkinds, res_amkinds);
+	for (i = 0; i < 5; i++) {
+		for (t = 0; t < ZR_PK_NTREE; t++)
+			w_text(&w, t, n[i], t == ZR_PK_T_FROM ? "1\nF\n" :
+			    "1\n2\n");
+	}
+	open_ok("automerge kinds", &w, &pk);
+	drain(&pk);
+	CHECK(zr_pk_automerge(&pk, NULL, "t") == 1);
+	for (i = 0; i < zr_pk_nrows(&pk); i++) {
+		const struct zr_pk_row *row = zr_pk_row(&pk, (uint32_t)i);
+
+		if (named(row, "/a.txt"))
+			CHECK(zr_pk_choice(row) == ZR_CH_ONTO);
+		else if (named(row, "/b.txt"))
+			CHECK(zr_pk_choice(row) == ZR_CH_KEEP);
+		else if (named(row, "/c.txt"))
+			CHECK(zr_pk_choice(row) == ZR_CH_NONE);
+		else if (named(row, "/d.txt"))
+			CHECK(zr_pk_choice(row) == ZR_CH_KEEP);
+		else if (named(row, "/e.txt"))
+			CHECK(zr_pk_choice(row) == ZR_CH_NONE);
+	}
+	zr_pk_fini(&pk);
+	result_is(&w, "/a.txt", "1\n2\n");
+	result_is(&w, "/b.txt", "1\nF\n");
+	result_is(&w, "/c.txt", "1\n2\n");
+	result_is(&w, "/d.txt", "1\n2\n");
+	result_is(&w, "/e.txt", "1\n2\n");
+	world_fini(&w);
+}
+
+static const char man_ampool[] =
+	M_HDR("0", "1")
+	"/\n    p conflict 1\n    q conflict 1\n    ..\n"
+	REC("1", "changed-both", "/p changed on both sides");
+
+static const char res_ampool[] =
+	R_HDR("2", "2") "/\n    p conflict 1 -\n    q conflict 1 -\n    ..\n";
+
+/*
+ * ZP199: p and q are one object in the result. The pass merges it
+ * once, through p, and every name of it reads keep after: q is not
+ * merged a second time.
+ */
+static void
+test_automerge_pool(void)
+{
+	struct zr_picker pk;
+	struct world w;
+	struct stat pst, qst;
+	int t;
+
+	world_init(&w);
+	world_docs(&w, man_ampool, res_ampool);
+	for (t = ZR_PK_T_BASE; t <= ZR_PK_T_ONTO; t++) {
+		w_text(&w, t, "/p", t == ZR_PK_T_FROM ? "ONE\ntwo\n" :
+		    "one\ntwo\n");
+		w_text(&w, t, "/q", t == ZR_PK_T_FROM ? "ONE\ntwo\n" :
+		    "one\ntwo\n");
+	}
+	w_text(&w, ZR_PK_T_RESULT, "/p", "one\ntwo\n");
+	w_hardlink(&w, ZR_PK_T_RESULT, "/q", "/p");
+	open_ok("automerge pool", &w, &pk);
+	drain(&pk);
+	CHECK(zr_pk_automerge(&pk, NULL, "t") == 2);
+	CHECK(zr_pk_choice(zr_pk_row(&pk, 0)) == ZR_CH_KEEP);
+	CHECK(zr_pk_choice(zr_pk_row(&pk, 1)) == ZR_CH_KEEP);
+	zr_pk_fini(&pk);
+	result_is(&w, "/p", "ONE\ntwo\n");
+	w_stat(&w, ZR_PK_T_RESULT, "/p", &pst);
+	w_stat(&w, ZR_PK_T_RESULT, "/q", &qst);
+	CHECK(pst.st_ino == qst.st_ino && pst.st_nlink == 2);
+	world_fini(&w);
+}
+
+/*
+ * ZP200: the entry, as the launcher and the standalone binary call
+ * it, with "-m" after the program's name: the pass, nothing drawn,
+ * 0; and 2 where the documents will not open.
+ */
+static void
+test_automerge_main(void)
+{
+	static char dash_m[] = "-m";
+	struct zr_picker pk;
+	struct world w;
+	char *av[ZR_PK_ARGC + 1];
+	char res[PATHMAX];
+	int i;
+
+	world_init(&w);
+	build_merge(&w);
+	av[0] = w.w_av[0];
+	av[1] = dash_m;
+	for (i = 1; i < ZR_PK_ARGC; i++)
+		av[i + 1] = w.w_av[i];
+	CHECK(zr_picker_main(ZR_PK_ARGC + 1, av) == 0);
+	open_ok("automerge main", &w, &pk);
+	CHECK(zr_pk_choice(zr_pk_row(&pk, G_ONE)) == ZR_CH_KEEP);
+	CHECK(zr_pk_choice(zr_pk_row(&pk, G_M2)) == ZR_CH_NONE);
+	zr_pk_fini(&pk);
+	result_is(&w, "/one.txt", "s1\nFF\n");
+	/* no manifest beside the resolution: refused, 2 */
+	(void) snprintf(res, sizeof (res), "%s", w.w_man);
+	CHECK(unlink(res) == 0);
+	av[0] = w.w_av[0];
+	av[1] = dash_m;
+	for (i = 1; i < ZR_PK_ARGC; i++)
+		av[i + 1] = w.w_av[i];
+	CHECK(zr_picker_main(ZR_PK_ARGC + 1, av) == 2);
+	world_fini(&w);
+}
+
 int
 main(void)
 {
@@ -5614,6 +5885,11 @@ main(void)
 	test_merge_writeshort();
 	test_merge_savefail();
 	test_merge_pool();
+	test_automerge();
+	test_automerge_meta();
+	test_automerge_kinds();
+	test_automerge_pool();
+	test_automerge_main();
 	test_merge_pool_group();
 	test_unsaved_count();
 	test_tree_unreadable();

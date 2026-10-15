@@ -84,6 +84,7 @@ struct zr_run_opts {
 	int		takefrom;
 	int		interactive;
 	int		nomerge;
+	int		mergenc;	/* -m: merge what merges clean */
 	int		verbose;
 };
 
@@ -247,6 +248,7 @@ struct zr_verb_opts {
 	const char	*editor;	/* -i's value; NULL is the built-in */
 	int		interactive;
 	int		nomerge;
+	int		mergenc;	/* -m: merge what merges clean */
 	int		verbose;
 };
 
